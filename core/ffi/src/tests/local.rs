@@ -41,9 +41,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_6() {
-    assert_eq!(FFI_API_VERSION, 6);
-    assert_eq!(ffi_api_version(), 6);
+fn the_version_is_7() {
+    assert_eq!(FFI_API_VERSION, 7);
+    assert_eq!(ffi_api_version(), 7);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -1265,8 +1265,13 @@ fn a_removed_accounts_id_is_not_given_to_the_next_account() {
         provider: None,
         auth_hint: AuthKind::Password,
     };
+    // One address per account: the same address again would update the first account (see `readd`).
     let add = |name: &str| {
-        block(core.add_account(found.clone(), name.into(), None, password_cred("x"))).unwrap()
+        let found = FfiDiscovered {
+            email: format!("{name}@example.org"),
+            ..found.clone()
+        };
+        block(core.add_account(found, name.into(), None, password_cred("x"))).unwrap()
     };
     assert_eq!(add("one"), 1);
     assert_eq!(add("two"), 2);

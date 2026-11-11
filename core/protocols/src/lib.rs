@@ -24,6 +24,7 @@ pub mod types;
 
 pub use backend::{BackendFuture, MailBackend};
 pub use demo::{DemoBackend, DemoFolderState, DemoSubmitter};
+pub use host::clean_host;
 pub use imap::{
     check_certificate, probe_certificate, CertFingerprint, CertificateProblem, Credential,
     ImapBackend, ImapConfig, Security,

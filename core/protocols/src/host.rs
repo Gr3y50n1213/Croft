@@ -16,7 +16,7 @@
 ///
 /// DNS names are not case sensitive, so the lower-case form can be used for the lookup, for the
 /// certificate's name check and for comparing against a list.
-pub(crate) fn clean_host(host: &str) -> String {
+pub fn clean_host(host: &str) -> String {
     host.trim()
         .trim_start_matches('[')
         // `]` and `.` in any order: `[host.]` and `[host].` are both `host`.

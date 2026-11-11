@@ -336,6 +336,57 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
     assert_eq!(provider.sign_ins(), vec![account], "no further calls");
 }
 
+/// Signing in again for an address that is already added, with the same server: the account keeps
+/// its id, leaves the needs-sign-in state and syncs with the new password the call brought. The
+/// provider is not asked: the credential came with `add_account`, and the app stores it under the
+/// same id afterwards.
+#[test]
+fn signing_in_again_with_the_right_password_resumes_the_account_under_its_id() {
+    let server = start_server();
+    three_messages(&server);
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    let account = block(core.add_account(
+        discovered_for(&server),
+        "Alice".into(),
+        Some(fingerprint_of(&server)),
+        password_cred("the wrong password"),
+    ))
+    .unwrap();
+    provider.store(account, password_cred("the wrong password"));
+    block(wait_for(&core, "needs sign-in", || {
+        core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn
+    }));
+    assert!(core.list_folders(account).unwrap().is_empty());
+
+    let again = block(core.add_account(
+        discovered_for(&server),
+        "Alice".into(),
+        Some(fingerprint_of(&server)),
+        password_cred(PASSWORD),
+    ))
+    .unwrap();
+    assert_eq!(again, account, "the same account");
+    // What the app does next: the new password replaces the old one under that id.
+    provider.store(account, password_cred(PASSWORD));
+
+    block(wait_for(
+        &core,
+        "the first sync with the new password",
+        || !core.list_folders(account).unwrap().is_empty(),
+    ));
+    let accounts = core.list_accounts().unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].status, AccountStatus::Ok);
+    assert_eq!(
+        provider.sign_ins(),
+        vec![account],
+        "told once, at the first failure"
+    );
+    assert!(provider.asked().is_empty(), "the provider was not asked");
+}
+
 /// The provider is never consulted for a new account: a secret that happens to be stored under the
 /// id the new account will get (a leftover of another account) is not used, only the credential
 /// `add_account` was given.

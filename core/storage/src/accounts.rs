@@ -247,6 +247,23 @@ pub fn set_status(conn: &Connection, id: i64, status: Status) -> Result<bool> {
     Ok(n > 0)
 }
 
+/// Replaces an account's provider name and stored settings, and nothing else: its id, address,
+/// label, position, colour and every row that belongs to it stay. Returns false when the account
+/// does not exist. Like `config`, the new settings never hold a secret.
+pub fn set_settings(
+    conn: &Connection,
+    id: i64,
+    provider: &str,
+    config: &serde_json::Value,
+) -> Result<bool> {
+    let config = serde_json::to_string(config)?;
+    let n = conn.execute(
+        "UPDATE account SET provider = ?2, config_json = ?3 WHERE id = ?1",
+        params![id, provider, config],
+    )?;
+    Ok(n > 0)
+}
+
 /// Removes an account and, by cascade, all its folders, messages, identities, queue and outbox rows.
 /// Returns false when the account does not exist.
 pub fn delete(conn: &Connection, id: i64) -> Result<bool> {

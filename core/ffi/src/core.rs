@@ -19,8 +19,8 @@ use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{
     provider_for_host, verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions,
 };
-use croft_protocols::{CertFingerprint, DemoBackend};
-use croft_storage::accounts::{self, NewAccount, Protocol};
+use croft_protocols::{clean_host, CertFingerprint, Credential, DemoBackend};
+use croft_storage::accounts::{self, Account, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
 use croft_storage::{folders, Db};
 use tokio::runtime::{Builder, Handle, Runtime};
@@ -106,11 +106,31 @@ pub(crate) struct Inner {
     /// The sample mailbox, when it is running (at most one), by account id. It has no entry in
     /// `backends`: no server adapter is ever built for it.
     demos: Mutex<HashMap<i64, Arc<DemoBackend>>>,
-    /// Held while `add_demo_account` looks for the sample mailbox and adds or starts it, and while
-    /// `remove_account` removes an account: two adds at once add only one, and a remove never
-    /// runs between an add's row insert and the start of its task (which would leave a task
-    /// running for a deleted account). A tokio lock: it is held across the awaits of both calls.
-    demo_adding: tokio::sync::Mutex<()>,
+    /// Held while `add_account` looks for an account with the same address and inserts or updates
+    /// one, while `add_demo_account` looks for the sample mailbox and adds or starts it, and while
+    /// `remove_account` removes an account: two adds at once (of one address, or of the sample
+    /// mailbox) add only one, and a remove never runs between an add's row insert and the start of
+    /// its task (which would leave a task running for a deleted account). A tokio lock: it is held
+    /// across the awaits of these calls.
+    account_changes: tokio::sync::Mutex<()>,
+}
+
+/// What `add_account` has worked out for the account, ready to be stored and started.
+struct Added {
+    display_name: String,
+    email: String,
+    provider: String,
+    json: serde_json::Value,
+    settings: StoredSettings,
+    credential: Credential,
+}
+
+/// Whether two settings records name the same IMAP server and login: the host (cleaned up like
+/// the connection does it), the port and the user name.
+fn same_server(a: &StoredSettings, b: &StoredSettings) -> bool {
+    clean_host(&a.imap.host) == clean_host(&b.imap.host)
+        && a.imap.port == b.imap.port
+        && a.imap.username == b.imap.username
 }
 
 fn now_ms() -> i64 {
@@ -153,6 +173,123 @@ impl Inner {
             self.handle.set_online(id, false);
         }
         Ok(())
+    }
+
+    /// The account with this address that `add_account` would update: not the sample mailbox,
+    /// and the same address without regard to case (the domain never has case, and no provider
+    /// tells `Alice@` from `alice@`). Reads the database: call it from a blocking thread.
+    fn account_with_address(&self, email: &str) -> Result<Option<Account>, CoreError> {
+        let wanted = email.trim();
+        Ok(self.handle.read(|db| {
+            accounts::list(db.connection()).map(|all| {
+                all.into_iter().find(|a| {
+                    !is_demo(&a.config, &a.email) && a.email.trim().eq_ignore_ascii_case(wanted)
+                })
+            })
+        })?)
+    }
+
+    /// Inserts a new account and starts it with the credential, or removes the row again when it
+    /// cannot start. Blocks: call it from a blocking thread, with `account_changes` held.
+    fn insert_account(&self, new: Added) -> Result<i64, CoreError> {
+        let Added {
+            display_name,
+            email,
+            provider,
+            json,
+            settings,
+            credential,
+        } = new;
+        let id = self.handle.read(|db| {
+            let conn = db.connection();
+            let position = i64::try_from(accounts::list(conn)?.len()).unwrap_or(0);
+            Ok::<_, CoreError>(accounts::insert(
+                conn,
+                &NewAccount {
+                    label: display_name,
+                    email,
+                    protocol: Protocol::Imap,
+                    provider,
+                    config: json,
+                    color: None,
+                    position,
+                },
+                now_ms(),
+            )?)
+        })?;
+        if let Err(e) = self.start_account(id, &settings, Asked::Credential(credential)) {
+            let _ = self.handle.read(|db| accounts::delete(db.connection(), id));
+            return Err(e);
+        }
+        self.hub.accounts_changed([id]);
+        Ok(id)
+    }
+
+    /// `add_account` for an address that is already added: the same server means the person signs
+    /// in again (see `Core::add_account`), another server is [`CoreError::AccountExists`]. With
+    /// `account_changes` held.
+    async fn sign_in_again(
+        self: &Arc<Self>,
+        existing: Account,
+        new: Added,
+    ) -> Result<i64, CoreError> {
+        let id = existing.id;
+        // Settings this version cannot read (a newer app wrote them) are never overwritten.
+        let old =
+            StoredSettings::from_json(&existing.config).map_err(|_| CoreError::AccountExists)?;
+        if existing.protocol != Protocol::Imap || !same_server(&old, &new.settings) {
+            return Err(CoreError::AccountExists);
+        }
+        // The new settings first, so a restart in the middle starts the account with them.
+        self.handle
+            .read(|db| accounts::set_settings(db.connection(), id, &new.provider, &new.json))?;
+        // Stop the account's task (its queue and outbox stay stored) and start it again with the
+        // credential the person just verified.
+        self.engine.remove_account(id).await;
+        self.backends().remove(&id);
+        let inner = self.clone();
+        let Added {
+            settings,
+            credential,
+            ..
+        } = new;
+        let started = tokio::task::spawn_blocking(move || {
+            inner.start_account(id, &settings, Asked::Credential(credential))
+        })
+        .await
+        .map_err(|_| CoreError::Internal)?;
+        match started {
+            Ok(()) => {
+                // Engine first, then the hub, as in `signed_in`: the account leaves the
+                // needs-sign-in state and syncs and sends what waited.
+                self.hub.set_broken(id, false);
+                self.handle.signed_in(id);
+                self.hub.clear_sign_in(id);
+                self.hub.accounts_changed([id]);
+                Ok(id)
+            }
+            Err(e) => {
+                // Put the old settings back and start the account as it was (asking the app for
+                // its stored credential), so a failed re-add costs nothing.
+                let back = self.clone();
+                let restored = tokio::task::spawn_blocking(move || {
+                    back.handle.read(|db| {
+                        accounts::set_settings(
+                            db.connection(),
+                            id,
+                            &existing.provider,
+                            &existing.config,
+                        )
+                    })?;
+                    back.start_stored_account(id, &old)
+                })
+                .await;
+                if !matches!(restored, Ok(Ok(()))) {
+                    self.hub.set_broken(id, true);
+                }
+                Err(e)
+            }
+        }
     }
 
     fn demos(&self) -> MutexGuard<'_, HashMap<i64, Arc<DemoBackend>>> {
@@ -342,6 +479,16 @@ impl Core {
         &self.inner.hub
     }
 
+    /// The stored row of an account, for tests that check what was written.
+    #[cfg(test)]
+    pub(crate) fn stored_account(&self, id: i64) -> Option<Account> {
+        self.inner
+            .handle
+            .read(|db| accounts::get(db.connection(), id))
+            .ok()
+            .flatten()
+    }
+
     #[cfg(test)]
     pub(crate) async fn discover_using(
         &self,
@@ -423,7 +570,7 @@ impl Core {
             provider: credentials,
             backends: Mutex::new(HashMap::new()),
             demos: Mutex::new(HashMap::new()),
-            demo_adding: tokio::sync::Mutex::new(()),
+            account_changes: tokio::sync::Mutex::new(()),
         });
 
         let stored = inner.handle.read(|db| accounts::list(db.connection()))?;
@@ -517,8 +664,21 @@ impl Core {
     /// verified. The core keeps it only in the protocol layer's wiping string and never asks the
     /// provider about a new account. The returned id is the account's: **the app stores the
     /// credential under that id right after this returns** (and stores nothing when this fails),
-    /// so that the provider can answer for it from then on (`open`, `signed_in`). Ids are never
-    /// reused, so the id has no stored secrets of an earlier account.
+    /// so that the provider can answer for it from then on (`open`, `signed_in`). A new account's
+    /// id is never reused, so it has no stored secrets of an earlier account.
+    ///
+    /// **An address that is already added** (the same address, compared without regard to case;
+    /// the sample mailbox never counts) is not added twice:
+    /// - With the same IMAP host, port and user name as the stored account, this is the person
+    ///   signing in again (a new password, a changed security setting, a new certificate pin). The
+    ///   account keeps its id, its label and everything synced so far; its stored settings are
+    ///   replaced (the pin included, under the rule below), its connection is rebuilt from
+    ///   `credential`, and it leaves the needs-sign-in state, so syncing and the queued changes
+    ///   resume with the new credential. The id returned is the existing one, and **the app stores
+    ///   the credential under it, replacing the old one**, exactly as for a new account.
+    /// - With another server, port or user name (or when the stored settings cannot be read) it
+    ///   fails with [`CoreError::AccountExists`] and changes nothing. The person removes the old
+    ///   account first if they mean to replace it.
     ///
     /// A credential that is not valid UTF-8 fails with `NoCredential` before anything is written.
     ///
@@ -569,38 +729,34 @@ impl Core {
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
-                // Starting an account does blocking work: not on a runtime worker.
-                tokio::task::spawn_blocking(move || {
-                    let id = inner.handle.read(|db| {
-                        let conn = db.connection();
-                        let position = i64::try_from(accounts::list(conn)?.len()).unwrap_or(0);
-                        Ok::<_, CoreError>(accounts::insert(
-                            conn,
-                            &NewAccount {
-                                label: display_name,
-                                email,
-                                protocol: Protocol::Imap,
-                                provider,
-                                config: json,
-                                color: None,
-                                position,
-                            },
-                            now_ms(),
-                        )?)
-                    })?;
-                    if let Err(e) =
-                        inner.start_account(id, &settings, Asked::Credential(credential))
-                    {
-                        let _ = inner
-                            .handle
-                            .read(|db| accounts::delete(db.connection(), id));
-                        return Err(e);
+                // One add, re-add or remove at a time: the check for the address and what follows
+                // it cannot be interleaved with another call's.
+                let _changing = inner.account_changes.lock().await;
+                let reader = inner.clone();
+                let same_address = {
+                    let email = email.clone();
+                    tokio::task::spawn_blocking(move || reader.account_with_address(&email))
+                        .await
+                        .map_err(|_| CoreError::Internal)??
+                };
+                let new = Added {
+                    display_name,
+                    email,
+                    provider,
+                    json,
+                    settings,
+                    credential,
+                };
+                match same_address {
+                    Some(existing) => inner.sign_in_again(existing, new).await,
+                    None => {
+                        // Starting an account does blocking work: not on a runtime worker.
+                        let inner = inner.clone();
+                        tokio::task::spawn_blocking(move || inner.insert_account(new))
+                            .await
+                            .map_err(|_| CoreError::Internal)?
                     }
-                    inner.hub.accounts_changed([id]);
-                    Ok(id)
-                })
-                .await
-                .map_err(|_| CoreError::Internal)?
+                }
             },
             false,
         );
@@ -622,8 +778,8 @@ impl Core {
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
-                // Held until the account is started (see `Inner::demo_adding`).
-                let _adding = inner.demo_adding.lock().await;
+                // Held until the account is started (see `Inner::account_changes`).
+                let _adding = inner.account_changes.lock().await;
                 let blocking = inner.clone();
                 // Starting an account does blocking work: not on a runtime worker.
                 tokio::task::spawn_blocking(move || add_demo(&blocking))
@@ -651,7 +807,7 @@ impl Core {
         let task = self.spawn(
             async move {
                 // Never between an `add_demo_account`'s insert and its start.
-                let _adding = inner.demo_adding.lock().await;
+                let _adding = inner.account_changes.lock().await;
                 inner.engine.remove_account(id).await;
                 inner.backends().remove(&id);
                 inner.demos().remove(&id);
@@ -873,7 +1029,7 @@ impl Core {
 /// The name of the sample mailbox in the account list (the app may show its own translated text).
 const DEMO_LABEL: &str = "Sample mail";
 
-/// The body of `add_demo_account`, on a blocking thread with `Inner::demo_adding` held: returns
+/// The body of `add_demo_account`, on a blocking thread with `Inner::account_changes` held: returns
 /// the sample mailbox, adding it if there is none and starting it if it is not running (its start
 /// failed at `open`, say).
 fn add_demo(inner: &Inner) -> Result<AccountInfo, CoreError> {

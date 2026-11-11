@@ -636,27 +636,29 @@ impl OpQueue {
     }
 
     /// When the engine should next wake up to drain the queue, or `None` if nothing is waiting.
+    ///
+    /// An operation held back behind an earlier unfinished one on the same message does not count:
+    /// it can only run once that one has finished, and the earlier one gives its own time (or is
+    /// running). Counting it would give a time in the past that [`OpQueue::take_due`] then refuses,
+    /// and a caller that sleeps until the next wake would spin.
     pub fn next_wake_ms(&self) -> Option<i64> {
-        self.ops
-            .values()
-            .filter(|op| {
-                op.state == OpState::Queued
-                    && self.account_may_run(op.account)
-                    && !self.awaits_new_uid(op)
-            })
-            .map(|op| self.earliest_ms(op))
-            .min()
+        self.next_wake_matching(None)
     }
 
     /// Like [`OpQueue::next_wake_ms`], for one account only.
     pub fn next_wake_ms_for(&self, account: AccountId) -> Option<i64> {
+        self.next_wake_matching(Some(account))
+    }
+
+    fn next_wake_matching(&self, only: Option<AccountId>) -> Option<i64> {
         self.ops
             .values()
             .filter(|op| {
-                op.account == account
+                only.is_none_or(|a| a == op.account)
                     && op.state == OpState::Queued
                     && self.account_may_run(op.account)
                     && !self.awaits_new_uid(op)
+                    && !self.blocked_by_earlier(op)
             })
             .map(|op| self.earliest_ms(op))
             .min()
@@ -977,6 +979,17 @@ mod tests {
         queued(&mut q, seen(1, true), 10_000);
         queued(&mut q, seen(2, true), 2_000);
         assert_eq!(q.next_wake_ms(), Some(3_500));
+    }
+
+    #[test]
+    fn an_operation_held_behind_an_earlier_one_does_not_set_the_wake_time() {
+        let mut q = OpQueue::new();
+        // A star (1.5 s) queued behind an archive (5 s) of the same message.
+        queued(&mut q, mv(1, "Archive"), 0);
+        queued(&mut q, seen(1, true), 0);
+        assert_eq!(q.next_wake_ms(), Some(5_000));
+        assert_eq!(q.next_wake_ms_for(A), Some(5_000));
+        assert!(q.take_due(1_500, 10).is_empty());
     }
 
     #[test]

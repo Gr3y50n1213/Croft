@@ -563,3 +563,44 @@ async fn a_message_containing_an_end_of_data_line_cannot_inject_commands() {
     assert_eq!(got[0].rcpt_to, ["b@example.org"]);
     assert!(!server.commands().iter().any(|c| c.contains("evil@")));
 }
+
+#[tokio::test]
+async fn the_certificate_probe_reads_the_fingerprint_and_sends_no_credential() {
+    for (tls, security) in [
+        (TlsMode::Implicit, SmtpSecurity::Tls),
+        (TlsMode::StartTls, SmtpSecurity::StartTls),
+    ] {
+        let server = with_options(SmtpOptions {
+            tls,
+            ..SmtpOptions::default()
+        })
+        .await;
+        let seen = probe_smtp_certificate(&config(&server, security))
+            .await
+            .unwrap();
+        assert_eq!(
+            seen,
+            CertFingerprint::of_der(&server.certificate_der().unwrap())
+        );
+        assert!(
+            !server
+                .commands()
+                .iter()
+                .any(|c| c.starts_with("AUTH") || c.starts_with("MAIL")),
+            "{tls:?}: {:?}",
+            server.commands()
+        );
+        // Probing trusts nothing: the same settings still refuse the certificate when sending.
+        let sender = SmtpSender::new(config(&server, security), Credential::password("x")).unwrap();
+        assert!(matches!(
+            sender.send("a@example.org", &["b@example.org"], MSG).await,
+            Err(BackendError::Auth(_))
+        ));
+    }
+    let server = SmtpServer::start_default().await;
+    assert!(
+        probe_smtp_certificate(&config(&server, SmtpSecurity::PlaintextForTestsOnly))
+            .await
+            .is_err()
+    );
+}

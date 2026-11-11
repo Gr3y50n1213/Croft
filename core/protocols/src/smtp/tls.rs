@@ -10,13 +10,14 @@
 //! - **Pinned**: the leaf certificate's SHA-256 must equal the fingerprint the caller passed in.
 //!   Used for self-signed servers. On a mismatch the handshake fails; there is no fallback.
 //!
-//! There is no way to turn verification off. (This file repeats the verifier in `imap/tls.rs`
+//! Nothing here can turn verification off for a real connection. [`Trust::Capture`] exists only
+//! for [`probe_certificate`](super::probe_certificate), which never sends any data. (This file repeats the verifier in `imap/tls.rs`
 //! because that module is private to the IMAP adapter; when both are next touched together they
 //! should share one implementation.)
 
 use crate::imap::CertFingerprint;
 use crate::types::BackendError;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
 use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
@@ -29,6 +30,18 @@ use tokio_rustls::rustls::{
     CertificateError, ClientConfig, DigitallySignedStruct, Error as TlsError, OtherError,
     RootCertStore, SignatureScheme,
 };
+
+/// How the server's certificate is judged.
+#[derive(Debug, Clone)]
+pub(crate) enum Trust {
+    /// Chain to the webpki or platform roots and match the host name.
+    Roots,
+    /// Exactly this leaf certificate.
+    Pinned(CertFingerprint),
+    /// Record the leaf fingerprint without trusting it. Only for the certificate probe, which
+    /// closes the connection without signing in or sending anything.
+    Capture(Arc<Mutex<Option<CertFingerprint>>>),
+}
 
 /// The pin did not match.
 #[derive(Debug)]
@@ -46,7 +59,7 @@ impl std::error::Error for PinMismatch {}
 /// algorithms, so a pin cannot be satisfied by replaying a public certificate.
 #[derive(Debug)]
 struct PinVerifier {
-    pin: CertFingerprint,
+    mode: Trust,
     algorithms: WebPkiSupportedAlgorithms,
 }
 
@@ -59,12 +72,18 @@ impl ServerCertVerifier for PinVerifier {
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, TlsError> {
-        if CertFingerprint::of_der(end_entity.as_ref()) == self.pin {
-            Ok(ServerCertVerified::assertion())
-        } else {
-            Err(TlsError::InvalidCertificate(CertificateError::Other(
+        let seen = CertFingerprint::of_der(end_entity.as_ref());
+        match &self.mode {
+            Trust::Pinned(pin) if *pin == seen => Ok(ServerCertVerified::assertion()),
+            Trust::Capture(slot) => {
+                if let Ok(mut guard) = slot.lock() {
+                    *guard = Some(seen);
+                }
+                Ok(ServerCertVerified::assertion())
+            }
+            _ => Err(TlsError::InvalidCertificate(CertificateError::Other(
                 OtherError(Arc::new(PinMismatch)),
-            )))
+            ))),
         }
     }
 
@@ -117,9 +136,7 @@ async fn roots() -> Arc<RootCertStore> {
 }
 
 /// Builds the client configuration: TLS 1.3 and 1.2, ring crypto, no client certificate.
-pub(crate) async fn client_config(
-    pin: Option<CertFingerprint>,
-) -> Result<Arc<ClientConfig>, BackendError> {
+pub(crate) async fn client_config(trust: &Trust) -> Result<Arc<ClientConfig>, BackendError> {
     let provider = Arc::new(ring::default_provider());
     let builder = ClientConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[
@@ -127,14 +144,14 @@ pub(crate) async fn client_config(
             &tokio_rustls::rustls::version::TLS12,
         ])
         .map_err(|_| BackendError::Permanent("TLS could not be configured".into()))?;
-    let config = match pin {
-        None => builder
+    let config = match trust {
+        Trust::Roots => builder
             .with_root_certificates(roots().await)
             .with_no_client_auth(),
-        Some(pin) => builder
+        Trust::Pinned(_) | Trust::Capture(_) => builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(PinVerifier {
-                pin,
+                mode: trust.clone(),
                 algorithms: provider.signature_verification_algorithms,
             }))
             .with_no_client_auth(),

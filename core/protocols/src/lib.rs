@@ -17,5 +17,7 @@ pub mod types;
 
 pub use backend::{BackendFuture, MailBackend};
 pub use imap::{probe_certificate, CertFingerprint, Credential, ImapBackend, ImapConfig, Security};
-pub use smtp::{SendReceipt, SmtpConfig, SmtpSecurity, SmtpSender};
+pub use smtp::{
+    probe_certificate as probe_smtp_certificate, SendReceipt, SmtpConfig, SmtpSecurity, SmtpSender,
+};
 pub use types::*;

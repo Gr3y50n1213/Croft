@@ -50,11 +50,13 @@ mod wire;
 
 pub use config::{SmtpConfig, SmtpSecurity};
 
-use crate::imap::Credential;
+use crate::imap::{CertFingerprint, Credential};
 use crate::types::BackendError;
 use base64::Engine as _;
 use std::cell::Cell;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tls::Trust;
 use tokio::net::{lookup_host, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -168,7 +170,7 @@ impl SmtpSender {
         body: &[u8],
         past_the_point_of_no_return: &Cell<bool>,
     ) -> Result<(SendReceipt, Conn), BackendError> {
-        let (mut conn, caps) = self.open().await?;
+        let (mut conn, caps) = self.open(&self.trust()).await?;
         self.sign_in(&mut conn, &caps).await?;
 
         // MAIL FROM, with the extensions the server offered.
@@ -251,7 +253,7 @@ impl SmtpSender {
 
     /// Connects, secures the connection, reads the greeting and returns what `EHLO` offered.
     /// Nothing secret has been sent when this returns.
-    async fn open(&self) -> Result<(Conn, Capabilities), BackendError> {
+    async fn open(&self, trust: &Trust) -> Result<(Conn, Capabilities), BackendError> {
         let cfg = &self.config;
         let t = cfg.timeout;
         let host = cfg
@@ -301,7 +303,7 @@ impl SmtpSender {
 
         let mut conn = match cfg.security {
             SmtpSecurity::Tls => {
-                let stream = self.tls_upgrade(tcp, host).await?;
+                let stream = self.tls_upgrade(tcp, host, trust).await?;
                 Conn::new(stream, t)
             }
             SmtpSecurity::PlaintextForTestsOnly | SmtpSecurity::StartTls => {
@@ -339,7 +341,7 @@ impl SmtpSender {
                     "unexpected connection state".into(),
                 ));
             };
-            let stream = self.tls_upgrade(tcp, host).await?;
+            let stream = self.tls_upgrade(tcp, host, trust).await?;
             conn = Conn::new(stream, t);
             // What the server offers can change once the channel is secure (AUTH often appears
             // only now), so the capabilities from before the upgrade are discarded.
@@ -348,8 +350,18 @@ impl SmtpSender {
         Ok((conn, caps))
     }
 
-    async fn tls_upgrade(&self, tcp: TcpStream, host: &str) -> Result<Stream, BackendError> {
-        let config = tls::client_config(self.config.pinned_cert).await?;
+    /// How this sender judges the server's certificate: the pin if there is one, else the roots.
+    fn trust(&self) -> Trust {
+        self.config.pinned_cert.map_or(Trust::Roots, Trust::Pinned)
+    }
+
+    async fn tls_upgrade(
+        &self,
+        tcp: TcpStream,
+        host: &str,
+        trust: &Trust,
+    ) -> Result<Stream, BackendError> {
+        let config = tls::client_config(trust).await?;
         let name = ServerName::try_from(host.to_string()).map_err(|_| {
             BackendError::Permanent("the server name is not a valid host name".into())
         })?;
@@ -411,6 +423,35 @@ impl SmtpSender {
             }
         }
     }
+}
+
+/// Connects to a submission server, completes the TLS handshake (for `STARTTLS`, after the
+/// `STARTTLS` command) **without trusting the certificate**, reads the leaf certificate's SHA-256
+/// fingerprint, and disconnects. No credential and no message is ever sent.
+///
+/// This is for the account-setup screen: when a server's certificate does not validate, the person
+/// is shown this fingerprint to compare with the one the server's owner published, and may then
+/// pin it with [`SmtpConfig::with_pinned_cert`]. Calling it trusts nothing by itself. Any
+/// `pinned_cert` already in `config` is ignored. Returns `Permanent` for
+/// [`SmtpSecurity::PlaintextForTestsOnly`], which has no certificate.
+pub async fn probe_certificate(config: &SmtpConfig) -> Result<CertFingerprint, BackendError> {
+    config.validate()?;
+    if config.security == SmtpSecurity::PlaintextForTestsOnly {
+        return Err(BackendError::Permanent(
+            "an unencrypted connection has no certificate".into(),
+        ));
+    }
+    let slot = Arc::new(Mutex::new(None));
+    // The sender is only a carrier for the settings: the placeholder credential is never sent,
+    // because `open` stops before signing in.
+    let sender = SmtpSender {
+        config: config.clone(),
+        credential: Credential::password(String::new()),
+    };
+    let (mut conn, _caps) = sender.open(&Trust::Capture(slot.clone())).await?;
+    quit(&mut conn).await;
+    let seen = slot.lock().ok().and_then(|g| *g);
+    seen.ok_or_else(|| BackendError::Transient("the server sent no certificate".into()))
 }
 
 /// `prefix` + base64(`raw`) + CRLF, in a buffer that is wiped when dropped.

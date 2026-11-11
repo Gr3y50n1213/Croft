@@ -5,6 +5,18 @@ unverified, the next step.
 
 ---
 
+## T16b: release build; design-token follow-up; store audit (11 November 2026)
+
+**Status:** merged (pull requests #6 and #7) after GitHub CI passed, including the new `android-release` job.
+
+**What was built:** a `release` build type (R8, resource shrinking, not debuggable, unsigned; signing is the owner's), F-Droid-safe (`dependenciesInfo` off), keep rules for the Rust bindings checked before and after R8, a release-manifest allowlist check (no app permissions, only the launcher exported), 16 KB alignment checks on the APK and the app bundle. The amber status colour, wait times, pull threshold and wide-screen width moved into `design/tokens.json`. A read-only store audit (`docs/store/AUDIT-2026-11-11.md`) updated `READINESS.md` and wrote store rules into T17, T18, T20, T21; S60 (About, privacy policy link) added to T17.
+
+**Owner item that blocks the first Google Play upload:** the real application ID (see `docs/OPEN-ITEMS.md`).
+
+**Next:** T15 (swipe engine), in progress.
+
+---
+
 ## T13 and T14: controls, haptics, navigation, Inbox screens (11 November 2026)
 
 **Status:** merged into `main` (pull requests #3 and #4) after GitHub CI passed. Device-only items are unverified (ripple and haptic feel, scroll speed with 5,000 rows, TalkBack order).

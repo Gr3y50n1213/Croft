@@ -64,14 +64,33 @@ without the owner, and the progress files to keep.
 - Small commits with the task ID in the message, one crate or one screen per task.
 
 ## How to run things
+The checks that must pass before every commit (also in `.github/workflows/ci.yml`):
 ```
-cd core && cargo test                       # unit tests (no network needed)
-cd core && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings
-python3 core/storage/tools/check_schema.py  # applies migrations to SQLite and checks triggers, FTS5, queue queries
-docker compose -f test-servers/docker-compose.yml up -d   # servers for integration tests (when Docker is available)
+cd core && cargo fmt --all --check
+cd core && cargo clippy --all-targets -- -D warnings
+cd core && cargo clippy -p croft-ffi --features cli --all-targets -- -D warnings
+cd core && cargo test                                  # unit and in-process tests, no network needed
+cd core && cargo test -p croft-storage --features sqlcipher
+python3 core/storage/tools/check_schema.py             # applies migrations to SQLite and checks triggers, FTS5, queue queries
+cd design/generator && npm ci && npm run generate && npm test   # tokens; git diff must show no change in design/generated
 ```
+Integration tests against real servers (Docker):
+```
+docker compose -f test-servers/docker-compose.yml up -d --wait greenmail dovecot
+cd core && cargo test -p croft-protocols --features integration
+docker compose -f test-servers/docker-compose.yml down -v
+```
+Android (needs `ANDROID_HOME`, NDK r29, cargo-ndk; see `android/README.md`):
+```
+cd android && ./gradlew :app:assembleDebug :app:testDebugUnitTest
+```
+Parallel work in one container: each task gets its own git worktree; container tests then need their own
+compose project name (`-p`) and host ports (the tests read `CROFT_TEST_*_PORT`). Remove a worktree once merged:
+build folders fill the disk.
 
 ## Where things stand
-Done and tested: schema v1, sync planner, operation queue (per-kind delays, account back-off, offline hold, UID re-pointing), protocol vocabulary and the `MailBackend` trait.
-Everything else is in `docs/tasks/`, starting with T01. The first build environment could not reach
-crates.io, so no external crate has been compiled yet: expect to fix version and API details when you add them.
+Progress, task by task, is in `docs/PROGRESS.md` (newest first); choices in `docs/DECISIONS.md`; what waits on the
+owner in `docs/OPEN-ITEMS.md`; security-sensitive code to read by hand in `docs/REVIEW-QUEUE.md`.
+Done and tested: storage (SQLite, SQLCipher, migrations 0001-0004), persisted operation queue, IMAP adapter (vendored
+async-imap), account discovery, SMTP sender and outbox, sync engine (`core/engine`), design tokens, first Android
+screen through UniFFI. Next tasks are in `docs/tasks/` (T06 part B, T09, T10, then T11-T21 for the Android app).

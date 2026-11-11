@@ -12,7 +12,9 @@
 use super::config::{Credential, ImapConfig, Security};
 use super::error::{self, OpError};
 use super::stream::Stream;
-use super::text::{bracketed_message_id, decode_encoded_words, folder_arg, quote, uid_sets};
+use super::text::{
+    bracketed_message_id, decode_encoded_words, folder_arg, quote, uid_set, uid_sets,
+};
 use super::text::{reference_ids, utf7_decode};
 use super::tls::{client_config, Trust};
 use crate::types::*;
@@ -21,7 +23,8 @@ use async_imap::imap_proto::{
     AttributeValue, MailboxDatum, MessageSection, NameAttribute, Response, ResponseCode,
     SectionPath, Status,
 };
-use async_imap::{Authenticator, Client, Session};
+use async_imap::{Client, Session};
+use base64::Engine as _;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::ops::RangeInclusive;
@@ -30,11 +33,17 @@ use tokio::net::{lookup_host, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
+use zeroize::Zeroizing;
 
 /// UIDs per command line. Large selections are split so no command line gets huge.
 const UIDS_PER_COMMAND: usize = 500;
 /// Most UIDs accepted from a `COPYUID` set, so a hostile server cannot make us allocate wildly.
 const MAX_COPYUID_UIDS: usize = 1_000_000;
+/// Most replies read while waiting for the answer to the sign-in command.
+const MAX_SIGN_IN_REPLIES: usize = 10_000;
+/// How fast an `APPEND` literal is assumed to go out at least, so the deadline for a big message
+/// grows with its size (one second per 16 KiB on top of the command deadline).
+const APPEND_BYTES_PER_SECOND: usize = 16 * 1024;
 
 /// The flags of every message the last time a folder was read, with the mod-sequence it was read
 /// at. Lets CONDSTORE/QRESYNC servers answer with deltas.
@@ -102,6 +111,10 @@ pub(crate) struct Conn {
     /// What the server can do (QRESYNC is true only once it has been enabled).
     pub caps: Capabilities,
     timeout: Duration,
+    /// Overall limit for one command ([`ImapConfig::command_deadline`]).
+    deadline: Duration,
+    /// Cap on untagged replies per command ([`ImapConfig::max_untagged_replies`]).
+    max_items: usize,
     /// Last-known flags per folder, kept across reconnects by the owner.
     pub cache: HashMap<String, FolderCache>,
 }
@@ -115,25 +128,6 @@ impl fmt::Debug for Conn {
 // ---------------------------------------------------------------------------------------------
 // Connecting
 // ---------------------------------------------------------------------------------------------
-
-/// Sends the XOAUTH2 string once; answers any later challenge (an error report) with an empty
-/// line, as RFC 7628 and Google's documentation require, so the server then says `NO`.
-struct XOAuth2 {
-    payload: String,
-    sent: bool,
-}
-
-impl Authenticator for XOAuth2 {
-    type Response = String;
-    fn process(&mut self, _challenge: &[u8]) -> String {
-        if self.sent {
-            String::new()
-        } else {
-            self.sent = true;
-            self.payload.clone()
-        }
-    }
-}
 
 /// Opens the transport (TCP, then TLS or STARTTLS) and reads the greeting. Nothing secret has
 /// been sent when this returns.
@@ -241,15 +235,164 @@ async fn read_greeting(client: &mut Client<Stream>, t: Duration) -> Result<(), O
     }
 }
 
-fn caps_from(caps: &async_imap::types::Capabilities) -> Capabilities {
-    let condstore = caps.has_str("CONDSTORE");
+fn caps_from_names(names: &[String]) -> Capabilities {
+    let has = |wanted: &str| names.iter().any(|n| n.eq_ignore_ascii_case(wanted));
+    let condstore = has("CONDSTORE");
     Capabilities {
-        move_cmd: caps.has_str("MOVE"),
-        uidplus: caps.has_str("UIDPLUS"),
-        special_use: caps.has_str("SPECIAL-USE"),
-        idle: caps.has_str("IDLE"),
-        condstore: condstore || caps.has_str("QRESYNC"),
-        qresync: caps.has_str("QRESYNC") && caps.has_str("ENABLE"),
+        move_cmd: has("MOVE"),
+        uidplus: has("UIDPLUS"),
+        special_use: has("SPECIAL-USE"),
+        idle: has("IDLE"),
+        condstore: condstore || has("QRESYNC"),
+        qresync: has("QRESYNC") && has("ENABLE"),
+    }
+}
+
+fn names_of_library_caps(caps: &async_imap::types::Capabilities) -> Vec<String> {
+    use async_imap::types::Capability as C;
+    caps.iter()
+        .map(|c| match c {
+            C::Imap4rev1 => "IMAP4rev1".to_string(),
+            C::Auth(a) => format!("AUTH={a}"),
+            C::Atom(a) => a.clone(),
+        })
+        .collect()
+}
+
+fn names_of_code_caps(caps: &[async_imap::imap_proto::Capability<'_>]) -> Vec<String> {
+    use async_imap::imap_proto::Capability as C;
+    caps.iter()
+        .map(|c| match c {
+            C::Imap4rev1 => "IMAP4rev1".to_string(),
+            C::Auth(a) => format!("AUTH={a}"),
+            C::Atom(a) => a.to_string(),
+        })
+        .collect()
+}
+
+/// A string as a quoted IMAP string for `LOGIN`, kept in wiped memory because it holds a secret.
+/// Quotes and backslashes are escaped; line breaks and NUL cannot be carried and refuse the
+/// sign-in. Non-ASCII text is sent as UTF-8 the way `async-imap`'s own `login` did.
+fn quote_secret(s: &str) -> Option<Zeroizing<String>> {
+    let mut out = Zeroizing::new(String::with_capacity(s.len() + 2));
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\r' | '\n' | '\0' => return None,
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    Some(out)
+}
+
+/// Runs `LOGIN` or `AUTHENTICATE XOAUTH2` and reads the answer itself instead of leaving it to
+/// `async-imap`, which skips an untagged `BYE` and reports a closed connection as a generic loss.
+/// Here a `BYE`, a closed connection or a reset while waiting for the answer is
+/// [`error::sign_in_hangup`] (`Auth`): servers that hang up on a failed password are the common
+/// case, and retrying would lock the account. Returns the session and the capabilities the
+/// server put in its answer, if any.
+async fn sign_in(
+    mut client: Client<Stream>,
+    config: &ImapConfig,
+    credential: &Credential,
+) -> Result<(Session<Stream>, Option<Vec<String>>), OpError> {
+    let t = config.timeout;
+    // The command line holds the secret. It lives in wiped memory and is gone after the send.
+    let (command, oauth_payload): (Zeroizing<String>, Option<Zeroizing<String>>) = match credential
+    {
+        Credential::Password(password) => {
+            let (Some(user), Some(pass)) = (quote_secret(&config.username), quote_secret(password))
+            else {
+                return Err(OpError::auth(
+                    "the sign-in details contain characters IMAP cannot carry",
+                ));
+            };
+            (Zeroizing::new(format!("LOGIN {} {}", *user, *pass)), None)
+        }
+        Credential::OAuth2 { user, access_token } => {
+            let raw = Zeroizing::new(format!(
+                "user={user}\u{1}auth=Bearer {}\u{1}\u{1}",
+                **access_token
+            ));
+            let encoded =
+                Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(raw.as_bytes()));
+            (
+                Zeroizing::new("AUTHENTICATE XOAUTH2".to_string()),
+                Some(encoded),
+            )
+        }
+    };
+    let wait = async {
+        let id = match client.run_command(command.as_str()).await {
+            Ok(id) => id,
+            Err(e) => return Err(error::from_command(&e, "sign in")),
+        };
+        drop(command);
+        let mut answered_challenge = false;
+        let mut replies = 0usize;
+        loop {
+            let resp = match timeout(t, client.read_response()).await {
+                Err(_) => return Err(OpError::timed_out("while signing in")),
+                Ok(Err(e)) => return Err(error::from_io_during_sign_in(&e)),
+                Ok(Ok(None)) => return Err(error::sign_in_hangup()),
+                Ok(Ok(Some(r))) => r,
+            };
+            replies += 1;
+            if replies > MAX_SIGN_IN_REPLIES {
+                return Err(OpError::flooded("sign in"));
+            }
+            match resp.parsed() {
+                Response::Done {
+                    tag,
+                    status,
+                    outcome,
+                } if *tag == id => {
+                    return match status {
+                        Status::Ok => {
+                            let caps = match &outcome.code {
+                                Some(ResponseCode::Capabilities(c)) => Some(names_of_code_caps(c)),
+                                _ => None,
+                            };
+                            Ok(caps)
+                        }
+                        Status::No | Status::Bad => {
+                            Err(error::sign_in_refusal(&error::detail_text(
+                                outcome.code.as_ref(),
+                                outcome.information.as_deref(),
+                            )))
+                        }
+                        _ => Err(OpError::dropped("unexpected server reply while signing in")),
+                    };
+                }
+                Response::Data {
+                    status: Status::Bye,
+                    ..
+                } => return Err(error::sign_in_hangup()),
+                Response::Continue(_) => {
+                    if let Some(payload) = &oauth_payload {
+                        // The XOAUTH2 string once; any later challenge is the server's error
+                        // report, answered with an empty line (RFC 7628) so it then says `NO`.
+                        let line: &str = if answered_challenge { "" } else { payload };
+                        answered_challenge = true;
+                        match client.run_command_untagged(line).await {
+                            Ok(()) => {}
+                            Err(e) => return Err(error::from_command(&e, "sign in")),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    };
+    match timeout(config.command_deadline, wait).await {
+        Err(_) => Err(OpError::too_slow("sign in")),
+        Ok(Err(e)) => Err(e),
+        Ok(Ok(caps)) => Ok((client.into_session(), caps)),
     }
 }
 
@@ -266,44 +409,21 @@ impl Conn {
         };
         let client = connect_client(config, &trust).await?;
         let t = config.timeout;
-        let signed_in = match credential {
-            Credential::Password(password) => {
-                match timeout(
-                    t,
-                    client.login_with_capabilities(&config.username, password),
-                )
-                .await
-                {
-                    Err(_) => return Err(OpError::timed_out("signing in")),
-                    Ok(Err((e, _client))) => return Err(error::from_auth(&e)),
-                    Ok(Ok((session, caps))) => (session, caps),
-                }
-            }
-            Credential::OAuth2 { user, access_token } => {
-                let auth = XOAuth2 {
-                    payload: format!("user={user}\u{1}auth=Bearer {access_token}\u{1}\u{1}"),
-                    sent: false,
-                };
-                match timeout(t, client.authenticate("XOAUTH2", auth)).await {
-                    Err(_) => return Err(OpError::timed_out("signing in")),
-                    Ok(Err((e, _client))) => return Err(error::from_auth(&e)),
-                    Ok(Ok(session)) => (session, None),
-                }
-            }
-        };
-        let (mut session, login_caps) = signed_in;
-        let caps = match login_caps {
+        let (mut session, login_caps) = sign_in(client, config, credential).await?;
+        let names = match login_caps {
             Some(c) => c,
             None => match timeout(t, session.capabilities()).await {
                 Err(_) => return Err(OpError::timed_out("reading server capabilities")),
                 Ok(Err(e)) => return Err(error::from_command(&e, "read the server capabilities")),
-                Ok(Ok(c)) => c,
+                Ok(Ok(c)) => names_of_library_caps(&c),
             },
         };
         let mut conn = Conn {
             session,
-            caps: caps_from(&caps),
+            caps: caps_from_names(&names),
             timeout: t,
+            deadline: config.command_deadline,
+            max_items: config.max_untagged_replies,
             cache: HashMap::new(),
         };
         if conn.caps.qresync {
@@ -327,8 +447,21 @@ impl Conn {
 
     /// Sends one tagged command and reads until its tagged reply. `doing` completes the sentence
     /// "while trying to ..." in error messages.
+    ///
+    /// Two limits stop a server that never finishes: `timeout` is the longest silence between
+    /// replies, `deadline` the longest the whole command may take however steadily replies come,
+    /// and more than `max_items` untagged replies is refused. All three drop the connection and
+    /// are `Transient`.
     async fn exec(&mut self, command: &str, doing: &str) -> Result<Reply, OpError> {
+        match timeout(self.deadline, self.exec_inner(command, doing)).await {
+            Ok(result) => result,
+            Err(_) => Err(OpError::too_slow(doing)),
+        }
+    }
+
+    async fn exec_inner(&mut self, command: &str, doing: &str) -> Result<Reply, OpError> {
         let t = self.timeout;
+        let mut untagged = 0usize;
         let id = match timeout(t, self.session.run_command(command)).await {
             Err(_) => return Err(OpError::timed_out(&format!("while trying to {doing}"))),
             Ok(Err(e)) => return Err(error::from_command(&e, doing)),
@@ -371,11 +504,7 @@ impl Conn {
                         _ => Done::Other,
                     },
                     // Inspected for response codes only; never copied into an error.
-                    format!(
-                        "{:?} {}",
-                        outcome.code,
-                        outcome.information.as_deref().unwrap_or("")
-                    ),
+                    error::detail_text(outcome.code.as_ref(), outcome.information.as_deref()),
                     copyuid_of(outcome.code.as_ref()),
                     matches!(outcome.code, Some(ResponseCode::ReadOnly)),
                 ),
@@ -389,6 +518,12 @@ impl Conn {
                 },
                 other => Step::Keep(item_of(other)),
             };
+            if !matches!(step, Step::Done(..)) {
+                untagged += 1;
+                if untagged > self.max_items {
+                    return Err(OpError::flooded(doing));
+                }
+            }
             match step {
                 Step::Done(Done::Ok, _, done_copy, read_only) => {
                     return Ok(Reply {
@@ -436,12 +571,23 @@ impl Conn {
         Ok(info)
     }
 
-    /// UIDs from `set` that still exist in the selected folder.
-    async fn existing_uids(&mut self, set: &str) -> Result<Vec<Uid>, OpError> {
-        let reply = self
-            .exec(&format!("UID SEARCH UID {set}"), "look up messages")
-            .await?;
-        Ok(search_results(&reply))
+    /// The UIDs in `wanted` (sorted, no duplicates) that still exist in the selected folder.
+    ///
+    /// The server's `SEARCH` answer is not trusted to stay inside the question: a buggy or hostile
+    /// server could list other UIDs, and those would then be flagged, moved or expunged. The
+    /// result is cut down to `wanted` and returned sorted without duplicates.
+    async fn existing_uids(&mut self, wanted: &[Uid]) -> Result<Vec<Uid>, OpError> {
+        let mut existing: Vec<Uid> = Vec::new();
+        for set in uid_sets(wanted, UIDS_PER_COMMAND) {
+            let reply = self
+                .exec(&format!("UID SEARCH UID {set}"), "look up messages")
+                .await?;
+            existing.extend(search_results(&reply));
+        }
+        existing.retain(|u| wanted.binary_search(u).is_ok());
+        existing.sort_unstable();
+        existing.dedup();
+        Ok(existing)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -687,6 +833,20 @@ impl Conn {
         Ok(())
     }
 
+    /// Moves messages with `UID MOVE`, or, on a server without `MOVE`, with `UID COPY`, then
+    /// `\\Deleted`, then expunge, in chunks of at most [`UIDS_PER_COMMAND`] UIDs.
+    ///
+    /// **A retry can leave duplicates, never lose mail.** The fallback is several commands. If the
+    /// connection drops after a chunk was copied and before it was expunged, that chunk exists in
+    /// both folders, and when the queue repeats the move the same messages are copied again, so
+    /// the destination can hold duplicates. This is inherent in COPY-then-delete and is the
+    /// price of never deleting a message that was not copied first. Servers with `MOVE` do it in
+    /// one atomic command and do not have this problem.
+    ///
+    /// Without `UIDPLUS` the final expunge removes every `\\Deleted` message in the folder, so the
+    /// check that no other message is marked deleted runs before the first chunk and again before
+    /// each chunk's expunge (another client can mark one between chunks). If one has appeared the
+    /// move stops with a `Permanent` refusal and nothing more is expunged.
     pub(crate) async fn move_to(
         &mut self,
         folder: &str,
@@ -703,10 +863,7 @@ impl Conn {
         let mut wanted: Vec<Uid> = uids.to_vec();
         wanted.sort_unstable();
         wanted.dedup();
-        let mut existing: Vec<Uid> = Vec::new();
-        for set in uid_sets(&wanted, UIDS_PER_COMMAND) {
-            existing.extend(self.existing_uids(&set).await?);
-        }
+        let existing = self.existing_uids(&wanted).await?;
         if existing.is_empty() {
             return Ok(outcome);
         }
@@ -715,7 +872,8 @@ impl Conn {
             // COPY + expunge without UID EXPUNGE would also remove other deleted messages.
             self.refuse_if_others_deleted(&existing).await?;
         }
-        for set in uid_sets(&existing, UIDS_PER_COMMAND) {
+        for chunk in existing.chunks(UIDS_PER_COMMAND) {
+            let set = uid_set(chunk);
             if !fallback {
                 let reply = self
                     .exec(&format!("UID MOVE {set} {dest_arg}"), "move messages")
@@ -731,12 +889,20 @@ impl Conn {
                     "mark messages deleted",
                 )
                 .await?;
-                self.expunge(&set).await?;
+                self.expunge_checked(&set, chunk).await?;
             }
         }
         Ok(outcome)
     }
 
+    /// Marks messages `\\Deleted` and expunges them, in chunks of at most [`UIDS_PER_COMMAND`]
+    /// UIDs. Repeating it is harmless: UIDs that are already gone are skipped.
+    ///
+    /// Without `UIDPLUS` the expunge removes every `\\Deleted` message in the folder, so the check
+    /// that no other message is marked deleted runs before the first chunk and again before each
+    /// chunk's expunge, because another client can mark one between chunks. If one has appeared
+    /// the call stops with a `Permanent` refusal and nothing more is expunged (earlier chunks are
+    /// already gone; a retry deletes the rest).
     pub(crate) async fn delete_forever(
         &mut self,
         folder: &str,
@@ -749,25 +915,46 @@ impl Conn {
         let mut wanted: Vec<Uid> = uids.to_vec();
         wanted.sort_unstable();
         wanted.dedup();
-        let mut existing: Vec<Uid> = Vec::new();
-        for set in uid_sets(&wanted, UIDS_PER_COMMAND) {
-            existing.extend(self.existing_uids(&set).await?);
-        }
+        let existing = self.existing_uids(&wanted).await?;
         if existing.is_empty() {
             return Ok(());
         }
         if !self.caps.uidplus {
             self.refuse_if_others_deleted(&existing).await?;
         }
-        for set in uid_sets(&existing, UIDS_PER_COMMAND) {
+        for chunk in existing.chunks(UIDS_PER_COMMAND) {
+            let set = uid_set(chunk);
             self.exec(
                 &format!("UID STORE {set} +FLAGS.SILENT (\\Deleted)"),
                 "mark messages deleted",
             )
             .await?;
-            self.expunge(&set).await?;
+            self.expunge_checked(&set, chunk).await?;
         }
         Ok(())
+    }
+
+    /// Expunges one chunk whose messages (`ours`, written as `set`) are already marked
+    /// `\\Deleted`. Without UIDPLUS the plain `EXPUNGE` removes every `\\Deleted` message, so the
+    /// check for other deleted messages is repeated here, right before each chunk's expunge: another
+    /// client can mark a message deleted at any time between chunks, and removing it would lose it
+    /// (in a move, before it was copied). If one has appeared, the chunk's own `\\Deleted` marks
+    /// are taken off again (best effort) and the operation is refused with nothing expunged.
+    async fn expunge_checked(&mut self, set: &str, ours: &[Uid]) -> Result<(), OpError> {
+        if !self.caps.uidplus {
+            if let Err(e) = self.refuse_if_others_deleted(ours).await {
+                if !e.broken {
+                    let _ = self
+                        .exec(
+                            &format!("UID STORE {set} -FLAGS.SILENT (\\Deleted)"),
+                            "restore message flags",
+                        )
+                        .await;
+                }
+                return Err(e);
+            }
+        }
+        self.expunge(set).await
     }
 
     /// Expunges `set`: `UID EXPUNGE` with UIDPLUS, otherwise a plain `EXPUNGE` (callers have
@@ -783,12 +970,15 @@ impl Conn {
     }
 
     /// Without UIDPLUS, `EXPUNGE` removes every `\Deleted` message. Refuses (changing nothing) if
-    /// the folder holds any that are not in `ours`.
+    /// the folder holds any that are not in `ours` (sorted).
     async fn refuse_if_others_deleted(&mut self, ours: &[Uid]) -> Result<(), OpError> {
         let reply = self
             .exec("UID SEARCH DELETED", "check for other deleted messages")
             .await?;
-        if search_results(&reply).iter().any(|u| !ours.contains(u)) {
+        if search_results(&reply)
+            .iter()
+            .any(|u| ours.binary_search(u).is_err())
+        {
             return Err(OpError::permanent(
                 "this folder has other messages marked deleted and the server cannot remove \
                  just these ones",
@@ -811,7 +1001,26 @@ impl Conn {
     }
 
     /// Adds a message to a folder and returns its new UID when the server says (`APPENDUID`).
+    /// The overall deadline is the command deadline plus time to send the message at 16 KiB/s.
     pub(crate) async fn append(
+        &mut self,
+        folder: &str,
+        flags: &[&str],
+        message: &str,
+    ) -> Result<Option<Uid>, OpError> {
+        let allowance = Duration::from_secs((message.len() / APPEND_BYTES_PER_SECOND) as u64);
+        match timeout(
+            self.deadline.saturating_add(allowance),
+            self.append_inner(folder, flags, message),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(OpError::too_slow("add a message")),
+        }
+    }
+
+    async fn append_inner(
         &mut self,
         folder: &str,
         flags: &[&str],
@@ -837,6 +1046,7 @@ impl Conn {
         };
         // Wait for the continuation request, send the literal, then read the tagged reply.
         let mut sent = false;
+        let mut replies = 0usize;
         loop {
             let resp = match timeout(t, self.session.read_response()).await {
                 Err(_) => return Err(OpError::timed_out("while trying to add a message")),
@@ -846,6 +1056,10 @@ impl Conn {
                 }
                 Ok(Ok(Some(r))) => r,
             };
+            replies += 1;
+            if replies > self.max_items {
+                return Err(OpError::flooded("add a message"));
+            }
             match resp.parsed() {
                 Response::Continue(_) if !sent => {
                     sent = true;
@@ -868,7 +1082,10 @@ impl Conn {
                             _ => None,
                         }),
                         Status::No => Err(error::refusal(
-                            &format!("{:?}", outcome.code),
+                            &error::detail_text(
+                                outcome.code.as_ref(),
+                                outcome.information.as_deref(),
+                            ),
                             "add a message",
                         )),
                         _ => Err(OpError::permanent("the server did not accept the message")),

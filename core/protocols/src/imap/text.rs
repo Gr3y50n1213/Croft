@@ -126,6 +126,11 @@ pub(crate) fn uid_sets(uids: &[Uid], max: usize) -> Vec<String> {
     sorted.chunks(max).map(uid_set_sorted).collect()
 }
 
+/// One IMAP set for UIDs that are already sorted and unique, such as `1:3,5`.
+pub(crate) fn uid_set(sorted: &[Uid]) -> String {
+    uid_set_sorted(sorted)
+}
+
 fn uid_set_sorted(uids: &[Uid]) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut i = 0;

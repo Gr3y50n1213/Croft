@@ -7,9 +7,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use croft_protocols::*;
-use croft_test_support::{sample_message, sample_reply, Caps, ServerOptions, TestServer, TlsMode};
+use croft_test_support::{
+    sample_message, sample_reply, Caps, Misbehavior, ServerOptions, TestServer, TlsMode,
+};
 use std::collections::BTreeMap;
 use std::time::Duration;
+use std::time::Instant;
 
 fn plain_config(server: &TestServer) -> ImapConfig {
     ImapConfig::new(
@@ -24,7 +27,7 @@ fn plain_config(server: &TestServer) -> ImapConfig {
 fn backend(server: &TestServer) -> ImapBackend {
     ImapBackend::new(
         plain_config(server),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap()
 }
@@ -547,7 +550,7 @@ async fn wrong_password_is_auth_and_never_transient() {
     let server = TestServer::start_default().await;
     let b = ImapBackend::new(
         plain_config(&server),
-        Credential::Password("not the password".into()),
+        Credential::password("not the password"),
     )
     .unwrap();
     for _ in 0..2 {
@@ -576,20 +579,14 @@ async fn xoauth2_signs_in_and_a_bad_token_is_auth() {
     let server = TestServer::start_default().await;
     let good = ImapBackend::new(
         plain_config(&server),
-        Credential::OAuth2 {
-            user: server.username(),
-            access_token: server.password(),
-        },
+        Credential::oauth2(server.username(), server.password()),
     )
     .unwrap();
     assert!(!good.list_folders().await.unwrap().is_empty());
 
     let bad = ImapBackend::new(
         plain_config(&server),
-        Credential::OAuth2 {
-            user: server.username(),
-            access_token: "expired-token".into(),
-        },
+        Credential::oauth2(server.username(), "expired-token"),
     )
     .unwrap();
     let err = bad.list_folders().await.unwrap_err();
@@ -624,7 +621,7 @@ async fn a_silent_server_times_out_as_transient_and_the_adapter_recovers() {
     let server = TestServer::start_default().await;
     let b = ImapBackend::new(
         plain_config(&server).with_timeout(Duration::from_millis(300)),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap();
     b.list_folders().await.unwrap();
@@ -639,7 +636,7 @@ async fn a_silent_server_times_out_as_transient_and_the_adapter_recovers() {
 async fn nothing_listening_is_transient() {
     let cfg = ImapConfig::new("127.0.0.1", 1, Security::PlaintextForTestsOnly, "u")
         .with_timeout(Duration::from_secs(2));
-    let b = ImapBackend::new(cfg, Credential::Password("pw".into())).unwrap();
+    let b = ImapBackend::new(cfg, Credential::password("pw")).unwrap();
     let err = b.list_folders().await.unwrap_err();
     assert!(matches!(err, BackendError::Transient(_)), "{err:?}");
 }
@@ -690,7 +687,7 @@ async fn implicit_tls_with_the_pinned_fingerprint_works() {
     let (server, fp) = tls_server(TlsMode::Implicit).await;
     let b = ImapBackend::new(
         tls_config(&server, Security::Tls).with_pinned_cert(fp),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap();
     assert!(!b.list_folders().await.unwrap().is_empty());
@@ -701,12 +698,13 @@ async fn a_self_signed_certificate_is_refused_without_a_pin() {
     let (server, _fp) = tls_server(TlsMode::Implicit).await;
     let b = ImapBackend::new(
         tls_config(&server, Security::Tls),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap();
     let err = b.list_folders().await.unwrap_err();
     match err {
-        BackendError::Permanent(m) => assert!(m.contains("certificate"), "{m}"),
+        // A certificate that cannot be verified pauses the account (Auth); it is not Permanent.
+        BackendError::Auth(m) => assert!(m.contains("certificate could not be verified"), "{m}"),
         other => panic!("{other:?}"),
     }
     // The password was never sent.
@@ -719,12 +717,17 @@ async fn a_wrong_pin_is_refused_before_any_credentials_are_sent() {
     let other = CertFingerprint::of_der(b"some other certificate");
     let b = ImapBackend::new(
         tls_config(&server, Security::Tls).with_pinned_cert(other),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap();
     let err = b.list_folders().await.unwrap_err();
     match err {
-        BackendError::Permanent(m) => assert!(m.contains("fingerprint"), "{m}"),
+        BackendError::Auth(m) => {
+            assert!(
+                m.contains("could not be verified") && m.contains("fingerprint"),
+                "{m}"
+            )
+        }
         other => panic!("{other:?}"),
     }
     assert!(server.commands().is_empty());
@@ -735,7 +738,7 @@ async fn starttls_upgrades_before_login_and_honours_the_pin() {
     let (server, fp) = tls_server(TlsMode::StartTls).await;
     let b = ImapBackend::new(
         tls_config(&server, Security::StartTls).with_pinned_cert(fp),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap();
     assert!(!b.list_folders().await.unwrap().is_empty());
@@ -748,12 +751,12 @@ async fn starttls_upgrades_before_login_and_honours_the_pin() {
     server.clear_commands();
     let bad = ImapBackend::new(
         tls_config(&server, Security::StartTls).with_pinned_cert(CertFingerprint::of_der(b"x")),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap();
     assert!(matches!(
         bad.list_folders().await,
-        Err(BackendError::Permanent(_))
+        Err(BackendError::Auth(_))
     ));
     assert!(!server.commands().iter().any(|c| c.starts_with("LOGIN")));
 }
@@ -764,7 +767,7 @@ async fn starttls_never_falls_back_to_plaintext() {
     let server = TestServer::start_default().await;
     let b = ImapBackend::new(
         tls_config(&server, Security::StartTls),
-        Credential::Password(server.password()),
+        Credential::password(server.password()),
     )
     .unwrap();
     let err = b.list_folders().await.unwrap_err();
@@ -799,4 +802,209 @@ async fn create_folder_is_idempotent() {
     b.create_folder("Receipts").await.unwrap();
     let folders = b.list_folders().await.unwrap();
     assert_eq!(folders.iter().filter(|f| f.path == "Receipts").count(), 1);
+}
+
+// ------------------------------------------------------------------------------------------
+// Sign-in refusals that must never be retried (review finding 2)
+// ------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_bye_during_login_is_auth_not_transient() {
+    // Servers that drop the connection after too many failed sign-ins say `* BYE` and hang up.
+    // Reading that as a network error made the queue retry the wrong password until lockout.
+    let server = TestServer::start_default().await;
+    server.set_misbehavior(Misbehavior::ByeOnLogin);
+    let b = ImapBackend::new(
+        plain_config(&server),
+        Credential::password("not the password"),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let err = b.list_folders().await.unwrap_err();
+        match err {
+            BackendError::Auth(m) => assert!(!m.contains("not the password"), "{m}"),
+            other => panic!("expected Auth, got {other:?}"),
+        }
+    }
+    // The same for a token.
+    let oauth = ImapBackend::new(
+        plain_config(&server),
+        Credential::oauth2(server.username(), "expired-token"),
+    )
+    .unwrap();
+    let err = oauth.list_folders().await.unwrap_err();
+    assert!(matches!(err, BackendError::Auth(_)), "{err:?}");
+    // One try per call: nothing reconnected and tried again behind the caller's back.
+    assert_eq!(server.connection_count(), 3);
+}
+
+#[tokio::test]
+async fn an_auth_failure_whose_text_says_unavailable_is_auth_not_transient() {
+    let server = TestServer::start_default().await;
+    server.set_misbehavior(Misbehavior::AuthFailedMentioningUnavailable);
+    let b = backend(&server);
+    let err = b.list_folders().await.unwrap_err();
+    assert!(matches!(err, BackendError::Auth(_)), "{err:?}");
+    let oauth = ImapBackend::new(
+        plain_config(&server),
+        Credential::oauth2(server.username(), "token"),
+    )
+    .unwrap();
+    let err = oauth.list_folders().await.unwrap_err();
+    assert!(matches!(err, BackendError::Auth(_)), "{err:?}");
+}
+
+// ------------------------------------------------------------------------------------------
+// A hostile server cannot make the client allocate wildly or run for ever (finding 3)
+// ------------------------------------------------------------------------------------------
+
+/// Peak resident memory of this process in KiB (Linux only; `None` elsewhere).
+fn peak_rss_kib() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[tokio::test]
+async fn a_500_megabyte_literal_is_refused_without_allocating_it() {
+    let server = TestServer::start_default().await;
+    server.set_misbehavior(Misbehavior::HugeLiteral(500_000_000));
+    let b = ImapBackend::new(
+        plain_config(&server),
+        Credential::password(server.password()),
+    )
+    .unwrap();
+    // Sign-in and the first replies are normal; the LIST answer announces 500 MB and sends two
+    // bytes. The server then goes silent, so a client that waited for the data would run into
+    // the 5 s timeout. Refusing the size up front returns at once.
+    let before = peak_rss_kib();
+    let started = Instant::now();
+    let err = b.list_folders().await.unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(matches!(err, BackendError::Transient(_)), "{err:?}");
+    // The patched buffer limit is 64 MiB. The stock 512 MiB limit pre-sized a 500 MB buffer
+    // (the reviewer measured +490 MB); allow a generous 150 MiB of growth for everything else
+    // the test process does at the same time.
+    if let (Some(before), Some(after)) = (before, peak_rss_kib()) {
+        assert!(
+            after.saturating_sub(before) < 150 * 1024,
+            "peak memory grew by {} KiB",
+            after.saturating_sub(before)
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_endless_stream_of_replies_hits_the_command_deadline() {
+    let server = TestServer::start_default().await;
+    server.set_misbehavior(Misbehavior::EndlessExists);
+    // Replies arrive far faster than the 5 s silence timeout, so only the overall deadline can
+    // stop this. The reply cap is set out of reach so the test is about the deadline.
+    let b = ImapBackend::new(
+        plain_config(&server)
+            .with_command_deadline(Duration::from_millis(800))
+            .with_max_untagged_replies(usize::MAX),
+        Credential::password(server.password()),
+    )
+    .unwrap();
+    let started = Instant::now();
+    let err = b.list_folders().await.unwrap_err();
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(700) && took < Duration::from_secs(4),
+        "{took:?}"
+    );
+    match err {
+        BackendError::Transient(m) => assert!(m.contains("took too long"), "{m}"),
+        other => panic!("expected Transient, got {other:?}"),
+    }
+    // The connection was dropped: the next call opens a new one.
+    server.set_misbehavior(Misbehavior::None);
+    assert!(b.list_folders().await.is_ok());
+    assert_eq!(server.connection_count(), 2);
+}
+
+#[tokio::test]
+async fn too_many_untagged_replies_are_refused() {
+    let server = TestServer::start_default().await;
+    server.set_misbehavior(Misbehavior::EndlessExists);
+    let b = ImapBackend::new(
+        plain_config(&server).with_max_untagged_replies(1_000),
+        Credential::password(server.password()),
+    )
+    .unwrap();
+    let started = Instant::now();
+    let err = b.list_folders().await.unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    match err {
+        BackendError::Transient(m) => assert!(m.contains("far more data"), "{m}"),
+        other => panic!("expected Transient, got {other:?}"),
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// SEARCH answers are not trusted (finding 4)
+// ------------------------------------------------------------------------------------------
+
+fn uids_in(server: &TestServer, folder: &str) -> Vec<u32> {
+    server.messages(folder).iter().map(|m| m.uid).collect()
+}
+
+#[tokio::test]
+async fn a_search_that_lists_extra_uids_never_moves_or_deletes_other_messages() {
+    for caps in [Caps::all(), Caps::bare()] {
+        let server = server_with(caps).await;
+        let a = server.add_message("INBOX", &msg("a@x"));
+        let b_uid = server.add_message("INBOX", &msg("b@x"));
+        let c = server.add_message("INBOX", &msg("c@x"));
+        server.set_misbehavior(Misbehavior::SearchExtraUids);
+        let backend = backend(&server);
+
+        // Move only `a`. The server's SEARCH also names b, c and a UID that does not exist.
+        backend.move_to("INBOX", &[a], "Trash").await.unwrap();
+        assert_eq!(uids_in(&server, "INBOX"), vec![b_uid, c], "{caps:?}");
+        assert_eq!(server.messages("Trash").len(), 1, "{caps:?}");
+        for m in server.messages("INBOX") {
+            assert!(!m.flags.contains("\\Deleted"), "{caps:?}");
+        }
+
+        // Delete only `b`.
+        backend.delete_forever("INBOX", &[b_uid]).await.unwrap();
+        assert_eq!(uids_in(&server, "INBOX"), vec![c], "{caps:?}");
+        assert_eq!(server.messages("Trash").len(), 1, "{caps:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_move_without_uidplus_stops_when_another_client_marks_a_later_chunk_deleted() {
+    // 501 messages are two chunks of UIDs (500 + 1). Another client has already marked the last
+    // one \Deleted. Without UIDPLUS the expunge after chunk 1 would remove it before it was
+    // copied. The check before each chunk's expunge refuses instead, and nothing is lost.
+    let server = server_with(Caps::bare()).await;
+    let mut uids = Vec::new();
+    for i in 0..501 {
+        uids.push(server.add_message("INBOX", &msg(&format!("m{i}@x"))));
+    }
+    let last = *uids.last().unwrap();
+    server.modify_flags("INBOX", last, &["\\Deleted"], &[]);
+    let b = backend(&server);
+    let err = b.move_to("INBOX", &uids, "Trash").await.unwrap_err();
+    assert!(matches!(err, BackendError::Permanent(_)), "{err:?}");
+    // Nothing was expunged from the source.
+    assert_eq!(server.messages("INBOX").len(), 501);
+    // The chunk's own \Deleted marks were taken off again.
+    let marked = server
+        .messages("INBOX")
+        .iter()
+        .filter(|m| m.flags.contains("\\Deleted"))
+        .count();
+    assert_eq!(marked, 1, "only the other client's mark is left");
 }

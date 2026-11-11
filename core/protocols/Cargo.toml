@@ -30,6 +30,8 @@ sha2 = "0.11.1"
 tokio = { version = "1.54", features = ["net", "time", "sync", "io-util", "rt"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 webpki-roots = "1.0.12"
+# Wipes the password and OAuth token from memory when a `Credential` is dropped.
+zeroize = "1.9.1"
 
 [dev-dependencies]
 croft-test-support = { path = "../test-support" }

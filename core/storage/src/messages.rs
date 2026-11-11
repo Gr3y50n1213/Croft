@@ -58,6 +58,9 @@ pub struct Message {
     pub pending_ops: i64,
     /// `none`, `partial` or `full`.
     pub body_state: String,
+    /// True while a move or delete is waiting for the server: the row is kept but left out of
+    /// lists.
+    pub local_hidden: bool,
 }
 
 fn map_row(row: &Row<'_>) -> rusqlite::Result<Message> {
@@ -92,21 +95,23 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<Message> {
         snoozed_until: row.get(19)?,
         pending_ops: row.get(20)?,
         body_state: row.get(21)?,
+        local_hidden: row.get(22)?,
     })
 }
 
-/// The list query: newest first, snoozed rows hidden. It is a constant so a test can check that
-/// its plan uses the `message_folder_date` index without a sort step.
+/// The list query: newest first, leaving out snoozed rows and rows hidden by a waiting move or
+/// delete. It is a constant so a test can check that its plan uses the `message_folder_date` index without a sort step.
 pub(crate) const LIST_SQL: &str = r#"SELECT id, account_id, folder_id, uid, message_id_hdr, thread_key, subject,
        from_name, from_addr, date_ts, size, snippet, is_seen, is_flagged, is_answered, is_draft,
-       keywords_json, has_attachments, category, snoozed_until, pending_ops, body_state
+       keywords_json, has_attachments, category, snoozed_until, pending_ops, body_state, local_hidden
   FROM message
- WHERE account_id = ?1 AND folder_id = ?2
+ WHERE account_id = ?1 AND folder_id = ?2 AND local_hidden = 0
    AND (snoozed_until IS NULL OR snoozed_until <= ?3)
  ORDER BY date_ts DESC, id
  LIMIT ?4 OFFSET ?5"#;
 
-/// Messages of one folder, newest first, leaving out messages snoozed past `now_ms`.
+/// Messages of one folder, newest first, leaving out messages snoozed past `now_ms` and messages
+/// hidden while a move or delete waits for the server (`local_hidden`).
 ///
 /// Returns at most `limit` rows after skipping `offset`. Rows with the same date keep a stable
 /// order (by id), so paging does not repeat or skip them.
@@ -133,7 +138,7 @@ pub fn get(conn: &Connection, account_id: i64, message_id: i64) -> Result<Option
             r#"SELECT id, account_id, folder_id, uid, message_id_hdr, thread_key, subject,
                       from_name, from_addr, date_ts, size, snippet, is_seen, is_flagged, is_answered,
                       is_draft, keywords_json, has_attachments, category, snoozed_until, pending_ops,
-                      body_state
+                      body_state, local_hidden
                  FROM message WHERE account_id = ?1 AND id = ?2"#,
             params![account_id, message_id],
             map_row,

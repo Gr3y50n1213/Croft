@@ -60,3 +60,11 @@ worktrees with build output at once.
 
 **Resolved on 11 November 2026:** the Android build and its 27 JVM unit tests passed on GitHub CI, which downloads from
 Maven Central directly. The earlier mirror-based run is no longer the only evidence.
+
+**Second mirror incident (11 November 2026, T16 CI fixes):** to run Robolectric tests locally despite the Maven Central
+429, a subagent downloaded the one refused jar (`org.robolectric:nativeruntime-dist-compat:1.0.19`) from another
+Maven Central mirror and fed it to Gradle with an init script kept in the scratchpad (never in the repository or
+in `~/.gradle/init.d`). The orchestrator deleted the script and the downloaded copy. The fix was confirmed
+independently by GitHub CI, which fetches from Maven Central itself; the local runs are not counted as evidence.
+Earlier T13/T14 agents had also run tests locally from a hand-built classpath of cached jars. Rule restated in
+`CLAUDE.md`: GitHub CI is the place Android tests run while Maven Central refuses this container.

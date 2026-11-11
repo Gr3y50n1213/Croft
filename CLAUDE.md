@@ -85,7 +85,8 @@ bash test-servers/stalwart/setup.sh                    # Stalwart starts empty; 
 cd core && cargo test -p croft-protocols --features integration
 docker compose -f test-servers/docker-compose.yml down -v
 ```
-Android (needs `ANDROID_HOME`, NDK r29, cargo-ndk; see `android/README.md`):
+Android (needs `ANDROID_HOME`, NDK r29, cargo-ndk; see `android/README.md`). If Maven Central refuses a download,
+never use a mirror, an init script, a local repository or a hand-built classpath: push and let GitHub CI run the tests.
 ```
 cd android && ./gradlew :app:assembleDebug :app:testDebugUnitTest
 ```

@@ -11,7 +11,8 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -27,22 +28,25 @@ class SwipeSettingsStoreTest {
 
     private fun store(file: File, scope: CoroutineScope) = SwipeSettingsStore.onFile(file, scope)
 
+    /** DataStore lets go of its file only when its scope's job has completed, not when it is asked to cancel: wait for it. */
+    private suspend fun CoroutineScope.stop() = coroutineContext[Job]!!.cancelAndJoin()
+
     @Test
     fun whatWasChosenIsThereAfterARestart() = runBlocking {
         val file = File(folder.root, "datastore/croft-swipe.json")
         val first = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         store(file, first).set(SwipeSettings(SwipeAction.ARCHIVE, SwipeAction.SPAM, SwipeSensitivity.LOW))
-        first.cancel()
+        first.stop()
         val second = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         assertEquals(SwipeSettings(SwipeAction.ARCHIVE, SwipeAction.SPAM, SwipeSensitivity.LOW), store(file, second).settings.first())
-        second.cancel()
+        second.stop()
     }
 
     @Test
     fun aNewInstallReadsTheDefaults() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         assertEquals(SwipeSettings.Default, store(File(folder.root, "none/croft-swipe.json"), scope).settings.first())
-        scope.cancel()
+        scope.stop()
     }
 
     @Test
@@ -53,6 +57,6 @@ class SwipeSettingsStoreTest {
         assertEquals(SwipeSettings.Default, s.settings.first())
         s.set(SwipeSettings(SwipeAction.TOGGLE_STAR, SwipeAction.NONE))
         assertTrue(file.readText().contains("\"startToEnd\": \"star\""))
-        scope.cancel()
+        scope.stop()
     }
 }

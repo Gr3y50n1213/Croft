@@ -23,3 +23,7 @@ One line per choice made without the owner: the decision, the reason, the date. 
 | 2026-11-11 | Database key is exactly 32 raw bytes, given to SQLCipher as a raw hex key (no passphrase derivation) | The key comes from the platform keystore, so it is already random; raw keys open in about 1 ms |
 | 2026-11-11 | `Db::open` checks the version on a read-only connection first, disables checkpoint-on-close until the version is accepted, and turns relative paths into `./path` | Review findings: a refused (too new, wrong key) database must not be changed, even with a leftover `-wal`; bundled SQLite reads `file:` names as URIs |
 | 2026-11-11 | A message with no References, Message-ID or usable subject gets thread key `uid:<folder_id>:<uid>` | Otherwise every such message would share one empty thread |
+| 2026-11-11 | Op ids never reused: high-water mark kept in the `setting` table (key `op_queue.max_id`), no migration | Review finding; the Undo snackbar holds an op id, so a reused id could cancel the wrong action |
+| 2026-11-11 | Rows of the queue that a newer app wrote, or that are damaged, are marked failed and kept until the engine acknowledges them | Never drop a person's action silently |
+| 2026-11-11 | Migration 0003 replaces the folder counter triggers so hidden rows do not count | The unread badge should drop the moment the person archives, not when the server confirms |
+| 2026-11-11 | Queue payload JSON (`{"v":1,...}`) is read and written in `croft-storage`; `croft-mail-core` has no serde | Keeps mail-core pure and dependency-light |

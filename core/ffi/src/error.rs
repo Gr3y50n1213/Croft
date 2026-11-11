@@ -48,11 +48,12 @@ pub enum CoreError {
     /// The credential provider had no credential for the account. The provider was told
     /// (`sign_in_needed`) and the account stays in the needs-sign-in state.
     NoCredential,
-    /// `add_account`: the address is already added with a pinned certificate (a self-signed server
-    /// the person trusted), and this sign-in would replace or drop that pin without the person
-    /// having confirmed the change. Nothing was changed. `verify` reports the change as
-    /// `VerifyFailure::CertificateChanged` first; after the person confirmed that warning the app
-    /// calls `add_account` again with `accept_changed_certificate`.
+    /// `add_account`: the address is already added, and this sign-in would replace its trusted
+    /// certificate pin, add a pin to an account that had none (its certificate used to chain to an
+    /// authority) or drop its pin, without the person having confirmed that exact fingerprint.
+    /// Nothing was changed. `verify` reports the change as `VerifyFailure::CertificateChanged`
+    /// first; after the person confirmed that warning the app calls `add_account` again with
+    /// `confirmed_fingerprint`. A pin is never dropped this way.
     CertificateChanged,
     /// `add_account`: an account with this address is already added, with another IMAP server,
     /// port, security mode or user name, or another SMTP server (or with settings this version

@@ -185,7 +185,7 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
     block(core.verify(found.clone(), password_cred(PASSWORD), pin.clone())).unwrap();
 
     let account =
-        block(core.add_account(found, "Alice".into(), pin, false, password_cred(PASSWORD)))
+        block(core.add_account(found, "Alice".into(), pin, None, password_cred(PASSWORD)))
             .unwrap()
             .id;
     provider.store(account, password_cred(PASSWORD));
@@ -251,7 +251,7 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
         discovered_for(&server),
         "Bob".into(),
         Some(fingerprint_of(&server)),
-        false,
+        None,
         password_cred(WRONG),
     ))
     .unwrap()

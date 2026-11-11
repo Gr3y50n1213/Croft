@@ -121,7 +121,7 @@ fn a_stored_pin_makes_another_certificate_a_change_and_not_a_first_use() {
         found.clone(),
         "Alice".into(),
         Some(earlier.clone()),
-        false,
+        None,
         good(),
     ))
     .unwrap();
@@ -147,47 +147,93 @@ fn a_stored_pin_makes_another_certificate_a_change_and_not_a_first_use() {
         block(core.verify(found.clone(), good(), Some(seen.clone()))).unwrap(),
         Some(seen.clone())
     );
-    // Adding it needs the acknowledgement; without it nothing changes.
+    // Adding it needs the confirmation of that fingerprint; without it nothing changes.
     assert_eq!(
         block(core.add_account(
             found.clone(),
             "Alice".into(),
             Some(seen.clone()),
-            false,
+            None,
             good()
         )),
         Err(CoreError::CertificateChanged)
     );
-    let acknowledged = block(core.add_account(
+    let confirmed = block(core.add_account(
         found.clone(),
         "Alice".into(),
         Some(seen.clone()),
-        true,
+        Some(seen.clone()),
         good(),
     ))
     .unwrap();
-    assert_eq!(
-        acknowledged,
-        AddedAccount {
-            id: added.id,
-            updated: true
-        }
-    );
+    assert!(confirmed.updated && confirmed.id == added.id);
 
     // The stored pin is the new one now: `verify` passes with no pin, and says which one it used.
     assert_eq!(
         block(core.verify(found.clone(), good(), None)).unwrap(),
         Some(seen.clone())
     );
-    // A sign-in again with it needs no acknowledgement, and the account syncs over that pin.
-    let again = block(core.add_account(found, "Alice".into(), Some(seen), false, good())).unwrap();
+    // A sign-in again with it needs no confirmation.
+    let again = block(core.add_account(found, "Alice".into(), Some(seen), None, good())).unwrap();
+    assert!(again.updated && again.id == added.id);
+}
+
+/// An account stored without a pin reached its server with a certificate that chains to an
+/// authority. A self-signed certificate now is a change (the stronger warning), not a first use:
+/// pinning it is a downgrade the person must knowingly accept. A new address still gets the
+/// ordinary first-use question.
+#[test]
+fn an_account_stored_without_a_pin_reports_a_self_signed_certificate_as_a_change() {
+    let server = start_server();
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let found = discovered_for(&server);
+    let good = || password_cred(PASSWORD);
+    let seen = fingerprint_of(&server);
+
+    // Stored without a pin (it never reached the server over a self-signed certificate).
+    let added = block(core.add_account(found.clone(), "Alice".into(), None, None, good())).unwrap();
+    assert!(!added.updated);
+
     assert_eq!(
-        again,
-        AddedAccount {
-            id: added.id,
-            updated: true
+        block(core.verify(found.clone(), good(), None)).unwrap_err(),
+        VerifyFailure::CertificateChanged {
+            fingerprint: seen.clone()
         }
     );
+    // Another address on the same server is a new account: the first-use question.
+    let mut other = found.clone();
+    other.email = "bob@example.org".into();
+    assert!(matches!(
+        block(core.verify(other, good(), None)).unwrap_err(),
+        VerifyFailure::UntrustedCertificate { .. }
+    ));
+    // The person confirmed the warning: verify with that fingerprint works, and adding the pin needs it.
+    assert_eq!(
+        block(core.verify(found.clone(), good(), Some(seen.clone()))).unwrap(),
+        Some(seen.clone())
+    );
+    assert_eq!(
+        block(core.add_account(
+            found.clone(),
+            "Alice".into(),
+            Some(seen.clone()),
+            None,
+            good()
+        )),
+        Err(CoreError::CertificateChanged)
+    );
+    let pinned = block(core.add_account(
+        found.clone(),
+        "Alice".into(),
+        Some(seen.clone()),
+        Some(seen.clone()),
+        good(),
+    ))
+    .unwrap();
+    assert!(pinned.updated && pinned.id == added.id);
+    // Now it is an account with a pin: no more warning for that certificate.
+    assert_eq!(block(core.verify(found, good(), None)).unwrap(), Some(seen));
 }
 
 #[test]
@@ -405,7 +451,7 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
-        false,
+        None,
         password_cred("the wrong password"),
     ))
     .unwrap()
@@ -450,7 +496,7 @@ fn signing_in_again_with_the_right_password_resumes_the_account_under_its_id() {
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
-        false,
+        None,
         password_cred("the wrong password"),
     ))
     .unwrap()
@@ -465,7 +511,7 @@ fn signing_in_again_with_the_right_password_resumes_the_account_under_its_id() {
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
-        false,
+        None,
         password_cred(PASSWORD),
     ))
     .unwrap()
@@ -506,7 +552,7 @@ fn a_new_account_uses_the_credential_it_was_given_not_the_providers() {
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
-        false,
+        None,
         password_cred("not the password"),
     ))
     .unwrap()

@@ -17,7 +17,7 @@ use croft_engine::{
 };
 use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{
-    provider_for_host, verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions,
+    provider_for_host, verify, Discoverer, EmailAddress, ProbeUpdate, VerifyError, VerifyOptions,
 };
 use croft_protocols::{clean_host, CertFingerprint, Credential, DemoBackend};
 use croft_storage::accounts::{self, Account, NewAccount, Protocol};
@@ -116,6 +116,8 @@ pub(crate) struct Inner {
     /// What the last re-add of each account replaced, until the app undoes it or the next change
     /// of that account.
     previous: Mutex<HashMap<i64, Previous>>,
+    /// Source of `AddedAccount::update_token`.
+    update_tokens: std::sync::atomic::AtomicU64,
 }
 
 /// What `add_account` has worked out for the account, ready to be stored and started.
@@ -126,8 +128,9 @@ struct Added {
     json: serde_json::Value,
     settings: StoredSettings,
     credential: Credential,
-    /// The person confirmed that the pinned certificate changed (see `Core::add_account`).
-    accept_changed_certificate: bool,
+    /// The certificate the person confirmed on the changed-certificate warning (see
+    /// `Core::add_account`).
+    confirmed: Option<CertFingerprint>,
 }
 
 /// What a re-add replaced, kept so that the app can undo it when it could not store the new
@@ -136,6 +139,11 @@ struct Previous {
     provider: String,
     config: serde_json::Value,
     settings: StoredSettings,
+    /// Names the update this undoes (`AddedAccount::update_token`): only that update can be rolled
+    /// back or committed, never a later one.
+    token: u64,
+    /// The account was in the needs-sign-in state before the update, and is put back in it.
+    was_sign_in_needed: bool,
 }
 
 /// Whether two stored servers are the same: the host (cleaned up like the connection does it),
@@ -219,11 +227,16 @@ impl Inner {
         })?)
     }
 
-    /// The certificate pin of the account that `settings` would re-add (same address, same
-    /// servers), if it has one that applies: the pin `verify` checks against when the caller has
-    /// none, so that another certificate is reported as changed. Reads the database: call it from
-    /// a blocking thread.
-    fn stored_pin_for(&self, email: &str, settings: &StoredSettings) -> Option<CertFingerprint> {
+    /// The stored account that `settings` would re-add (same address, same servers), if there is
+    /// one: `Some(pin)` with the pin that applies to it (`None` when it has none, which includes a
+    /// provider's host). `verify` checks against that pin when the caller has none, and treats an
+    /// account stored without one as one whose certificate used to chain to an authority. Reads
+    /// the database: call it from a blocking thread.
+    fn stored_match_for(
+        &self,
+        email: &str,
+        settings: &StoredSettings,
+    ) -> Option<Option<CertFingerprint>> {
         let account = self.account_with_address(email).ok()??;
         if account.protocol != Protocol::Imap {
             return None;
@@ -232,8 +245,8 @@ impl Inner {
         if !same_servers(&old, settings) {
             return None;
         }
-        // `imap_config` leaves the pin out for a provider's host.
-        old.imap_config().ok()?.pinned_cert
+        // `imap_config` leaves the pin out for a provider's host and for an unusable pin.
+        Some(old.imap_config().ok().and_then(|c| c.pinned_cert))
     }
 
     fn previous(&self) -> MutexGuard<'_, HashMap<i64, Previous>> {
@@ -250,7 +263,7 @@ impl Inner {
             json,
             settings,
             credential,
-            accept_changed_certificate: _,
+            confirmed: _,
         } = new;
         let id = self.handle.read(|db| {
             let conn = db.connection();
@@ -285,7 +298,7 @@ impl Inner {
         self: &Arc<Self>,
         existing: Account,
         new: Added,
-    ) -> Result<i64, CoreError> {
+    ) -> Result<(i64, u64), CoreError> {
         let id = existing.id;
         // Settings this version cannot read (a newer app wrote them) are never overwritten.
         let old =
@@ -293,20 +306,26 @@ impl Inner {
         if existing.protocol != Protocol::Imap || !same_servers(&old, &new.settings) {
             return Err(CoreError::AccountExists);
         }
-        // A trusted certificate is not replaced or dropped without the person's say. The pin that
-        // applies is the one the connection would use (none for a provider's host, and none when
-        // the stored pin is unusable, so a broken record can be fixed by signing in again).
+        // A trusted certificate is never replaced, added to an account that had none (it used to
+        // chain to an authority) or dropped without the person's say. The pin that applies is the
+        // one the connection would use (none for a provider's host, and none when the stored pin is
+        // unusable). Another pin needs the person to have confirmed exactly that fingerprint on the
+        // changed-certificate warning; dropping a pin is never possible this way.
         let old_pin = old.imap_config().ok().and_then(|c| c.pinned_cert);
         let new_pin = new.settings.imap_config().ok().and_then(|c| c.pinned_cert);
-        if old_pin.is_some() && old_pin != new_pin && !new.accept_changed_certificate {
+        if old_pin != new_pin && !matches!((new_pin, new.confirmed), (Some(n), Some(c)) if n == c) {
             return Err(CoreError::CertificateChanged);
         }
         // Whatever an earlier re-add replaced is not this one's to undo.
         self.previous().remove(&id);
+        let token = self.update_tokens.fetch_add(1, Ordering::Relaxed) + 1;
+        let was_sign_in_needed = self.hub.is_sign_in_needed(id);
         let previous = Previous {
             provider: existing.provider,
             config: existing.config,
             settings: old,
+            token,
+            was_sign_in_needed,
         };
         // The new settings first, so a restart in the middle starts the account with them.
         self.handle
@@ -338,7 +357,7 @@ impl Inner {
                 self.hub.clear_sign_in(id);
                 self.hub.accounts_changed([id]);
                 self.previous().insert(id, previous);
-                Ok(id)
+                Ok((id, token))
             }
             Err(e) => {
                 // A failed re-add costs nothing: the old settings are back and the account runs
@@ -353,6 +372,7 @@ impl Inner {
     /// stored credential). If that fails the account shows as an error. With `account_changes`
     /// held.
     async fn restore(self: &Arc<Self>, id: i64, previous: Previous) -> Result<(), CoreError> {
+        let previous_was_sign_in_needed = previous.was_sign_in_needed;
         self.engine.remove_account(id).await;
         self.backends().remove(&id);
         let back = self.clone();
@@ -365,6 +385,10 @@ impl Inner {
         .await;
         match restored {
             Ok(Ok(())) => {
+                if previous_was_sign_in_needed {
+                    // As it was before the update: waiting for a sign-in.
+                    self.hub.sign_in_needed(id);
+                }
                 self.hub.accounts_changed([id]);
                 Ok(())
             }
@@ -659,6 +683,7 @@ impl Core {
             demos: Mutex::new(HashMap::new()),
             account_changes: tokio::sync::Mutex::new(()),
             previous: Mutex::new(HashMap::new()),
+            update_tokens: std::sync::atomic::AtomicU64::new(0),
         });
 
         let stored = inner.handle.read(|db| accounts::list(db.connection()))?;
@@ -722,8 +747,12 @@ impl Core {
     /// and the same servers is stored with a pin, that pin is the expected certificate: any other
     /// certificate, one that chains to a trusted authority included, is
     /// `VerifyFailure::CertificateChanged` with the fingerprint seen, never the first-use
-    /// `UntrustedCertificate`. The app then shows the stronger warning, and passes the new
-    /// fingerprint back after the person confirmed it.
+    /// `UntrustedCertificate`. The same goes for such an account stored **without** a pin (its
+    /// certificate used to chain to an authority): a certificate that does not chain now is
+    /// `CertificateChanged`, because moving from a verified certificate to a pinned one is a
+    /// downgrade the person must knowingly accept. A new address gets the first-use question. The
+    /// app shows the stronger warning, and passes the new fingerprint back as `pinned_fingerprint`
+    /// (and later as `confirmed_fingerprint` of `add_account`) after the person confirmed it.
     ///
     /// Returns the fingerprint the connection was checked against, if any: the pin passed in, or
     /// the stored one. **Pass it to `add_account` as its `pinned_fingerprint`.** It is `None`
@@ -754,23 +783,33 @@ impl Core {
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
-                let pin = match (pin, probe) {
+                // The stored account of this address and servers, when the caller named no pin.
+                let stored = match (pin, probe) {
                     (None, Some(probe)) => {
                         // A database read: not on a runtime worker.
-                        tokio::task::spawn_blocking(move || inner.stored_pin_for(&email, &probe))
+                        tokio::task::spawn_blocking(move || inner.stored_match_for(&email, &probe))
                             .await
                             .map_err(|_| VerifyFailure::Internal)?
                     }
-                    (pin, _) => pin,
+                    _ => None,
                 };
+                let used = pin.or(stored.flatten());
+                // An account stored without a pin was reaching its server with a certificate that
+                // chains to an authority. A self-signed one now is a change, not a first use.
+                let had_no_pin = pin.is_none() && stored == Some(None);
                 let options = VerifyOptions {
-                    pinned_cert: pin,
+                    pinned_cert: used,
                     ..VerifyOptions::default()
                 };
-                verify(&settings, credential, options)
-                    .await
-                    .map(|verified| verified.imap.pinned_cert.map(|pin| pin.to_string()))
-                    .map_err(|e| VerifyFailure::from_verify_error(&e))
+                match verify(&settings, credential, options).await {
+                    Ok(verified) => Ok(verified.imap.pinned_cert.map(|pin| pin.to_string())),
+                    Err(VerifyError::UntrustedCertificate { fingerprint }) if had_no_pin => {
+                        Err(VerifyFailure::CertificateChanged {
+                            fingerprint: fingerprint.to_string(),
+                        })
+                    }
+                    Err(e) => Err(VerifyFailure::from_verify_error(&e)),
+                }
             },
             true,
         );
@@ -793,20 +832,24 @@ impl Core {
     ///   everything synced so far; its stored settings are replaced (the pin included, under the
     ///   rules below), its connection is rebuilt from `credential`, and it leaves the
     ///   needs-sign-in state, so syncing and the queued changes resume with the new credential.
-    ///   The result has `updated` set and the existing id, and **the app stores the credential
-    ///   under it, replacing the old one**. If the app cannot store it, it calls
-    ///   [`Core::rollback_account_update`] so that the account stays as it was.
+    ///   The result has `updated` set, the existing id and an `update_token`, and **the app stores
+    ///   the credential under the id, replacing the old one**. It then calls
+    ///   [`Core::commit_account_update`]; if it cannot store the credential it calls
+    ///   [`Core::rollback_account_update`] instead, so that the account stays as it was.
     /// - With any other server, port, security mode or user name, or another SMTP server (or when
     ///   the stored settings cannot be read) it fails with [`CoreError::AccountExists`] and changes
     ///   nothing. The person removes the old account first if they mean to replace it, so that a
     ///   sign-in can never silently repoint where mail is read or sent.
-    /// - **A pinned certificate is never replaced or dropped silently.** When the stored account
-    ///   has a pin (a self-signed server the person trusted) and `pinned_fingerprint` is another
-    ///   fingerprint or `None`, the call fails with [`CoreError::CertificateChanged`] and changes
-    ///   nothing, unless `accept_changed_certificate` is true. Pass true **only** after the person
-    ///   confirmed the changed-certificate warning (`VerifyFailure::CertificateChanged`, see
-    ///   `verify`) in this very sign-in; never from a first-use trust question, and never by
-    ///   default. It has no effect when there is no stored pin, and for a new account.
+    /// - **A trusted certificate is never replaced, added or dropped silently.** When the stored
+    ///   account's pin differs from `pinned_fingerprint` (another fingerprint, a fingerprint where
+    ///   the account had none because its certificate used to chain to an authority, or none
+    ///   where it had one), the call fails with [`CoreError::CertificateChanged`] and changes
+    ///   nothing, unless `confirmed_fingerprint` equals `pinned_fingerprint`. Pass it **only**
+    ///   after the person confirmed the changed-certificate warning (`VerifyFailure::CertificateChanged`,
+    ///   see `verify`) for exactly that fingerprint in this sign-in; never from a first-use
+    ///   trust question. Dropping a pin is never possible this way: a re-add with no pin over a
+    ///   stored pin is always refused. It has no effect when the pin does not change, and for a
+    ///   new account.
     ///
     /// A credential that is not valid UTF-8 fails with `NoCredential` before anything is written.
     ///
@@ -820,7 +863,7 @@ impl Core {
         discovered: FfiDiscovered,
         display_name: String,
         pinned_fingerprint: Option<String>,
-        accept_changed_certificate: bool,
+        confirmed_fingerprint: Option<String>,
         credential: Arc<FfiCredential>,
     ) -> Result<AddedAccount, CoreError> {
         let imap = discovered
@@ -848,6 +891,9 @@ impl Core {
             .map_err(|_| CoreError::BadSettings)?
             .validate()
             .map_err(|_| CoreError::BadSettings)?;
+        let confirmed = confirmed_fingerprint
+            .map(|text| Self::pin_from_text(&text))
+            .transpose()?;
         let provider = discovered
             .provider
             .map_or("generic", |p| p.db_name())
@@ -875,12 +921,16 @@ impl Core {
                     json,
                     settings,
                     credential,
-                    accept_changed_certificate,
+                    confirmed,
                 };
                 match same_address {
                     Some(existing) => {
-                        let id = inner.sign_in_again(existing, new).await?;
-                        Ok(AddedAccount { id, updated: true })
+                        let (id, update_token) = inner.sign_in_again(existing, new).await?;
+                        Ok(AddedAccount {
+                            id,
+                            updated: true,
+                            update_token,
+                        })
                     }
                     None => {
                         // Starting an account does blocking work: not on a runtime worker.
@@ -888,7 +938,11 @@ impl Core {
                         let id = tokio::task::spawn_blocking(move || inner.insert_account(new))
                             .await
                             .map_err(|_| CoreError::Internal)??;
-                        Ok(AddedAccount { id, updated: false })
+                        Ok(AddedAccount {
+                            id,
+                            updated: false,
+                            update_token: 0,
+                        })
                     }
                 }
             },
@@ -897,26 +951,48 @@ impl Core {
         task.await?
     }
 
-    /// Undoes the last `add_account` that **updated** the account (`updated` was true), when the
-    /// app could not store the new credential: the earlier settings and pin are written back and
-    /// the account starts again with the credential the app still has stored (asking the credential
-    /// provider, as at `open`). Does nothing when there is nothing to undo, for a new account, and
-    /// once the account has changed since. Call it right away, from the code that stored (or failed
-    /// to store) the credential.
-    pub async fn rollback_account_update(&self, id: i64) -> Result<(), CoreError> {
+    /// Undoes the `add_account` that **updated** the account and gave this `update_token`, when
+    /// the app could not store the new credential: the earlier settings and pin are written back,
+    /// the account is put back in the needs-sign-in state it had, and it starts again with the
+    /// credential the app still has stored (asking the credential provider, as at `open`).
+    /// Returns true when it was undone, false when there was nothing to undo: the token is not the
+    /// account's latest update (another sign-in of the same account came after it, and its
+    /// settings and credential stand), it was committed or rolled back already, or the account is
+    /// gone. Call it right away, from the code that failed to store the credential.
+    pub async fn rollback_account_update(
+        &self,
+        id: i64,
+        update_token: u64,
+    ) -> Result<bool, CoreError> {
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
                 let _changing = inner.account_changes.lock().await;
-                let previous = inner.previous().remove(&id);
+                let previous = {
+                    let mut all = inner.previous();
+                    match all.get(&id) {
+                        Some(p) if p.token == update_token => all.remove(&id),
+                        _ => None,
+                    }
+                };
                 match previous {
-                    Some(previous) => inner.restore(id, previous).await,
-                    None => Ok(()),
+                    Some(previous) => inner.restore(id, previous).await.map(|()| true),
+                    None => Ok(false),
                 }
             },
             false,
         );
         task.await?
+    }
+
+    /// The app stored the credential of the update that gave this `update_token`: the core drops
+    /// what it kept for undoing it. Does nothing for any other token, including a later update's.
+    pub fn commit_account_update(&self, id: i64, update_token: u64) -> Result<(), CoreError> {
+        let mut all = self.inner.previous();
+        if all.get(&id).is_some_and(|p| p.token == update_token) {
+            all.remove(&id);
+        }
+        Ok(())
     }
 
     /// Every account, in list order.

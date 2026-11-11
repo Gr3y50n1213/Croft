@@ -123,7 +123,7 @@ mod with_sqlcipher {
             },
             "Alice".into(),
             None,
-            false,
+            None,
             password_cred(PASSWORD),
         ))
         .unwrap()

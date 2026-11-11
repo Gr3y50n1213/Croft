@@ -244,7 +244,7 @@ impl Rig {
             discovered_for(&server),
             "Alice".into(),
             Some(fingerprint.clone()),
-            false,
+            None,
             password_cred(PASSWORD),
         ))
         .unwrap()

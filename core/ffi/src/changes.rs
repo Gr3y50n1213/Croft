@@ -166,6 +166,11 @@ impl Hub {
         }
     }
 
+    /// Whether the account is in the needs-sign-in state right now.
+    pub(crate) fn is_sign_in_needed(&self, account: i64) -> bool {
+        self.lock().needs_sign_in.contains(&account)
+    }
+
     /// The person signed in again: the account leaves the needs-sign-in state.
     pub(crate) fn clear_sign_in(&self, account: i64) {
         let was = self.lock().needs_sign_in.remove(&account);

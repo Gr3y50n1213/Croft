@@ -187,10 +187,14 @@ pub struct AddedAccount {
     /// The account's id: a new one, or the existing account's when `updated`.
     pub id: i64,
     /// True when the address was already added with the same servers: the account kept its id and
-    /// got the new settings and credential (the app then **replaces** the stored credential under
-    /// that id, and must not remove the account if storing it fails: see
-    /// `Core::rollback_account_update`). False for a new account.
+    /// got the new settings and credential. The app then **replaces** the stored credential under
+    /// that id and reports the result with `commit_account_update` (stored) or
+    /// `rollback_account_update` (could not be stored), both with `update_token`.
     pub updated: bool,
+    /// Names this update, for `commit_account_update` and `rollback_account_update`: a number
+    /// from a counter, so that a later update of the same account is another one. 0 for a new
+    /// account (there is nothing to commit or roll back).
+    pub update_token: u64,
 }
 
 /// What `discover` found for an address; passed back to `verify` and `add_account`. It holds no

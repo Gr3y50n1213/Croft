@@ -79,15 +79,12 @@ fn the_same_address_and_server_updates_the_account_and_keeps_its_id() {
         found("User1@Example.org", "[127.0.0.1]", 1, "nobody"),
         "A new label".into(),
         Some(pin.clone()),
-        false,
+        // Pinning a certificate on an account that had none is a change the person confirmed.
+        Some(pin.clone()),
         password_cred("the new password"),
     ))
     .unwrap();
-    assert_eq!(
-        again,
-        AddedAccount { id, updated: true },
-        "the account keeps its id"
-    );
+    assert!(is_update_of(again, id), "the account keeps its id");
 
     let accounts = core.list_accounts().unwrap();
     assert_eq!(accounts.len(), 1, "no second account");
@@ -108,19 +105,25 @@ fn the_same_address_and_server_updates_the_account_and_keeps_its_id() {
     assert_eq!(provider.sign_ins(), vec![id]);
 }
 
-/// Signs in for `alice@example.org` on the dead server with `pin`, as the app does after `verify`.
+/// Signs in for `alice@example.org` on the dead server with `pin` and the fingerprint the person
+/// `confirmed` on the changed-certificate warning, as the app does after `verify`.
 fn sign_in(
     core: &Core,
     pin: Option<&String>,
-    accept_changed_certificate: bool,
+    confirmed: Option<&String>,
 ) -> Result<AddedAccount, CoreError> {
     block(core.add_account(
         same_server("alice@example.org"),
         "Alice".into(),
         pin.cloned(),
-        accept_changed_certificate,
+        confirmed.cloned(),
         password_cred("x"),
     ))
+}
+
+/// An update of that account: its id, `updated` and a token to commit or roll back with.
+fn is_update_of(added: AddedAccount, id: i64) -> bool {
+    added.updated && added.id == id && added.update_token != 0
 }
 
 fn fingerprint(name: &str) -> String {
@@ -132,10 +135,19 @@ fn core_with_pinned_account() -> (TempDb, Arc<Core>, i64, String) {
     let db = TempDb::new();
     let core = db.open(&MemProvider::new());
     let pin = fingerprint("certificate A");
-    let added = sign_in(&core, Some(&pin), false).unwrap();
+    let added = sign_in(&core, Some(&pin), None).unwrap();
     assert!(!added.updated);
     assert_eq!(pin_of(&stored(&core, added.id)), Some(pin.clone()));
     (db, core, added.id, pin)
+}
+
+/// A core with `alice@example.org` stored without a pin (its certificate chained to an authority).
+fn core_with_unpinned_account() -> (TempDb, Arc<Core>, i64) {
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let added = sign_in(&core, None, None).unwrap();
+    assert_eq!(pin_of(&stored(&core, added.id)), None);
+    (db, core, added.id)
 }
 
 /// The re-add must not swap in another certificate behind the person's back: an interceptor with
@@ -143,12 +155,18 @@ fn core_with_pinned_account() -> (TempDb, Arc<Core>, i64, String) {
 /// warning that this is not the certificate trusted before. (This replaces the test
 /// `a_stored_pin_follows_the_latest_sign_in`, which asserted exactly that behaviour.)
 #[test]
-fn a_different_pin_is_refused_without_the_acknowledgement() {
+fn a_different_pin_is_refused_without_the_confirmation() {
     let (_db, core, id, pin) = core_with_pinned_account();
     let before = stored(&core, id);
     let other = fingerprint("certificate B");
     assert_eq!(
-        sign_in(&core, Some(&other), false),
+        sign_in(&core, Some(&other), None),
+        Err(CoreError::CertificateChanged)
+    );
+    // A confirmation of another fingerprint than the pin being stored does not count.
+    let third = fingerprint("certificate C");
+    assert_eq!(
+        sign_in(&core, Some(&other), Some(&third)),
         Err(CoreError::CertificateChanged)
     );
     assert_eq!(stored(&core, id), before, "nothing was changed");
@@ -157,52 +175,87 @@ fn a_different_pin_is_refused_without_the_acknowledgement() {
 }
 
 /// The second way in: a re-add with no pin (the interceptor's certificate chains to a trusted
-/// authority) must not drop the pin silently either.
+/// authority) must not drop the pin silently either, and no confirmation makes it possible.
 #[test]
-fn no_pin_is_refused_without_the_acknowledgement_when_one_is_stored() {
+fn a_pin_is_never_dropped_not_even_with_a_confirmation() {
     let (_db, core, id, pin) = core_with_pinned_account();
     let before = stored(&core, id);
     assert_eq!(
-        sign_in(&core, None, false),
+        sign_in(&core, None, None),
         Err(CoreError::CertificateChanged)
     );
+    for confirmed in [pin.clone(), fingerprint("certificate B")] {
+        assert_eq!(
+            sign_in(&core, None, Some(&confirmed)),
+            Err(CoreError::CertificateChanged)
+        );
+    }
     assert_eq!(stored(&core, id), before);
     assert_eq!(pin_of(&stored(&core, id)), Some(pin));
 }
 
 #[test]
-fn with_the_acknowledgement_the_pin_is_replaced_or_dropped() {
+fn with_the_confirmation_of_that_fingerprint_the_pin_is_replaced() {
     let (_db, core, id, _pin) = core_with_pinned_account();
     let other = fingerprint("certificate B");
-    let added = sign_in(&core, Some(&other), true).unwrap();
-    assert_eq!(added, AddedAccount { id, updated: true });
-    assert_eq!(pin_of(&stored(&core, id)), Some(other.clone()));
-    // Confirmed again later, with the certificate now chaining to an authority: no pin.
-    assert_eq!(sign_in(&core, None, true).unwrap().id, id);
-    assert_eq!(pin_of(&stored(&core, id)), None);
+    let added = sign_in(&core, Some(&other), Some(&other)).unwrap();
+    assert!(added.updated && added.id == id && added.update_token != 0);
+    assert_eq!(pin_of(&stored(&core, id)), Some(other));
     assert_eq!(core.list_accounts().unwrap().len(), 1);
 }
 
 #[test]
-fn the_same_pin_as_stored_is_accepted_without_the_acknowledgement() {
+fn the_same_pin_as_stored_is_accepted_without_the_confirmation() {
     let (_db, core, id, pin) = core_with_pinned_account();
     // The pin `verify` returned for the stored account's certificate (any spelling of the hex).
-    let added = sign_in(&core, Some(&pin.to_lowercase()), false).unwrap();
-    assert_eq!(added, AddedAccount { id, updated: true });
+    let added = sign_in(&core, Some(&pin.to_lowercase()), None).unwrap();
+    assert!(added.updated && added.id == id);
     assert_eq!(pin_of(&stored(&core, id)), Some(pin));
 }
 
+/// An account stored without a pin reached its server with a certificate that chains to an
+/// authority. Pinning a certificate now (an interceptor's self-signed one, say) moves it from
+/// verified to trusted-on-first-use: a downgrade the person must knowingly accept, so it needs the
+/// same confirmation as a change. A new account needs none. (This replaces
+/// `the_acknowledgement_changes_nothing_when_no_pin_is_stored_or_for_a_new_account`, which asserted
+/// that a pin could be added to such an account without it.)
 #[test]
-fn the_acknowledgement_changes_nothing_when_no_pin_is_stored_or_for_a_new_account() {
-    let db = TempDb::new();
-    let core = db.open(&MemProvider::new());
+fn a_pin_added_to_an_account_that_had_none_needs_the_confirmation() {
+    let (_db, core, id) = core_with_unpinned_account();
+    let before = stored(&core, id);
     let pin = fingerprint("certificate A");
-    // A new account with the flag: just added.
-    let added = sign_in(&core, None, true).unwrap();
-    assert!(!added.updated);
-    // No stored pin: a pin may be added with or without the flag.
-    assert_eq!(sign_in(&core, Some(&pin), false).unwrap().id, added.id);
-    assert_eq!(pin_of(&stored(&core, added.id)), Some(pin));
+    assert_eq!(
+        sign_in(&core, Some(&pin), None),
+        Err(CoreError::CertificateChanged)
+    );
+    assert_eq!(
+        sign_in(&core, Some(&pin), Some(&fingerprint("certificate B"))),
+        Err(CoreError::CertificateChanged)
+    );
+    assert_eq!(stored(&core, id), before);
+    // Confirmed: pinned. No pin over no pin never needs anything.
+    let added = sign_in(&core, Some(&pin), Some(&pin)).unwrap();
+    assert!(added.updated && added.id == id);
+    assert_eq!(pin_of(&stored(&core, id)), Some(pin));
+
+    let (_db, core, id) = core_with_unpinned_account();
+    assert_eq!(sign_in(&core, None, None).unwrap().id, id);
+    // A new account takes a pin and a confirmation alike: just added.
+    let db = TempDb::new();
+    let fresh = db.open(&MemProvider::new());
+    let pin = fingerprint("certificate A");
+    let added = sign_in(&fresh, Some(&pin), Some(&pin)).unwrap();
+    assert!(!added.updated && added.update_token == 0);
+}
+
+/// A malformed confirmation is refused like a malformed pin.
+#[test]
+fn a_malformed_confirmation_is_refused() {
+    let (_db, core, _id, _pin) = core_with_pinned_account();
+    assert_eq!(
+        sign_in(&core, None, Some(&"zz".to_owned())),
+        Err(CoreError::BadFingerprint)
+    );
 }
 
 /// The app cannot store the new password: it undoes the update, and the account is as it was,
@@ -212,30 +265,157 @@ fn an_update_can_be_rolled_back() {
     let (_db, core, id, pin) = core_with_pinned_account();
     let before = stored(&core, id);
     let other = fingerprint("certificate B");
-    let added = sign_in(&core, Some(&other), true).unwrap();
+    let added = sign_in(&core, Some(&other), Some(&other)).unwrap();
     assert!(added.updated);
     assert_eq!(pin_of(&stored(&core, id)), Some(other));
 
-    block(core.rollback_account_update(id)).unwrap();
+    assert_eq!(
+        block(core.rollback_account_update(id, added.update_token)),
+        Ok(true)
+    );
     assert_eq!(stored(&core, id), before);
     assert_eq!(pin_of(&stored(&core, id)), Some(pin));
     assert_eq!(core.list_accounts().unwrap().len(), 1);
-    // Nothing more to undo: a second call, an unknown id and a new account do nothing.
-    block(core.rollback_account_update(id)).unwrap();
-    block(core.rollback_account_update(999)).unwrap();
+    // Nothing more to undo: a second call, an unknown id and a new account's token do nothing.
+    assert_eq!(
+        block(core.rollback_account_update(id, added.update_token)),
+        Ok(false)
+    );
+    assert_eq!(block(core.rollback_account_update(999, 1)), Ok(false));
     assert_eq!(stored(&core, id), before);
+}
+
+/// A re-adds account 5, B re-adds it after, A's keystore write fails and A rolls back: that must
+/// not undo B's update (A's settings with B's password). The token names the update.
+#[test]
+fn a_rollback_undoes_only_the_update_it_names() {
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let add = |host: &str| {
+        block(core.add_account(
+            found("alice@example.org", host, 1, "nobody"),
+            "Alice".into(),
+            None,
+            None,
+            password_cred("x"),
+        ))
+        .unwrap()
+    };
+    let first = add("127.0.0.1");
+    assert!(!first.updated);
+    let a = add("[127.0.0.1]");
+    let b = add("127.0.0.1.");
+    assert_ne!(a.update_token, b.update_token);
+    assert_eq!(stored(&core, first.id).config["imap"]["host"], "127.0.0.1.");
+
+    // A's rollback is stale: nothing is undone, and B's settings stand.
+    assert_eq!(
+        block(core.rollback_account_update(first.id, a.update_token)),
+        Ok(false)
+    );
+    assert_eq!(stored(&core, first.id).config["imap"]["host"], "127.0.0.1.");
+    // B's own is the latest and can still be undone: back to what B replaced (A's settings).
+    assert_eq!(
+        block(core.rollback_account_update(first.id, b.update_token)),
+        Ok(true)
+    );
+    assert_eq!(
+        stored(&core, first.id).config["imap"]["host"],
+        "[127.0.0.1]"
+    );
+}
+
+/// The app reports the password stored: the core forgets what it kept, and a late rollback does
+/// nothing. Only the named update is committed.
+#[test]
+fn a_commit_clears_the_undo_of_that_update_only() {
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let add = |host: &str| {
+        block(core.add_account(
+            found("alice@example.org", host, 1, "nobody"),
+            "Alice".into(),
+            None,
+            None,
+            password_cred("x"),
+        ))
+        .unwrap()
+    };
+    let first = add("127.0.0.1");
+    let a = add("[127.0.0.1]");
+    // A commit for another token changes nothing; the right one clears the entry.
+    core.commit_account_update(first.id, a.update_token + 1)
+        .unwrap();
+    core.commit_account_update(first.id, 0).unwrap();
+    core.commit_account_update(first.id, a.update_token)
+        .unwrap();
+    assert_eq!(
+        block(core.rollback_account_update(first.id, a.update_token)),
+        Ok(false)
+    );
+    assert_eq!(
+        stored(&core, first.id).config["imap"]["host"],
+        "[127.0.0.1]"
+    );
+}
+
+/// After a rollback the account is in the state it had: waiting for a sign-in.
+#[test]
+fn a_rollback_puts_the_account_back_in_the_needs_sign_in_state_it_had() {
+    let db = TempDb::new();
+    let id = {
+        let d = Db::open(&db.path, None).unwrap();
+        insert_account(&d, 1)
+    };
+    let provider = MemProvider::new();
+    // The app still holds the old (wrong) password: the account starts, then is told to sign in.
+    provider.store(id, password_cred("the old password"));
+    let core = db.open(&provider);
+    {
+        // The hub tells the provider on a blocking task of the runtime.
+        let _runtime = rt().enter();
+        core.hub().sign_in_needed(id);
+    }
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::NeedsSignIn
+    );
+    let added = block(core.add_account(
+        same_server("user1@example.org"),
+        "x".into(),
+        None,
+        None,
+        password_cred("the new password"),
+    ))
+    .unwrap();
+    assert_eq!(core.list_accounts().unwrap()[0].status, AccountStatus::Ok);
+    assert_eq!(
+        block(core.rollback_account_update(id, added.update_token)),
+        Ok(true)
+    );
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::NeedsSignIn
+    );
 }
 
 #[test]
 fn a_new_account_has_nothing_to_roll_back_and_removing_forgets_the_update() {
     let db = TempDb::new();
     let core = db.open(&MemProvider::new());
-    let added = sign_in(&core, None, false).unwrap();
-    block(core.rollback_account_update(added.id)).unwrap();
+    let added = sign_in(&core, None, None).unwrap();
+    assert_eq!(
+        block(core.rollback_account_update(added.id, added.update_token)),
+        Ok(false)
+    );
     assert_eq!(core.list_accounts().unwrap().len(), 1);
-    assert!(sign_in(&core, None, false).unwrap().updated);
+    let again = sign_in(&core, None, None).unwrap();
+    assert!(again.updated);
     block(core.remove_account(added.id)).unwrap();
-    block(core.rollback_account_update(added.id)).unwrap();
+    assert_eq!(
+        block(core.rollback_account_update(added.id, again.update_token)),
+        Ok(false)
+    );
     assert!(core.list_accounts().unwrap().is_empty());
 }
 
@@ -266,7 +446,7 @@ fn another_server_for_a_stored_address_is_an_error_and_changes_nothing() {
                 discovered,
                 "x".into(),
                 None,
-                false,
+                None,
                 password_cred("another password")
             )),
             Err(CoreError::AccountExists),
@@ -313,7 +493,7 @@ fn settings_this_version_cannot_read_are_never_overwritten() {
             same_server("user1@example.org"),
             "x".into(),
             None,
-            false,
+            None,
             password_cred("x")
         )),
         Err(CoreError::AccountExists)
@@ -336,7 +516,7 @@ fn the_sample_mailbox_is_never_the_account_that_is_updated() {
         same_server(DEMO_ADDRESS),
         "Real".into(),
         None,
-        false,
+        None,
         password_cred("x"),
     ))
     .unwrap()
@@ -354,25 +534,21 @@ fn the_sample_mailbox_is_never_the_account_that_is_updated() {
 
     // Adding it again finds the real one, not the sample mailbox, and a different server is refused
     // because of the real one.
-    assert_eq!(
-        block(core.add_account(
-            same_server(DEMO_ADDRESS),
-            "Real".into(),
-            None,
-            false,
-            password_cred("y")
-        )),
-        Ok(AddedAccount {
-            id: real,
-            updated: true
-        })
-    );
+    let again = block(core.add_account(
+        same_server(DEMO_ADDRESS),
+        "Real".into(),
+        None,
+        None,
+        password_cred("y"),
+    ))
+    .unwrap();
+    assert!(is_update_of(again, real));
     assert_eq!(
         block(core.add_account(
             found(DEMO_ADDRESS, "localhost", 1, "nobody"),
             "Real".into(),
             None,
-            false,
+            None,
             password_cred("y")
         )),
         Err(CoreError::AccountExists)
@@ -390,7 +566,7 @@ fn updating_an_account_uses_up_no_id_and_two_at_once_make_one_account() {
             same_server(email),
             "x".into(),
             None,
-            false,
+            None,
             password_cred("x"),
         )
     };
@@ -407,21 +583,9 @@ fn updating_an_account_uses_up_no_id_and_two_at_once_make_one_account() {
     assert_eq!(core.list_accounts().unwrap().len(), 1);
     // Ids are still handed out one by one: the updates did not use any.
     let again = block(add("alice@example.org")).unwrap();
-    assert_eq!(
-        again,
-        AddedAccount {
-            id: a.id,
-            updated: true
-        }
-    );
+    assert!(is_update_of(again, a.id));
     let next = block(add("bob@example.org")).unwrap();
-    assert_eq!(
-        next,
-        AddedAccount {
-            id: a.id + 1,
-            updated: false
-        }
-    );
+    assert!(!next.updated && next.update_token == 0 && next.id == a.id + 1);
 }
 
 /// The address is compared with full Unicode lower-casing, not only ASCII.
@@ -434,7 +598,7 @@ fn the_address_is_compared_with_unicode_lower_casing() {
             same_server(email),
             "x".into(),
             None,
-            false,
+            None,
             password_cred("x"),
         ))
         .unwrap()
@@ -442,13 +606,7 @@ fn the_address_is_compared_with_unicode_lower_casing() {
     let first = add("Élodie@Example.org");
     assert!(!first.updated);
     // The same address in other case, in letters outside ASCII too, and with spaces around it.
-    assert_eq!(
-        add(" élodie@example.ORG "),
-        AddedAccount {
-            id: first.id,
-            updated: true
-        }
-    );
+    assert!(is_update_of(add(" élodie@example.ORG "), first.id));
     assert_eq!(add("ÉLODIE@EXAMPLE.ORG").id, first.id);
     assert_eq!(core.list_accounts().unwrap().len(), 1);
     // Another address is another account.
@@ -475,7 +633,7 @@ fn a_different_security_mode_or_smtp_server_is_another_server() {
         d
     };
     let add =
-        |d: FfiDiscovered| block(core.add_account(d, "x".into(), None, false, password_cred("x")));
+        |d: FfiDiscovered| block(core.add_account(d, "x".into(), None, None, password_cred("x")));
     let first = add(with(SecurityMode::Tls, Some(smtp("127.0.0.1", 2)))).unwrap();
     let before = stored(&core, first.id);
     for (what, d) in [
@@ -498,13 +656,7 @@ fn a_different_security_mode_or_smtp_server_is_another_server() {
     }
     // The same SMTP server written another way is the same server.
     let same = add(with(SecurityMode::Tls, Some(smtp("[127.0.0.1]", 2)))).unwrap();
-    assert_eq!(
-        same,
-        AddedAccount {
-            id: first.id,
-            updated: true
-        }
-    );
+    assert!(is_update_of(same, first.id));
     // And an account stored without SMTP does not take one.
     let bare = {
         let mut d = same_server("bob@example.org");

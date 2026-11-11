@@ -1173,7 +1173,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
         ..base.clone()
     };
     assert_eq!(
-        block(core.add_account(jmap_only, "x".into(), None, false, password_cred("x"))),
+        block(core.add_account(jmap_only, "x".into(), None, None, password_cred("x"))),
         Err(CoreError::UnsupportedServer)
     );
     assert_eq!(
@@ -1181,7 +1181,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
             base.clone(),
             "x".into(),
             Some("zz".into()),
-            false,
+            None,
             password_cred("x")
         )),
         Err(CoreError::BadFingerprint)
@@ -1194,7 +1194,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
         ..base.clone()
     };
     assert_eq!(
-        block(core.add_account(no_host, "x".into(), None, false, password_cred("x"))),
+        block(core.add_account(no_host, "x".into(), None, None, password_cred("x"))),
         Err(CoreError::BadSettings)
     );
     // A credential that is not UTF-8 is refused with a typed error, and nothing is written.
@@ -1203,7 +1203,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
             base,
             "x".into(),
             None,
-            false,
+            None,
             FfiCredential::password(vec![0xff, 0xfe])
         )),
         Err(CoreError::NoCredential)
@@ -1244,7 +1244,7 @@ fn a_pin_for_a_providers_own_server_is_refused_even_when_the_provider_field_is_e
                 edited,
                 "x".into(),
                 Some(pin.clone()),
-                false,
+                None,
                 password_cred("x")
             )),
             Err(CoreError::BadSettings),
@@ -1279,7 +1279,7 @@ fn a_removed_accounts_id_is_not_given_to_the_next_account() {
             email: format!("{name}@example.org"),
             ..found.clone()
         };
-        block(core.add_account(found, name.into(), None, false, password_cred("x")))
+        block(core.add_account(found, name.into(), None, None, password_cred("x")))
             .unwrap()
             .id
     };

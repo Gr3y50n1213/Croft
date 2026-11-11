@@ -16,7 +16,9 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
@@ -277,7 +279,11 @@ class AccountsScreensTest {
         rule.waitUntil(10_000) { exists(MoveTags.folder(receipts)) }
         tag(MoveTags.folder(receipts)).performClick()
         rule.waitUntil(10_000) { session.folderMapping.mapped(1, FolderRole.ARCHIVE) == receipts }
-        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Receipts")).fetchSemanticsNodes().isNotEmpty() }
+        try {
+            rule.waitUntil(10_000) { rule.onAllNodes(hasText("Receipts")).fetchSemanticsNodes().isNotEmpty() }
+        } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
+            throw AssertionError("the Archive row does not show the chosen folder:\n" + rule.onRoot(useUnmergedTree = true).printToString(), e)
+        }
         // A folder the server itself marks (Trash) is used as it is: shown, nothing to choose.
         rule.onNodeWithText("Trash (from your server)").assertExists()
     }

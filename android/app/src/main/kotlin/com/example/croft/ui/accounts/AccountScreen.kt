@@ -26,7 +26,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -101,7 +100,8 @@ fun AccountScreen(
     val accounts by rememberAccountList(session)
     val account = accounts?.firstOrNull { it.id == accountId }
     var folders by remember { mutableStateOf<List<FolderInfo>>(emptyList()) }
-    var mappingTick by remember { mutableIntStateOf(0) }
+    // The folder chosen for each role (kept in the screen's state so the rows follow it; `FolderMapping` is what the app remembers).
+    var chosenIds by remember(session, accountId) { mutableStateOf(MappedRoles.associate { it.first to session.folderMapping.mapped(accountId, it.first) }) }
     LaunchedEffect(session, accountId, account?.status) {
         folders = try { session.repository.listFolders(accountId).filter { !it.isVirtual } } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { folders }
     }
@@ -157,16 +157,16 @@ fun AccountScreen(
         Text(stringResource(R.string.account_folders_hint), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         var choosing by remember { mutableStateOf<FolderRole?>(null) }
         MappedRoles.forEach { (role, label, key) ->
-            FolderRow(session, accountId, role, stringResource(label), folders, mappingTick, Modifier.testTag(AccountsTags.folder(key))) { choosing = role }
+            FolderRow(role, stringResource(label), folders, chosenIds[role], Modifier.testTag(AccountsTags.folder(key))) { choosing = role }
         }
         choosing?.let { role ->
             val label = stringResource(MappedRoles.first { it.first == role }.second)
             MoveToSheet(
                 title = stringResource(R.string.account_folder_choose, label), folders = folders, recent = emptyList(), excluding = emptySet(),
-                onPick = { f -> session.folderMapping.remember(accountId, role, f.id); mappingTick++; choosing = null },
+                onPick = { f -> session.folderMapping.remember(accountId, role, f.id); chosenIds = chosenIds + (role to f.id); choosing = null },
                 onDismiss = { choosing = null },
-                footer = if (session.folderMapping.mapped(accountId, role) != null) ({
-                    DeclineFolderButton(stringResource(R.string.account_folder_clear), { session.folderMapping.forget(accountId, role); mappingTick++; choosing = null })
+                footer = if (chosenIds[role] != null) ({
+                    DeclineFolderButton(stringResource(R.string.account_folder_clear), { session.folderMapping.forget(accountId, role); chosenIds = chosenIds + (role to null); choosing = null })
                 }) else null,
             )
         }
@@ -245,17 +245,15 @@ private fun ColourChoice(colour: AccountColour, selected: Boolean, onClick: () -
  */
 @Composable
 private fun FolderRow(
-    session: MailSession,
-    account: AccountId,
     role: FolderRole,
     label: String,
     folders: List<FolderInfo>,
-    @Suppress("UNUSED_PARAMETER") tick: Int,
+    chosenId: Long?,
     modifier: Modifier,
     onChoose: () -> Unit,
 ) {
     val server = folders.firstOrNull { it.role == role }
-    val chosen = session.folderMapping.mapped(account, role)?.let { id -> folders.firstOrNull { it.id == id } }
+    val chosen = chosenId?.let { id -> folders.firstOrNull { it.id == id } }
     val clickable = server == null
     val supporting = when {
         server != null -> stringResource(R.string.account_folder_from_server, server.path)

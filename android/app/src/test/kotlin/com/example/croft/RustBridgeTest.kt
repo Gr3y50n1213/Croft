@@ -1,0 +1,63 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package com.example.croft
+
+import java.io.File
+import kotlin.io.path.createTempDirectory
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+import uniffi.croft_ffi.Core
+import uniffi.croft_ffi.CoreException
+import uniffi.croft_ffi.croftVersion
+import uniffi.croft_ffi.ffiApiVersion
+
+/**
+ * Kotlin to Rust through the generated bindings, on the JVM: the host build of libcroft_ffi is
+ * found through the jna.library.path system property that the Gradle build sets.
+ */
+class RustBridgeTest {
+    @Test
+    fun versionIsTheCargoVersion() {
+        assertEquals(System.getProperty("croft.cargoVersion"), croftVersion())
+    }
+
+    @Test
+    fun apiVersionIsTheOneTheAppExpects() {
+        assertEquals(EXPECTED_FFI_API_VERSION, ffiApiVersion())
+        assertEquals(RustInfo(croftVersion(), EXPECTED_FFI_API_VERSION), loadRustInfo())
+    }
+
+    @Test
+    fun aFreshDatabaseHasNoFolders() {
+        val dir = createTempDirectory("croft-test").toFile()
+        try {
+            val core = Core.open(File(dir, "croft.db").path)
+            assertTrue(core.listFolders(1L).isEmpty())
+            core.close()
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun aFileThatIsNotADatabaseIsAStorageErrorWithoutThePath() {
+        val dir = createTempDirectory("croft-test").toFile()
+        try {
+            val file = File(dir, "jane-doe-mail.db")
+            file.writeBytes(ByteArray(4096) { 'x'.code.toByte() })
+            try {
+                Core.open(file.path)
+                fail("expected a CoreException")
+            } catch (e: CoreException.Storage) {
+                assertFalse(e.toString(), e.toString().contains("jane-doe"))
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+}

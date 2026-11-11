@@ -198,6 +198,8 @@ tasks.named("preBuild") { dependsOn("generateUniffiBindings", "buildRustAndroid"
 
 tasks.withType<Test>().configureEach {
     dependsOn("buildRustHost")
+    // The pure swipe machine's tests (module :swipe) run with the app's, so one command (and CI) covers both.
+    dependsOn(":swipe:test")
     // JNA finds the host build of the library here; the generated bindings load it by name.
     systemProperty("jna.library.path", hostLibDir.asFile.path)
     systemProperty("croft.cargoVersion", cargoVersion)
@@ -218,6 +220,8 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
+    // T15: the swipe state machine, settings types and pill geometry (plain Kotlin, its own tests).
+    implementation(project(":swipe"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)

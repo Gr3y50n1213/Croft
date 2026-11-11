@@ -93,8 +93,8 @@ class GalleryCompletenessTest {
     fun everyKindOfControlOfTheSpecHasASection() {
         val ids = sections.map { it.id }.toSet()
         // Spec: buttons, FAB, Send, chips, text fields, switch/radio/checkbox, message row, attachment chip, banner, snackbar,
-        // dialog, bottom sheet, menus, icon-only button with tooltip, long-press; and (T14) the markers a row has in the list.
-        val required = setOf("buttons", "fab", "send", "chips", "fields", "toggles", "row", "listmarkers", "attachment", "banner", "snackbar", "dialog", "sheet", "menu", "iconbutton", "longpress", "common")
+        // dialog, bottom sheet, menus, icon-only button with tooltip, long-press; (T14) the markers a row has in the list, and (T15) the swipe card and pill.
+        val required = setOf("buttons", "fab", "send", "chips", "fields", "toggles", "row", "swipe", "listmarkers", "attachment", "banner", "snackbar", "dialog", "sheet", "menu", "iconbutton", "longpress", "common")
         assertEquals(required, ids)
     }
 

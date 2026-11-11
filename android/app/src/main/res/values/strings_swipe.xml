@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- T15: swipe actions, row actions, long-press menus, S47 and S48. The sample message is made up. -->
+    <string name="mail_action_spam">Mark as spam</string>
+    <string name="mail_action_reply">Reply</string>
+    <string name="swipe_action_snooze">Snooze</string>
+    <string name="swipe_action_move_to">Move to</string>
+    <string name="swipe_action_none">None</string>
+    <string name="swipe_name_read">Mark read or unread</string>
+    <string name="swipe_name_star">Star</string>
+    <string name="swipe_not_available">Not available here</string>
+    <string name="mail_snack_reply_later">Reply comes with the compose screen, which is next.</string>
+    <plurals name="mail_snack_spam">
+        <item quantity="one">%d conversation marked as spam</item>
+        <item quantity="other">%d conversations marked as spam</item>
+    </plurals>
+    <string name="mail_snack_no_spam">Couldn\'t mark as spam. This account has no Spam folder.</string>
+
+    <!-- Long-press menu of a mailbox in the drawer -->
+    <string name="mail_menu_mark_all_read">Mark all as read</string>
+    <string name="mail_menu_sync_now">Sync now</string>
+    <string name="mail_menu_mailbox_settings">Mailbox settings</string>
+    <plurals name="mail_snack_marked_read">
+        <item quantity="one">%d conversation marked as read</item>
+        <item quantity="other">%d conversations marked as read</item>
+    </plurals>
+    <plurals name="mail_menu_unread_count">
+        <item quantity="one">%d unread</item>
+        <item quantity="other">%d unread</item>
+    </plurals>
+    <string name="mail_snack_nothing_unread">Nothing to mark as read.</string>
+    <string name="mail_snack_synced">Syncing now.</string>
+
+    <!-- S47 Swipe actions, S48 Choose swipe action -->
+    <string name="settings_swipe_actions">Swipe actions</string>
+    <string name="settings_swipe_actions_hint">What a swipe on a message does</string>
+    <string name="swipe_title">Swipe actions</string>
+    <string name="swipe_preview_label">Preview</string>
+    <string name="swipe_preview_hint">Plays on a loop. Try your own swipe on the row.</string>
+    <string name="swipe_preview_sender">Sam Rivera</string>
+    <string name="swipe_preview_subject">Lunch on Friday?</string>
+    <string name="swipe_preview_snippet">Are you free around noon? I booked the place by the harbour.</string>
+    <string name="swipe_preview_time">9:12</string>
+    <string name="swipe_right">Swipe right</string>
+    <string name="swipe_left">Swipe left</string>
+    <string name="swipe_sensitivity">Sensitivity</string>
+    <string name="swipe_sensitivity_low">Low</string>
+    <string name="swipe_sensitivity_normal">Normal</string>
+    <string name="swipe_sensitivity_high">High</string>
+    <string name="swipe_forever_title">Delete forever asks first</string>
+    <string name="swipe_forever_hint">This one cannot be turned off</string>
+    <string name="swipe_presets">Presets</string>
+    <string name="swipe_preset_triage">Triage</string>
+    <string name="swipe_preset_gmail">Gmail style</string>
+    <string name="swipe_preset_tidy">Tidy</string>
+    <string name="swipe_reset">Reset</string>
+    <string name="swipe_choose_hint">The pill and icon use the colour shown here while you swipe. Delete in Trash and Spam deletes forever and asks first.</string>
+    <string name="swipe_chosen_state">Chosen</string>
+</resources>

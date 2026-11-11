@@ -15,7 +15,17 @@ import androidx.compose.ui.test.junit4.ComposeContentTestRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.Dp
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.unit.dp
 import com.example.croft.haptics.RecordingHaptics
+import com.example.croft.mail.FolderId
+import com.example.croft.mail.MessageRowData
+import com.example.croft.mail.OpId
+import com.example.croft.mail.RepositoryRowActions
+import com.example.croft.mail.RowActions
+import com.example.croft.swipe.SwipeSettings
+import com.example.croft.ui.swipe.LocalBackGestureInset
+import com.example.croft.ui.swipe.LocalSwipeSettings
 import com.example.croft.mail.AnchorStore
 import com.example.croft.mail.FakeData
 import com.example.croft.mail.FakeMessageRepository
@@ -41,7 +51,10 @@ class InboxFixture(
 ) {
     var clockMs = NOW
     val repo = FakeMessageRepository(data, { clockMs }, FakeData.accounts(NOW))
-    val session = MailSession(repo, anchors, { clockMs }, ZoneId.of("UTC"))
+
+    /** Every call a swipe, a menu or a custom action makes on the rows goes through here, in order. */
+    val actions = RecordingRowActions(RepositoryRowActions(repo))
+    val session = MailSession(repo, anchors, { clockMs }, ZoneId.of("UTC"), actions)
     val haptics = RecordingHaptics()
 
     /** The ids of the unified Inbox, newest first, as the repository holds them now. */
@@ -51,15 +64,43 @@ class InboxFixture(
     val topId: Long get() = inboxIds().first()
 }
 
-/** Show the Inbox of [f] under the app theme at [level]; every haptic goes to the fixture's recorder. */
+/**
+ * Show the Inbox of [f] under the app theme at [level]; every haptic goes to the fixture's recorder. [swipe] is read in the
+ * composition (it may read a state, so a test can change the settings while the screen is up); a test window has no system gesture
+ * strips, so a 24 dp strip is put at each edge.
+ */
 fun ComposeContentTestRule.showInbox(
     f: InboxFixture,
     level: AnimationLevel = AnimationLevel.FULL,
     onSettings: () -> Unit = {},
     startDrawerOpen: Boolean = false,
     startSwitcherOpen: Boolean = false,
+    startScope: MessageScope = MessageScope.UnifiedInbox,
+    swipe: () -> SwipeSettings = { SwipeSettings.Default },
+    onOpenMessage: (Long) -> Unit = {},
 ) {
-    show(level, f.haptics) { InboxScreen(f.session, onOpenSettings = onSettings, startDrawerOpen = startDrawerOpen, startSwitcherOpen = startSwitcherOpen) }
+    show(level, f.haptics) {
+        CompositionLocalProvider(LocalSwipeSettings provides swipe(), LocalBackGestureInset provides 24.dp) {
+            InboxScreen(f.session, onOpenSettings = onSettings, startScope = startScope, startDrawerOpen = startDrawerOpen, startSwitcherOpen = startSwitcherOpen, onOpenMessage = onOpenMessage)
+        }
+    }
+}
+
+/** A [RowActions] that remembers what it was asked, in order, and does it through [inner]. */
+class RecordingRowActions(private val inner: RowActions) : RowActions {
+    private val log = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    /** "archive 7", "trash 7", "markSeen 7 true", ... in call order. */
+    val calls: List<String> get() = log.toList()
+
+    override suspend fun markSeen(row: MessageRowData, seen: Boolean) { log += "markSeen ${row.id} $seen"; inner.markSeen(row, seen) }
+    override suspend fun setFlagged(row: MessageRowData, flagged: Boolean) { log += "setFlagged ${row.id} $flagged"; inner.setFlagged(row, flagged) }
+    override suspend fun archive(row: MessageRowData): List<OpId> { log += "archive ${row.id}"; return inner.archive(row) }
+    override suspend fun trash(row: MessageRowData): List<OpId> { log += "trash ${row.id}"; return inner.trash(row) }
+    override suspend fun markSpam(row: MessageRowData): List<OpId> { log += "markSpam ${row.id}"; return inner.markSpam(row) }
+    override suspend fun deleteForever(row: MessageRowData): List<OpId> { log += "deleteForever ${row.id}"; return inner.deleteForever(row) }
+    override suspend fun moveTo(row: MessageRowData, folder: FolderId): List<OpId> { log += "moveTo ${row.id} $folder"; return inner.moveTo(row, folder) }
+    override suspend fun undo(ops: List<OpId>) { log += "undo ${ops.size}"; inner.undo(ops) }
 }
 
 /** Wait until the row of message [id] is on screen. */

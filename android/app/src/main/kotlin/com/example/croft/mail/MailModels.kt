@@ -159,7 +159,7 @@ data class ChangeBatch(
 )
 
 /** Typed refusals of an action (fieldless, like the core's errors). */
-enum class MailError { NO_ARCHIVE_FOLDER, NO_TRASH_FOLDER, NOT_FOUND }
+enum class MailError { NO_ARCHIVE_FOLDER, NO_TRASH_FOLDER, NO_SPAM_FOLDER, NOT_FOUND }
 
 /** An action the repository refused. */
 class MailException(val error: MailError) : Exception(error.name)

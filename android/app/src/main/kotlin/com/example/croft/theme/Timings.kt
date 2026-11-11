@@ -49,3 +49,18 @@ fun shimmerSpec(): InfiniteRepeatableSpec<Float> =
 
 /** A linear fade of [ms], for the waits above (a tint that fades over 1.2 s). Durations are only ever typed in this package. */
 fun <T> linearFadeSpec(ms: Long): FiniteAnimationSpec<T> = TweenSpec(ms.toInt(), easing = LinearEasing)
+
+/**
+ * Swipe values that `tokens.json` does not hold yet (docs/ux/swipe.md). Owner to do: add them to `tokens.json` (`swipe`) and
+ * regenerate, then read them from `CroftTokens`.
+ */
+object SwipeLooks {
+    /** The card's corners ease from the row's own to the card radius over this much drag. */
+    const val CARD_EASE_IN_DP = 16
+
+    /** The pill's icon, centred in it, drawn once the pill is wide enough to hold it. */
+    const val ICON_DP = 24
+
+    /** The S47 preview waits this long between the stages of its looped demonstration. */
+    const val PREVIEW_PAUSE_MS = 900L
+}

@@ -21,6 +21,8 @@ class MailSession(
     val anchors: AnchorStore = InMemoryAnchorStore(),
     val clock: () -> Long = System::currentTimeMillis,
     val zone: ZoneId = ZoneId.systemDefault(),
+    /** What a swipe, a menu item or a TalkBack action does to a row: over the repository until T16 supplies the core's own. */
+    val rowActions: RowActions = RepositoryRowActions(repository),
 ) {
     private val cache = HashMap<String, CachedList>()
 

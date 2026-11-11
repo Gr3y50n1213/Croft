@@ -42,6 +42,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -67,6 +68,8 @@ import com.example.croft.mail.MailSession
 import com.example.croft.mail.MessageId
 import com.example.croft.mail.MessageRowData
 import com.example.croft.mail.MessageScope
+import com.example.croft.swipe.SwipeAction
+import com.example.croft.swipe.SwipeDirection
 import com.example.croft.theme.ListStyle
 import com.example.croft.theme.LocalMotionLevel
 import com.example.croft.theme.LocalThemeSettings
@@ -81,6 +84,11 @@ import com.example.croft.ui.components.FabState
 import com.example.croft.ui.components.MessageRow
 import com.example.croft.ui.components.MessageRowState
 import com.example.croft.ui.components.RowAction
+import com.example.croft.ui.swipe.LocalSwipeSettings
+import com.example.croft.ui.swipe.SwipeCallbacks
+import com.example.croft.ui.swipe.SwipeRowHost
+import com.example.croft.ui.swipe.swipeIcon
+import com.example.croft.ui.swipe.swipeLabel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
@@ -111,6 +119,7 @@ fun InboxScreen(
 ) {
     val controller = rememberInboxController(session, startScope)
     controller.haptics = LocalHaptics.current
+    controller.swipeSettings = LocalSwipeSettings.current
     controller.density = LocalDensity.current.density
     LaunchedEffect(controller) { controller.run() }
 
@@ -136,6 +145,13 @@ fun InboxScreen(
                 openScope(target)
             },
             onSettings = { closeDrawer(); onOpenSettings() },
+            // The answer (with its Undo) is a snackbar on the list: the drawer closes so that its scrim does not cover the button.
+            onMarkAllRead = { f ->
+                closeDrawer()
+                controller.markMailboxRead(f, unified = f.role == FolderRole.INBOX && controller.messageScope == MessageScope.UnifiedInbox)
+            },
+            onSyncNow = { f -> closeDrawer(); controller.syncMailbox(f) },
+            onMailboxSettings = { closeDrawer(); controller.snackbar.show(laterMessage) },
         )
     }
 
@@ -367,12 +383,13 @@ private fun InboxBody(
                                         role = role, outgoing = outgoing, selecting = selecting,
                                         focusRequester = focusRequesters.getOrPut(item.row.id) { FocusRequester() },
                                         onOpen = onOpenMessage,
+                                        listScrolling = { listState.isScrollInProgress },
                                     )
                                 }
                             }
                         }
                     }
-                    FastScroller(listState, items, labelOf = { it.label(res, nowMs, session.zone, locale) }, haptics = haptics, modifier = Modifier.align(Alignment.CenterEnd))
+                    FastScroller(listState, items, labelOf = { it.label(res, nowMs, session.zone, locale) }, haptics = haptics, modifier = Modifier.align(Alignment.CenterEnd), onDraggingChange = { controller.fastScrolling = it })
                 }
             }
             NewMailPill(
@@ -404,6 +421,16 @@ private fun InboxBody(
         }
     }
 
+    controller.parkedRow?.let {
+        // A swiped Delete forever: the card waits at 40 percent while this is open; Cancel springs it back.
+        DestructiveDialog(
+            title = pluralStringResource(R.plurals.mail_confirm_title_delete_forever, 1, 1),
+            message = stringResource(R.string.mail_confirm_message_forever),
+            confirmLabel = stringResource(R.string.mail_action_delete_forever),
+            onConfirm = { controller.resolveParked(true) },
+            onDismiss = { controller.resolveParked(false) },
+        )
+    }
     controller.pendingConfirm?.let { pending ->
         val titleRes = when (pending.action) {
             SelectionAction.ARCHIVE -> R.plurals.mail_confirm_title_archive
@@ -431,7 +458,11 @@ private fun statusWord(chip: com.example.croft.ui.components.AccountStatus): Int
     else -> R.string.status_syncing
 }
 
-/** One row of the list, with its divider: the shared [MessageRow] fed from the message data. */
+/**
+ * One row of the list: the shared [MessageRow] fed from the message data, inside the swipe host (the card, the pill, the gesture and
+ * the commit sequence) with its divider. The row's custom actions for screen readers and switch users are the configured swipe actions
+ * (so they follow S47), then Select, Star and Reply: nobody needs a swipe, a long-press or a menu.
+ */
 @Composable
 private fun LazyItemScope.RowItem(
     row: MessageRowData,
@@ -444,6 +475,7 @@ private fun LazyItemScope.RowItem(
     selecting: Boolean,
     focusRequester: FocusRequester,
     onOpen: (MessageId) -> Unit,
+    listScrolling: () -> Boolean,
 ) {
     val res = LocalContext.current.resources
     val shown = RowTimes.shown(row.dateMs, nowMs, zone, locale)
@@ -458,44 +490,56 @@ private fun LazyItemScope.RowItem(
         hasAttachment = row.hasAttachments,
         threadCount = row.threadCount,
     )
-    // The extra actions for screen readers: what the toolbar would offer for this row (T15 adds the configured swipe actions).
-    val toolbar = SelectionRules.toolbar(listOf(row), role, archiveAvailable = controller.folders.any { it.account == row.account && it.role == FolderRole.ARCHIVE })
-    val extra = toolbar.primary.map { a -> RowAction(rowActionLabel(res, a, role)) { if (a == SelectionAction.MARK_READ || a == SelectionAction.MARK_UNREAD) controller.toggleRead(row) else controller.actOn(row, a) } }
-    Column(listItemMotion()) {
-        MessageRow(
-            sender = if (outgoing) row.recipients ?: row.displayName else row.displayName,
-            subject = row.subject,
-            preview = row.snippet,
-            time = shown,
-            state = state,
-            onClick = { if (selecting) controller.toggle(row.id) else onOpen(row.id) },
-            modifier = Modifier.testTag(InboxTags.row(row.id)),
-            onLongClick = { controller.longPress(row.id) },
-            onAvatarClick = { controller.toggle(row.id) },
-            onToggleStar = { controller.toggleStar(row) },
-            timeDescription = spoken,
-            outgoing = outgoing,
-            swipeEnabled = !selecting,
-            extraActions = extra,
-            focusRequester = focusRequester,
+    val settings = controller.swipeSettings
+    // The custom actions: every configured swipe action this row can do (Star is the row's own action already), then Reply.
+    val configured = listOf(SwipeDirection.START_TO_END, SwipeDirection.END_TO_START)
+        .map { settings.actionOf(it) }
+        .filter { it != SwipeAction.NONE && it != SwipeAction.TOGGLE_STAR }
+        .distinct()
+        .filter { controller.canDo(row, it) }
+    val extra = configured.map { a -> RowAction(swipeLabel(res, a, row, role)) { controller.act(row, a) } } +
+        RowAction(res.getString(R.string.mail_action_reply)) { controller.reply(row) }
+    val rowNow by rememberUpdatedState(row)
+    val callbacks = remember(controller) {
+        SwipeCallbacks(
+            onKeep = { a -> controller.keepAction(rowNow, a) },
+            onRemoved = { a, onFailed -> controller.removeAction(rowNow, a, onFailed) },
+            onPark = { a -> controller.swipeParked(rowNow, a) },
+            onNotAvailable = { controller.swipeNotAvailable() },
         )
-        HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+    }
+    Column(listItemMotion()) {
+        SwipeRowHost(
+            settings = settings,
+            enabled = !selecting && !controller.refreshing && !controller.fastScrolling,
+            alive = controller.isPresent(row.id),
+            slotOf = { d -> controller.slotOf(row, d) },
+            iconOf = { a -> swipeIcon(a, row) },
+            listScrolling = listScrolling,
+            callbacks = callbacks,
+            parkResolution = controller.parkResolution?.takeIf { it.first == row.id }?.second,
+            onParkResolutionHandled = { controller.parkHandled(row.id) },
+            trailing = { HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant) },
+        ) { card ->
+            MessageRow(
+                sender = if (outgoing) row.recipients ?: row.displayName else row.displayName,
+                subject = row.subject,
+                preview = row.snippet,
+                time = shown,
+                state = state,
+                onClick = { if (selecting) controller.toggle(row.id) else onOpen(row.id) },
+                modifier = Modifier.testTag(InboxTags.row(row.id)),
+                onLongClick = { controller.longPress(row.id) },
+                onAvatarClick = { controller.toggle(row.id) },
+                onToggleStar = { controller.toggleStar(row) },
+                card = card,
+                timeDescription = spoken,
+                outgoing = outgoing,
+                swipeEnabled = !selecting,
+                extraActions = extra,
+                focusRequester = focusRequester,
+            )
+        }
     }
 }
 
-private fun rowActionLabel(res: android.content.res.Resources, action: SelectionAction, role: FolderRole): String = res.getString(
-    when (action) {
-        SelectionAction.ARCHIVE -> R.string.mail_action_archive
-        SelectionAction.DELETE -> R.string.mail_action_delete
-        SelectionAction.DELETE_FOREVER -> R.string.mail_action_delete_forever
-        SelectionAction.MARK_READ -> R.string.mail_action_mark_read
-        SelectionAction.MARK_UNREAD -> R.string.mail_action_mark_unread
-        SelectionAction.STAR -> R.string.mail_action_star
-        SelectionAction.UNSTAR -> R.string.mail_action_unstar
-        SelectionAction.RESTORE -> when (role) {
-            FolderRole.SPAM -> R.string.mail_action_not_spam
-            FolderRole.TRASH -> R.string.mail_action_restore
-            else -> R.string.mail_action_move_to_inbox
-        }
-    },
-)

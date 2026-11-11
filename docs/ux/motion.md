@@ -95,3 +95,14 @@ Animations hold 60 fps on a mid-range phone and use the display's full rate wher
 | Skeleton rows | First load of a folder | Opacity pulses, one loop 1.2 s (as built; the catalogue's "shimmer") | Linear, `CroftTimings.SKELETON_SHIMMER_MS` | Static placeholders at Reduced and Off |
 | Account switcher card (S13) | Avatar tap | The card scales from 90 percent and fades in; the scrim fades | Spatial default, effects default | Fade; Off: at once |
 | Fast scroller thumb | The list scrolls | The thumb fades in, stays 1.5 s after the list stops, fades out | Effects default, `CroftTimings.FAST_SCROLLER_LINGER_MS` | Same; Off: at once |
+
+### Added in T15
+| Animation | Trigger | What moves | Token | Reduced-motion substitute |
+|---|---|---|---|---|
+| Swipe icon at the arm point | A drag crosses the threshold | The icon grows to 1.2 and the pill goes from its tonal to its full colour (colour: effects default) | Spatial fast (scale), effects default (colour) | No growth; the pill changes colour and a soft disc appears behind the icon; the haptic still plays |
+| Swipe commit as built | Release armed or flung on a removing action | The card slides off and the pill widens to the row width (spatial fast), and from the half-way point the slot collapses (spatial default) | Spatial fast, then spatial default | The card does not move; the row fades (effects default, about 100 ms), then the slot closes with a fade-and-close; Off: at once |
+| Swipe commit, read and star | Release armed or flung on Mark read or Star | The action runs now and the card springs back, the pill shrinking into the edge; it can be swiped again at once | Spatial fast | Same spring from the standard set (no overshoot); Off: at once |
+| Swipe cancel and park as built | Release short of the arm point; or an armed Delete forever | Short: the card springs back with the release velocity. Parked: it slides to 40 percent and holds while the dialog is open, then leaves or returns | Spatial fast (cancel), spatial default (park) | No bounce (the standard set); Off: at once |
+| Undo highlight | Undo returns a row | The row returns with the list's own motion and the new-row tint | Spatial default (placement), effects default (fade), `CroftTimings.NEW_ROW_TINT_MS` | Fade in; the tint is kept at Reduced and dropped at Off |
+| Long-press lift on a drawer entry | Press held past the long-press time | 1 dp lift and 102 percent, then the menu opens (effects default, scale from 90 percent) | Spatial fast, effects default | Highlight only; the menu fades |
+| S47 preview loop | The screen is open | Each direction in turn: the card drags past the arm point, holds, is released and the commit plays, then the row returns; silent; a finger ends it | Spatial default (drag), as the commit rows above | Same with the standard springs; Off: not played (the row can still be swiped by hand) |

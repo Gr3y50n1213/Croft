@@ -25,6 +25,6 @@ class MainActivity : ComponentActivity() {
         val info = runCatching { loadRustInfo() }.getOrNull()
         val store = ThemeStore.shared(applicationContext)
         val session = MailSession.shared(applicationContext)
-        setContent { CroftApp(store, info, session) }
+        setContent { CroftApp(store, info, session, swipeStore = com.example.croft.ui.swipe.SwipeSettingsStore.shared(applicationContext)) }
     }
 }

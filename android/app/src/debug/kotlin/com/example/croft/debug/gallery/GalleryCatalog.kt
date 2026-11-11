@@ -58,6 +58,9 @@ import com.example.croft.ui.components.FieldValidation
 import com.example.croft.ui.components.ForcedState
 import com.example.croft.ui.components.MenuItemSpec
 import com.example.croft.ui.components.MessageRow
+import com.example.croft.swipe.SwipeAction
+import com.example.croft.ui.components.SwipeCardLook
+import com.example.croft.ui.swipe.SwipeRowFrozen
 import com.example.croft.ui.components.MessageRowState
 import com.example.croft.ui.components.RecipientChip
 import com.example.croft.ui.components.RecipientChipState
@@ -94,7 +97,7 @@ private val sampleRow = MessageRowState()
 /** The whole catalogue: every control of docs/ux/controls.md in every state it has. */
 object GalleryCatalog {
     val sections: List<GallerySection> by lazy {
-        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), listMarkers(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress())
+        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), swipes(), listMarkers(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress())
     }
 
     fun entry(id: String): GalleryEntry? = sections.firstNotNullOfOrNull { s -> s.entries.firstOrNull { it.id == id } }
@@ -319,12 +322,16 @@ object GalleryCatalog {
     private fun rows(): GallerySection {
         fun r(name: String, row: String, state: MessageRowState, source: ForcedState = ForcedState.NONE, drag: Boolean = false, hold: Long? = null, lifted: Boolean = false) =
             GalleryEntry(id("row", name), row, listOf(row)) {
-                MessageRow(
-                    "Sam Rivera", "Lunch on Friday?", "Are you free around noon? I booked the place by the harbour.", "9:12", state, NoOp,
-                    onLongClick = NoOp, onAvatarClick = NoOp, onToggleStar = NoOp,
-                    dragOffset = if (drag) 120.dp else 0.dp, failedEdgeHoldMs = hold, forceLifted = lifted,
-                    interactionSource = rememberForcedInteractionSource(source),
-                )
+                val interaction = rememberForcedInteractionSource(source)
+                val content: @Composable (SwipeCardLook?) -> Unit = { card ->
+                    MessageRow(
+                        "Sam Rivera", "Lunch on Friday?", "Are you free around noon? I booked the place by the harbour.", "9:12", state, NoOp,
+                        onLongClick = NoOp, onAvatarClick = NoOp, onToggleStar = NoOp,
+                        card = card, failedEdgeHoldMs = hold, forceLifted = lifted,
+                        interactionSource = interaction,
+                    )
+                }
+                if (drag) SwipeRowFrozen(offsetDp = -120f, action = SwipeAction.DELETE, armed = false) { card -> content(card) } else content(null)
             }
         return GallerySection(
             "row", "Message row",
@@ -342,6 +349,36 @@ object GalleryCatalog {
                 r("pending", "Action pending offline", MessageRowState(pendingOffline = true)),
                 r("failed", "Action failed", MessageRowState(failed = true), hold = null),
                 r("lifted", "Long-pressed", MessageRowState(), lifted = true),
+            ),
+        )
+    }
+
+    // ---- Swipe (T15): the card and the pill in every state ----
+    private fun swipes(): GallerySection {
+        fun s(name: String, label: String, action: SwipeAction, offsetDp: Float, armed: Boolean, available: Boolean = true, state: MessageRowState = MessageRowState(unread = true)) =
+            GalleryEntry(id("swipe", name), label, emptyList()) {
+                SwipeRowFrozen(offsetDp = offsetDp, action = action, armed = armed, available = available) { card ->
+                    MessageRow(
+                        "Sam Rivera", "Lunch on Friday?", "Are you free around noon? I booked the place by the harbour.", "9:12", state, NoOp,
+                        card = card, timeDescription = "2 hours ago",
+                    )
+                }
+            }
+        return GallerySection(
+            "swipe", "Swipe: the card and the pill",
+            listOf(
+                s("read_dragging", "Mark read, below the arm point (tonal pill)", SwipeAction.TOGGLE_READ, 110f, armed = false),
+                s("read_armed", "Mark read, armed (full colour, icon grown)", SwipeAction.TOGGLE_READ, 170f, armed = true),
+                s("delete_dragging", "Delete, below the arm point", SwipeAction.DELETE, -110f, armed = false),
+                s("delete_armed", "Delete, armed", SwipeAction.DELETE, -190f, armed = true),
+                s("delete_committing", "Delete, committing (pill nearly row wide, card leaving)", SwipeAction.DELETE, -270f, armed = true),
+                s("archive_armed", "Archive, armed", SwipeAction.ARCHIVE, 170f, armed = true),
+                s("spam_armed", "Mark as spam, armed", SwipeAction.SPAM, -190f, armed = true),
+                s("star_armed", "Star, armed", SwipeAction.TOGGLE_STAR, 170f, armed = true),
+                s("snooze_parked", "Snooze, parked at 40 percent", SwipeAction.SNOOZE, 140f, armed = true),
+                s("move_parked", "Move to, parked at 40 percent", SwipeAction.MOVE_TO, 140f, armed = true),
+                s("unavailable", "Not available here (grey, never arms)", SwipeAction.ARCHIVE, -190f, armed = false, available = false),
+                s("narrow", "Just started: a round capsule, no icon yet", SwipeAction.DELETE, -30f, armed = false),
             ),
         )
     }

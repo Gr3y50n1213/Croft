@@ -1,0 +1,121 @@
+{
+ "methodResponses": [
+  [
+   "Mailbox/get",
+   {
+    "accountId": "c",
+    "state": "sam",
+    "list": [
+     {
+      "id": "d",
+      "name": "Drafts",
+      "role": "drafts",
+      "parentId": null,
+      "totalEmails": 0,
+      "unreadEmails": 0,
+      "myRights": {
+       "mayReadItems": true,
+       "mayAddItems": true,
+       "mayRemoveItems": true,
+       "maySetSeen": true,
+       "maySetKeywords": true,
+       "mayCreateChild": true,
+       "mayRename": true,
+       "maySubmit": true,
+       "mayDelete": true,
+       "mayShare": true,
+       "maySetMetadata": true
+      }
+     },
+     {
+      "id": "c",
+      "name": "Junk Mail",
+      "role": "junk",
+      "parentId": null,
+      "totalEmails": 0,
+      "unreadEmails": 0,
+      "myRights": {
+       "mayReadItems": true,
+       "mayAddItems": true,
+       "mayRemoveItems": true,
+       "maySetSeen": true,
+       "maySetKeywords": true,
+       "mayCreateChild": true,
+       "mayRename": true,
+       "maySubmit": true,
+       "mayDelete": true,
+       "mayShare": true,
+       "maySetMetadata": true
+      }
+     },
+     {
+      "id": "e",
+      "name": "Sent Items",
+      "role": "sent",
+      "parentId": null,
+      "totalEmails": 0,
+      "unreadEmails": 0,
+      "myRights": {
+       "mayReadItems": true,
+       "mayAddItems": true,
+       "mayRemoveItems": true,
+       "maySetSeen": true,
+       "maySetKeywords": true,
+       "mayCreateChild": true,
+       "mayRename": true,
+       "maySubmit": true,
+       "mayDelete": true,
+       "mayShare": true,
+       "maySetMetadata": true
+      }
+     },
+     {
+      "id": "b",
+      "name": "Deleted Items",
+      "role": "trash",
+      "parentId": null,
+      "totalEmails": 0,
+      "unreadEmails": 0,
+      "myRights": {
+       "mayReadItems": true,
+       "mayAddItems": true,
+       "mayRemoveItems": true,
+       "maySetSeen": true,
+       "maySetKeywords": true,
+       "mayCreateChild": true,
+       "mayRename": true,
+       "maySubmit": true,
+       "mayDelete": true,
+       "mayShare": true,
+       "maySetMetadata": true
+      }
+     },
+     {
+      "id": "a",
+      "name": "Inbox",
+      "role": "inbox",
+      "parentId": null,
+      "totalEmails": 1,
+      "unreadEmails": 0,
+      "myRights": {
+       "mayReadItems": true,
+       "mayAddItems": true,
+       "mayRemoveItems": true,
+       "maySetSeen": true,
+       "maySetKeywords": true,
+       "mayCreateChild": true,
+       "mayRename": true,
+       "maySubmit": true,
+       "mayDelete": true,
+       "mayShare": true,
+       "maySetMetadata": true
+      }
+     }
+    ],
+    "notFound": []
+   },
+   "a"
+  ]
+ ],
+ "sessionState": "e6c54f87"
+}

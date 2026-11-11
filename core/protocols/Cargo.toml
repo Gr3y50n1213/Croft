@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-# Tests that need the container mail servers in test-servers/ (GreenMail and Dovecot).
+# Tests that need the container mail servers in test-servers/ (GreenMail, Dovecot and Stalwart).
 # Start them with: docker compose -f test-servers/docker-compose.yml up -d
 integration = []
 # Recording stand-ins for the network (`discovery::testing`), for tests of discovery. Off in
@@ -30,6 +30,9 @@ idna = "1.1.0"
 log = { version = "0.4.29", features = ["max_level_debug"] }
 quick-xml = "0.42.0"
 rustls-native-certs = "0.8.5"
+# JSON for the JMAP adapter (requests are built with `json!`, answers are read into small structs).
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 sha2 = "0.11.1"
 tokio = { version = "1.54", features = ["net", "time", "sync", "io-util", "rt"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }

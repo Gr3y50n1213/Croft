@@ -476,6 +476,8 @@ dependencies = [
  "quick-xml",
  "rcgen",
  "rustls-native-certs",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tokio",

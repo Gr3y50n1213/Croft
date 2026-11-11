@@ -20,7 +20,7 @@ Things only the owner can decide or do. Newest first within each section.
 
 ## Placeholders from T17c
 - **Privacy policy address.** S60 and S01 open `https://example.org/croft/privacy` (`AboutLinks.PRIVACY_POLICY_URL` in `android/app/src/main/kotlin/com/example/croft/ui/accounts/Links.kt`). It is a placeholder: host the policy (`docs/store/PRIVACY-POLICY.draft.md`) at a stable public address and change that one constant before the first store upload.
-- **Source link.** S60 opens the project's GitHub repository (`AboutLinks.SOURCE_URL`, same file). It names the repository's owner account in the address; if the public repository will live elsewhere, change that constant.
+- **Source link.** S60's "Source code" opens `https://example.org/croft/source` (`AboutLinks.SOURCE_URL`, same file). It is a placeholder: set the real address. It may be the GitHub repository page if you accept that the account name in that address appears in the app (and so in every build); otherwise use an address of your own domain.
 - **Licence texts.** S60's licence screen lists each library with its licence name; it does not bundle the full licence texts. Check with the licence review whether the stores' and the licences' notice rules need them in the app.
 
 ## Left out of S45 for T18 and later

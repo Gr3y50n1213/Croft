@@ -22,8 +22,11 @@ object AboutLinks {
      */
     const val PRIVACY_POLICY_URL = "https://example.org/croft/privacy"
 
-    /** The project's source code. */
-    const val SOURCE_URL = "https://github.com/Gr3y50n1213/Croft"
+    /**
+     * **PLACEHOLDER, not a real address yet.** Where S60's "Source code" opens. The owner sets the real address (docs/OPEN-ITEMS.md): it may be
+     * the project's repository page if the owner accepts the account name in that address appearing in the app.
+     */
+    const val SOURCE_URL = "https://example.org/croft/source"
 }
 
 /**

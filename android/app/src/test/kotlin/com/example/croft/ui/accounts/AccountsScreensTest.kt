@@ -326,7 +326,7 @@ class AccountsScreensTest {
         tag(AccountsTags.SOURCE).performScrollTo().performClick()
         val source = shadowOf(rule.activity).nextStartedActivity
         assertEquals(Intent.ACTION_VIEW, source.action)
-        assertEquals("https://github.com/Gr3y50n1213/Croft", source.data.toString())
+        assertEquals(AboutLinks.SOURCE_URL, source.data.toString())
     }
 
     @Test

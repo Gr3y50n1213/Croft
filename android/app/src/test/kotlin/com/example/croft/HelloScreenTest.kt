@@ -11,11 +11,10 @@ import androidx.compose.ui.test.onNodeWithText
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /** The screen on a simulated device (Robolectric): no emulator needed. */
-@RunWith(RobolectricTestRunner::class)
+@RunWith(CroftRobolectricRunner::class)
 @Config(sdk = [35])
 class HelloScreenTest {
     @get:Rule
@@ -37,7 +36,7 @@ class HelloScreenTest {
 }
 
 /** The real activity, calling the real Rust library (host build) through the generated bindings. */
-@RunWith(RobolectricTestRunner::class)
+@RunWith(CroftRobolectricRunner::class)
 @Config(sdk = [35])
 class MainActivityTest {
     @get:Rule

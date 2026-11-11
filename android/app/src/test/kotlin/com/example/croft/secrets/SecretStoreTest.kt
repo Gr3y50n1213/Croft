@@ -200,4 +200,73 @@ class SecretStoreTest {
         syncDirectory(File(dir, "no-such-directory"))
         syncDirectory(dir)
     }
+
+    /** A box whose open waits for the test, like a Keystore back-off. */
+    private class BlockingBox(private val inner: SecretBox) : SecretBox {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+
+        @Volatile
+        var block = false
+
+        override fun seal(plain: ByteArray, context: ByteArray): ByteArray {
+            if (block) {
+                entered.countDown()
+                release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            return inner.seal(plain, context)
+        }
+
+        override fun open(blob: ByteArray, context: ByteArray): ByteArray {
+            if (block) {
+                entered.countDown()
+                release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            }
+            return inner.open(blob, context)
+        }
+    }
+
+    @Test
+    fun aWaitInsideTheBoxDoesNotHoldTheStoresMonitor() {
+        val box = BlockingBox(AesGcmSecretBox(keys))
+        val s = SecretStore(dir, box)
+        s.put(1, SecretKind.PASSWORD, bytes("one"))
+        s.put(2, SecretKind.PASSWORD, bytes("two"))
+        box.block = true
+        // One thread waits inside open (the Keystore's back-off); another reads, checks and writes meanwhile.
+        val reader = kotlin.concurrent.thread { s.get(1, SecretKind.PASSWORD) }
+        assertTrue(box.entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val others = kotlin.concurrent.thread {
+            assertTrue(s.has(2, SecretKind.PASSWORD))
+            s.remove(2, SecretKind.PASSWORD)
+            assertFalse(s.hasAny().not())
+        }
+        others.join(5_000)
+        val stuck = others.isAlive
+        box.release.countDown()
+        reader.join(10_000)
+        assertFalse("has/remove/hasAny waited for the box", stuck)
+        assertFalse(s.has(2, SecretKind.PASSWORD))
+    }
+
+    @Test
+    fun aDamagedEntryIsDeletedOnlyIfItIsStillTheOneThatWasRead() {
+        store.put(1, SecretKind.PASSWORD, bytes("one"))
+        val f = java.io.File(dir, "acct-1.password.v1")
+        f.writeBytes(f.readBytes().also { it[20] = (it[20].toInt() xor 1).toByte() })
+        assertNull(store.get(1, SecretKind.PASSWORD))
+        assertFalse(f.exists())
+    }
+
+    @Test
+    fun hasAnyThrowsWhenTheFolderCannotBeListed() {
+        val missing = SecretStore(dir, AesGcmSecretBox(keys))
+        dir.deleteRecursively()
+        try {
+            missing.hasAny()
+            fail("an unlistable folder must not read as 'no secrets'")
+        } catch (e: java.io.IOException) {
+            // right
+        }
+    }
 }

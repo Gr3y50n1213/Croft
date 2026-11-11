@@ -6,6 +6,7 @@ package com.example.croft.secrets
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.croft.CroftRobolectricRunner
 import java.io.File
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -17,7 +18,6 @@ import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
@@ -27,7 +27,7 @@ import org.robolectric.annotation.Config
  * keystore can make the key (otherwise that test is skipped, not failed). What the hardware
  * does (StrongBox, TEE, reboots) can only be checked on a phone.
  */
-@RunWith(RobolectricTestRunner::class)
+@RunWith(CroftRobolectricRunner::class)
 @Config(sdk = [35])
 class KeystoreWiringTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
@@ -67,6 +67,7 @@ class KeystoreWiringTest {
         val box = AesGcmSecretBox(source)
         val plain = Fixture.PASSWORD.toByteArray()
         val blob = try {
+            source.create() // sealing never makes a key
             box.seal(plain, "ctx".toByteArray())
         } catch (e: SecretBoxException) {
             assumeTrue("this Robolectric has no usable AndroidKeyStore: ${e.kind}", false)

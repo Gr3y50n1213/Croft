@@ -12,16 +12,23 @@ import javax.crypto.spec.GCMParameterSpec
  * Why a [SecretBox] could not seal or open something. The text is fixed on purpose: no message
  * here ever carries a secret, a context name or a cause's text.
  */
-class SecretBoxException(val kind: Kind) : Exception(kind.name) {
+class SecretBoxException(val kind: Kind, val weak: Boolean = false) : Exception(kind.name) {
     // No cause is chained on purpose: a provider's message can name key aliases or sizes.
+
+    // [weak] marks an answer that points at a lost key but is not proof: KEY_LOST on Android 8 to
+    // 11 (where the keystore service answers "empty" when it fails), or UNAVAILABLE because the
+    // key and the canary both look absent. The caller acts on it only after it has persisted
+    // across several app starts over at least an hour (see `LossConfirmation`); until then it is
+    // handled like UNAVAILABLE. A weak exception is never raised for the other two kinds.
 
     enum class Kind {
         /**
          * The wrapping key is definitely gone, on definite evidence only: the platform said the key
          * is permanently invalidated (or, on Android 13 and later, reported a key-specific error that
          * is not transient), or the alias was missing from the keystore's list on every one of
-         * several spaced checks while other keystore calls worked (see [KeystoreErrors] and
-         * [KeystoreKeySource]).
+         * several spaced checks while a second, independent "canary" key made with it was listed and
+         * usable (see [KeystoreErrors] and [KeystoreKeySource]). On Android 8 to 11 the last kind is
+         * [SecretBoxException.weak]: the platform's service reports failure as "nothing there".
          */
         KEY_LOST,
 
@@ -66,11 +73,19 @@ interface SecretBox {
 /** Where [AesGcmSecretBox] gets its AES-256 key: the Android Keystore in the app, memory in tests. */
 interface WrappingKeySource {
     /**
-     * The key to seal with. Creates it on first use, but only when it is definitely absent (never
-     * after a failure that may pass: a new key under the same name would destroy the old one).
-     * Throws [SecretBoxException] (UNAVAILABLE) when that cannot be decided or fails.
+     * The key to seal with. **Never creates a key**: a missing key is a loss to report (a new key
+     * under the same name would destroy the old one, and every secret sealed with it would read as
+     * corrupt). Throws [SecretBoxException] like [keyForOpening].
      */
     fun keyForSealing(): SecretKey
+
+    /**
+     * Makes the wrapping key (and whatever the source keeps to tell a lost key from an unreachable
+     * keystore), replacing an entry of the same name, and returns it. Only `AppSecrets` calls
+     * it: on the very first run (no wrapped file of any kind exists) and in the reset after a
+     * declared and quarantined key loss. Throws UNAVAILABLE when the key cannot be made.
+     */
+    fun create(): SecretKey
 
     /**
      * The key to open with. Throws [SecretBoxException] with KEY_LOST only on definite evidence
@@ -81,7 +96,7 @@ interface WrappingKeySource {
     /**
      * Deletes the key. A key loss does not call this (the entry is kept, in case the loss was a
      * wrong call and the quarantined data can be opened again); it is for a future "erase
-     * everything" and for the one case where the entry is itself the dead key (see `AppSecrets`).
+     * everything".
      */
     fun discard()
 }

@@ -11,6 +11,7 @@
 //! Nothing here writes a secret to SQLite, a log line or an error.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use croft_protocols::{
     BackendError, BackendFuture, Capabilities, Credential, FlagChange, FolderStatus, ImapBackend,
@@ -122,11 +123,20 @@ pub enum ProviderError {
     /// The app's code failed (it threw, or reported a failure). The core treats it like "no
     /// credential".
     Failed,
+    /// The app's secure storage is not ready right now (the platform keystore is busy or
+    /// restarting) and cannot say whether a credential exists. From `credential` this is a
+    /// transient failure of the connection attempt: the account is not paused, `sign_in_needed`
+    /// is not called, and the core asks again later with a growing delay. From `sign_in_needed`
+    /// it is ignored, like `Failed`.
+    NotReady,
 }
 
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the app's callback failed")
+        match self {
+            Self::Failed => f.write_str("the app's callback failed"),
+            Self::NotReady => f.write_str("the app's secure storage is not ready"),
+        }
     }
 }
 
@@ -141,7 +151,8 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for ProviderError {
 /// UI thread; keep the answers quick.
 ///
 /// A callback that throws is reported as [`ProviderError::Failed`] (see there); the core treats
-/// `credential` failing like having no credential.
+/// `credential` failing like having no credential. [`ProviderError::NotReady`] is the one answer
+/// that is not "no credential": it means "ask again later".
 #[uniffi::export(with_foreign)]
 pub trait CredentialProvider: Send + Sync {
     /// The credential for the account, or `None` when there is none (the account then starts in
@@ -159,14 +170,26 @@ pub trait CredentialProvider: Send + Sync {
     fn sign_in_needed(&self, account_id: i64) -> Result<(), ProviderError>;
 }
 
+/// What the provider answered when asked for a stored account's credential.
+pub(crate) enum Asked {
+    /// A credential.
+    Credential(Credential),
+    /// None: no secret stored, a failure on the app's side, or a credential that is not UTF-8.
+    NoCredential,
+    /// The app's secure storage is not ready: ask again later, and do not call it a sign-in problem.
+    NotReady,
+}
+
 /// Asks the provider. A failure on the app's side (or a credential that is not UTF-8) counts as
-/// "no credential".
-pub(crate) fn ask(provider: &dyn CredentialProvider, account: i64) -> Option<Credential> {
-    provider
-        .credential(account)
-        .ok()
-        .flatten()
-        .and_then(|c| c.to_credential())
+/// "no credential"; [`ProviderError::NotReady`] is kept apart.
+pub(crate) fn ask(provider: &dyn CredentialProvider, account: i64) -> Asked {
+    match provider.credential(account) {
+        Ok(Some(c)) => c
+            .to_credential()
+            .map_or(Asked::NoCredential, Asked::Credential),
+        Ok(None) | Err(ProviderError::Failed) => Asked::NoCredential,
+        Err(ProviderError::NotReady) => Asked::NotReady,
+    }
 }
 
 /// Tells the provider the account needs a sign-in. A failure on the app's side is ignored.
@@ -180,6 +203,10 @@ enum State {
     /// No credential: every call answers `Auth`, so the engine pauses the account and reports the
     /// sign-in.
     NeedsSignIn,
+    /// The app's secure storage was not ready when the credential was asked for. Every call
+    /// answers `Transient` (the engine retries) until `retry_at`, then the next call asks the
+    /// provider again. `failures` counts the answers that were `NotReady` in a row.
+    NotReady { retry_at: Instant, failures: u32 },
     /// Ready.
     Ready(Arc<ImapBackend>),
     /// The settings are unusable: every call answers `Permanent`.
@@ -193,22 +220,67 @@ pub(crate) enum Readiness {
     Ready,
     /// No credential.
     NeedsSignIn,
+    /// The app's secure storage was not ready: not a sign-in problem; asked again later.
+    NotReady,
     /// The settings are unusable.
     Broken,
 }
 
+/// The wait before asking the provider again after its `n`th `NotReady` in a row (`n >= 1`):
+/// `base`, doubled each time, at most [`MAX_NOT_READY_DELAY`].
+fn not_ready_delay(base: Duration, n: u32) -> Duration {
+    base.saturating_mul(1u32 << n.saturating_sub(1).min(8))
+        .min(MAX_NOT_READY_DELAY)
+}
+
+/// The longest wait between two asks while the app's secure storage is not ready.
+const MAX_NOT_READY_DELAY: Duration = Duration::from_secs(300);
+
+/// The first wait after a `NotReady` answer (short in this crate's own tests).
+const NOT_READY_BASE_DELAY: Duration = if cfg!(test) {
+    Duration::from_millis(20)
+} else {
+    Duration::from_secs(2)
+};
+
 /// One account's mail backend. The engine holds it for the life of the account; `set_credential`
 /// swaps the adapter inside when the person signs in again, so the engine's slot never changes.
+///
+/// When the app's secure storage answers `NotReady` the backend is not signed out: it answers
+/// `Transient` (so the engine keeps the account running and retries), and asks the provider again
+/// on a later call, after a delay that doubles each time (2 s up to 5 min). `NoCredential` from
+/// that later ask puts the account in the needs-sign-in state as usual.
 pub(crate) struct AccountBackend {
     config: ImapConfig,
+    provider: Arc<dyn CredentialProvider>,
+    account: i64,
+    not_ready_base: Duration,
     state: Mutex<State>,
 }
 
 impl AccountBackend {
-    /// A backend with no credential yet.
-    pub(crate) fn new(config: ImapConfig) -> Self {
+    /// A backend with no credential yet. `provider` is asked again for account `account` when it
+    /// said `NotReady`.
+    pub(crate) fn new(
+        config: ImapConfig,
+        provider: Arc<dyn CredentialProvider>,
+        account: i64,
+    ) -> Self {
+        Self::with_not_ready_base(config, provider, account, NOT_READY_BASE_DELAY)
+    }
+
+    /// Like [`AccountBackend::new`] with another first wait after `NotReady` (tests use a short one).
+    pub(crate) fn with_not_ready_base(
+        config: ImapConfig,
+        provider: Arc<dyn CredentialProvider>,
+        account: i64,
+        not_ready_base: Duration,
+    ) -> Self {
         Self {
             config,
+            provider,
+            account,
+            not_ready_base,
             state: Mutex::new(State::NeedsSignIn),
         }
     }
@@ -217,24 +289,78 @@ impl AccountBackend {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Builds the adapter from the credential (or marks the backend as needing a sign-in when
-    /// there is none). The previous adapter is dropped, which closes its connection.
-    pub(crate) fn set_credential(&self, credential: Option<Credential>) -> Readiness {
-        let (state, readiness) = match credential {
-            None => (State::NeedsSignIn, Readiness::NeedsSignIn),
-            Some(c) => match ImapBackend::new(self.config.clone(), c) {
+    /// The state an answer from the provider leads to, with the failures in a row so far.
+    fn state_for(&self, asked: Asked, failures: u32) -> (State, Readiness) {
+        match asked {
+            Asked::NoCredential => (State::NeedsSignIn, Readiness::NeedsSignIn),
+            Asked::NotReady => {
+                let failures = failures.saturating_add(1);
+                (
+                    State::NotReady {
+                        retry_at: Instant::now() + not_ready_delay(self.not_ready_base, failures),
+                        failures,
+                    },
+                    Readiness::NotReady,
+                )
+            }
+            Asked::Credential(c) => match ImapBackend::new(self.config.clone(), c) {
                 Ok(b) => (State::Ready(Arc::new(b)), Readiness::Ready),
                 Err(_) => (State::Broken, Readiness::Broken),
             },
-        };
+        }
+    }
+
+    /// Builds the adapter from what the provider answered (or marks the backend as needing a
+    /// sign-in when there is no credential, or as not ready when the app's storage is not). The
+    /// previous adapter is dropped, which closes its connection.
+    pub(crate) fn set_asked(&self, asked: Asked) -> Readiness {
+        let (state, readiness) = self.state_for(asked, 0);
         *self.lock() = state;
         readiness
     }
 
-    fn current(&self) -> Result<Arc<ImapBackend>, BackendError> {
+    /// The adapter, asking the provider again first when it said `NotReady` and the wait is over.
+    async fn current(&self) -> Result<Arc<ImapBackend>, BackendError> {
+        let claimed = {
+            let mut st = self.lock();
+            match &*st {
+                State::NotReady { retry_at, failures } if Instant::now() >= *retry_at => {
+                    // This caller asks; the others find a later `retry_at` and answer Transient.
+                    let failures = *failures;
+                    *st = State::NotReady {
+                        retry_at: Instant::now()
+                            + not_ready_delay(self.not_ready_base, failures.saturating_add(1)),
+                        failures: failures.saturating_add(1),
+                    };
+                    Some(failures)
+                }
+                _ => None,
+            }
+        };
+        if let Some(failures) = claimed {
+            let provider = self.provider.clone();
+            let account = self.account;
+            // The app's callback may take a moment: not on a runtime worker.
+            let asked = tokio::task::spawn_blocking(move || ask(&*provider, account))
+                .await
+                .unwrap_or(Asked::NotReady);
+            let (state, _) = self.state_for(asked, failures.saturating_add(1));
+            let mut st = self.lock();
+            // A sign-in that happened meanwhile (`set_asked`) is newer than this answer.
+            if matches!(&*st, State::NotReady { .. }) {
+                *st = state;
+            }
+        }
+        self.ready()
+    }
+
+    fn ready(&self) -> Result<Arc<ImapBackend>, BackendError> {
         match &*self.lock() {
             State::Ready(b) => Ok(b.clone()),
             State::NeedsSignIn => Err(BackendError::Auth("sign-in needed".into())),
+            State::NotReady { .. } => Err(BackendError::Transient(
+                "secure storage is not ready".into(),
+            )),
             State::Broken => Err(BackendError::Permanent("unusable server settings".into())),
         }
     }
@@ -242,31 +368,19 @@ impl AccountBackend {
 
 impl MailBackend for AccountBackend {
     fn capabilities(&self) -> BackendFuture<'_, Capabilities> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.capabilities().await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.capabilities().await })
     }
 
     fn list_folders(&self) -> BackendFuture<'_, Vec<RemoteFolder>> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.list_folders().await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.list_folders().await })
     }
 
     fn folder_status<'a>(&'a self, folder: &'a str) -> BackendFuture<'a, FolderStatus> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.folder_status(folder).await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.folder_status(folder).await })
     }
 
     fn snapshot<'a>(&'a self, folder: &'a str) -> BackendFuture<'a, RemoteSnapshot> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.snapshot(folder).await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.snapshot(folder).await })
     }
 
     fn fetch_headers<'a>(
@@ -274,10 +388,7 @@ impl MailBackend for AccountBackend {
         folder: &'a str,
         uids: &'a [Uid],
     ) -> BackendFuture<'a, Vec<RemoteHeader>> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.fetch_headers(folder, uids).await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.fetch_headers(folder, uids).await })
     }
 
     fn find_by_message_id<'a>(
@@ -285,10 +396,12 @@ impl MailBackend for AccountBackend {
         folder: &'a str,
         message_id: &'a str,
     ) -> BackendFuture<'a, Option<Uid>> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.find_by_message_id(folder, message_id).await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move {
+            self.current()
+                .await?
+                .find_by_message_id(folder, message_id)
+                .await
+        })
     }
 
     fn set_flag<'a>(
@@ -297,10 +410,7 @@ impl MailBackend for AccountBackend {
         uids: &'a [Uid],
         change: FlagChange,
     ) -> BackendFuture<'a, ()> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.set_flag(folder, uids, change).await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.set_flag(folder, uids, change).await })
     }
 
     fn move_to<'a>(
@@ -309,16 +419,10 @@ impl MailBackend for AccountBackend {
         uids: &'a [Uid],
         dest: &'a str,
     ) -> BackendFuture<'a, MoveOutcome> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.move_to(folder, uids, dest).await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.move_to(folder, uids, dest).await })
     }
 
     fn delete_forever<'a>(&'a self, folder: &'a str, uids: &'a [Uid]) -> BackendFuture<'a, ()> {
-        match self.current() {
-            Ok(b) => Box::pin(async move { b.delete_forever(folder, uids).await }),
-            Err(e) => Box::pin(async move { Err(e) }),
-        }
+        Box::pin(async move { self.current().await?.delete_forever(folder, uids).await })
     }
 }

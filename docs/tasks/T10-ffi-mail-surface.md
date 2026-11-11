@@ -95,3 +95,11 @@ Security review follow-up (still API version 3, which is unmerged):
 - **Tests.** Rust: `a_new_account_uses_the_credential_it_was_given_not_the_providers`, `a_removed_accounts_id_is_not_given_to_the_next_account`,
   `add_account_refuses_unusable_input_before_touching_the_database` (now includes a non-UTF-8 credential), the version test
   `the_version_is_4`; Kotlin: `SecretStoreCredentialsTest`, `MailSurfaceTest`, `RustBridgeTest`.
+
+### `ProviderError::NotReady` (T11, second security review; still API version 4)
+`ProviderError` has a second, fieldless variant, `NotReady`: the app's secure storage cannot answer right now (the Android Keystore is busy or restarting), so the app does not know whether a credential exists. `FFI_API_VERSION` and `EXPECTED_FFI_API_VERSION` stay 4: version 4 (the `add_account` credential) has never been released, so the extra variant belongs to the same version.
+- `credential` returning `NotReady` is a transient failure of that connection attempt. The account is not paused, it is not in the needs-sign-in state, and `sign_in_needed` is not called. The account's backend answers `BackendError::Transient` and asks the provider again on a later call after a back-off (2 s, doubling, at most 5 min); the engine retries on its own schedule and on every poke (`sync_now`). When the provider then has no credential, the account moves to needs-sign-in as before.
+- `ProviderError::Failed` keeps its meaning (no credential). `sign_in_needed` returning `NotReady` is ignored like `Failed`.
+- `signed_in` with a provider that answers `NotReady` returns `Ok`: the person did sign in, the account leaves the needs-sign-in state, and the backend asks again by itself.
+- Code: `core/ffi/src/credentials.rs` (`Asked`, `AccountBackend`), tests `a_provider_that_is_not_ready_does_not_pause_the_account_and_is_asked_again` and `signed_in_with_a_provider_that_is_not_ready_is_not_a_missing_credential` in `core/ffi/src/tests/server.rs`.
+

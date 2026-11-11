@@ -100,4 +100,50 @@ class OpenCoreTest {
         // And the new key is the one that works from now on.
         assertTrue(core(secrets()).listAccounts().isEmpty())
     }
+
+    private fun appWith(mainThread: Boolean, dirName: String = "secrets") = AppSecrets(
+        File(dir, dirName), AesGcmSecretBox(keys), keys, db, java.security.SecureRandom(),
+        listOf(100L, 500L, 2000L), {}, Quarantine(File(dir, "croft-quarantine"), { 0L }), { 0L }, { mainThread },
+    )
+
+    @Test
+    fun openCoreRefusesTheMainThreadBeforeAnythingIsTouched() {
+        val s = appWith(mainThread = true)
+        try {
+            core(s)
+            throw AssertionError("expected IllegalStateException")
+        } catch (e: IllegalStateException) {
+            // the main thread
+        }
+        assertFalse(File(dir, "secrets/db-key.v1").exists())
+        assertFalse(db.exists())
+    }
+
+    @Test
+    fun aStartCountsOnlyOnceTheCoreHasOpened() {
+        // An incident from an earlier loss.
+        core(secrets())
+        closeAll()
+        keys.lose()
+        core(secrets())
+        closeAll()
+        val incident = File(dir, "croft-quarantine").listFiles()!!.single()
+        val q = Quarantine(File(dir, "croft-quarantine"), { 0L })
+        assertEquals("the start that made the incident does not count", 0, q.startsOf(incident))
+
+        // A start whose core refuses the file: the key was fine, the start still does not count.
+        val refused = File(dir, "refused.db")
+        refused.writeText("not a database")
+        val other = AppSecrets(File(dir, "secrets"), AesGcmSecretBox(keys), keys, refused)
+        try {
+            openCore(refused.path, other, none).also { open += it }
+            throw AssertionError("expected CoreException")
+        } catch (e: CoreException) {
+            // refused: no count
+        }
+        assertEquals(0, q.startsOf(incident))
+
+        core(secrets())
+        assertEquals("one successful start", 1, q.startsOf(incident))
+    }
 }

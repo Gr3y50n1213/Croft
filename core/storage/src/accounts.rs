@@ -183,7 +183,16 @@ fn insert_in_savepoint(
 ) -> Result<i64> {
     let table_max: i64 =
         conn.query_row("SELECT COALESCE(MAX(id), 0) FROM account", [], |r| r.get(0))?;
-    let high_water = settings::get::<i64>(conn, MAX_ID_KEY)?.unwrap_or(0);
+    // A mark that is not an integer (damaged or written by hand) is treated as absent: the id then
+    // comes from `MAX(id)`, and the mark is overwritten below. Failing here would make every
+    // insert fail for good.
+    let high_water = match settings::get::<i64>(conn, MAX_ID_KEY) {
+        Ok(mark) => mark.unwrap_or(0),
+        // Only a document that cannot be read is ignored; a database error still fails the insert
+        // (guessing then could reuse an id).
+        Err(StorageError::Json(_)) => 0,
+        Err(e) => return Err(e),
+    };
     let id = table_max
         .max(high_water)
         .checked_add(1)
@@ -290,6 +299,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(insert(c, &new_account("new"), 2).unwrap(), 8);
+    }
+
+    #[test]
+    fn a_mark_that_is_not_an_integer_is_ignored_and_overwritten() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        assert_eq!(insert(c, &new_account("one"), 1).unwrap(), 1);
+        for bad in ["\"seven\"", "{\"a\":1}", "not json", "1.5", "null"] {
+            c.execute(
+                "INSERT INTO setting (key, value_json, updated_at) VALUES ('account.max_id', ?1, 1)
+                 ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json",
+                [bad],
+            )
+            .unwrap();
+            let id = insert(c, &new_account("next"), 2).unwrap();
+            // The id falls back to MAX(id) + 1, and the mark is repaired.
+            let max: i64 = c
+                .query_row("SELECT MAX(id) FROM account", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(id, max, "bad mark {bad}");
+            assert_eq!(settings::get::<i64>(c, MAX_ID_KEY).unwrap(), Some(id));
+        }
     }
 
     #[test]

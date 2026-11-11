@@ -34,11 +34,13 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
         dir.mkdirs()
     }
 
+    // The box may wait on the Keystore (back-off between checks). Sealing and opening therefore
+    // run with no monitor held; only the file work is synchronized.
+
     /** Stores (or replaces) the secret. Throws [SecretBoxException] when it cannot be sealed. */
-    @Synchronized
     fun put(accountId: Long, kind: SecretKind, secret: ByteArray) {
         val blob = box.seal(secret, context(accountId, kind))
-        writeAtomically(file(accountId, kind), blob)
+        synchronized(this) { writeAtomically(file(accountId, kind), blob) }
     }
 
     /**
@@ -46,10 +48,12 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
      * never reuses an id, so there should be none; a leftover of a crash must not be mistaken for
      * the new account's), then stores [secret]. Throws [SecretBoxException] when it cannot be sealed.
      */
-    @Synchronized
     fun putForNewAccount(accountId: Long, kind: SecretKind, secret: ByteArray) {
-        removeAccount(accountId)
-        put(accountId, kind, secret)
+        val blob = box.seal(secret, context(accountId, kind))
+        synchronized(this) {
+            removeAccount(accountId)
+            writeAtomically(file(accountId, kind), blob)
+        }
     }
 
     /**
@@ -59,19 +63,23 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
      * entry from a newer Croft (UNSUPPORTED_VERSION) are reported with [SecretBoxException] and
      * nothing is deleted.
      */
-    @Synchronized
     fun get(accountId: Long, kind: SecretKind): ByteArray? {
         val f = file(accountId, kind)
-        val blob = try {
-            f.readBytes()
-        } catch (e: java.io.FileNotFoundException) {
-            return null
+        val blob = synchronized(this) {
+            try {
+                f.readBytes()
+            } catch (e: java.io.FileNotFoundException) {
+                return null
+            }
         }
         try {
             return box.open(blob, context(accountId, kind))
         } catch (e: SecretBoxException) {
             if (e.kind == SecretBoxException.Kind.CORRUPT) {
-                f.delete()
+                // Delete only the entry that was read: a newer one written meanwhile stays.
+                synchronized(this) {
+                    if (f.exists() && f.readBytes().contentEquals(blob)) f.delete()
+                }
                 return null
             }
             throw e
@@ -98,9 +106,10 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
         SecretKind.values().forEach { remove(accountId, it) }
     }
 
-    /** True when any account secret exists. */
+    /** True when any account secret exists. Throws [IOException] when the folder cannot be listed (it must not read as "none"). */
     @Synchronized
-    fun hasAny(): Boolean = dir.listFiles { f -> f.name.startsWith(PREFIX) }?.isNotEmpty() == true
+    fun hasAny(): Boolean =
+        (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets")).isNotEmpty()
 
     /** Deletes every account secret (key loss). */
     @Synchronized

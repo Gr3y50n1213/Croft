@@ -58,6 +58,8 @@ pub(crate) struct MemProvider {
     stored: Mutex<HashMap<i64, Arc<FfiCredential>>>,
     asked: Mutex<Vec<i64>>,
     sign_ins: Mutex<Vec<i64>>,
+    /// How many of the next `credential` calls answer `NotReady` (the keystore is busy).
+    not_ready: Mutex<usize>,
 }
 
 impl MemProvider {
@@ -67,6 +69,11 @@ impl MemProvider {
 
     pub(crate) fn store(&self, id: i64, c: Arc<FfiCredential>) {
         self.stored.lock().unwrap().insert(id, c);
+    }
+
+    /// The next `n` calls to `credential` fail with `NotReady`.
+    pub(crate) fn not_ready_for(&self, n: usize) {
+        *self.not_ready.lock().unwrap() = n;
     }
 
     pub(crate) fn sign_ins(&self) -> Vec<i64> {
@@ -81,6 +88,13 @@ impl MemProvider {
 impl CredentialProvider for MemProvider {
     fn credential(&self, account_id: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
         self.asked.lock().unwrap().push(account_id);
+        {
+            let mut n = self.not_ready.lock().unwrap();
+            if *n > 0 {
+                *n -= 1;
+                return Err(ProviderError::NotReady);
+            }
+        }
         Ok(self.stored.lock().unwrap().get(&account_id).cloned())
     }
 

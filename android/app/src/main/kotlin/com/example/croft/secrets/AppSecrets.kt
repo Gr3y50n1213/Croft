@@ -5,6 +5,7 @@
 package com.example.croft.secrets
 
 import android.content.Context
+import android.os.Looper
 import java.io.File
 import java.io.IOException
 import java.nio.channels.FileChannel
@@ -75,26 +76,95 @@ class KeyLossNotice(private val marker: File) {
     override fun toString(): String = "[redacted]"
 }
 
+/** Whether the calling thread is the app's main thread. Injectable so JVM tests can say yes. */
+internal fun interface MainThreadCheck {
+    fun isMainThread(): Boolean
+
+    companion object {
+        /** The real check. A JVM without Android's `Looper` (plain unit tests) is never the main thread. */
+        val ANDROID = MainThreadCheck {
+            try {
+                val looper = Looper.myLooper()
+                looper != null && looper == Looper.getMainLooper()
+            } catch (e: RuntimeException) {
+                false
+            }
+        }
+    }
+}
+
+/**
+ * A quarantined database and its secrets that can be put back: the wrapped database key in the
+ * quarantine opens with the **current** wrapping key, so the loss that moved the data aside was a
+ * false alarm (a Keystore that failed, not a key that was gone).
+ *
+ * At the first [AppSecrets.databaseKey] of a process `AppSecrets` looks for such an incident (the
+ * newest one). If nothing new was written since the reset (no account secret exists, which is the
+ * case until a person signs in again), it puts the old database, secrets and key back by itself and
+ * clears [KeyLossNotice]. If there is new data, it does nothing to it and sets [available] so a
+ * screen can offer "restore my earlier mail and accounts". [restore] does that: the new data moves
+ * into the incident's `superseded/` folder (kept like any quarantine, not deleted), so the choice
+ * is reversible too. [dismiss] hides the offer for good. Call [restore] with the core closed and
+ * off the main thread, then open the core again.
+ */
+class QuarantineRestore internal constructor(private val owner: AppSecrets) {
+    private val state = MutableStateFlow(false)
+
+    /** True when an earlier database can be restored and was not restored automatically. Set by the first `databaseKey()` of a process. */
+    val available: StateFlow<Boolean> get() = state
+
+    internal fun set(value: Boolean) {
+        state.value = value
+    }
+
+    /**
+     * Puts the quarantined database, secrets and key back; the current ones move into the
+     * incident. Throws [SecureStorageException] (STORAGE_ERROR) when files cannot be moved. Does
+     * nothing when [available] is false. The core must be closed.
+     */
+    fun restore() = owner.restoreFromQuarantine()
+
+    /** The person does not want the earlier data: [available] turns false and stays so. */
+    fun dismiss() = owner.dismissQuarantineOffer()
+
+    override fun toString(): String = "[redacted]"
+}
+
 /**
  * The app's secrets: the database key, the account secrets and the key-loss notice, all kept in
  * [dir] (the app's `noBackupFilesDir/croft-secrets`) and wrapped by [box]. Use one instance per
  * process (`createAppSecrets` does); [databaseKey] also takes a file lock, so a second process or
  * a second instance cannot make a second key while the first is being made.
  *
+ * **Threads.** [databaseKey] (and `openCore`, which calls it) can wait on the Keystore for several
+ * seconds: up to 0.6 s per check and three retries with back-off (about 3 s), and a first key can
+ * take longer on a busy secure element. It throws [IllegalStateException] on the main thread, so
+ * the mistake shows up in the first test run, not as an ANR in the field. The waits happen with no
+ * monitor held (the key source and [SecretStore] release theirs before sleeping, and this class
+ * releases its process lock between retries).
+ *
  * [databaseFile] is the SQLite file the key belongs to. It is only touched when the key is
- * definitely lost: then it (and its `-wal`, `-shm` and `-journal` files), every account secret and
- * the wrapped key are **moved**, not deleted, into `croft-quarantine/<timestamp>/` next to [dir]
+ * lost: then it (and its `-wal`, `-shm` and `-journal` files), every account secret and the
+ * wrapped key are **moved**, not deleted, into `croft-quarantine/<timestamp>/` next to [dir]
  * (see [Quarantine]), a new key is made and [keyLoss] is raised. The mail is synced again from
  * the servers; the person signs in again. Quarantined data is deleted after 7 days and 3 later
- * successful starts. The Keystore entry is kept, so that quarantined data can still be opened if
- * the loss was a wrong call; it is replaced only when the entry is itself the dead key.
+ * successful starts (see [recordSuccessfulStart]: a start counts once `Core.open` has succeeded).
+ * The Keystore entry is kept, so quarantined data can still be opened if the loss was a wrong
+ * call: [quarantineRestore] then puts it back (automatically when nothing new was written).
  *
  * What counts as lost: the wrapped key's envelope is damaged or fails authentication
- * ([SecretBoxException.Kind.CORRUPT]), the Keystore says the key is definitely gone
- * (KEY_LOST, see [KeystoreErrors]), or data exists without its wrapped key. A Keystore that
- * merely fails (UNAVAILABLE) is retried with backoff and then reported as
+ * ([SecretBoxException.Kind.CORRUPT]); the Keystore says the key is definitely gone (KEY_LOST,
+ * see [KeystoreErrors] and [KeystoreKeySource]); or data exists without its wrapped key. Weak
+ * evidence of a lost key ([SecretBoxException.weak]: Android 8 to 11, or a keystore in which the
+ * key and its canary both look absent) is acted on only after it has been seen at 3 app starts
+ * over at least an hour ([LossConfirmation]); until then the open fails with NOT_READY and nothing
+ * moves. A Keystore that merely fails (UNAVAILABLE) is retried with backoff and then reported as
  * [SecureStorageException.Reason.NOT_READY]; a blob from a newer Croft (UNSUPPORTED_VERSION) as
  * NEWER_DATA. Neither moves or deletes anything.
+ *
+ * **A wrapping key is created only when no wrapped file exists** (the first run: no `db-key.v1`,
+ * no account secret, no database, no quarantine) **or in the reset after a declared loss**, when
+ * everything wrapped has been moved into the quarantine. Sealing never creates it.
  */
 class AppSecrets internal constructor(
     private val dir: File,
@@ -105,6 +175,8 @@ class AppSecrets internal constructor(
     private val retryDelaysMs: List<Long>,
     private val sleep: (Long) -> Unit,
     private val quarantine: Quarantine,
+    private val clock: () -> Long,
+    private val mainThread: MainThreadCheck,
 ) {
     constructor(
         dir: File,
@@ -115,6 +187,7 @@ class AppSecrets internal constructor(
     ) : this(
         dir, box, keys, databaseFile, random, DEFAULT_RETRY_DELAYS_MS, Thread::sleep,
         Quarantine(File(dir.absoluteFile.parentFile, Quarantine.FOLDER_NAME), System::currentTimeMillis),
+        System::currentTimeMillis, MainThreadCheck.ANDROID,
     )
 
     init {
@@ -127,59 +200,180 @@ class AppSecrets internal constructor(
     /** Raised when the keystore key was gone and everything was moved aside. */
     val keyLoss = KeyLossNotice(File(dir, KEY_LOST_MARKER))
 
+    /** Earlier data that can be put back after a false alarm (see the class text). */
+    val quarantineRestore = QuarantineRestore(this)
+
     private val keyFile = File(dir, "db-key.v1")
     private val lockFile = File(dir, LOCK_FILE)
+    private val suspicion = LossConfirmation(File(dir, SUSPICION_FILE), clock)
     private var startCounted = false
+    private var restoreChecked = false
+    private var incidentThisStart: File? = null
+    private var offered: File? = null
+
+    /** What one pass of [databaseKey] came to. */
+    private sealed interface Attempt {
+        class Done(val key: DatabaseKey) : Attempt
+
+        object Retry : Attempt
+    }
+
+    /**
+     * Throws [IllegalStateException] on the main thread. `openCore` calls it first, so that a
+     * call from the wrong thread fails before anything is read.
+     */
+    internal fun assertNotMainThread() {
+        check(!mainThread.isMainThread()) {
+            "Secure storage waits on the Keystore: call it off the main thread (for example Dispatchers.IO)"
+        }
+    }
 
     /**
      * The database key: made on first run, opened from its wrapped file afterwards. A key that is
-     * definitely lost is handled as described in the class text. Throws [SecureStorageException]
-     * when the storage cannot be used now (nothing is moved or deleted then). The first success in
-     * a process also counts as a successful start for the quarantine's housekeeping.
-     * Wipe or [DatabaseKey.close] the result.
+     * lost is handled as described in the class text. Throws [SecureStorageException] when the
+     * storage cannot be used now (nothing is moved or deleted then), and [IllegalStateException] on
+     * the main thread. A start is **not** counted here: `openCore` counts it after `Core.open`
+     * succeeded (see [recordSuccessfulStart]). Wipe or [DatabaseKey.close] the result.
      */
-    fun databaseKey(): DatabaseKey = withLock {
-        var incident: File? = null
-        val key = openStoredKey() ?: run {
-            // Lost: the old data is moved aside, then a new key is made.
-            incident = moveAside()
-            create()
-        }
-        if (!startCounted) {
-            startCounted = true
-            quarantine.recordSuccessfulStart(except = incident)
-        }
-        key
-    }
-
-    /** The stored key; null when it is definitely lost or when data exists without one. */
-    private fun openStoredKey(): DatabaseKey? {
-        if (!keyFile.exists()) {
-            return if (databaseExists() || secrets.hasAny()) null else create()
-        }
-        val plain = try {
-            retrying { box.open(keyFile.readBytes(), DB_KEY_CONTEXT) }
-        } catch (e: SecretBoxException) {
-            when (e.kind) {
-                SecretBoxException.Kind.KEY_LOST, SecretBoxException.Kind.CORRUPT -> return null
-                SecretBoxException.Kind.UNSUPPORTED_VERSION ->
-                    throw SecureStorageException(SecureStorageException.Reason.NEWER_DATA)
-                SecretBoxException.Kind.UNAVAILABLE -> throw notReady()
+    fun databaseKey(): DatabaseKey {
+        assertNotMainThread()
+        var attempt = 0
+        while (true) {
+            // The process lock is held for one pass only; the back-off sleeps without it.
+            when (val result = withLock { onePass() }) {
+                is Attempt.Done -> return result.key
+                Attempt.Retry -> {
+                    if (attempt >= retryDelaysMs.size) throw notReady()
+                    sleep(retryDelaysMs[attempt++])
+                }
             }
         }
-        if (plain.size == KEY_BYTES) return DatabaseKey(plain)
+    }
+
+    /**
+     * Counts this process as one successful start for the quarantine's housekeeping (once per
+     * process; the incident made during this very start does not count). `openCore` calls it after
+     * `Core.open` succeeded, so a start that failed to open the core never counts. Never throws.
+     */
+    internal fun recordSuccessfulStart() {
+        try {
+            withLock {
+                if (!startCounted) {
+                    startCounted = true
+                    quarantine.recordSuccessfulStart(except = incidentThisStart)
+                }
+            }
+        } catch (e: SecureStorageException) {
+            // Housekeeping only: tried again at the next start.
+        }
+    }
+
+    private fun onePass(): Attempt {
+        try {
+            var key = obtainKey()
+            if (!restoreChecked) {
+                val restored = try {
+                    checkQuarantine()
+                } catch (e: IOException) {
+                    key.close()
+                    throw e
+                } catch (e: SecretBoxException) {
+                    // The check could not be made now (Keystore busy): the key is fine, try the check at the next call.
+                    false
+                }
+                if (restored) {
+                    key.close()
+                    key = obtainKey()
+                }
+            }
+            return Attempt.Done(key)
+        } catch (e: SecretBoxException) {
+            return when (e.kind) {
+                SecretBoxException.Kind.UNSUPPORTED_VERSION ->
+                    throw SecureStorageException(SecureStorageException.Reason.NEWER_DATA)
+                SecretBoxException.Kind.UNAVAILABLE -> Attempt.Retry
+                // A loss that was not confirmed (weak, or one that came while sealing): not now.
+                SecretBoxException.Kind.KEY_LOST, SecretBoxException.Kind.CORRUPT -> throw notReady()
+            }
+        }
+    }
+
+    /** The key, however it has to be made: stored, first run or the reset after a loss. */
+    private fun obtainKey(): DatabaseKey {
+        if (keyFile.exists()) {
+            openStoredKey()?.let { return it }
+            // Declared lost: move everything wrapped aside, then make a new key.
+            moveAside()
+            return sealNewKey()
+        }
+        if (databaseExists() || secrets.hasAny()) {
+            moveAside()
+            return sealNewKey()
+        }
+        if (quarantine.incidents().isEmpty()) return createFirstKey()
+        // Nothing wrapped is left but there is a quarantine: a reset that stopped before the new
+        // key was written. Finish it (this is not a first run: the old key may still matter).
+        return sealNewKey()
+    }
+
+    /** The stored key; null when the loss is declared (definite or confirmed); throws UNAVAILABLE when it is not decided. */
+    private fun openStoredKey(): DatabaseKey? {
+        val plain = try {
+            box.open(keyFile.readBytes(), DB_KEY_CONTEXT)
+        } catch (e: SecretBoxException) {
+            when (e.kind) {
+                SecretBoxException.Kind.CORRUPT -> return null
+                SecretBoxException.Kind.KEY_LOST, SecretBoxException.Kind.UNAVAILABLE -> {
+                    // Weak evidence has to persist across starts; a definite one is acted on now.
+                    if (e.weak && !suspicion.observe()) throw SecretBoxException(SecretBoxException.Kind.UNAVAILABLE)
+                    if (e.weak || e.kind == SecretBoxException.Kind.KEY_LOST) return null
+                    throw e
+                }
+                SecretBoxException.Kind.UNSUPPORTED_VERSION -> throw e
+            }
+        }
+        if (plain.size == KEY_BYTES) {
+            suspicion.clear()
+            return DatabaseKey(plain)
+        }
         plain.fill(0)
         return null
     }
 
-    private fun create(): DatabaseKey {
+    /** The very first key. Nothing wrapped exists, so there is nothing a new Keystore key could destroy. */
+    private fun createFirstKey(): DatabaseKey {
+        requireNoWrappedFiles()
+        keys.create()
+        return writeNewKey { box.seal(it, DB_KEY_CONTEXT) }
+    }
+
+    /**
+     * Seals a new key after a loss. The wrapping key is used if it works; it is replaced only on
+     * definite evidence that it is dead, or on weak evidence that has persisted ([suspicion]).
+     */
+    private fun sealNewKey(): DatabaseKey {
+        requireNoWrappedFiles()
+        return writeNewKey { key ->
+            try {
+                box.seal(key, DB_KEY_CONTEXT)
+            } catch (e: SecretBoxException) {
+                val definite = e.kind == SecretBoxException.Kind.KEY_LOST && !e.weak
+                val confirmed = e.weak && suspicion.observe()
+                if (!definite && !confirmed) throw if (e.weak) SecretBoxException(SecretBoxException.Kind.UNAVAILABLE) else e
+                keys.create()
+                box.seal(key, DB_KEY_CONTEXT)
+            }
+        }
+    }
+
+    private fun writeNewKey(seal: (ByteArray) -> ByteArray): DatabaseKey {
         val key = ByteArray(KEY_BYTES)
         random.nextBytes(key)
         val blob = try {
-            retrying { sealFirstKey(key) }
+            seal(key)
         } catch (e: SecretBoxException) {
             key.fill(0)
-            throw notReady()
+            throw e
         }
         try {
             writeAtomically(keyFile, blob)
@@ -187,37 +381,32 @@ class AppSecrets internal constructor(
             key.fill(0)
             throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
         }
+        suspicion.clear()
         return DatabaseKey(key)
     }
 
-    /**
-     * Seals the new key. If the wrapping key itself definitely refuses (the entry is the dead
-     * key), the entry is deleted once and a fresh one is made: that is the one place the alias is
-     * not kept.
-     */
-    private fun sealFirstKey(key: ByteArray): ByteArray =
-        try {
-            box.seal(key, DB_KEY_CONTEXT)
-        } catch (e: SecretBoxException) {
-            if (e.kind != SecretBoxException.Kind.KEY_LOST) throw e
-            keys.discard()
-            box.seal(key, DB_KEY_CONTEXT)
-        }
+    /** No wrapped file of any kind may be in place when a Keystore key is made: it could make them unreadable. */
+    private fun requireNoWrappedFiles() {
+        check(!keyFile.exists() && !secrets.hasAny()) { "a wrapping key must not be made while wrapped files exist" }
+    }
 
     private fun databaseExists(): Boolean = databaseSiblings().any { it.exists() }
 
     private fun databaseSiblings(): List<File> =
         listOf("", "-wal", "-shm", "-journal").map { File(databaseFile.path + it) }
 
-    private fun moveAside(): File {
+    private fun accountSecretFiles(): List<File> =
+        dir.listFiles { f -> f.name.startsWith(SecretStore.PREFIX) }?.toList() ?: throw IOException("cannot list the secrets")
+
+    private fun moveAside() {
         // The notice first: a crash half way through must still show it.
         val wasPending = keyLoss.pending.value
         keyLoss.raise()
         try {
-            return quarantine.moveAside(
+            incidentThisStart = quarantine.moveAside(
                 listOf(
                     "database" to databaseSiblings(),
-                    "secrets" to (dir.listFiles { f -> f.name.startsWith(SecretStore.PREFIX) }?.toList() ?: emptyList()),
+                    "secrets" to accountSecretFiles(),
                     // Last: if the app is killed half way, the wrapped key is still there and the
                     // same decision is made again at the next start.
                     "key" to listOf(keyFile),
@@ -231,16 +420,107 @@ class AppSecrets internal constructor(
         }
     }
 
-    /** Runs [op], repeating it after each of [retryDelaysMs] while it fails with UNAVAILABLE. */
-    private fun <T> retrying(op: () -> T): T {
-        var attempt = 0
-        while (true) {
-            try {
-                return op()
-            } catch (e: SecretBoxException) {
-                if (e.kind != SecretBoxException.Kind.UNAVAILABLE || attempt >= retryDelaysMs.size) throw e
-                sleep(retryDelaysMs[attempt++])
+    // ---- putting quarantined data back after a false alarm ----
+
+    /**
+     * Once per process, before the core is opened: finds the newest incident whose wrapped key
+     * opens with the current wrapping key. Restores it at once when nothing new was written (no
+     * account secret exists), otherwise offers it. Returns true when files were swapped (the
+     * caller then reads the key again). Throws [SecretBoxException] UNAVAILABLE when the Keystore
+     * cannot answer now (the check is repeated at the next call).
+     */
+    private fun checkQuarantine(): Boolean {
+        val restored = checkQuarantineOnce()
+        restoreChecked = true
+        return restored
+    }
+
+    private fun checkQuarantineOnce(): Boolean {
+        // The incident this very pass made is the app's own, fresh judgment: it is looked at from the next start on.
+        val candidate = quarantine.incidents().asReversed().firstOrNull { it != incidentThisStart && openable(it) }
+        if (candidate == null) {
+            offered = null
+            quarantineRestore.set(false)
+            return false
+        }
+        // An incident whose restore was cut short is finished whatever is in the secrets folder now.
+        if (!secrets.hasAny() || File(candidate, RESTORING).exists()) {
+            performRestore(candidate, supersedeSecrets = false)
+            keyLoss.acknowledge()
+            offered = null
+            quarantineRestore.set(false)
+            return true
+        }
+        offered = candidate
+        quarantineRestore.set(true)
+        return false
+    }
+
+    /** True when the incident has a wrapped key, was not dismissed, and the current wrapping key opens it. */
+    private fun openable(incident: File): Boolean {
+        val blob = File(incident, "key/${keyFile.name}")
+        if (!blob.isFile || File(incident, DECLINED).exists()) return false
+        val plain = try {
+            box.open(blob.readBytes(), DB_KEY_CONTEXT)
+        } catch (e: SecretBoxException) {
+            if (e.kind == SecretBoxException.Kind.UNAVAILABLE) throw e
+            return false
+        }
+        val ok = plain.size == KEY_BYTES
+        plain.fill(0)
+        return ok
+    }
+
+    /**
+     * Swaps the live files for the incident's. The live database (and the live secrets when
+     * [supersedeSecrets]) move into `<incident>/superseded/`, the live key is copied there, then
+     * the incident's database, secrets and finally its key move into place; the key goes last and
+     * by one atomic rename, and a `restoring` marker makes a run that was cut short start over
+     * where it stopped instead of moving the restored files away again.
+     */
+    private fun performRestore(incident: File, supersedeSecrets: Boolean) {
+        try {
+            val marker = File(incident, RESTORING)
+            if (!marker.exists()) {
+                writeAtomically(marker, ByteArray(0))
+                val superseded = File(incident, "superseded")
+                quarantine.moveInto(File(superseded, "database"), databaseSiblings())
+                if (supersedeSecrets) quarantine.moveInto(File(superseded, "secrets"), accountSecretFiles())
+                if (keyFile.exists()) {
+                    File(superseded, "key").mkdirs()
+                    keyFile.copyTo(File(superseded, "key/${keyFile.name}"), overwrite = true)
+                }
             }
+            val home = databaseFile.absoluteFile.parentFile ?: throw IOException("no parent directory")
+            quarantine.moveInto(home, File(incident, "database").listFiles()?.toList() ?: emptyList())
+            quarantine.moveInto(dir, File(incident, "secrets").listFiles()?.toList() ?: emptyList())
+            quarantine.moveInto(dir, File(incident, "key").listFiles()?.toList() ?: emptyList())
+        } catch (e: IOException) {
+            throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+        }
+    }
+
+    internal fun restoreFromQuarantine() {
+        assertNotMainThread()
+        withLock {
+            val incident = offered ?: return@withLock
+            performRestore(incident, supersedeSecrets = true)
+            keyLoss.acknowledge()
+            offered = null
+            quarantineRestore.set(false)
+        }
+    }
+
+    internal fun dismissQuarantineOffer() {
+        withLock {
+            val incident = offered ?: return@withLock
+            try {
+                writeAtomically(File(incident, DECLINED), ByteArray(0))
+            } catch (e: IOException) {
+                throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            }
+            offered = null
+            quarantineRestore.set(false)
         }
     }
 
@@ -264,6 +544,9 @@ class AppSecrets internal constructor(
         private const val KEY_BYTES = 32
         private const val KEY_LOST_MARKER = "key-lost.flag"
         private const val LOCK_FILE = "lock"
+        private const val SUSPICION_FILE = "loss-suspected.v1"
+        private const val RESTORING = "restoring"
+        private const val DECLINED = "declined"
         private val DB_KEY_CONTEXT = "croft/db-key/v1".toByteArray(Charsets.UTF_8)
 
         /** Waits before each repeat of a key open that failed with UNAVAILABLE. */

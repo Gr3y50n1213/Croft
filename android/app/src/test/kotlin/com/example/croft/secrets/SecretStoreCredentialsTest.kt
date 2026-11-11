@@ -27,6 +27,7 @@ import uniffi.croft_ffi.CredentialProvider
 import uniffi.croft_ffi.DiscoverySource
 import uniffi.croft_ffi.FfiCredential
 import uniffi.croft_ffi.FfiDiscovered
+import uniffi.croft_ffi.ProviderException
 import uniffi.croft_ffi.SecurityMode
 import uniffi.croft_ffi.ServerSettings
 
@@ -102,14 +103,31 @@ class SecretStoreCredentialsTest {
     }
 
     @Test
-    fun aFailingKeystoreReadsAsNoCredentialAndNothingIsThrown() {
+    fun aKeystoreThatCannotAnswerIsNotReadyAndALostKeyReadsAsNoCredential() {
         val keys = MemoryKeySource()
         val failing = SecretStore(File(dir, "failing"), AesGcmSecretBox(keys))
         failing.put(5, SecretKind.PASSWORD, "x".toByteArray())
+        // UNAVAILABLE: not "no credential" (that would send the person to sign in again).
         keys.unavailable = true
-        assertNull(SecretStoreCredentials(failing, signIns).credential(5))
+        try {
+            SecretStoreCredentials(failing, signIns).credential(5)
+            fail("expected ProviderException.NotReady")
+        } catch (e: ProviderException.NotReady) {
+            // the core treats it as a transient failure
+        }
+        assertTrue("sign_in_needed is not ours to call for it", signIns.accounts.value.isEmpty())
+        // A loss that is only suspected (Android 8 to 11) is not a sign-in problem either.
         keys.unavailable = false
         keys.lose()
+        keys.weakLoss = true
+        try {
+            SecretStoreCredentials(failing, signIns).credential(5)
+            fail("expected ProviderException.NotReady")
+        } catch (e: ProviderException.NotReady) {
+            // same
+        }
+        // A definite loss is "no credential": the secret is gone.
+        keys.weakLoss = false
         assertNull(SecretStoreCredentials(failing, signIns).credential(5))
     }
 
@@ -195,6 +213,64 @@ class SecretStoreCredentialsTest {
             assertEquals(SecretBoxException.Kind.UNAVAILABLE, e.kind)
         }
         assertTrue(core.listAccounts().isEmpty())
+    }
+
+    @Test
+    fun ifTheSecretFileCannotBeWrittenTheAccountIsNotKeptEither() {
+        val core = core(provider())
+        // The first account will get id 1. A directory where its temporary file must go makes the write fail
+        // with an IOException (not a SecretBoxException).
+        File(File(dir, "secrets"), "acct-1.password.v1.tmp").mkdirs()
+        try {
+            add(core)
+            fail("expected IOException")
+        } catch (e: java.io.IOException) {
+            // the write failed
+        }
+        assertTrue("the account was removed again", core.listAccounts().isEmpty())
+        assertFalse(store.has(1, SecretKind.PASSWORD))
+    }
+
+    @Test
+    fun theCallersPasswordArrayIsLeftAloneAndAddRunsOffTheCallingThread() {
+        val core = core(provider())
+        val password = Fixture.PASSWORD.toByteArray()
+        var thread: Thread? = null
+        val accounts = AccountSecrets(store, signIns, kotlinx.coroutines.Dispatchers.IO)
+        val id = runBlocking {
+            thread = Thread.currentThread()
+            accounts.addPasswordAccount(core, deadServer(), "Alice", null, password)
+        }
+        assertArrayEquals("the copy given to the core is wiped, the caller's array is the caller's", Fixture.PASSWORD.toByteArray(), password)
+        assertArrayEquals(Fixture.PASSWORD.toByteArray(), store.get(id, SecretKind.PASSWORD))
+        assertNotNull(thread)
+    }
+
+    @Test
+    fun aKeystoreThatIsNotReadyAtOpenDoesNotMarkTheAccountAndTheCoreAsksAgain() {
+        val keys = MemoryKeySource()
+        val local = SecretStore(File(dir, "notready"), AesGcmSecretBox(keys))
+        val first = core(SecretStoreCredentials(local, signIns))
+        val id = runBlocking {
+            AccountSecrets(local, signIns).addPasswordAccount(first, deadServer(), "Alice", null, Fixture.PASSWORD.toByteArray())
+        }
+        first.close()
+        open.remove(first)
+
+        keys.unavailable = true
+        val recording = Recording(SecretStoreCredentials(local, signIns))
+        val second = core(recording)
+        assertEquals(listOf(id), recording.asked.toList())
+        assertEquals("not a sign-in problem", AccountStatus.OK, second.listAccounts().single().status)
+        // The core asks again by itself after a back-off (a poke wakes the account's task).
+        keys.unavailable = false
+        await {
+            second.syncNow(id)
+            recording.asked.size.takeIf { it >= 2 }
+        }
+        Thread.sleep(300)
+        assertEquals(AccountStatus.OK, second.listAccounts().single().status)
+        assertTrue("the account was never marked as needing a sign-in", signIns.accounts.value.isEmpty())
     }
 
     @Test

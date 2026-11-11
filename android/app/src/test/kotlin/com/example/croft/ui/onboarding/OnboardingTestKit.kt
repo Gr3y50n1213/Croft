@@ -81,5 +81,5 @@ class FakeFirstSync(var status: FirstSyncStatus = FirstSyncStatus(0, done = fals
 /** A session over the fake repository, for the environment's `openSession`. */
 fun fakeSession(): MailSession {
     val now = 1_700_000_000_000L
-    return MailSession(FakeMessageRepository(FakeData.rows(5, now), { now }, FakeData.accounts(now)), usesFakeData = false)
+    return MailSession(FakeMessageRepository(FakeData.rows(5, now), { now }, FakeData.accounts(now)))
 }

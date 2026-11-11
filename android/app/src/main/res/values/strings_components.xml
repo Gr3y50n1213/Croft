@@ -51,6 +51,7 @@
     <string name="row_encrypted">Encrypted</string>
     <string name="row_signature_invalid">Signature is not valid</string>
     <string name="row_pending">Waiting for the network</string>
+    <string name="row_not_saved">Not saved to server</string>
     <string name="row_failed">The server refused the change</string>
     <string name="row_failed_state">Failed. Retry is available</string>
     <string name="row_action_select">Select</string>

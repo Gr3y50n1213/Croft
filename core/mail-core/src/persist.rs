@@ -26,7 +26,8 @@ use std::fmt;
 use croft_protocols::{BackendError, Uid};
 
 use crate::ops::{
-    AccountId, AwaitingUid, CancelError, Enqueued, Op, OpId, OpKind, OpQueue, OpState, Rejection,
+    AccountId, AwaitingUid, CancelError, Enqueued, Location, Op, OpId, OpKind, OpQueue, OpState,
+    Rejection,
 };
 
 /// The optimistic change to the person's view that goes with a queue change. The store applies the
@@ -250,6 +251,13 @@ impl<S: OpStore> PersistentQueue<S> {
         &self.store
     }
 
+    /// The store, mutably. For writes that are not queue rows and must not go through the queue,
+    /// such as the sync engine applying a folder sync to the same database. Never use it to commit
+    /// a [`Batch`] by hand: the queue in memory would no longer match the disk.
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
     /// Gives the store back (for example to reopen it in a test).
     pub fn into_store(self) -> S {
         self.store
@@ -344,6 +352,20 @@ impl<S: OpStore> PersistentQueue<S> {
         self.run(
             Finish::Restore,
             |q| q.take_due(now_ms, limit),
+            |_, _, _| Vec::new(),
+        )
+    }
+
+    /// Like [`PersistentQueue::take_due`], for one account only (see [`OpQueue::take_due_for`]).
+    pub fn take_due_for(
+        &mut self,
+        account: AccountId,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<Op>, S::Error> {
+        self.run(
+            Finish::Restore,
+            |q| q.take_due_for(account, now_ms, limit),
             |_, _, _| Vec::new(),
         )
     }
@@ -476,6 +498,50 @@ impl<S: OpStore> PersistentQueue<S> {
                 }
                 if leftover {
                     effects.push(remove_row(account, from));
+                }
+                effects
+            },
+        )
+    }
+
+    /// [`PersistentQueue::repoint_after_reset`] for several messages in one batch, using
+    /// [`OpQueue::repoint_many`] so that each operation moves once even when one message's new UID
+    /// is another message's old UID (a renumbered folder). Each re-pointed operation puts its
+    /// pending count and local value (or hidden state) on the row at its new address.
+    ///
+    /// An old address with an awaiting-UID entry has its leftover row removed, as in
+    /// [`PersistentQueue::repoint_after_reset`], unless that address is also one of the new
+    /// addresses in `moves` (the row there now belongs to the re-pointed message).
+    pub fn repoint_many_after_reset(
+        &mut self,
+        account: AccountId,
+        moves: &[(Location, Location)],
+    ) -> Result<usize, S::Error> {
+        self.run(
+            Finish::Nothing,
+            |q| q.repoint_many(account, moves),
+            |before, after, _| {
+                let map: BTreeMap<(&str, Uid), &Location> = moves
+                    .iter()
+                    .map(|(from, to)| ((from.0.as_str(), from.1), to))
+                    .collect();
+                let mut effects = Vec::new();
+                for op in after.iter().filter(|op| !op.state.is_finished()) {
+                    let Some(old) = before.get(op.id).filter(|old| !old.state.is_finished()) else {
+                        continue;
+                    };
+                    if let Some(to) = map.get(&old.kind.target()) {
+                        effects.extend(created_effects(op.account, &op.kind, (&to.0, to.1)));
+                    }
+                }
+                for (from, to) in moves {
+                    let reused = moves.iter().any(|(_, t)| t == from);
+                    if from != to
+                        && !reused
+                        && before.awaiting_for(account, (&from.0, from.1)).is_some()
+                    {
+                        effects.push(remove_row(account, (&from.0, from.1)));
+                    }
                 }
                 effects
             },

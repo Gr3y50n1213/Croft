@@ -1116,3 +1116,16 @@ fn finished_rows_that_were_readable_are_still_deleted_on_load() {
     assert_eq!(count(&q, "SELECT count(*) FROM op_queue"), 0);
     assert!(q.unreadable().is_empty());
 }
+
+#[test]
+fn db_mut_lends_the_database_for_other_writes() {
+    let mut store = SqliteOpStore::new(Db::open_in_memory().unwrap());
+    let n: i64 = store
+        .db_mut()
+        .transaction(|tx| {
+            tx.query_row("SELECT COUNT(*) FROM op_queue", [], |r| r.get(0))
+                .map_err(StorageError::from)
+        })
+        .unwrap();
+    assert_eq!(n, 0);
+}

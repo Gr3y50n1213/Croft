@@ -594,3 +594,99 @@ fn a_move_confirmed_without_following_removes_the_old_row() {
         ]
     );
 }
+
+#[test]
+fn take_due_for_stores_only_that_accounts_operations_as_applying() {
+    let mut q = open();
+    let mine = add(&mut q, seen(1, true), 0);
+    let Enqueued::Queued(theirs) = q.enqueue(2, seen(1, true), 0, WINDOW).unwrap() else {
+        panic!("expected a new operation")
+    };
+    assert_eq!(q.take_due_for(A, 2_000, 10).unwrap().len(), 1);
+    assert_eq!(
+        q.store.ops.get(&mine).map(|o| o.state),
+        Some(OpState::Applying)
+    );
+    assert_eq!(
+        q.store.ops.get(&theirs).map(|o| o.state),
+        Some(OpState::Queued)
+    );
+}
+
+#[test]
+fn store_mut_lends_the_store_without_touching_the_queue() {
+    let mut q = open();
+    add(&mut q, seen(1, true), 0);
+    q.store_mut().commits = 99;
+    assert_eq!(q.store.commits, 99);
+    assert_eq!(q.queue().unfinished(), 1);
+}
+
+#[test]
+fn repoint_many_after_a_reset_moves_each_operation_once_and_sets_its_new_row() {
+    let mut q = open();
+    let a = add(&mut q, seen(1, true), 0);
+    let b = add(&mut q, starred(2, true), 0);
+    take_effects(&mut q);
+    let moves = vec![
+        (("INBOX".to_owned(), 1), ("INBOX".to_owned(), 2)),
+        (("INBOX".to_owned(), 2), ("INBOX".to_owned(), 1)),
+    ];
+    assert_eq!(q.repoint_many_after_reset(A, &moves).unwrap(), 2);
+    assert_eq!(q.queue().get(a).map(|o| o.kind.target().1), Some(2));
+    assert_eq!(q.queue().get(b).map(|o| o.kind.target().1), Some(1));
+    assert_eq!(
+        take_effects(&mut q),
+        vec![
+            set_seen(2, true),
+            delta("INBOX", 2, 1),
+            LocalEffect::SetFlagged {
+                account: A,
+                folder: "INBOX".into(),
+                uid: 1,
+                value: true
+            },
+            delta("INBOX", 1, 1),
+        ]
+    );
+    assert_eq!(
+        q.store.ops.get(&a).map(|o| o.kind.target().1),
+        Some(2),
+        "stored"
+    );
+}
+
+#[test]
+fn repoint_many_after_a_reset_removes_an_awaiting_leftover_unless_reused() {
+    let mut q = open();
+    let moved = add(&mut q, mv(1, "Archive"), 0);
+    let later = add(&mut q, seen(1, true), 0);
+    q.take_due(WINDOW, 10).unwrap();
+    q.confirm_moved_with(moved, None, Some("<a@x>".into()), WINDOW)
+        .unwrap();
+    take_effects(&mut q);
+    let moves = vec![(("INBOX".to_owned(), 1), ("Archive".to_owned(), 4))];
+    assert_eq!(q.repoint_many_after_reset(A, &moves).unwrap(), 1);
+    assert_eq!(
+        take_effects(&mut q),
+        vec![
+            LocalEffect::SetSeen {
+                account: A,
+                folder: "Archive".into(),
+                uid: 4,
+                value: true
+            },
+            delta("Archive", 4, 1),
+            LocalEffect::RemoveMessage {
+                account: A,
+                folder: "INBOX".into(),
+                uid: 1
+            },
+        ]
+    );
+    assert!(q.store.awaiting.is_empty());
+    assert_eq!(
+        q.queue().get(later).map(|o| o.kind.target()),
+        Some(("Archive", 4))
+    );
+}

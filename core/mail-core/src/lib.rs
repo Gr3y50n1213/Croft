@@ -13,7 +13,10 @@ pub mod ops;
 pub mod persist;
 pub mod sync_plan;
 
-pub use ops::{AwaitingUid, Enqueued, Op, OpId, OpKind, OpQueue, OpState, Rejection};
+pub use ops::{
+    AccountId, AwaitingUid, CancelError, Enqueued, Location, Op, OpId, OpKind, OpQueue, OpState,
+    Rejection,
+};
 pub use persist::{
     Batch, LocalEffect, OpStore, PersistentQueue, QueueError, StoredQueue, UnreadableOp,
 };

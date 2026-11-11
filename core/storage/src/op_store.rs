@@ -67,6 +67,13 @@ impl<D: BorrowMut<Db>> SqliteOpStore<D> {
         Borrow::<Db>::borrow(&self.db)
     }
 
+    /// The database, mutably, for transactions that are not queue rows (the sync engine applies a
+    /// folder sync through this). Do not write `op_queue` or `op_awaiting_uid` through it: the
+    /// queue in memory would no longer match.
+    pub fn db_mut(&mut self) -> &mut Db {
+        BorrowMut::<Db>::borrow_mut(&mut self.db)
+    }
+
     /// Gives the database back.
     pub fn into_inner(self) -> D {
         self.db

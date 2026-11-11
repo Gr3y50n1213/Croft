@@ -87,6 +87,19 @@ pub fn get(conn: &Connection, account_id: i64, folder_id: i64) -> Result<Option<
         .optional()?)
 }
 
+/// Reads the folder of this account with this path (paths are unique per account).
+pub fn find_by_path(conn: &Connection, account_id: i64, path: &str) -> Result<Option<Folder>> {
+    Ok(conn
+        .query_row(
+            r#"SELECT id, account_id, path, delimiter, special_use, uid_validity, uid_next,
+                      highest_modseq, unread_count, total_count, last_synced_at
+                 FROM folder WHERE account_id = ?1 AND path = ?2"#,
+            params![account_id, path],
+            map_row,
+        )
+        .optional()?)
+}
+
 /// Every folder of this account, ordered by path.
 pub fn list(conn: &Connection, account_id: i64) -> Result<Vec<Folder>> {
     let mut stmt = conn.prepare_cached(

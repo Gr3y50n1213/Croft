@@ -26,6 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type OpId = u64;
 /// Identifier of an account, matching `account.id` in the database.
 pub type AccountId = i64;
+/// Where a message is: folder path and UID.
+pub type Location = (String, Uid);
 
 /// A transient answer from a connected server is retried this many times before the operation is
 /// reported as failed. Time spent offline does not count.
@@ -362,6 +364,16 @@ impl OpQueue {
     /// An operation is held back while an earlier one on the same message is unfinished, so a
     /// "mark read" never overtakes the "move" before it.
     pub fn take_due(&mut self, now_ms: i64, limit: usize) -> Vec<Op> {
+        self.take_due_matching(now_ms, limit, None)
+    }
+
+    /// Like [`OpQueue::take_due`], for one account only. The sync engine runs one task per account,
+    /// and each task must only hand out its own account's operations.
+    pub fn take_due_for(&mut self, account: AccountId, now_ms: i64, limit: usize) -> Vec<Op> {
+        self.take_due_matching(now_ms, limit, Some(account))
+    }
+
+    fn take_due_matching(&mut self, now_ms: i64, limit: usize, only: Option<AccountId>) -> Vec<Op> {
         let mut chosen = Vec::new();
         let ids: Vec<OpId> = self.ops.keys().copied().collect();
         for id in ids {
@@ -371,6 +383,9 @@ impl OpQueue {
             let Some(op) = self.ops.get(&id) else {
                 continue;
             };
+            if only.is_some_and(|a| a != op.account) {
+                continue;
+            }
             if op.state != OpState::Queued
                 || self.earliest_ms(op) > now_ms
                 || !self.account_may_run(op.account)
@@ -507,6 +522,34 @@ impl OpQueue {
         changed
     }
 
+    /// Re-points several messages at once: every unfinished operation of `account` whose target is
+    /// the first address of a pair moves to the second. Each operation moves at most once, even
+    /// when one message's new address is another message's old address (a UIDVALIDITY change
+    /// renumbers a whole folder, so this is common there). Calling [`OpQueue::repoint`] once per
+    /// pair would move such operations twice. Awaiting-UID entries at the old addresses are
+    /// resolved. Returns how many operations changed.
+    pub fn repoint_many(&mut self, account: AccountId, moves: &[(Location, Location)]) -> usize {
+        let map: BTreeMap<(&str, Uid), &Location> = moves
+            .iter()
+            .map(|(from, to)| ((from.0.as_str(), from.1), to))
+            .collect();
+        for (from, _) in moves {
+            self.awaiting_uid.remove(&(account, from.0.clone(), from.1));
+        }
+        let mut changed = 0;
+        for op in self
+            .ops
+            .values_mut()
+            .filter(|op| op.account == account && !op.state.is_finished())
+        {
+            if let Some(to) = map.get(&op.kind.target()) {
+                op.kind.retarget(&to.0, to.1);
+                changed += 1;
+            }
+        }
+        changed
+    }
+
     /// Gives up on the unfinished operations on a message whose new location could not be found
     /// (or whose folder was reset by a UIDVALIDITY change and could not be matched). They fail, so
     /// the screen can say so. Returns their ids.
@@ -598,6 +641,20 @@ impl OpQueue {
             .values()
             .filter(|op| {
                 op.state == OpState::Queued
+                    && self.account_may_run(op.account)
+                    && !self.awaits_new_uid(op)
+            })
+            .map(|op| self.earliest_ms(op))
+            .min()
+    }
+
+    /// Like [`OpQueue::next_wake_ms`], for one account only.
+    pub fn next_wake_ms_for(&self, account: AccountId) -> Option<i64> {
+        self.ops
+            .values()
+            .filter(|op| {
+                op.account == account
+                    && op.state == OpState::Queued
                     && self.account_may_run(op.account)
                     && !self.awaits_new_uid(op)
             })
@@ -1082,6 +1139,50 @@ mod tests {
         q.confirm(done);
         assert_eq!(q.purge_finished(), 1);
         assert_eq!(q.unfinished(), 1);
+    }
+
+    #[test]
+    fn take_due_for_hands_out_only_that_accounts_operations() {
+        let mut q = OpQueue::new();
+        let mine = queued(&mut q, seen(1, true), 0);
+        let theirs = match q.enqueue(2, seen(1, true), 0, WINDOW) {
+            Enqueued::Queued(id) => id,
+            other => panic!("expected a new operation, got {other:?}"),
+        };
+        assert_eq!(q.next_wake_ms_for(A), Some(1_500));
+        assert_eq!(q.next_wake_ms_for(3), None);
+        let due = q.take_due_for(A, 5_000, 10);
+        assert_eq!(due.iter().map(|o| o.id).collect::<Vec<_>>(), vec![mine]);
+        assert_eq!(q.get(theirs).map(|o| o.state), Some(OpState::Queued));
+        assert_eq!(q.next_wake_ms_for(A), None, "mine is applying");
+        q.set_offline(2, true);
+        assert_eq!(
+            q.next_wake_ms_for(2),
+            None,
+            "an offline account never wakes"
+        );
+        assert!(q.take_due_for(2, 5_000, 10).is_empty());
+    }
+
+    #[test]
+    fn repoint_many_moves_each_operation_once_even_when_addresses_swap() {
+        let mut q = OpQueue::new();
+        let a = queued(&mut q, seen(1, true), 0);
+        let b = queued(&mut q, seen(2, true), 0);
+        let c = queued(&mut q, seen(3, true), 0);
+        let moves = vec![
+            (("INBOX".to_owned(), 1), ("INBOX".to_owned(), 2)),
+            (("INBOX".to_owned(), 2), ("INBOX".to_owned(), 1)),
+        ];
+        assert_eq!(q.repoint_many(A, &moves), 2);
+        assert_eq!(q.get(a).map(|o| o.kind.target().1), Some(2));
+        assert_eq!(q.get(b).map(|o| o.kind.target().1), Some(1));
+        assert_eq!(q.get(c).map(|o| o.kind.target().1), Some(3), "untouched");
+        assert_eq!(
+            q.repoint_many(2, &moves),
+            0,
+            "other accounts are left alone"
+        );
     }
 
     #[test]

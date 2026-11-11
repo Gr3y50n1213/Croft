@@ -979,3 +979,117 @@ fn every_query_in_folders_and_messages_filters_on_account_id() {
         }
     }
 }
+
+// ---- helpers for the sync engine (T04) ----------------------------------------------------------
+
+#[test]
+fn folders_are_found_by_path_only_in_their_account() {
+    let (db, a1, f1, a2, f2) = two_accounts();
+    let c = db.connection();
+    assert_eq!(
+        folders::find_by_path(c, a1, "INBOX").unwrap().map(|f| f.id),
+        Some(f1)
+    );
+    assert_eq!(
+        folders::find_by_path(c, a2, "INBOX").unwrap().map(|f| f.id),
+        Some(f2)
+    );
+    assert!(folders::find_by_path(c, a1, "Archive").unwrap().is_none());
+}
+
+#[test]
+fn folder_flags_and_find_by_uid_read_hidden_rows_too() {
+    let (db, a1, f1, a2, _f2) = two_accounts();
+    let c = db.connection();
+    let mut h = header(3, "Hello", 10);
+    h.flags.seen = true;
+    h.flags.keywords.insert("$Work".into());
+    let id = messages::upsert(c, a1, f1, &h).unwrap();
+    messages::upsert(c, a1, f1, &header(4, "Other", 20)).unwrap();
+    c.execute("UPDATE message SET local_hidden = 1 WHERE id = ?1", [id])
+        .unwrap();
+
+    let flags = messages::folder_flags(c, a1, f1).unwrap();
+    assert_eq!(flags.keys().copied().collect::<Vec<_>>(), vec![3, 4]);
+    assert!(flags[&3].seen && flags[&3].keywords.contains("$Work"));
+    assert!(messages::folder_flags(c, a2, f1).unwrap().is_empty());
+
+    let m = messages::find_by_uid(c, a1, f1, 3).unwrap().unwrap();
+    assert_eq!((m.id, m.local_hidden), (id, true));
+    assert!(messages::find_by_uid(c, a2, f1, 3).unwrap().is_none());
+    assert!(messages::find_by_uid(c, a1, f1, 99).unwrap().is_none());
+}
+
+#[test]
+fn set_server_flags_keeps_local_seen_and_flagged_while_pending() {
+    let (db, a1, f1, a2, _f2) = two_accounts();
+    let c = db.connection();
+    let id = messages::upsert(c, a1, f1, &header(1, "Hello", 10)).unwrap();
+    let server = Flags {
+        seen: true,
+        flagged: true,
+        answered: true,
+        ..Flags::default()
+    };
+    assert!(!messages::set_server_flags(c, a2, f1, 1, &server).unwrap());
+    c.execute("UPDATE message SET pending_ops = 1 WHERE id = ?1", [id])
+        .unwrap();
+    assert!(messages::set_server_flags(c, a1, f1, 1, &server).unwrap());
+    let m = messages::get(c, a1, id).unwrap().unwrap();
+    assert!(!m.is_seen && !m.is_flagged && m.is_answered);
+    c.execute("UPDATE message SET pending_ops = 0 WHERE id = ?1", [id])
+        .unwrap();
+    messages::set_server_flags(c, a1, f1, 1, &server).unwrap();
+    let m = messages::get(c, a1, id).unwrap().unwrap();
+    assert!(m.is_seen && m.is_flagged);
+    assert_eq!(folders::get(c, a1, f1).unwrap().unwrap().unread_count, 0);
+}
+
+#[test]
+fn delete_uids_and_delete_all_stay_in_the_account_and_folder() {
+    let (db, a1, f1, a2, f2) = two_accounts();
+    let c = db.connection();
+    for uid in 1..=3 {
+        messages::upsert(c, a1, f1, &header(uid, "x", 10)).unwrap();
+        messages::upsert(c, a2, f2, &header(uid, "x", 10)).unwrap();
+    }
+    assert_eq!(messages::delete_uids(c, a2, f1, &[1]).unwrap(), 0);
+    assert_eq!(messages::delete_uids(c, a1, f1, &[1, 9]).unwrap(), 1);
+    assert_eq!(messages::folder_flags(c, a1, f1).unwrap().len(), 2);
+    assert_eq!(messages::delete_all_in_folder(c, a2, f1).unwrap(), 0);
+    assert_eq!(messages::delete_all_in_folder(c, a1, f1).unwrap(), 2);
+    assert_eq!(folders::get(c, a1, f1).unwrap().unwrap().total_count, 0);
+    assert_eq!(messages::folder_flags(c, a2, f2).unwrap().len(), 3);
+}
+
+#[test]
+fn release_local_state_clears_stuck_rows_except_the_ones_kept() {
+    let (db, a1, f1, a2, f2) = two_accounts();
+    let c = db.connection();
+    for uid in 1..=3 {
+        messages::upsert(c, a1, f1, &header(uid, "x", 10)).unwrap();
+    }
+    messages::upsert(c, a2, f2, &header(1, "x", 10)).unwrap();
+    c.execute(
+        "UPDATE message SET local_hidden = 1, pending_ops = 2 WHERE uid IN (1, 2)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        folders::get(c, a1, f1).unwrap().unwrap().total_count,
+        1,
+        "hidden rows are not counted"
+    );
+    let keep: BTreeSet<u32> = [2].into_iter().collect();
+    assert_eq!(messages::release_local_state(c, a1, f1, &keep).unwrap(), 1);
+    let row = |uid| messages::find_by_uid(c, a1, f1, uid).unwrap().unwrap();
+    assert_eq!((row(1).local_hidden, row(1).pending_ops), (false, 0));
+    assert_eq!((row(2).local_hidden, row(2).pending_ops), (true, 2));
+    assert_eq!(folders::get(c, a1, f1).unwrap().unwrap().total_count, 2);
+    let other = messages::find_by_uid(c, a2, f2, 1).unwrap().unwrap();
+    assert_eq!(
+        (other.local_hidden, other.pending_ops),
+        (true, 2),
+        "another account is untouched"
+    );
+}

@@ -14,10 +14,13 @@ mod error;
 pub mod folders;
 pub mod messages;
 pub mod op_store;
+pub mod outbox_store;
 pub mod settings;
 
 #[cfg(test)]
 mod op_store_tests;
+#[cfg(test)]
+mod outbox_store_tests;
 #[cfg(test)]
 mod repo_tests;
 #[cfg(test)]
@@ -26,6 +29,7 @@ mod schema_checks;
 pub use db::Db;
 pub use error::{Result, StorageError};
 pub use op_store::SqliteOpStore;
+pub use outbox_store::SqliteOutboxStore;
 
 /// One forward-only schema change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +58,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "counters_skip_hidden",
         sql: include_str!("../migrations/0003_counters_skip_hidden.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "outbox_append",
+        sql: include_str!("../migrations/0004_outbox_append.sql"),
     },
 ];
 
@@ -141,6 +150,8 @@ mod tests {
     #[test]
     fn every_table_has_an_account_scope_or_is_global() {
         // Guards the multi-user rule: new tables must either carry account_id or be listed here.
+        // `AUTOINCREMENT` (on `outbox`) makes SQLite create its own `sqlite_sequence` table. It
+        // holds only `('outbox', seq)`, the id high-water mark, and is global on purpose.
         let global = [
             "account",
             "message_body",

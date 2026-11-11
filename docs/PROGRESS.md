@@ -5,6 +5,48 @@ unverified, the next step.
 
 ---
 
+## T18a: reading in the core (11 November 2026)
+
+**Status:** draft pull request on `task/t18a` (CI only; not merged). Part A of T18, core side only: no screens. **FFI API
+version 8** (if T18c also takes 8, the branch merged second takes 9; both may add a migration `0006`: the second renumbers).
+
+**What was built:** (1) `MailBackend::fetch_body(folder, uid) -> RawMessage { Found(bytes), Gone, TooLarge { size } }`:
+IMAP `EXAMINE` + `RFC822.SIZE` + `BODY.PEEK[]`, JMAP `blobId` download from the session's `downloadUrl` (session origin
+only), the sample mailbox serves `message_source` (and a stand-in for a message whose source was not kept), the app's
+account backend forwards it; a default answer for adapters that have none. 50 MiB limit, checked before downloading.
+(2) New crate `croft-reader` (pure): `render` parses with mail-parser 1.0 (caps on size, parts, depth, text, HTML,
+inline images), sanitises the HTML with ammonia configured for mail (see `sanitize.rs` and `docs/DECISIONS.md`), lists
+attachments with safe names and executable marks; `part_content`; `remote_allowed`. (3) Migration 0006 and
+`storage::reading`: the fetched message (`message_raw`), body counts, attachment details, `message.remote_allowed`,
+`trusted_sender`, a Message-ID index, and the conversation query (Sent in, Trash/Junk/Drafts only when opened from
+there, one copy per Message-ID, widened through Message-IDs); a confirmed move takes all of it along. (4)
+`EngineHandle::fetch_body`: fetch, parse on a blocking thread, store; never marks read; offline and sign-in cases
+typed. (5) FFI (`core/ffi/src/reading.rs`): `open_conversation`, `load_body`, `save_attachment`, `allow_remote_content`,
+`trust_sender`, `untrust_sender`, `trusted_senders`, records `Conversation`, `ConversationMessage`, `MailAddress`,
+`MessageBody`, `AttachmentInfo`, enums `BodyState`, `RemoteImagesSetting`, error `ReadError`; README section "Reading a
+message" (how the app renders: sanitised string only, JavaScript and file access off, network off while blocked).
+Kotlin: only `EXPECTED_FFI_API_VERSION` and its test literal.
+
+**Checks:** in this container (Rust 1.99, the CI's stable; the default 1.97 cannot build mail-parser 1.0): `cargo fmt --check`,
+`cargo clippy --all-targets` and `-p croft-ffi --features cli`, `cargo test` (all crates: reader 33 tests including the
+fuzz-style test, storage 153, engine, protocols, ffi 98), `croft-storage` with `sqlcipher` (clippy and 156 tests),
+`croft-ffi` with `sqlcipher` (102) and `test-server` (clippy and 99), `check_schema.py`: all pass. Integration
+(`cargo test -p croft-protocols --features integration`) against GreenMail, Dovecot and Stalwart under compose project
+`t18a` on remapped ports: all pass, including the new `body_integration.rs` (a body and its attachment, byte for byte, on
+all three servers, still unread afterwards). `smtp_integration.rs` reads `CROFT_GREENMAIL_*_PORT`, not
+`CROFT_TEST_GREENMAIL_*_PORT` (older naming; it passed with those set). Containers stopped. Gradle was not run here
+(Maven Central refuses this container): the Android jobs run on CI. Found by testing: 100 000 nested `div`s took 340 s
+to sanitise, hence the depth limit; the fuzz test found that an unknown CSS function name (`--x--url(...)`) passed the
+first CSS filter, hence the function allow-list.
+
+**Not done / not verified:** the JMAP thread id is not used for conversations (the sync does not store it, and JMAP
+accounts cannot be added from the app yet): conversations use References/In-Reply-To on both protocols. No screens
+(S20, S21 are Part A's app half, for the Android agent). The sanitiser has had no independent review yet (REVIEW-QUEUE
+row, awaiting review). Rendering fidelity in a real WebView is unverified. "Show original" has its data
+(`message_raw`, `headers_raw`) but no FFI call yet.
+
+---
+
 ## T17d: sign-in hardening (11 November 2026)
 
 **Status:** draft pull request #14, `task/t17d` (CI only; not merged). Fixes the low-severity findings the two T17b reviews left. **FFI API version 7** (v7 is not merged yet, so the review fixes changed its surface: `add_account` takes `accept_changed_certificate` and returns `AddedAccount { id, updated }`, `verify` returns the pin it used, new `rollback_account_update`, new `CoreError::AccountExists` and `CoreError::CertificateChanged`); the T17c branch does not bump the version, so 7 stays.

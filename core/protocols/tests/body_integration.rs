@@ -56,7 +56,10 @@ fn with_attachment(id: &str, to: &str) -> String {
 fn check(label: &str, raw: &[u8]) {
     let r = croft_reader::render(raw, false).unwrap();
     assert!(
-        r.text.as_deref().unwrap().contains("The report is attached."),
+        r.text
+            .as_deref()
+            .unwrap()
+            .contains("The report is attached."),
         "{label}"
     );
     let html = r.html.unwrap();
@@ -66,7 +69,9 @@ fn check(label: &str, raw: &[u8]) {
     let a = &r.attachments[0];
     assert_eq!(a.file_name, "report.pdf", "{label}");
     assert_eq!(a.mime_type, "application/pdf", "{label}");
-    let bytes = croft_reader::part_content(raw, &a.part_id).unwrap().unwrap();
+    let bytes = croft_reader::part_content(raw, &a.part_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(bytes, PDF, "{label}: the attachment round-trips");
 }
 

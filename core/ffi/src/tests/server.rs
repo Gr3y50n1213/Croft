@@ -450,6 +450,47 @@ fn signed_in_with_a_provider_that_is_not_ready_is_not_a_missing_credential() {
     drop(server);
 }
 
+/// A `SignInNeeded` that was emitted before `signed_in` but is applied after it (it waited in the
+/// broadcast) must not flip the account back: the engine has resumed it.
+#[test]
+fn a_stale_sign_in_needed_after_signed_in_is_ignored() {
+    let rig = Rig::new(three_messages);
+    rig.wait_for_inbox(3);
+    let Rig {
+        server,
+        db,
+        core,
+        account,
+        ..
+    } = rig;
+    drop(core);
+
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    block(wait_for(&core, "sign_in_needed", || {
+        !provider.sign_ins().is_empty()
+    }));
+    provider.store(account, password_cred(PASSWORD));
+    block(core.signed_in(account)).unwrap();
+    assert_eq!(core.list_accounts().unwrap()[0].status, AccountStatus::Ok);
+
+    core.hub()
+        .apply(croft_engine::Change::SignInNeeded { account });
+    // The callback runs on a blocking task: give a wrongly sent one time to show up.
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::Ok,
+        "a stale notice does not pause the account"
+    );
+    assert_eq!(
+        provider.sign_ins(),
+        vec![account],
+        "no second sign_in_needed"
+    );
+    drop(server);
+}
+
 #[test]
 fn an_account_with_no_credential_at_open_starts_paused_and_syncs_after_signed_in() {
     let rig = Rig::new(three_messages);

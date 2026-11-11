@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["storage", "protocols", "mail-core", "test-support"]
+# vendor/ holds third-party source with local patches (see vendor/async-imap/CROFT-PATCHES.md). It is
+# a path dependency inside the workspace folder, which Cargo would otherwise make a member, so it
+# is excluded: our fmt and clippy checks must not run on code that is not ours.
+exclude = ["vendor"]
 # crypto/ and ffi/ join the workspace when crates.io is reachable (rPGP, UniFFI); see their README files.
 
 [workspace.package]
@@ -17,3 +21,9 @@ missing_docs = "warn"
 dbg_macro = "deny"
 unwrap_used = "warn"
 expect_used = "warn"
+
+# async-imap 0.12.0 with the logging of commands and responses removed and its buffer limit lowered.
+# Do not remove this patch without reading vendor/async-imap/CROFT-PATCHES.md: the stock crate logs
+# the LOGIN line (with the password) at trace level.
+[patch.crates-io]
+async-imap = { path = "vendor/async-imap" }

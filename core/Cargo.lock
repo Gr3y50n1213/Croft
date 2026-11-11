@@ -85,8 +85,6 @@ dependencies = [
 [[package]]
 name = "async-imap"
 version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f97b87216c9f0ccc63c516263169085fa34bba25633f6d96c6a9b9ca1fd5f70a"
 dependencies = [
  "async-channel 2.5.0",
  "async-compression",
@@ -95,7 +93,6 @@ dependencies = [
  "chrono",
  "futures-util",
  "imap-proto",
- "log",
  "nom 8.0.0",
  "pin-project",
  "pin-utils",
@@ -266,6 +263,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "webpki-roots",
+ "zeroize",
 ]
 
 [[package]]

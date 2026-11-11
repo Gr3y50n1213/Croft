@@ -15,6 +15,18 @@
 //! [`BackendError::Permanent`]. Error text is fixed wording and never contains the password,
 //! server text, message data or addresses.
 
+// Build-time guard, for debug and release builds alike. Croft's patched async-imap (core/vendor)
+// no longer logs commands or responses; this is the second lock. Nothing in this crate logs at
+// `trace` level or secret content at any level, so if some other crate in the build turns on a
+// finer level (`log/max_level_trace`, `log/release_max_level_trace`, ...), the build stops here
+// and someone has to look at it. Cargo.toml keeps `log/max_level_debug`.
+const _: () = assert!(
+    (log::STATIC_MAX_LEVEL as usize) <= (log::LevelFilter::Debug as usize),
+    "log's compile-time level is above Debug: some crate enabled log/max_level_trace or \
+     log/release_max_level_trace. Croft allows at most Debug, so that nothing finer can ever \
+     reach a logger (see core/vendor/async-imap/CROFT-PATCHES.md)."
+);
+
 mod config;
 mod conn;
 mod error;
@@ -290,6 +302,13 @@ impl MailBackend for ImapBackend {
         })
     }
 
+    /// Moves messages with `UID MOVE`, or, without `MOVE`, with `UID COPY`, `\\Deleted` and expunge.
+    ///
+    /// On a server without `MOVE`, a retry after a dropped connection can leave duplicates in
+    /// the destination (a chunk that was copied but not yet expunged is copied again). No message
+    /// is ever lost: nothing is deleted from the source before it was copied. Without `UIDPLUS`
+    /// the move refuses (`Permanent`) when another message in the folder is marked deleted,
+    /// checked again before each chunk of 500 UIDs.
     fn move_to<'a>(
         &'a self,
         folder: &'a str,
@@ -304,6 +323,9 @@ impl MailBackend for ImapBackend {
         })
     }
 
+    /// Deletes messages for good. Without `UIDPLUS` it refuses (`Permanent`) when another message
+    /// in the folder is marked deleted, checked again before each chunk of 500 UIDs, because the
+    /// server's plain `EXPUNGE` would remove that message too.
     fn delete_forever<'a>(&'a self, folder: &'a str, uids: &'a [Uid]) -> BackendFuture<'a, ()> {
         Box::pin(async move {
             match self.run(Op::DeleteForever(folder, uids)).await? {
@@ -343,11 +365,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn async_imap_trace_logging_is_compiled_out() {
-        // async-imap traces whole commands (including the LOGIN line with the password) and whole
-        // server responses at `trace` level. Cargo.toml turns on `log/max_level_debug` so those
-        // calls do not exist in any build. If this fails, a password could reach a logger.
-        assert!(log::STATIC_MAX_LEVEL < log::LevelFilter::Trace);
+    fn the_log_level_is_capped_at_debug_in_every_build() {
+        // The same rule as the `const _` assertion above, kept as a test so a failure shows up in
+        // the test report with an explanation as well as in the compiler output.
+        assert!(log::STATIC_MAX_LEVEL <= log::LevelFilter::Debug);
     }
 
     #[test]
@@ -358,15 +379,14 @@ mod tests {
             Security::PlaintextForTestsOnly,
             "u",
         );
-        let err = ImapBackend::new(cfg, Credential::Password("pw".into())).err();
+        let err = ImapBackend::new(cfg, Credential::password("pw")).err();
         assert!(matches!(err, Some(BackendError::Permanent(_))));
     }
 
     #[test]
     fn debug_of_the_backend_hides_the_credential() {
         let cfg = ImapConfig::tls("mail.example.org", "alice@example.org");
-        let b =
-            ImapBackend::new(cfg, Credential::Password("hunter2".into())).expect("valid settings");
+        let b = ImapBackend::new(cfg, Credential::password("hunter2")).expect("valid settings");
         let shown = format!("{b:?}");
         assert!(!shown.contains("hunter2") && !shown.contains("alice"));
     }

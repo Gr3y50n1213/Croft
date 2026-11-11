@@ -76,7 +76,7 @@ impl Target {
     fn backend(&self) -> ImapBackend {
         ImapBackend::new(
             self.config.clone().with_timeout(Duration::from_secs(20)),
-            Credential::Password(self.password.clone()),
+            Credential::password(self.password.clone()),
         )
         .unwrap()
     }
@@ -304,7 +304,7 @@ async fn suite(t: Target) {
 async fn wrong_password_is_auth(t: Target) {
     let b = ImapBackend::new(
         t.config.clone().with_timeout(Duration::from_secs(20)),
-        Credential::Password("definitely-not-the-password".into()),
+        Credential::password("definitely-not-the-password"),
     )
     .unwrap();
     for _ in 0..2 {
@@ -364,14 +364,14 @@ async fn greenmail_wrong_password_is_auth() {
 async fn greenmail_imaps_refuses_without_a_pin_and_with_the_wrong_pin() {
     let cfg = ImapConfig::new(GREENMAIL_HOST, 3993, Security::Tls, "test")
         .with_timeout(Duration::from_secs(20));
-    let none = ImapBackend::new(cfg.clone(), Credential::Password("test".into())).unwrap();
+    let none = ImapBackend::new(cfg.clone(), Credential::password("test")).unwrap();
     assert!(matches!(
         none.list_folders().await,
         Err(BackendError::Permanent(_))
     ));
     let wrong = ImapBackend::new(
         cfg.with_pinned_cert(CertFingerprint::of_der(b"not the certificate")),
-        Credential::Password("test".into()),
+        Credential::password("test"),
     )
     .unwrap();
     assert!(matches!(
@@ -444,7 +444,7 @@ async fn dovecot_probe_reads_the_known_certificate_and_a_wrong_pin_is_refused() 
     let user = unique("pin");
     let mut cfg = dovecot_imaps(&user).config;
     cfg.pinned_cert = Some(CertFingerprint::of_der(b"someone else"));
-    let b = ImapBackend::new(cfg, Credential::Password("testpass".into())).unwrap();
+    let b = ImapBackend::new(cfg, Credential::password("testpass")).unwrap();
     assert!(matches!(
         b.list_folders().await,
         Err(BackendError::Permanent(_))
@@ -452,7 +452,7 @@ async fn dovecot_probe_reads_the_known_certificate_and_a_wrong_pin_is_refused() 
 
     // Unpinned: the self-signed certificate does not validate against public roots.
     let unpinned = ImapConfig::new("localhost", 31993, Security::Tls, &user);
-    let b = ImapBackend::new(unpinned, Credential::Password("testpass".into())).unwrap();
+    let b = ImapBackend::new(unpinned, Credential::password("testpass")).unwrap();
     assert!(matches!(
         b.list_folders().await,
         Err(BackendError::Permanent(_))
@@ -463,13 +463,6 @@ async fn dovecot_probe_reads_the_known_certificate_and_a_wrong_pin_is_refused() 
 async fn dovecot_oauth_token_is_refused_as_auth() {
     // Dovecot's example config does not offer XOAUTH2: the failure must still be Auth.
     let cfg = dovecot_imaps(&unique("oauth")).config;
-    let b = ImapBackend::new(
-        cfg,
-        Credential::OAuth2 {
-            user: "someone".into(),
-            access_token: "bogus-token".into(),
-        },
-    )
-    .unwrap();
+    let b = ImapBackend::new(cfg, Credential::oauth2("someone", "bogus-token")).unwrap();
     assert!(matches!(b.list_folders().await, Err(BackendError::Auth(_))));
 }

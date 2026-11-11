@@ -8,6 +8,7 @@ use crate::types::BackendError;
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 /// How the connection to the server is secured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,10 +118,25 @@ pub struct ImapConfig {
     /// Longest wait for connecting, for one command's next reply, or for the TLS handshake. A
     /// timeout is a `Transient` error and drops the connection.
     pub timeout: Duration,
+    /// Longest a single command may take from sending it to its final reply, however steadily the
+    /// server keeps sending. [`timeout`](Self::timeout) only limits the silence between two
+    /// replies, so a server that never stops talking would otherwise hold a command open forever.
+    /// Running past it is a `Transient` error and drops the connection. Default 120 seconds.
+    pub command_deadline: Duration,
+    /// Most untagged replies accepted for one command. Past it the command fails as `Transient`
+    /// and the connection is dropped. The default (2 million) is far above what a mailbox of
+    /// realistic size produces for one `UID FETCH 1:* (FLAGS)`.
+    pub max_untagged_replies: usize,
 }
 
+/// Default for [`ImapConfig::command_deadline`].
+pub const DEFAULT_COMMAND_DEADLINE: Duration = Duration::from_secs(120);
+/// Default for [`ImapConfig::max_untagged_replies`].
+pub const DEFAULT_MAX_UNTAGGED_REPLIES: usize = 2_000_000;
+
 impl ImapConfig {
-    /// Settings with the default 30 second timeout and no pinned certificate.
+    /// Settings with the default 30 second timeout, the default command limits and no pinned
+    /// certificate.
     pub fn new(
         host: impl Into<String>,
         port: u16,
@@ -134,6 +150,8 @@ impl ImapConfig {
             username: username.into(),
             pinned_cert: None,
             timeout: Duration::from_secs(30),
+            command_deadline: DEFAULT_COMMAND_DEADLINE,
+            max_untagged_replies: DEFAULT_MAX_UNTAGGED_REPLIES,
         }
     }
 
@@ -156,6 +174,18 @@ impl ImapConfig {
     /// Changes the timeout.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Changes the overall deadline for one command (see [`ImapConfig::command_deadline`]).
+    pub fn with_command_deadline(mut self, deadline: Duration) -> Self {
+        self.command_deadline = deadline;
+        self
+    }
+
+    /// Changes the cap on untagged replies per command (see [`ImapConfig::max_untagged_replies`]).
+    pub fn with_max_untagged_replies(mut self, max: usize) -> Self {
+        self.max_untagged_replies = max;
         self
     }
 
@@ -189,22 +219,40 @@ impl fmt::Debug for ImapConfig {
             .field("username", &"***")
             .field("pinned_cert", &self.pinned_cert)
             .field("timeout", &self.timeout)
+            .field("command_deadline", &self.command_deadline)
+            .field("max_untagged_replies", &self.max_untagged_replies)
             .finish()
     }
 }
 
 /// What proves who the person is. It comes from the platform keystore and is handed in by the
-/// caller; Croft never stores it.
+/// caller; Croft never stores it. The secret strings are wiped from memory when the value is
+/// dropped ([`Zeroizing`]); build one with [`Credential::password`] or [`Credential::oauth2`].
 pub enum Credential {
     /// A password, sent with `LOGIN` (only ever over TLS).
-    Password(String),
+    Password(Zeroizing<String>),
     /// An OAuth 2 access token, sent with `AUTHENTICATE XOAUTH2`.
     OAuth2 {
         /// The account name the token belongs to.
         user: String,
         /// The current access token.
-        access_token: String,
+        access_token: Zeroizing<String>,
     },
+}
+
+impl Credential {
+    /// A password credential.
+    pub fn password(password: impl Into<String>) -> Self {
+        Self::Password(Zeroizing::new(password.into()))
+    }
+
+    /// An OAuth 2 credential: the account name and the current access token.
+    pub fn oauth2(user: impl Into<String>, access_token: impl Into<String>) -> Self {
+        Self::OAuth2 {
+            user: user.into(),
+            access_token: Zeroizing::new(access_token.into()),
+        }
+    }
 }
 
 impl fmt::Debug for Credential {
@@ -223,12 +271,9 @@ mod tests {
 
     #[test]
     fn debug_output_hides_secrets() {
-        let cred = Credential::Password("hunter2".into());
+        let cred = Credential::password("hunter2");
         assert!(!format!("{cred:?}").contains("hunter2"));
-        let oauth = Credential::OAuth2 {
-            user: "alice@example.org".into(),
-            access_token: "ya29.secret".into(),
-        };
+        let oauth = Credential::oauth2("alice@example.org", "ya29.secret");
         let shown = format!("{oauth:?}");
         assert!(!shown.contains("ya29") && !shown.contains("alice"));
         let cfg = ImapConfig::tls("imap.example.org", "alice@example.org");

@@ -4,7 +4,7 @@
 
 //! The protocol side of the test server: connection loop and command handlers.
 
-use crate::{Caps, Folder, Message, Shared, State, TlsMode};
+use crate::{Caps, Folder, Message, Misbehavior, Shared, State, TlsMode};
 use std::collections::BTreeSet;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -141,6 +141,45 @@ async fn run<S: AsyncRead + AsyncWrite + Unpin>(
         }
         let toks = tokenize(&args);
         let out: String;
+        let how = state.lock().expect("lock").misbehavior;
+        if (cmd == "LOGIN" || cmd == "AUTHENTICATE") && how == Misbehavior::ByeOnLogin {
+            if cmd == "AUTHENTICATE" {
+                // Let the client send its credentials first, then hang up.
+                let _ = rd.get_mut().write_all(b"+ \r\n").await;
+                let mut resp = String::new();
+                let _ = rd.read_line(&mut resp).await;
+            }
+            let _ = rd
+                .get_mut()
+                .write_all(b"* BYE Too many invalid login attempts\r\n")
+                .await;
+            return End::Closed;
+        }
+        if cmd == "LIST" && sess.authed {
+            match how {
+                Misbehavior::HugeLiteral(n) => {
+                    let line = format!("* LIST () \"/\" {{{n}}}\r\nab");
+                    let _ = rd.get_mut().write_all(line.as_bytes()).await;
+                    kill.changed().await.ok();
+                    return End::Closed;
+                }
+                Misbehavior::EndlessExists => {
+                    let chunk = "* 1 EXISTS\r\n".repeat(512);
+                    loop {
+                        tokio::select! {
+                            r = rd.get_mut().write_all(chunk.as_bytes()) => {
+                                if r.is_err() {
+                                    return End::Closed;
+                                }
+                            }
+                            _ = kill.changed() => return End::Closed,
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                }
+                _ => {}
+            }
+        }
         match cmd.as_str() {
             "STARTTLS" => {
                 let ok = {
@@ -184,7 +223,13 @@ async fn run<S: AsyncRead + AsyncWrite + Unpin>(
                     if !matches!(rd.read_line(&mut empty).await, Ok(k) if k > 0) {
                         return End::Closed;
                     }
-                    out = format!("{tag} NO [AUTHENTICATIONFAILED] Authentication failed.\r\n");
+                    out = if how == Misbehavior::AuthFailedMentioningUnavailable {
+                        format!(
+                            "{tag} NO [AUTHENTICATIONFAILED] Authentication failed: account unavailable\r\n"
+                        )
+                    } else {
+                        format!("{tag} NO [AUTHENTICATIONFAILED] Authentication failed.\r\n")
+                    };
                 }
             }
             "APPEND" => {
@@ -483,6 +528,11 @@ fn handle(
             }
             if st.login_unavailable {
                 return format!("{tag} NO [UNAVAILABLE] Temporary authentication failure\r\n");
+            }
+            if st.misbehavior == Misbehavior::AuthFailedMentioningUnavailable {
+                return format!(
+                    "{tag} NO [AUTHENTICATIONFAILED] Authentication failed: account unavailable\r\n"
+                );
             }
             let user = toks.first().and_then(Tok::text).unwrap_or("");
             let pass = toks.get(1).and_then(Tok::text).unwrap_or("");
@@ -1003,6 +1053,11 @@ fn copy_or_move(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok], is_mov
 }
 
 fn uid_search(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> String {
+    let extra_uids = st.misbehavior == Misbehavior::SearchExtraUids
+        && toks
+            .first()
+            .and_then(Tok::text)
+            .is_some_and(|k| k.eq_ignore_ascii_case("UID"));
     let Some((f, _)) = selected(st, sess) else {
         return format!("{tag} BAD No folder selected\r\n");
     };
@@ -1048,7 +1103,16 @@ fn uid_search(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> Strin
             _ => return format!("{tag} BAD Unsupported search key\r\n"),
         }
     }
-    let uids: Vec<String> = hits.iter().map(|m| m.uid.to_string()).collect();
+    let mut uids: Vec<String> = hits.iter().map(|m| m.uid.to_string()).collect();
+    if extra_uids {
+        // A server that answers with more than it was asked about.
+        for m in &f.messages {
+            if !uids.contains(&m.uid.to_string()) {
+                uids.push(m.uid.to_string());
+            }
+        }
+        uids.push("999999".to_string());
+    }
     let line = if uids.is_empty() {
         "* SEARCH\r\n".to_string()
     } else {

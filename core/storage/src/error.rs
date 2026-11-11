@@ -43,10 +43,20 @@ pub enum StorageError {
     WalUnavailable,
 }
 
+/// A category and the SQLite extended result code, never SQLite's message text or the SQL, which
+/// can carry values. The code (for example `sqlite3 code 1`) is what makes a failed migration
+/// diagnosable without leaking data.
 fn sqlite_summary(err: &rusqlite::Error) -> String {
     match err {
-        rusqlite::Error::SqliteFailure(e, _) => format!("{:?}", e.code),
+        rusqlite::Error::SqliteFailure(e, _) => {
+            format!("{:?}, sqlite3 code {}", e.code, e.extended_code)
+        }
+        rusqlite::Error::SqlInputError { error, .. } => {
+            format!("SqlInputError, sqlite3 code {}", error.extended_code)
+        }
         rusqlite::Error::QueryReturnedNoRows => "NoRows".to_owned(),
+        rusqlite::Error::FromSqlConversionFailure(..) => "FromSqlConversionFailure".to_owned(),
+        rusqlite::Error::InvalidColumnType(..) => "InvalidColumnType".to_owned(),
         _ => "Other".to_owned(),
     }
 }

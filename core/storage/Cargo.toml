@@ -10,7 +10,7 @@ rust-version = "1.89"
 [features]
 # Encrypts the database file with SQLCipher (rusqlite's `bundled-sqlcipher`). Without it, `Db::open`
 # refuses a key instead of silently storing mail unencrypted.
-sqlcipher = ["rusqlite/bundled-sqlcipher"]
+sqlcipher = ["rusqlite/bundled-sqlcipher", "dep:zeroize"]
 
 [dependencies]
 croft-mail-core = { path = "../mail-core" }
@@ -18,6 +18,8 @@ croft-protocols = { path = "../protocols" }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = "1.0.229"
 serde_json = "1.0.154"
+# Wipes the key text we build in `Db::open` when it is dropped (only needed, and only built, with `sqlcipher`).
+zeroize = { version = "1.9.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27"

@@ -45,6 +45,7 @@ object FailureCopy {
         "add.unsupported_server" -> R.string.fail_add_unsupported_server
         "add.no_credential" -> R.string.fail_add_no_credential
         "add.schema_too_new" -> R.string.fail_add_schema_too_new
+        "add.already_added" -> R.string.fail_add_already_added
         "add.internal" -> R.string.fail_add_internal
         "app.storage_unavailable" -> R.string.fail_app_storage_unavailable
         "app.unexpected" -> R.string.fail_app_unexpected

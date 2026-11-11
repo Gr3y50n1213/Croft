@@ -78,13 +78,14 @@ sealed class OnboardingFailure(val key: String, val host: String?) {
             is CoreException.UnsupportedServer -> "add.unsupported_server"
             is CoreException.NoCredential -> "add.no_credential"
             is CoreException.SchemaTooNew -> "add.schema_too_new"
+            is CoreException.AccountExists -> "add.already_added"
             else -> "add.internal"
         }
 
         /** Every key the app itself defines (the core's come from its own key functions). */
         val appKeys: List<String> = listOf(
-            "add.bad_settings", "add.unsupported_server", "add.no_credential", "add.schema_too_new", "add.internal",
-            KEY_STORAGE, KEY_UNEXPECTED,
+            "add.bad_settings", "add.unsupported_server", "add.no_credential", "add.schema_too_new", "add.already_added",
+            "add.internal", KEY_STORAGE, KEY_UNEXPECTED,
         )
     }
 }

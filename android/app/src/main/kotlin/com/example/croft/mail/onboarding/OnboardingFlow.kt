@@ -203,10 +203,14 @@ class OnboardingFlow(
         }
     }
 
-    /** S03 failure or S04: "Enter settings manually" / "Server settings". Opens S05 with what is known. */
+    /**
+     * S03 failure or S04: "Enter settings manually" / "Server settings". Opens S05 with what is known. Does nothing while the account
+     * is being added ([OnboardingState.adding]): like Back, it waits for that step, which cannot be stopped half way, and the screen that
+     * would open could not add the account again.
+     */
     fun openServerSettings() {
         val s = mutable.value
-        if (s.step != Step.FINDING && s.step != Step.SIGN_IN) return
+        if (s.adding || (s.step != Step.FINDING && s.step != Step.SIGN_IN)) return
         job?.cancel(); lookups.incrementAndGet(); endRun()
         val form = s.discovered?.let { ServerForm.from(it) } ?: ServerForm.guessFor(s.email)
         mutable.update {
@@ -318,7 +322,7 @@ class OnboardingFlow(
      * account with no secret, and a retry would then add a second one. The step works on its own copy of the password, so that
      * wiping the attempt's array meanwhile (Back, rotation) cannot store zeros. The result is the account's id; if nobody is
      * listening any more, the account is there with its secret and the next start shows it (the app starts on the Inbox once an
-     * account exists), and a second sign-in for the same address finds it ([CoreOnboardingBackend.addAccount]).
+     * account exists), and a second sign-in for the same address finds it and refreshes it (the core's `add_account` does that, see [CoreOnboardingBackend.addAccount]).
      */
     private suspend fun addAccountToCompletion(r: Run, pin: String?): Long = withContext(NonCancellable) {
         val copy = r.password.copyOf()

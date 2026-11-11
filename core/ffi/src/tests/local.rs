@@ -41,9 +41,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_4() {
-    assert_eq!(FFI_API_VERSION, 4);
-    assert_eq!(ffi_api_version(), 4);
+fn the_version_is_5() {
+    assert_eq!(FFI_API_VERSION, 5);
+    assert_eq!(ffi_api_version(), 5);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -623,6 +623,300 @@ fn rows_are_shaped_for_the_list() {
     assert_eq!(r.sender_address.as_deref(), Some("sam@example.org"));
     assert!(r.subject.starts_with("Subject"));
     assert!(!r.seen && !r.flagged && !r.has_attachments && !r.pending);
+    // Alone in its conversation, and no recipients stored.
+    assert_eq!(r.thread_count, 1);
+    assert!(r.recipients.is_empty());
+}
+
+/// A header that belongs to the conversation of `root`.
+fn reply(uid: u32, date_ms: i64, root: &str) -> RemoteHeader {
+    RemoteHeader {
+        references: vec![root.to_owned()],
+        ..header(uid, date_ms)
+    }
+}
+
+#[test]
+fn a_rows_thread_count_is_its_conversation_in_its_own_folder() {
+    let rig = list_rig(0);
+    let root = "<root@example.org>";
+    let (a, b, alone, in_archive) = {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        let c = d.connection();
+        let a = messages::upsert(c, rig.a1, rig.inbox1, &reply(1, 1000, root)).unwrap();
+        let b = messages::upsert(c, rig.a1, rig.inbox1, &reply(2, 2000, root)).unwrap();
+        let hidden = messages::upsert(c, rig.a1, rig.inbox1, &reply(3, 3000, root)).unwrap();
+        let alone = messages::upsert(c, rig.a1, rig.inbox1, &header(4, 4000)).unwrap();
+        // The same conversation in another folder and in another account: neither counts here.
+        let in_archive = messages::upsert(c, rig.a1, rig.archive1, &reply(1, 500, root)).unwrap();
+        messages::upsert(c, rig.a2, rig.inbox2, &reply(1, 600, root)).unwrap();
+        c.execute(
+            "UPDATE message SET local_hidden = 1 WHERE id = ?1",
+            [hidden],
+        )
+        .unwrap();
+        (a, b, alone, in_archive)
+    };
+    let count_of = |scope: MessageScope, id: i64| {
+        rig.core
+            .list_messages(scope, None, 50)
+            .unwrap()
+            .rows
+            .into_iter()
+            .find(|r| r.id == id)
+            .map(|r| r.thread_count)
+    };
+    let inbox = MessageScope::Folder {
+        account: rig.a1,
+        folder_id: rig.inbox1,
+    };
+    // Two visible messages share the conversation (the third is hidden by a waiting move).
+    assert_eq!(count_of(inbox, a), Some(2));
+    assert_eq!(count_of(inbox, b), Some(2));
+    assert_eq!(count_of(inbox, alone), Some(1));
+    // The unified Inbox counts per row's own folder, too.
+    assert_eq!(count_of(MessageScope::UnifiedInbox, a), Some(2));
+    // The Archive copy is alone in the Archive.
+    let archive = MessageScope::Folder {
+        account: rig.a1,
+        folder_id: rig.archive1,
+    };
+    assert_eq!(count_of(archive, in_archive), Some(1));
+}
+
+#[test]
+fn recipients_come_from_the_stored_to_list_and_a_damaged_value_gives_none() {
+    let rig = list_rig(0);
+    let sent = {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        let c = d.connection();
+        let sent = folders::upsert(c, rig.a1, &folder("Sent", SpecialUse::Sent)).unwrap();
+        let set = |uid: u32, json: &str| {
+            let id =
+                messages::upsert(c, rig.a1, sent, &header(uid, 1000 * i64::from(uid))).unwrap();
+            c.execute("UPDATE message SET to_json = ?2 WHERE id = ?1", (id, json))
+                .unwrap();
+        };
+        set(
+            1,
+            r#"[{"name":"Bo Chen","address":"bo@example.org"},{"address":"cy@example.org"}]"#,
+        );
+        set(
+            2,
+            r#"["di@example.org", "", 7, {"name": "  ", "address": "ed@example.org"}]"#,
+        );
+        set(3, "not json");
+        set(4, "[]");
+        // 30 recipients: only the first 20 are carried.
+        let many: Vec<String> = (0..30).map(|i| format!("\"r{i}@example.org\"")).collect();
+        set(5, &format!("[{}]", many.join(",")));
+        sent
+    };
+    let rows = rig
+        .core
+        .list_messages(
+            MessageScope::Folder {
+                account: rig.a1,
+                folder_id: sent,
+            },
+            None,
+            10,
+        )
+        .unwrap()
+        .rows;
+    let by_uid = |uid: i64| rows.iter().find(|r| r.date_ms == 1000 * uid).unwrap();
+    assert_eq!(by_uid(1).recipients, vec!["Bo Chen", "cy@example.org"]);
+    assert_eq!(
+        by_uid(2).recipients,
+        vec!["di@example.org", "ed@example.org"]
+    );
+    assert!(by_uid(3).recipients.is_empty());
+    assert!(by_uid(4).recipients.is_empty());
+    assert_eq!(by_uid(5).recipients.len(), 20);
+    assert_eq!(by_uid(5).recipients[0], "r0@example.org");
+    // Addresses never appear in the row's Debug output.
+    assert!(!format!("{:?}", by_uid(1)).contains("example.org"));
+}
+
+#[test]
+fn an_accounts_last_synced_time_is_its_newest_folder_sync() {
+    let rig = list_rig(0);
+    let last = |core: &Core, id: i64| {
+        core.list_accounts()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.id == id)
+            .unwrap()
+            .last_synced_ms
+    };
+    // Nothing has synced yet.
+    assert_eq!(last(&rig.core, rig.a1), None);
+    assert_eq!(last(&rig.core, rig.a2), None);
+    {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        let c = d.connection();
+        for (folder, at) in [(rig.inbox1, 5000), (rig.archive1, 9000), (rig.other1, 7000)] {
+            c.execute(
+                "UPDATE folder SET last_synced_at = ?2 WHERE id = ?1",
+                (folder, at),
+            )
+            .unwrap();
+        }
+    }
+    assert_eq!(last(&rig.core, rig.a1), Some(9000));
+    // Another account's folders do not count for this one.
+    assert_eq!(last(&rig.core, rig.a2), None);
+}
+
+/// Flags a message (a star) straight in the database, as a sync of a server-side star would.
+fn star(rig: &ListRig, id: i64) {
+    let d = Db::open(&rig.db.path, None).unwrap();
+    d.connection()
+        .execute("UPDATE message SET is_flagged = 1 WHERE id = ?1", [id])
+        .unwrap();
+}
+
+#[test]
+fn the_starred_scope_lists_flagged_rows_across_folders_newest_first_one_account_or_all() {
+    let rig = list_rig(0);
+    let (trash1, junk1, inbox_star, archive_star, plain, other_account) = {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        let c = d.connection();
+        let trash1 = folders::upsert(c, rig.a1, &folder("Trash", SpecialUse::Trash)).unwrap();
+        let junk1 = folders::upsert(c, rig.a1, &folder("Junk", SpecialUse::Junk)).unwrap();
+        let inbox_star = messages::upsert(c, rig.a1, rig.inbox1, &header(1, 3000)).unwrap();
+        let archive_star = messages::upsert(c, rig.a1, rig.archive1, &header(1, 2000)).unwrap();
+        let plain = messages::upsert(c, rig.a1, rig.inbox1, &header(2, 9000)).unwrap();
+        let other_account = messages::upsert(c, rig.a2, rig.inbox2, &header(1, 2500)).unwrap();
+        (
+            trash1,
+            junk1,
+            inbox_star,
+            archive_star,
+            plain,
+            other_account,
+        )
+    };
+    let (in_trash, in_junk, hidden, snoozed) = {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        let c = d.connection();
+        let in_trash = messages::upsert(c, rig.a1, trash1, &header(1, 8000)).unwrap();
+        let in_junk = messages::upsert(c, rig.a1, junk1, &header(1, 8100)).unwrap();
+        let hidden = messages::upsert(c, rig.a1, rig.inbox1, &header(3, 8200)).unwrap();
+        let snoozed = messages::upsert(c, rig.a1, rig.inbox1, &header(4, 8300)).unwrap();
+        c.execute(
+            "UPDATE message SET local_hidden = 1 WHERE id = ?1",
+            [hidden],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE message SET snoozed_until = 99999999999999 WHERE id = ?1",
+            [snoozed],
+        )
+        .unwrap();
+        (in_trash, in_junk, hidden, snoozed)
+    };
+    for id in [
+        inbox_star,
+        archive_star,
+        other_account,
+        in_trash,
+        in_junk,
+        hidden,
+        snoozed,
+    ] {
+        star(&rig, id);
+    }
+    let ids = |scope| -> Vec<i64> {
+        rig.core
+            .list_messages(scope, None, 100)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .collect()
+    };
+    // One account: its flagged rows from every folder but Trash and Junk, newest first; an
+    // unflagged row, a hidden one and a snoozed one are not there.
+    assert_eq!(
+        ids(MessageScope::Starred {
+            account: Some(rig.a1)
+        }),
+        vec![inbox_star, archive_star]
+    );
+    assert_eq!(
+        ids(MessageScope::Starred {
+            account: Some(rig.a2)
+        }),
+        vec![other_account]
+    );
+    // All accounts merged by date.
+    assert_eq!(
+        ids(MessageScope::Starred { account: None }),
+        vec![inbox_star, other_account, archive_star]
+    );
+    assert!(!ids(MessageScope::Starred { account: None }).contains(&plain));
+    // An account that does not exist has no starred rows (and is not an error).
+    assert!(ids(MessageScope::Starred { account: Some(999) }).is_empty());
+
+    // Keyset paging, one row at a time, gives the same order without a repeat or a gap.
+    let scope = MessageScope::Starred { account: None };
+    let mut walked = Vec::new();
+    let mut before = None;
+    let mut pages = 0;
+    loop {
+        let p = rig.core.list_messages(scope, before, 1).unwrap();
+        pages += 1;
+        walked.extend(p.rows.iter().map(|r| r.id));
+        match p.next {
+            Some(c) => before = Some(c),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    assert_eq!(walked, vec![inbox_star, other_account, archive_star]);
+
+    // A star set on a message later shows at once; removing it takes the row out.
+    star(&rig, plain);
+    assert_eq!(ids(scope)[0], plain);
+    {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        d.connection()
+            .execute("UPDATE message SET is_flagged = 0 WHERE id = ?1", [plain])
+            .unwrap();
+    }
+    assert!(!ids(scope).contains(&plain));
+}
+
+#[test]
+fn rows_of_equal_date_keep_their_order_across_starred_pages() {
+    let rig = list_rig(0);
+    let made: Vec<i64> = {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        let c = d.connection();
+        (1..=4)
+            .map(|uid| messages::upsert(c, rig.a1, rig.inbox1, &header(uid, 5000)).unwrap())
+            .collect()
+    };
+    for &id in &made {
+        star(&rig, id);
+    }
+    let scope = MessageScope::Starred {
+        account: Some(rig.a1),
+    };
+    let mut walked = Vec::new();
+    let mut before = None;
+    loop {
+        let p = rig.core.list_messages(scope, before, 3).unwrap();
+        walked.extend(p.rows.iter().map(|r| r.id));
+        match p.next {
+            Some(c) => before = Some(c),
+            None => break,
+        }
+    }
+    let mut expected = made;
+    expected.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(walked, expected);
 }
 
 #[test]

@@ -383,6 +383,10 @@ pub struct AccountInfo {
     pub email: String,
     /// Status chip state.
     pub status: AccountStatus,
+    /// When a folder of the account last synced successfully (the newest `last_synced_at` of its
+    /// folders), Unix milliseconds. `None` until the first folder has synced. S13 and S19 show it
+    /// as "Last synced".
+    pub last_synced_ms: Option<i64>,
 }
 
 impl std::fmt::Debug for AccountInfo {
@@ -392,6 +396,7 @@ impl std::fmt::Debug for AccountInfo {
             .field("label", &"***")
             .field("email", &"***")
             .field("status", &self.status)
+            .field("last_synced_ms", &self.last_synced_ms)
             .finish()
     }
 }
@@ -441,6 +446,13 @@ pub enum MessageScope {
     },
     /// The Inbox of every account (folders with special use `inbox`) merged by date.
     UnifiedInbox,
+    /// Starred (flagged) messages across the folders of one account, or of every account when
+    /// `account` is `None`, merged by date. Messages in Trash and Junk and rows hidden while a
+    /// move or delete waits for the server or by a snooze are left out, as in every other list.
+    Starred {
+        /// The account, or `None` for all accounts.
+        account: Option<i64>,
+    },
 }
 
 /// Where the next page starts: just after the row with this date and id. Opaque to the app; pass
@@ -480,6 +492,12 @@ pub struct MessageRow {
     pub has_attachments: bool,
     /// A local change has not been confirmed by the server yet.
     pub pending: bool,
+    /// How many messages share this row's conversation key in this row's folder (this one
+    /// included; rows hidden by a waiting move or delete are not counted). 1 when alone.
+    pub thread_count: u32,
+    /// Who the message was sent to (display names, else addresses), for the Sent folder's rows.
+    /// Read from the stored `to_json`; empty when the sync stored none.
+    pub recipients: Vec<String>,
 }
 
 impl std::fmt::Debug for MessageRow {

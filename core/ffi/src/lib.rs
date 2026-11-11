@@ -9,7 +9,7 @@
 //! surface is pre-1.0 additions count too). The apps check the version at start-up and refuse to
 //! run against one they do not know.
 //!
-//! # What it offers (API version 3)
+//! # What it offers (API version 5)
 //!
 //! - [`Core::open`] with the database key and a [`CredentialProvider`] the app implements.
 //! - Accounts: `discover`, `verify`, `add_account`, `list_accounts`, `remove_account`, `signed_in`.
@@ -38,6 +38,8 @@ mod credentials;
 mod error;
 mod list;
 mod settings;
+#[cfg(feature = "test-server")]
+mod test_server;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -48,6 +50,8 @@ pub use error::{
     discover_error_default_message, discover_error_message_key, verify_failure_default_message,
     verify_failure_message_key, CoreError, DiscoverError, StorageReason, VerifyFailure,
 };
+#[cfg(feature = "test-server")]
+pub use test_server::TestImapServer;
 pub use types::*;
 
 uniffi::setup_scaffolding!();
@@ -55,9 +59,12 @@ uniffi::setup_scaffolding!();
 /// Version of this FFI surface. Version 2 replaced the free-text storage reason with
 /// `StorageReason`. Version 3 is the mail surface: accounts, discovery, message lists, change
 /// notices, actions and the credential provider. Version 4: `add_account` takes the new account's
-/// credential, so the provider is only asked about accounts the app already stored. Bump on any
-/// change to what is exported.
-pub const FFI_API_VERSION: u32 = 4;
+/// credential, so the provider is only asked about accounts the app already stored. Version 5:
+/// `MessageRow.thread_count` and `.recipients`, `AccountInfo.last_synced_ms` and
+/// `MessageScope::Starred`. Bump on any change to what is exported. (The `test-server` feature adds
+/// a test-only object to the host library the JVM tests load; it is not part of the surface and
+/// is never in the Android library.)
+pub const FFI_API_VERSION: u32 = 5;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

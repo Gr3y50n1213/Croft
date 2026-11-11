@@ -5,6 +5,18 @@ unverified, the next step.
 
 ---
 
+## T09: JMAP adapter (11 November 2026)
+
+**Status:** done. Not done: resuming `Email/changes` from the stored state after a restart (the first snapshot after a restart is a full read); push (EventSource); keep-alive connections; `$junk`/`$notjunk` keywords for spam (the trait has no flag for it yet, same as IMAP).
+
+**What was built:** `croft_protocols::jmap`: `JmapBackend` implementing `MailBackend` for Stalwart, Fastmail and other JMAP servers, with its own small HTTP client (same TLS and pinning policy as IMAP and SMTP); a persistent map from JMAP ids to per-folder numbers (migration 0005) so nothing above the protocols crate knows which protocol an account uses; `JmapSubmitter` for sending through EmailSubmission. Stalwart v1.1.0 in `test-servers/` with a setup script that creates two users.
+
+**Checks run and seen passing (by the orchestrator):** on the merged branch fmt, clippy (both), `cargo test` **703 passed, 0 failed**, storage with `sqlcipher` 146, `check_schema.py` ok. **All container suites run together by the orchestrator against fresh containers: Stalwart 6 of 6, IMAP (GreenMail, Dovecot) 9 of 9, SMTP to GreenMail 6 of 6, discovery 3 of 3.**
+
+**Review:** Opus, one round: 1 high (after a proxy error such as 502 or 504, a JMAP send was retried and could be delivered twice), 2 medium (stale numbers after the id map was reset; a retried move lost the new number), 5 low; all fixed with tests. The fixes were checked against Stalwart by the orchestrator, not re-reviewed.
+
+---
+
 ## T10: FFI mail surface, API version 3 (11 November 2026)
 
 **Status:** done except: the Kotlin tests were not run through Gradle (Maven Central rate-limits this container). They were compiled by Gradle offline and run with plain JUnit against the real Rust library: 21 of 21 passed (agent's run; not repeated by the orchestrator). Sending is not on the surface yet.

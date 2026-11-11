@@ -76,7 +76,8 @@ cd design/generator && npm ci && npm run generate && npm test   # tokens; git di
 ```
 Integration tests against real servers (Docker):
 ```
-docker compose -f test-servers/docker-compose.yml up -d --wait greenmail dovecot
+docker compose -f test-servers/docker-compose.yml up -d --wait greenmail dovecot stalwart
+bash test-servers/stalwart/setup.sh                    # Stalwart starts empty; this creates the test users
 cd core && cargo test -p croft-protocols --features integration
 docker compose -f test-servers/docker-compose.yml down -v
 ```
@@ -92,5 +93,5 @@ build folders fill the disk.
 Progress, task by task, is in `docs/PROGRESS.md` (newest first); choices in `docs/DECISIONS.md`; what waits on the
 owner in `docs/OPEN-ITEMS.md`; security-sensitive code to read by hand in `docs/REVIEW-QUEUE.md`.
 Done and tested: storage (SQLite, SQLCipher, migrations 0001-0004), persisted operation queue, IMAP adapter (vendored
-async-imap), account discovery, SMTP sender and outbox, sync engine (`core/engine`), design tokens, first Android
-screen through UniFFI. Next tasks are in `docs/tasks/` (T06 part B, T09, T10, then T11-T21 for the Android app).
+async-imap), JMAP adapter, account discovery, SMTP sender and outbox in the engine, sync engine (`core/engine`), FFI
+surface v3 for the app, design tokens, first Android screen. Next tasks are T11-T21 in `docs/tasks/` (the Android app).

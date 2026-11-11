@@ -98,6 +98,37 @@ check("counters match a fresh count of visible rows",
       counts() == (one("SELECT count(*) FROM message WHERE folder_id=1 AND local_hidden=0"),
                    one("SELECT count(*) FROM message WHERE folder_id=1 AND local_hidden=0 AND is_seen=0")))
 
+# Migration 0004: the Outbox keeps the envelope and has the submitted and filing states.
+db.execute("INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (2,'Kim','kim@example.org','imap','{}',0)")
+db.execute("INSERT INTO identity (id,account_id,display_name,address,is_default) VALUES (20,2,'Kim','kim@example.org',1)")
+db.execute("INSERT INTO outbox (account_id,identity_id,mime_blob,send_at,envelope_from,recipients) "
+           "VALUES (2,20,?,6000,'kim@example.org','[\"a@example.org\",\"b@example.org\"]')", (b"Subject: x\r\n\r\n\x00\xff",))
+check("outbox row keeps bytes, envelope and defaults to queued with 0 attempts",
+      db.execute("SELECT mime_blob, envelope_from, recipients, state, attempts FROM outbox").fetchone()
+      == (b"Subject: x\r\n\r\n\x00\xff", "kim@example.org", '["a@example.org","b@example.org"]', "queued", 0))
+for st in ("sending", "submitted", "filing", "sent", "failed", "queued"):
+    db.execute("UPDATE outbox SET state = ?", (st,))
+check("outbox accepts submitted and filing", one("SELECT state FROM outbox") == "queued")
+try:
+    db.execute("UPDATE outbox SET state = 'bogus'")
+    check("outbox state check rejects unknown states", False)
+except sqlite3.IntegrityError:
+    check("outbox state check rejects unknown states", True)
+try:
+    db.execute("INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (99,x'00',0)")
+    check("outbox foreign key rejects a missing account", False)
+except sqlite3.IntegrityError:
+    check("outbox foreign key rejects a missing account", True)
+first_id = one("SELECT id FROM outbox")
+db.execute("DELETE FROM outbox")
+db.execute("INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (2,x'00',0)")
+check("outbox ids are never reused after a delete", one("SELECT id FROM outbox") > first_id)
+db.execute("DELETE FROM identity WHERE id = 20")
+check("removing an identity keeps the outbox row", one("SELECT count(*) FROM outbox") == 1
+      and one("SELECT identity_id IS NULL FROM outbox") == 1)
+db.execute("DELETE FROM account WHERE id = 2")
+check("removing an account removes its outbox rows", one("SELECT count(*) FROM outbox") == 0)
+
 try:
     db.execute("INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,category) VALUES (1,1,9,'t9',0,'spam')")
     check("category check rejects unknown values", False)
@@ -125,5 +156,20 @@ UPDATE message SET local_hidden = 1 WHERE uid = 1;""")
 old.executescript(open(mig[2]).read())
 check("migration 0003 takes already hidden rows out of the counters",
       old.execute("SELECT total_count, unread_count FROM folder WHERE id=1").fetchone() == (1, 0))
+
+# Upgrading a version-3 database that already has an outbox row keeps the row and the id counter.
+old = sqlite3.connect(":memory:")
+old.execute("PRAGMA foreign_keys = ON")
+for path in mig[:3]:
+    old.executescript(open(path).read())
+old.executescript("""INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'S','s@example.org','imap','{}',0);
+INSERT INTO outbox (id,account_id,mime_blob,state,send_at,attempts,last_error) VALUES (41,1,x'414243','failed',99,3,'old');""")
+old.executescript(open(mig[3]).read())
+check("migration 0004 keeps existing outbox rows and gives them an empty envelope",
+      old.execute("SELECT id, mime_blob, state, send_at, attempts, last_error, envelope_from, recipients FROM outbox").fetchone()
+      == (41, b"ABC", "failed", 99, 3, "old", "", "[]"))
+old.execute("INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (1,x'00',0)")
+check("migration 0004 continues the id counter after the old rows",
+      old.execute("SELECT max(id) FROM outbox").fetchone()[0] == 42)
 
 sys.exit(1 if check.failed else 0)

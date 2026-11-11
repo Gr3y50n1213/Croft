@@ -5,6 +5,34 @@ unverified, the next step.
 
 ---
 
+## T06: SMTP send and Outbox, part A (11 November 2026)
+
+**Status:** part A done; part B (wiring the outbox into the engine so "send with no network queues and sends later exactly once" runs end to end) is not done yet. Its plan is at the end of `docs/tasks/T06-smtp-outbox.md`.
+
+**What was built:** `croft_protocols::smtp`: an SMTP submission client written directly on tokio and rustls (TLS on 465, STARTTLS on 587, AUTH PLAIN/LOGIN/XOAUTH2, pinned certificates, same TLS policy as IMAP). `lettre` was not used: it cannot take a custom certificate verifier, so pinning would be impossible. `croft_mail_core::outbox`: the outbox state machine (queued, sending, submitted, filing in Sent, sent, failed; Undo, retry, edit back to draft, discard, abandon). A message whose sending was interrupted after the server may have accepted it is never resent automatically; it fails with "May not have been sent; check Sent before retrying". Migration 0004 rebuilds the `outbox` table (envelope, new states). A fake SMTP server in `core/test-support`.
+
+**Checks run and seen passing (by the orchestrator):** fmt, clippy, `cargo test` 442 passed, 0 failed on the merged branch; `check_schema.py` all ok. The agent ran 6 SMTP-to-GreenMail container tests (send, then read back over IMAP, including Bcc and a body line that is just a dot) on its own copy of the servers; not re-run by the orchestrator.
+
+**Review:** Opus, one round: no high or medium; 5 low fixed (message bytes and addresses in `Debug`, missing STARTTLS now pauses the account, abandon for a stuck sending row, outbox actions check the account, a schema comment).
+
+**Next:** T06 part B after T04 is merged.
+
+---
+
+## T05: Account discovery (11 November 2026)
+
+**Status:** done. Not checked here: the real DNS resolver and HTTPS client against the live internet (this container's DNS answers nothing; both were tested against local DNS and TLS servers), hickory's system configuration on Android, autoconfig files recorded from real providers (fixtures are written to Mozilla's format).
+
+**What was built:** `croft_protocols::discovery`: built-in table (Gmail, Outlook, iCloud, Fastmail), autoconfig over HTTPS on the person's own domain only, RFC 6186 SRV, JMAP well-known; probes in parallel, earliest source in that order wins. Then `verify`: a certificate check with no credentials first, then sign-in. Each failure has its own plain message (wrong password, needs an app password, untrusted certificate with its fingerprint, certificate changed, connection intercepted, certificate invalid, cannot connect, and others). The local part of the address never leaves the device in a URL, a DNS name or a header; no third-party lookup.
+
+**Checks run and seen passing (by the orchestrator):** fmt, clippy (with and without `integration`), `cargo test` 344 passed, 0 failed across the workspace. Container tests (GreenMail via autoconfig, Dovecot via SRV with TLS and STARTTLS: 3 of 3; T03's 9 of 9) were run by the agent on its own copy of the servers, not re-run by the orchestrator.
+
+**Review:** Opus, two rounds. Round 1: 1 medium (Croft offered "trust this certificate" for Gmail and other big providers, where a self-signed certificate means interception), 2 low, 3 info. Fixing it also fixed a clash: T03 had changed certificate errors to `Auth`, which discovery would have shown as "wrong password". Round 2: 2 low, 3 info; fixed except one kept on purpose (a self-signed certificate is offered trust whatever name it was made for).
+
+**Next:** T06 (in progress).
+
+---
+
 ## T03: IMAP adapter (11 November 2026)
 
 **Status:** done. Not covered by a container: UIDVALIDITY change on a real server (only the in-process server), CONDSTORE-only servers (only in-process), XOAUTH2 success (only in-process; no container offers it), the public certificate path against a real public server (no internet mail server reachable from here).

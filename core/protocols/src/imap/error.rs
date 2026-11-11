@@ -24,10 +24,69 @@
 //!   the message. There is no extra error variant for this: the person has to look at it either
 //!   way (a wrong pin, a renewed certificate, a hostile network).
 
+use super::config::CertFingerprint;
+use super::tls;
 use crate::types::BackendError;
 use async_imap::error::Error as ImapError;
 use async_imap::imap_proto::ResponseCode;
 use tokio_rustls::rustls;
+
+/// Why a server's certificate was refused, found by [`check_certificate`](super::check_certificate)
+/// in a handshake that sends no credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateProblem {
+    /// The certificate does not chain to a trusted root: self-signed, or signed by a private
+    /// authority. The fingerprint is the certificate's SHA-256, for the person to compare.
+    UnknownIssuer {
+        /// SHA-256 of the certificate the server presented.
+        fingerprint: CertFingerprint,
+    },
+    /// The certificate has expired.
+    Expired,
+    /// The certificate is for a different host name.
+    WrongName,
+    /// A pinned fingerprint was set and the server presented a different certificate.
+    PinMismatch {
+        /// SHA-256 of the certificate the server presented now.
+        fingerprint: CertFingerprint,
+    },
+    /// Any other certificate failure (not yet valid, bad signature, unsupported key, ...).
+    Other,
+    /// The server could not be reached, or did not answer in time. Nothing is known about its
+    /// certificate.
+    CannotConnect,
+    /// The server does not offer TLS 1.2 or newer (or STARTTLS), or refused the handshake for a
+    /// reason that is not about its certificate.
+    NoSecureConnection,
+}
+
+impl CertificateProblem {
+    /// Classifies a refused handshake. `fingerprint` is what the verifier saw, if it got that far.
+    pub(crate) fn from_tls(e: &rustls::Error, fingerprint: Option<CertFingerprint>) -> Self {
+        use rustls::{CertificateError as C, Error as E};
+        match (e, fingerprint) {
+            (e, Some(fingerprint)) if tls::is_pin_mismatch(e) => Self::PinMismatch { fingerprint },
+            // "Does not chain to a trusted root". Besides `UnknownIssuer`, a self-signed certificate
+            // whose name equals the name of some installed root fails when the verifier tries
+            // that root's key on it (`BadSignature`, or an algorithm the root's key cannot
+            // check). Such a certificate is just as unknown, so the person may still be asked.
+            (
+                E::InvalidCertificate(
+                    C::UnknownIssuer
+                    | C::BadSignature
+                    | C::UnsupportedSignatureAlgorithmContext { .. }
+                    | C::UnsupportedSignatureAlgorithmForPublicKeyContext { .. },
+                ),
+                Some(fingerprint),
+            ) => Self::UnknownIssuer { fingerprint },
+            (E::InvalidCertificate(C::Expired | C::ExpiredContext { .. }), _) => Self::Expired,
+            (E::InvalidCertificate(C::NotValidForName | C::NotValidForNameContext { .. }), _) => {
+                Self::WrongName
+            }
+            _ => Self::Other,
+        }
+    }
+}
 
 /// A failure inside one operation, with what the connection layer should do about it.
 #[derive(Debug)]
@@ -464,5 +523,42 @@ mod tests {
             rustls::PeerIncompatible::Tls12NotOffered,
         ));
         assert!(matches!(e.error, BackendError::Permanent(_)));
+    }
+
+    #[test]
+    fn certificate_problems_are_typed_without_reading_text() {
+        use rustls::CertificateError as C;
+        let fp = CertFingerprint::from_bytes([9; 32]);
+        let typed =
+            |c: C| CertificateProblem::from_tls(&rustls::Error::InvalidCertificate(c), Some(fp));
+        assert_eq!(
+            typed(C::UnknownIssuer),
+            CertificateProblem::UnknownIssuer { fingerprint: fp }
+        );
+        // A self-signed certificate that shares its name with an installed root fails against
+        // that root's key: still "does not chain to a trusted root".
+        assert_eq!(
+            typed(C::BadSignature),
+            CertificateProblem::UnknownIssuer { fingerprint: fp }
+        );
+        assert_eq!(
+            typed(C::UnsupportedSignatureAlgorithmForPublicKeyContext {
+                signature_algorithm_id: vec![1],
+                public_key_algorithm_id: vec![2],
+            }),
+            CertificateProblem::UnknownIssuer { fingerprint: fp }
+        );
+        assert_eq!(typed(C::Expired), CertificateProblem::Expired);
+        assert_eq!(typed(C::NotValidForName), CertificateProblem::WrongName);
+        assert_eq!(typed(C::NotValidYet), CertificateProblem::Other);
+        assert_eq!(typed(C::Revoked), CertificateProblem::Other);
+        // Without a fingerprint there is nothing to show, so nothing to trust.
+        assert_eq!(
+            CertificateProblem::from_tls(
+                &rustls::Error::InvalidCertificate(C::UnknownIssuer),
+                None
+            ),
+            CertificateProblem::Other
+        );
     }
 }

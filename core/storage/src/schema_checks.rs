@@ -471,3 +471,84 @@ fn migration_3_takes_already_hidden_rows_out_of_the_counters() {
     c.execute_batch(MIGRATIONS[2].sql).unwrap();
     assert_eq!(folder1_counters(&c), (1, 0));
 }
+
+// Migration 0004: the Outbox keeps the envelope and has the submitted and filing states.
+
+#[test]
+fn outbox_keeps_the_envelope_and_knows_the_states_after_acceptance() {
+    let db = fixture();
+    let c = db.connection();
+    c.execute(
+        "INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (2,'Kim','kim@example.org','imap','{}',0)",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO identity (id,account_id,display_name,address,is_default) VALUES (20,2,'Kim','kim@example.org',1)",
+        [],
+    )
+    .unwrap();
+    let bytes: &[u8] = b"Subject: x\r\n\r\n\x00\xff";
+    c.execute(
+        "INSERT INTO outbox (account_id,identity_id,mime_blob,send_at,envelope_from,recipients) VALUES (2,20,?1,6000,'kim@example.org','[\"a@example.org\",\"b@example.org\"]')",
+        [bytes],
+    )
+    .unwrap();
+    let row: (Vec<u8>, String, String, String, i64) = c
+        .query_row(
+            "SELECT mime_blob, envelope_from, recipients, state, attempts FROM outbox",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            bytes.to_vec(),
+            "kim@example.org".into(),
+            r#"["a@example.org","b@example.org"]"#.into(),
+            "queued".into(),
+            0
+        )
+    );
+    for st in ["sending", "submitted", "filing", "sent", "failed", "queued"] {
+        c.execute("UPDATE outbox SET state = ?1", [st]).unwrap();
+    }
+    let err = c
+        .execute("UPDATE outbox SET state = 'bogus'", [])
+        .unwrap_err();
+    assert_eq!(
+        err.sqlite_error_code(),
+        Some(ErrorCode::ConstraintViolation),
+        "unknown states are refused"
+    );
+    let err = c
+        .execute(
+            "INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (99,x'00',0)",
+            [],
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.sqlite_error_code(),
+        Some(ErrorCode::ConstraintViolation)
+    );
+    let first: i64 = one(c, "SELECT id FROM outbox");
+    c.execute("DELETE FROM outbox", []).unwrap();
+    c.execute(
+        "INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (2,x'00',0)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        one::<i64>(c, "SELECT id FROM outbox") > first,
+        "ids are never reused"
+    );
+    c.execute("DELETE FROM identity WHERE id = 20", []).unwrap();
+    assert_eq!(
+        pair(c, "SELECT count(*), sum(identity_id IS NULL) FROM outbox"),
+        (1, 1),
+        "removing an identity keeps the message"
+    );
+    c.execute("DELETE FROM account WHERE id = 2", []).unwrap();
+    assert_eq!(one::<i64>(c, "SELECT count(*) FROM outbox"), 0);
+}

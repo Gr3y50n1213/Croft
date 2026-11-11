@@ -27,6 +27,33 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const GREENMAIL_HOST: &str = "127.0.0.1";
 
+/// A host port, from the environment when set, else the one in `test-servers/docker-compose.yml`.
+/// This lets a second copy of the servers (`docker compose -p other-name ...` with remapped host
+/// ports) run next to someone else's. The variables are the ones `tests/discovery_containers.rs`
+/// reads, plus `CROFT_TEST_GREENMAIL_IMAP_PORT` for the plaintext port.
+fn port(variable: &str, default: u16) -> u16 {
+    std::env::var(variable)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn greenmail_imap_port() -> u16 {
+    port("CROFT_TEST_GREENMAIL_IMAP_PORT", 3143)
+}
+
+fn greenmail_imaps_port() -> u16 {
+    port("CROFT_TEST_GREENMAIL_IMAPS_PORT", 3993)
+}
+
+fn dovecot_imaps_port() -> u16 {
+    port("CROFT_TEST_DOVECOT_IMAPS_PORT", 31993)
+}
+
+fn dovecot_starttls_port() -> u16 {
+    port("CROFT_TEST_DOVECOT_STARTTLS_PORT", 31143)
+}
+
 fn unique(prefix: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -322,7 +349,12 @@ async fn wrong_password_is_auth(t: Target) {
 fn greenmail_plain(user: &str) -> Target {
     Target {
         label: "greenmail-plain",
-        config: ImapConfig::new(GREENMAIL_HOST, 3143, Security::PlaintextForTestsOnly, user),
+        config: ImapConfig::new(
+            GREENMAIL_HOST,
+            greenmail_imap_port(),
+            Security::PlaintextForTestsOnly,
+            user,
+        ),
         password: user.to_string(),
         has_special_use: false,
         has_condstore: false,
@@ -331,7 +363,7 @@ fn greenmail_plain(user: &str) -> Target {
 }
 
 async fn greenmail_tls(user: &str) -> Target {
-    let probe = ImapConfig::new(GREENMAIL_HOST, 3993, Security::Tls, user);
+    let probe = ImapConfig::new(GREENMAIL_HOST, greenmail_imaps_port(), Security::Tls, user);
     // Trust on first use, as the account-setup screen would after the person confirms it.
     let fp = probe_certificate(&probe).await.unwrap();
     Target {
@@ -362,8 +394,13 @@ async fn greenmail_wrong_password_is_auth() {
 
 #[tokio::test]
 async fn greenmail_imaps_refuses_without_a_pin_and_with_the_wrong_pin() {
-    let cfg = ImapConfig::new(GREENMAIL_HOST, 3993, Security::Tls, "test")
-        .with_timeout(Duration::from_secs(20));
+    let cfg = ImapConfig::new(
+        GREENMAIL_HOST,
+        greenmail_imaps_port(),
+        Security::Tls,
+        "test",
+    )
+    .with_timeout(Duration::from_secs(20));
     let none = ImapBackend::new(cfg.clone(), Credential::password("test")).unwrap();
     assert!(matches!(
         none.list_folders().await,
@@ -387,7 +424,7 @@ async fn greenmail_imaps_refuses_without_a_pin_and_with_the_wrong_pin() {
 fn dovecot_imaps(user: &str) -> Target {
     Target {
         label: "dovecot-imaps-pinned",
-        config: ImapConfig::new("localhost", 31993, Security::Tls, user)
+        config: ImapConfig::new("localhost", dovecot_imaps_port(), Security::Tls, user)
             .with_pinned_cert(dovecot_cert()),
         password: "testpass".into(),
         has_special_use: true,
@@ -399,8 +436,13 @@ fn dovecot_imaps(user: &str) -> Target {
 fn dovecot_starttls(user: &str) -> Target {
     Target {
         label: "dovecot-starttls-pinned",
-        config: ImapConfig::new("127.0.0.1", 31143, Security::StartTls, user)
-            .with_pinned_cert(dovecot_cert()),
+        config: ImapConfig::new(
+            "127.0.0.1",
+            dovecot_starttls_port(),
+            Security::StartTls,
+            user,
+        )
+        .with_pinned_cert(dovecot_cert()),
         password: "testpass".into(),
         has_special_use: true,
         has_condstore: true,
@@ -427,13 +469,18 @@ async fn dovecot_wrong_password_is_auth() {
 
 #[tokio::test]
 async fn dovecot_probe_reads_the_known_certificate_and_a_wrong_pin_is_refused() {
-    let seen = probe_certificate(&ImapConfig::new("127.0.0.1", 31993, Security::Tls, "u"))
-        .await
-        .unwrap();
+    let seen = probe_certificate(&ImapConfig::new(
+        "127.0.0.1",
+        dovecot_imaps_port(),
+        Security::Tls,
+        "u",
+    ))
+    .await
+    .unwrap();
     assert_eq!(seen, dovecot_cert());
     let seen = probe_certificate(&ImapConfig::new(
         "127.0.0.1",
-        31143,
+        dovecot_starttls_port(),
         Security::StartTls,
         "u",
     ))
@@ -449,7 +496,7 @@ async fn dovecot_probe_reads_the_known_certificate_and_a_wrong_pin_is_refused() 
 
     // Unpinned: the self-signed certificate does not validate against public roots. Certificate
     // failures are `Auth` (the account pauses, queued operations stay), not `Permanent`.
-    let unpinned = ImapConfig::new("localhost", 31993, Security::Tls, &user);
+    let unpinned = ImapConfig::new("localhost", dovecot_imaps_port(), Security::Tls, &user);
     let b = ImapBackend::new(unpinned, Credential::password("testpass")).unwrap();
     assert!(matches!(b.list_folders().await, Err(BackendError::Auth(_))));
 }

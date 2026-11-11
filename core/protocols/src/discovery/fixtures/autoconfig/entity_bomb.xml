@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!DOCTYPE clientConfig [
+  <!ENTITY a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
+  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+  <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+  <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">
+]>
+<clientConfig version="1.1">
+  <emailProvider id="bomb.example">
+    <incomingServer type="imap">
+      <hostname>&d;</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+    </incomingServer>
+  </emailProvider>
+</clientConfig>

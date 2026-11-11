@@ -10,17 +10,25 @@ rust-version.workspace = true
 # Tests that need the container mail servers in test-servers/ (GreenMail and Dovecot).
 # Start them with: docker compose -f test-servers/docker-compose.yml up -d
 integration = []
+# Recording stand-ins for the network (`discovery::testing`), for tests of discovery. Off in
+# release builds: this crate's own tests turn it on through the self-reference in
+# `[dev-dependencies]`, and other crates' tests can enable it explicitly.
+test-fakes = []
 
 [dependencies]
 async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 encoding_rs = "0.8.35"
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
+httparse = "1.10.1"
 futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
 # `max_level_debug` compiles out every `trace!` call in the build. async-imap traces whole
 # commands (the LOGIN line with the password) and whole server responses (message headers), so
 # this is a security setting, not a tuning knob. A test in this crate checks it stays on.
+idna = "1.1.0"
 log = { version = "0.4.29", features = ["max_level_debug"] }
+quick-xml = "0.42.0"
 rustls-native-certs = "0.8.5"
 sha2 = "0.11.1"
 tokio = { version = "1.54", features = ["net", "time", "sync", "io-util", "rt"] }
@@ -30,7 +38,12 @@ webpki-roots = "1.0.12"
 zeroize = "1.9.1"
 
 [dev-dependencies]
+# Turns on `test-fakes` for this crate's own tests (cargo test, clippy --all-targets) without
+# putting the fakes in a normal build.
+croft-protocols = { path = ".", features = ["test-fakes"] }
 croft-test-support = { path = "../test-support" }
+rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
+tempfile = "3.27"
 tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util"] }
 
 [lints]

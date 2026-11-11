@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="old.example">
+    <incomingServer type="imap">
+      <hostname>mail.old.example</hostname>
+      <port>143</port>
+      <socketType>plain</socketType>
+      <username>%EMAILADDRESS%</username>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>mail.old.example</hostname>
+      <port>25</port>
+      <socketType>plain</socketType>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>

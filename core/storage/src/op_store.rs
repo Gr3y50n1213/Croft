@@ -31,8 +31,8 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 
 use crate::error::{Result, StorageError};
-use crate::settings;
 use crate::Db;
+use crate::{folders, messages, settings};
 
 /// The payload format version written by this build.
 const PAYLOAD_VERSION: i64 = 1;
@@ -510,6 +510,33 @@ fn apply_effect(tx: &Transaction<'_>, effect: &LocalEffect) -> Result<()> {
             Ok(())
         }
         LocalEffect::CopyMessage { account, from, to } => copy_message(tx, *account, from, to),
+        LocalEffect::ClearFolder { account, folder } => {
+            if let Some(id) = folder_id(tx, *account, folder)? {
+                messages::delete_all_in_folder(tx, *account, id)?;
+            }
+            Ok(())
+        }
+        LocalEffect::PutHeader {
+            account,
+            folder,
+            header,
+        } => {
+            if let Some(id) = folder_id(tx, *account, folder)? {
+                messages::upsert(tx, *account, id, header)?;
+            }
+            Ok(())
+        }
+        LocalEffect::SetFolderStatus {
+            account,
+            folder,
+            status,
+            synced_at_ms,
+        } => {
+            if let Some(id) = folder_id(tx, *account, folder)? {
+                folders::update_status(tx, *account, id, status, *synced_at_ms)?;
+            }
+            Ok(())
+        }
     }
 }
 

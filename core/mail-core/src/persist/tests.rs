@@ -622,22 +622,74 @@ fn store_mut_lends_the_store_without_touching_the_queue() {
     assert_eq!(q.queue().unfinished(), 1);
 }
 
+fn reset(folder: &str) -> FolderReset {
+    FolderReset {
+        folder: folder.into(),
+        status: FolderStatus {
+            uid_validity: 9,
+            uid_next: 4,
+            highest_modseq: None,
+            exists: 3,
+        },
+        synced_at_ms: 7_000,
+        headers: Vec::new(),
+        matched: Vec::new(),
+        unmatched: Vec::new(),
+        moved_out: Vec::new(),
+        moved_in: Vec::new(),
+        reason: "not found".into(),
+    }
+}
+
+fn header(uid: Uid, id: &str) -> RemoteHeader {
+    RemoteHeader {
+        uid,
+        message_id: Some(id.into()),
+        references: Vec::new(),
+        subject: String::new(),
+        from_name: None,
+        from_addr: None,
+        date_ms: 0,
+        size: 0,
+        flags: croft_protocols::Flags::default(),
+    }
+}
+
 #[test]
-fn repoint_many_after_a_reset_moves_each_operation_once_and_sets_its_new_row() {
+fn a_folder_reset_is_one_batch_and_moves_each_operation_once() {
     let mut q = open();
     let a = add(&mut q, seen(1, true), 0);
     let b = add(&mut q, starred(2, true), 0);
+    let lost = add(&mut q, seen(3, true), 0);
     take_effects(&mut q);
-    let moves = vec![
-        (("INBOX".to_owned(), 1), ("INBOX".to_owned(), 2)),
-        (("INBOX".to_owned(), 2), ("INBOX".to_owned(), 1)),
-    ];
-    assert_eq!(q.repoint_many_after_reset(A, &moves).unwrap(), 2);
+    let commits = q.store.commits;
+    let mut r = reset("INBOX");
+    // A renumbered folder: 1 and 2 swapped, 3 is gone.
+    r.matched = vec![(1, 2), (2, 1)];
+    r.unmatched = vec![3];
+    r.headers = vec![header(2, "<a@x>"), header(1, "<b@x>")];
+    assert_eq!(q.reset_folder(A, &r).unwrap(), vec![lost]);
+    assert_eq!(q.store.commits, commits + 1, "one transaction");
     assert_eq!(q.queue().get(a).map(|o| o.kind.target().1), Some(2));
     assert_eq!(q.queue().get(b).map(|o| o.kind.target().1), Some(1));
     assert_eq!(
+        q.store.ops.get(&lost).map(|o| o.state),
+        Some(OpState::Failed)
+    );
+    let put = |uid, id: &str| LocalEffect::PutHeader {
+        account: A,
+        folder: "INBOX".into(),
+        header: header(uid, id),
+    };
+    assert_eq!(
         take_effects(&mut q),
         vec![
+            LocalEffect::ClearFolder {
+                account: A,
+                folder: "INBOX".into()
+            },
+            put(2, "<a@x>"),
+            put(1, "<b@x>"),
             set_seen(2, true),
             delta("INBOX", 2, 1),
             LocalEffect::SetFlagged {
@@ -647,46 +699,90 @@ fn repoint_many_after_a_reset_moves_each_operation_once_and_sets_its_new_row() {
                 value: true
             },
             delta("INBOX", 1, 1),
+            LocalEffect::SetFolderStatus {
+                account: A,
+                folder: "INBOX".into(),
+                status: r.status,
+                synced_at_ms: 7_000
+            },
         ]
-    );
-    assert_eq!(
-        q.store.ops.get(&a).map(|o| o.kind.target().1),
-        Some(2),
-        "stored"
     );
 }
 
 #[test]
-fn repoint_many_after_a_reset_removes_an_awaiting_leftover_unless_reused() {
+fn a_folder_reset_resolves_awaiting_entries_from_and_to_the_folder() {
     let mut q = open();
+    // INBOX 1 was archived without a new UID; a star waits for it.
     let moved = add(&mut q, mv(1, "Archive"), 0);
-    let later = add(&mut q, seen(1, true), 0);
+    let star = add(&mut q, starred(1, true), 0);
+    // INBOX 2 was moved to Junk without a new UID; a read waits for it.
+    let moved2 = add(&mut q, mv(2, "Junk"), 0);
+    let read = add(&mut q, seen(2, true), 0);
     q.take_due(WINDOW, 10).unwrap();
     q.confirm_moved_with(moved, None, Some("<a@x>".into()), WINDOW)
         .unwrap();
+    q.confirm_moved_with(moved2, None, Some("<b@x>".into()), WINDOW)
+        .unwrap();
     take_effects(&mut q);
-    let moves = vec![(("INBOX".to_owned(), 1), ("Archive".to_owned(), 4))];
-    assert_eq!(q.repoint_many_after_reset(A, &moves).unwrap(), 1);
+
+    // INBOX itself is reset: the Archive copy was found, the Junk copy was not.
+    let mut r = reset("INBOX");
+    r.moved_out = vec![
+        MovedOut {
+            old_uid: 1,
+            found: Some((("Archive".into(), 7), header(7, "<a@x>"))),
+        },
+        MovedOut {
+            old_uid: 2,
+            found: None,
+        },
+    ];
+    assert_eq!(q.reset_folder(A, &r).unwrap(), vec![read]);
     assert_eq!(
-        take_effects(&mut q),
-        vec![
-            LocalEffect::SetSeen {
+        q.queue().get(star).map(|o| o.kind.target()),
+        Some(("Archive", 7))
+    );
+    assert!(q.store.awaiting.is_empty());
+    let effects = take_effects(&mut q);
+    assert_eq!(
+        effects[..2],
+        [
+            LocalEffect::ClearFolder {
+                account: A,
+                folder: "INBOX".into()
+            },
+            LocalEffect::PutHeader {
                 account: A,
                 folder: "Archive".into(),
-                uid: 4,
-                value: true
-            },
-            delta("Archive", 4, 1),
-            LocalEffect::RemoveMessage {
-                account: A,
-                folder: "INBOX".into(),
-                uid: 1
+                header: header(7, "<a@x>")
             },
         ]
     );
-    assert!(q.store.awaiting.is_empty());
+    assert!(effects.contains(&delta("Archive", 7, 1)));
+
+    // Now a reset of the destination: an entry moved into it is found there, and its old hidden
+    // row in the source folder goes.
+    let mut q = open();
+    let moved = add(&mut q, mv(5, "Archive"), 0);
+    let star = add(&mut q, starred(5, true), 0);
+    q.take_due(WINDOW, 10).unwrap();
+    q.confirm_moved_with(moved, None, Some("<c@x>".into()), WINDOW)
+        .unwrap();
+    take_effects(&mut q);
+    let mut r = reset("Archive");
+    r.moved_in = vec![(("INBOX".into(), 5), 3)];
+    r.headers = vec![header(3, "<c@x>")];
+    assert!(q.reset_folder(A, &r).unwrap().is_empty());
     assert_eq!(
-        q.queue().get(later).map(|o| o.kind.target()),
-        Some(("Archive", 4))
+        q.queue().get(star).map(|o| o.kind.target()),
+        Some(("Archive", 3))
     );
+    let effects = take_effects(&mut q);
+    assert!(effects.contains(&LocalEffect::RemoveMessage {
+        account: A,
+        folder: "INBOX".into(),
+        uid: 5
+    }));
+    assert!(effects.contains(&delta("Archive", 3, 1)));
+    assert!(q.store.awaiting.is_empty());
 }

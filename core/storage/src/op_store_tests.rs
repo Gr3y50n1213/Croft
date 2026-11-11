@@ -11,10 +11,10 @@
 use std::path::{Path, PathBuf};
 
 use croft_mail_core::{
-    AwaitingUid, Batch, Enqueued, LocalEffect, Op, OpKind, OpState, OpStore, PersistentQueue,
-    QueueError, Rejection,
+    AwaitingUid, Batch, Enqueued, FolderReset, LocalEffect, Op, OpKind, OpState, OpStore,
+    PersistentQueue, QueueError, Rejection,
 };
-use croft_protocols::{BackendError, Flags, RemoteFolder, RemoteHeader, SpecialUse};
+use croft_protocols::{BackendError, Flags, FolderStatus, RemoteFolder, RemoteHeader, SpecialUse};
 use serde_json::json;
 
 use crate::accounts::{self, NewAccount, Protocol};
@@ -1128,4 +1128,113 @@ fn db_mut_lends_the_database_for_other_writes() {
         })
         .unwrap();
     assert_eq!(n, 0);
+}
+
+#[test]
+fn a_folder_reset_replaces_rows_status_and_operations_in_one_transaction() {
+    let fx = fixture();
+    let mut q = open(&fx.path);
+    // Star INBOX 2 and mark INBOX 3 read; account 2 marks its INBOX 2 read.
+    let star = add(&mut q, fx.a1, starred(2, true), 0);
+    let lost = add(&mut q, fx.a1, seen(3, true), 0);
+    add(&mut q, fx.a2, seen(2, true), 0);
+    let status = FolderStatus {
+        uid_validity: 4242,
+        uid_next: 3,
+        highest_modseq: None,
+        exists: 2,
+    };
+    // After the change: the starred message is now UID 1, the other one is gone, and a message
+    // nobody touched is UID 2.
+    let mut moved = header(1);
+    moved.message_id = Some("<m2@example.org>".into());
+    let mut stranger = header(2);
+    stranger.message_id = Some("<m9@example.org>".into());
+    let reset = FolderReset {
+        folder: "INBOX".into(),
+        status,
+        synced_at_ms: 9_000,
+        headers: vec![moved, stranger],
+        matched: vec![(2, 1)],
+        unmatched: vec![3],
+        moved_out: Vec::new(),
+        moved_in: Vec::new(),
+        reason: "Couldn't find the message".into(),
+    };
+    assert_eq!(q.reset_folder(fx.a1, &reset).unwrap(), vec![lost]);
+
+    let new_row = row(&q, fx.a1, "INBOX", 1).unwrap();
+    assert_eq!(new_row.message_id_hdr.as_deref(), Some("<m2@example.org>"));
+    assert!(new_row.is_flagged, "the local star is on the new row");
+    assert_eq!(new_row.pending_ops, 1);
+    let other = row(&q, fx.a1, "INBOX", 2).unwrap();
+    assert_eq!(
+        (
+            other.message_id_hdr.as_deref(),
+            other.pending_ops,
+            other.is_flagged
+        ),
+        (Some("<m9@example.org>"), 0, false),
+        "UID 2 is now a different message, with the server's values"
+    );
+    assert!(row(&q, fx.a1, "INBOX", 3).is_none());
+    let c = db(&q).connection();
+    let inbox = folders::find_by_path(c, fx.a1, "INBOX").unwrap().unwrap();
+    assert_eq!(
+        (inbox.uid_validity, inbox.last_synced_at),
+        (Some(4242), Some(9_000))
+    );
+    assert_eq!(inbox.total_count, 2);
+    let other_account = row(&q, fx.a2, "INBOX", 2).unwrap();
+    assert!(other_account.is_seen && other_account.pending_ops == 1);
+
+    // After a restart the queue has the re-pointed star and nothing else of account 1.
+    drop(q);
+    let q = open(&fx.path);
+    let ops: Vec<_> = q
+        .queue()
+        .iter()
+        .filter(|o| o.account == fx.a1)
+        .map(|o| (o.id, o.kind.target().1))
+        .collect();
+    assert_eq!(ops, vec![(star, 1)]);
+}
+
+#[test]
+fn a_folder_reset_that_cannot_be_written_changes_nothing() {
+    let fx = fixture();
+    let mut q = open(&fx.path);
+    let star = add(&mut q, fx.a1, starred(2, true), 0);
+    // A trigger that refuses the status update makes the whole batch fail.
+    db(&q)
+        .connection()
+        .execute_batch(
+            "CREATE TEMP TRIGGER refuse BEFORE UPDATE OF uid_validity ON folder
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .unwrap();
+    let reset = FolderReset {
+        folder: "INBOX".into(),
+        status: FolderStatus {
+            uid_validity: 7,
+            uid_next: 2,
+            highest_modseq: None,
+            exists: 1,
+        },
+        synced_at_ms: 1,
+        headers: vec![header(1)],
+        matched: vec![(2, 1)],
+        unmatched: Vec::new(),
+        moved_out: Vec::new(),
+        moved_in: Vec::new(),
+        reason: "x".into(),
+    };
+    assert!(q.reset_folder(fx.a1, &reset).is_err());
+    assert_eq!(
+        q.queue().get(star).map(|o| o.kind.target().1),
+        Some(2),
+        "memory put back"
+    );
+    assert!(row(&q, fx.a1, "INBOX", 3).is_some(), "rows kept");
+    assert_eq!(row(&q, fx.a1, "INBOX", 2).unwrap().pending_ops, 1);
 }

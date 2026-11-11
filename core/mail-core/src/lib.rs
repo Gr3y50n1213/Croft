@@ -18,6 +18,7 @@ pub use ops::{
     Rejection,
 };
 pub use persist::{
-    Batch, LocalEffect, OpStore, PersistentQueue, QueueError, StoredQueue, UnreadableOp,
+    Batch, FolderReset, LocalEffect, MovedOut, OpStore, PersistentQueue, QueueError, StoredQueue,
+    UnreadableOp,
 };
 pub use sync_plan::{plan, LocalFolder, SyncPlan};

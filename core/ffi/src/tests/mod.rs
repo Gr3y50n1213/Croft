@@ -7,6 +7,7 @@
 //! in-process IMAP server from `croft-test-support` (TLS on 127.0.0.1 with a self-signed
 //! certificate, trusted through the fingerprint exactly as the app does it).
 
+mod encrypted;
 mod local;
 mod secrets;
 mod server;

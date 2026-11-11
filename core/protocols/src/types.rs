@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Protocol-neutral mail vocabulary.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -163,6 +167,36 @@ pub struct RemoteHeader {
     pub size: u32,
     /// Flags at fetch time.
     pub flags: Flags,
+}
+
+/// What a move produced: where each moved message ended up.
+///
+/// IMAP servers report this in the `COPYUID` response code (RFC 4315 UIDPLUS, RFC 6851 MOVE). The
+/// sync engine uses it to re-point later queued operations on the same message at its new UID.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MoveOutcome {
+    /// Source UID to the UID the message has in the destination folder. Empty when the server gave
+    /// no `COPYUID` (no UIDPLUS), and a source UID that no longer existed when the move ran is
+    /// simply absent, so repeating a move is never an error.
+    pub dest_uids: BTreeMap<Uid, Uid>,
+}
+
+/// What the server can do, read once per connection. The screens use it to decide what is enabled
+/// and the adapter uses it to pick the best command (MOVE or COPY + expunge, deltas or a full scan).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Capabilities {
+    /// RFC 6851 `MOVE`.
+    pub move_cmd: bool,
+    /// RFC 4315 `UIDPLUS`: `UID EXPUNGE` and `COPYUID` / `APPENDUID` codes.
+    pub uidplus: bool,
+    /// RFC 6154 `SPECIAL-USE`: the server labels Sent, Trash and the rest.
+    pub special_use: bool,
+    /// RFC 2177 `IDLE`: the server can push changes.
+    pub idle: bool,
+    /// RFC 7162 `CONDSTORE`: per-message modification sequences.
+    pub condstore: bool,
+    /// RFC 7162 `QRESYNC`: resynchronise with a list of vanished UIDs.
+    pub qresync: bool,
 }
 
 /// Server-side picture of a folder: every UID with its flags.

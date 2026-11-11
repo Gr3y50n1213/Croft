@@ -1,0 +1,13 @@
+{
+ "methodResponses": [
+  [
+   "error",
+   {
+    "type": "invalidArguments",
+    "description": "invalid JMAP State at line 1 column 37"
+   },
+   "a"
+  ]
+ ],
+ "sessionState": "e6c54f87"
+}

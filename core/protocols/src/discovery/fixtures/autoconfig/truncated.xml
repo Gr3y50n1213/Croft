@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="cut.example">
+    <incomingServer type="imap">
+      <hostname>mail.cut.example</hostname>
+      <port>993</port>

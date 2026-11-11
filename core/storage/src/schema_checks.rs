@@ -1,0 +1,554 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! Rust port of every check in `tools/check_schema.py`, run against an in-memory database built by
+//! [`Db::open_in_memory`] (so the migration path itself is under test too). The Python script stays
+//! as an independent check of the same SQL.
+
+// Tests may unwrap: a panic is the failure report.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use rusqlite::{params, Connection, ErrorCode};
+
+use crate::{Db, MIGRATIONS};
+
+fn one<T: rusqlite::types::FromSql>(c: &Connection, sql: &str) -> T {
+    c.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+fn pair(c: &Connection, sql: &str) -> (i64, i64) {
+    c.query_row(sql, [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+}
+
+fn uids_newest_first(c: &Connection) -> Vec<i64> {
+    let mut stmt = c
+        .prepare("SELECT uid FROM message WHERE folder_id=1 ORDER BY date_ts DESC")
+        .unwrap();
+    let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+    rows.map(Result::unwrap).collect()
+}
+
+/// One account, one inbox, three messages (uid 1 unread newest, uid 2 read, uid 3 unread oldest).
+fn fixture() -> Db {
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    c.execute(
+        "INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'Sam','sam@example.org','imap','{}',0)",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO folder (id,account_id,path,special_use) VALUES (1,1,'INBOX','inbox')",
+        [],
+    )
+    .unwrap();
+    for (uid, subj, seen, ts) in [
+        (1, "Lunch on Friday?", 0, 300),
+        (2, "Server migration notes", 1, 200),
+        (3, "Bin collection changes", 0, 100),
+    ] {
+        c.execute(
+            "INSERT INTO message (account_id,folder_id,uid,thread_key,subject,from_name,from_addr,date_ts,is_seen) VALUES (1,1,?,?,?,?,?,?,?)",
+            params![uid, format!("t{uid}"), subj, "Sam Rivera", "sam@example.org", ts, seen],
+        )
+        .unwrap();
+    }
+    db
+}
+
+/// The fixture after the script's counter checks: uid 1 flipped read and back, uid 3 deleted.
+fn after_counter_steps() -> Db {
+    let db = fixture();
+    let c = db.connection();
+    c.execute("UPDATE message SET is_seen = 1 WHERE uid = 1", [])
+        .unwrap();
+    c.execute("UPDATE message SET is_seen = 0 WHERE uid = 1", [])
+        .unwrap();
+    c.execute("DELETE FROM message WHERE uid = 3", []).unwrap();
+    db
+}
+
+fn counters(c: &Connection) -> (i64, i64) {
+    pair(c, "SELECT total_count, unread_count FROM folder WHERE id=1")
+}
+
+#[test]
+fn folder_counters_after_insert_total_3_unread_2() {
+    assert_eq!(counters(fixture().connection()), (3, 2));
+}
+
+#[test]
+fn marking_read_lowers_unread_to_1() {
+    let db = fixture();
+    let c = db.connection();
+    c.execute("UPDATE message SET is_seen = 1 WHERE uid = 1", [])
+        .unwrap();
+    assert_eq!(
+        one::<i64>(c, "SELECT unread_count FROM folder WHERE id=1"),
+        1
+    );
+}
+
+#[test]
+fn marking_unread_raises_unread_to_2() {
+    let db = fixture();
+    let c = db.connection();
+    c.execute("UPDATE message SET is_seen = 1 WHERE uid = 1", [])
+        .unwrap();
+    c.execute("UPDATE message SET is_seen = 0 WHERE uid = 1", [])
+        .unwrap();
+    assert_eq!(
+        one::<i64>(c, "SELECT unread_count FROM folder WHERE id=1"),
+        2
+    );
+}
+
+#[test]
+fn deleting_an_unread_message_updates_both_counters() {
+    let db = after_counter_steps();
+    assert_eq!(counters(db.connection()), (2, 1));
+}
+
+#[test]
+fn list_query_is_newest_first() {
+    let db = after_counter_steps();
+    assert_eq!(uids_newest_first(db.connection()), vec![1, 2]);
+}
+
+fn plan(c: &Connection, sql: &str, params: impl rusqlite::Params) -> String {
+    let mut stmt = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    let rows = stmt.query_map(params, |r| r.get::<_, String>(3)).unwrap();
+    rows.map(Result::unwrap).collect::<Vec<_>>().join(" ")
+}
+
+#[test]
+fn list_query_uses_message_folder_date_without_a_sort_step() {
+    let db = after_counter_steps();
+    let p = plan(
+        db.connection(),
+        "SELECT uid FROM message WHERE folder_id=1 ORDER BY date_ts DESC",
+        [],
+    );
+    assert!(
+        p.contains("message_folder_date") && !p.contains("TEMP B-TREE"),
+        "{p}"
+    );
+}
+
+#[test]
+fn search_finds_subject_words() {
+    let db = after_counter_steps();
+    let n: i64 = one(
+        db.connection(),
+        "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'lunch'",
+    );
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn search_finds_sender() {
+    let db = after_counter_steps();
+    let n: i64 = one(
+        db.connection(),
+        "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'rivera'",
+    );
+    assert_eq!(n, 2);
+}
+
+fn add_dns_body(c: &Connection) {
+    c.execute(
+        "INSERT INTO message_body (message_id, text_plain) VALUES (2, 'Thanks, I will test the new DNS records tomorrow')",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn search_finds_body_text_added_later() {
+    let db = after_counter_steps();
+    add_dns_body(db.connection());
+    let rowid: i64 = one(
+        db.connection(),
+        "SELECT rowid FROM message_fts WHERE message_fts MATCH 'dns'",
+    );
+    assert_eq!(rowid, 2);
+}
+
+#[test]
+fn search_follows_subject_edits() {
+    let db = after_counter_steps();
+    let c = db.connection();
+    c.execute(
+        "UPDATE message SET subject = 'Lunch moved to Thursday' WHERE uid = 1",
+        [],
+    )
+    .unwrap();
+    let thursday: i64 = one(
+        c,
+        "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'thursday'",
+    );
+    let friday: i64 = one(
+        c,
+        "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'friday'",
+    );
+    assert_eq!((thursday, friday), (1, 0));
+}
+
+#[test]
+fn search_drops_deleted_messages() {
+    let db = after_counter_steps();
+    let c = db.connection();
+    add_dns_body(c);
+    c.execute("DELETE FROM message WHERE uid = 2", []).unwrap();
+    let n: i64 = one(
+        c,
+        "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'dns'",
+    );
+    assert_eq!(n, 0);
+}
+
+fn queue_fixture() -> Db {
+    let db = fixture();
+    let c = db.connection();
+    c.execute(
+        "INSERT INTO op_queue (account_id,kind,payload_json,target_key,created_at,not_before) VALUES (1,'set_seen','{}','m1',1000,6000)",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO op_queue (account_id,kind,payload_json,target_key,created_at,not_before,state) VALUES (1,'move','{}','m2',1000,500,'confirmed')",
+        [],
+    )
+    .unwrap();
+    db
+}
+
+fn due(c: &Connection, now: i64) -> i64 {
+    c.query_row(
+        "SELECT count(*) FROM op_queue WHERE state='queued' AND not_before <= ?",
+        [now],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn op_inside_undo_window_is_not_due() {
+    assert_eq!(due(queue_fixture().connection(), 5999), 0);
+}
+
+#[test]
+fn op_becomes_due_at_not_before() {
+    assert_eq!(due(queue_fixture().connection(), 6000), 1);
+}
+
+#[test]
+fn cancelled_op_is_never_due() {
+    let db = queue_fixture();
+    let c = db.connection();
+    c.execute("UPDATE op_queue SET state='cancelled' WHERE id=1", [])
+        .unwrap();
+    assert_eq!(due(c, 99999), 0);
+}
+
+#[test]
+fn local_hidden_exists_and_defaults_to_0() {
+    let db = fixture();
+    let c = db.connection();
+    assert_eq!(
+        one::<i64>(c, "SELECT count(*) FROM message WHERE local_hidden = 0"),
+        one::<i64>(c, "SELECT count(*) FROM message")
+    );
+}
+
+#[test]
+fn a_hidden_row_is_left_out_of_the_visible_list() {
+    let db = fixture();
+    let c = db.connection();
+    c.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1", [])
+        .unwrap();
+    let mut stmt = c
+        .prepare(
+            "SELECT uid FROM message WHERE folder_id=1 AND local_hidden = 0 ORDER BY date_ts DESC",
+        )
+        .unwrap();
+    let uids: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(uids, vec![2, 3]);
+}
+
+fn add_awaiting(c: &Connection) {
+    c.execute(
+        "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,message_id_hdr,created_at) VALUES (1,'INBOX',1,'Archive','<a@example.org>',5)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn op_awaiting_uid_keeps_destination_and_message_id_and_starts_lookups_at_0() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    let row: (String, String, i64) = c
+        .query_row(
+            "SELECT dest_folder, message_id_hdr, lookups FROM op_awaiting_uid",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("Archive".to_owned(), "<a@example.org>".to_owned(), 0));
+}
+
+#[test]
+fn op_awaiting_uid_has_one_row_per_old_address() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    let err = c
+        .execute(
+            "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (1,'INBOX',1,'Trash',6)",
+            [],
+        )
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn op_awaiting_uid_foreign_key_rejects_a_missing_account() {
+    let db = fixture();
+    let err = db
+        .connection()
+        .execute(
+            "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (99,'INBOX',2,'Trash',6)",
+            [],
+        )
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn removing_an_account_removes_its_awaiting_marks() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    c.execute("DELETE FROM account WHERE id = 1", []).unwrap();
+    assert_eq!(one::<i64>(c, "SELECT count(*) FROM op_awaiting_uid"), 0);
+}
+
+fn is_constraint(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::ConstraintViolation)
+}
+
+#[test]
+fn category_check_rejects_unknown_values() {
+    let db = fixture();
+    let err = db
+        .connection()
+        .execute(
+            "INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,category) VALUES (1,1,9,'t9',0,'spam')",
+            [],
+        )
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn foreign_key_rejects_a_missing_account() {
+    let db = fixture();
+    let err = db
+        .connection()
+        .execute("INSERT INTO folder (account_id,path) VALUES (99,'X')", [])
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn removing_an_account_removes_its_folders_messages_and_queue() {
+    let db = queue_fixture();
+    let c = db.connection();
+    c.execute("DELETE FROM account WHERE id = 1", []).unwrap();
+    let left: i64 = one(
+        c,
+        "SELECT (SELECT count(*) FROM folder) + (SELECT count(*) FROM message) + (SELECT count(*) FROM op_queue)",
+    );
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn opening_applies_every_migration_and_sets_user_version() {
+    let db = Db::open_in_memory().unwrap();
+    assert_eq!(db.migrations_run_on_open(), MIGRATIONS.len());
+    assert_eq!(db.schema_version().unwrap(), crate::latest_version());
+}
+
+// Migration 0003: rows hidden by a pending move or delete do not count towards folder counters.
+
+fn folder1_counters(c: &Connection) -> (i64, i64) {
+    pair(c, "SELECT total_count, unread_count FROM folder WHERE id=1")
+}
+
+#[test]
+fn hiding_and_showing_rows_keeps_folder_counters_equal_to_visible_rows() {
+    let db = fixture();
+    let c = db.connection();
+    assert_eq!(folder1_counters(c), (3, 2));
+    c.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1", [])
+        .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "hiding an unread row lowers both"
+    );
+    c.execute("UPDATE message SET is_seen = 1 WHERE uid = 1", [])
+        .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "a hidden row's read state does not count"
+    );
+    c.execute(
+        "UPDATE message SET local_hidden = 0, is_seen = 0 WHERE uid = 1",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (3, 2),
+        "one update changing both is counted once"
+    );
+    c.execute("UPDATE message SET local_hidden = 1 WHERE uid = 3", [])
+        .unwrap();
+    c.execute("DELETE FROM message WHERE uid = 3", []).unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "deleting a hidden row changes nothing"
+    );
+    c.execute(
+        "INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,is_seen,local_hidden) VALUES (1,1,9,'t9',0,0,1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "inserting a hidden row changes nothing"
+    );
+    assert_eq!(
+        folder1_counters(c),
+        pair(
+            c,
+            "SELECT count(*), coalesce(sum(1 - is_seen), 0) FROM message WHERE folder_id=1 AND local_hidden=0"
+        )
+    );
+}
+
+#[test]
+fn migration_3_takes_already_hidden_rows_out_of_the_counters() {
+    // Build a version-2 database by hand, hide a row under the old triggers, then run migration 3.
+    let c = Connection::open_in_memory().unwrap();
+    for m in &MIGRATIONS[..2] {
+        c.execute_batch(m.sql).unwrap();
+    }
+    c.execute_batch(
+        "INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'Sam','sam@example.org','imap','{}',0);
+         INSERT INTO folder (id,account_id,path,special_use) VALUES (1,1,'INBOX','inbox');
+         INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,is_seen) VALUES (1,1,1,'t1',1,0),(1,1,2,'t2',2,1);
+         UPDATE message SET local_hidden = 1 WHERE uid = 1;",
+    )
+    .unwrap();
+    assert_eq!(
+        folder1_counters(&c),
+        (2, 1),
+        "old triggers still count the hidden row"
+    );
+    c.execute_batch(MIGRATIONS[2].sql).unwrap();
+    assert_eq!(folder1_counters(&c), (1, 0));
+}
+
+// Migration 0004: the Outbox keeps the envelope and has the submitted and filing states.
+
+#[test]
+fn outbox_keeps_the_envelope_and_knows_the_states_after_acceptance() {
+    let db = fixture();
+    let c = db.connection();
+    c.execute(
+        "INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (2,'Kim','kim@example.org','imap','{}',0)",
+        [],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO identity (id,account_id,display_name,address,is_default) VALUES (20,2,'Kim','kim@example.org',1)",
+        [],
+    )
+    .unwrap();
+    let bytes: &[u8] = b"Subject: x\r\n\r\n\x00\xff";
+    c.execute(
+        "INSERT INTO outbox (account_id,identity_id,mime_blob,send_at,envelope_from,recipients) VALUES (2,20,?1,6000,'kim@example.org','[\"a@example.org\",\"b@example.org\"]')",
+        [bytes],
+    )
+    .unwrap();
+    let row: (Vec<u8>, String, String, String, i64) = c
+        .query_row(
+            "SELECT mime_blob, envelope_from, recipients, state, attempts FROM outbox",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            bytes.to_vec(),
+            "kim@example.org".into(),
+            r#"["a@example.org","b@example.org"]"#.into(),
+            "queued".into(),
+            0
+        )
+    );
+    for st in ["sending", "submitted", "filing", "sent", "failed", "queued"] {
+        c.execute("UPDATE outbox SET state = ?1", [st]).unwrap();
+    }
+    let err = c
+        .execute("UPDATE outbox SET state = 'bogus'", [])
+        .unwrap_err();
+    assert_eq!(
+        err.sqlite_error_code(),
+        Some(ErrorCode::ConstraintViolation),
+        "unknown states are refused"
+    );
+    let err = c
+        .execute(
+            "INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (99,x'00',0)",
+            [],
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.sqlite_error_code(),
+        Some(ErrorCode::ConstraintViolation)
+    );
+    let first: i64 = one(c, "SELECT id FROM outbox");
+    c.execute("DELETE FROM outbox", []).unwrap();
+    c.execute(
+        "INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (2,x'00',0)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        one::<i64>(c, "SELECT id FROM outbox") > first,
+        "ids are never reused"
+    );
+    c.execute("DELETE FROM identity WHERE id = 20", []).unwrap();
+    assert_eq!(
+        pair(c, "SELECT count(*), sum(identity_id IS NULL) FROM outbox"),
+        (1, 1),
+        "removing an identity keeps the message"
+    );
+    c.execute("DELETE FROM account WHERE id = 2", []).unwrap();
+    assert_eq!(one::<i64>(c, "SELECT count(*) FROM outbox"), 0);
+}

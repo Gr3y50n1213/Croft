@@ -26,6 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub type OpId = u64;
 /// Identifier of an account, matching `account.id` in the database.
 pub type AccountId = i64;
+/// Where a message is: folder path and UID.
+pub type Location = (String, Uid);
 
 /// A transient answer from a connected server is retried this many times before the operation is
 /// reported as failed. Time spent offline does not count.
@@ -198,8 +200,33 @@ pub fn backoff_ms(attempts: u32) -> i64 {
     STEPS[(attempts.saturating_sub(1) as usize).min(STEPS.len() - 1)]
 }
 
-/// The queue. Lives in memory here; the engine persists it in the `op_queue` table.
-#[derive(Debug, Default)]
+/// A message that was moved on the server but whose new UID is not known yet.
+///
+/// Later operations on the old address wait while this exists. The engine finds the message again
+/// by `message_id` in `dest_folder` and calls [`OpQueue::repoint`], or gives up and calls
+/// [`OpQueue::abandon`]. It is stored with the queue (see [`crate::persist`]), so a restart does
+/// not let a later operation run against the old UID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitingUid {
+    /// Owning account.
+    pub account: AccountId,
+    /// Old folder path (where the message was).
+    pub folder: String,
+    /// Old UID.
+    pub uid: Uid,
+    /// Folder the message was moved to. Empty when the operation was not a move.
+    pub dest_folder: String,
+    /// The message's `Message-ID` header, used to find it again. `None` means it cannot be found.
+    pub message_id: Option<String>,
+    /// How many times the engine has already looked for it.
+    pub lookups: u32,
+    /// When the move was confirmed (Unix milliseconds; 0 if the caller did not say).
+    pub created_ms: i64,
+}
+
+/// The queue. Lives in memory; [`crate::persist::PersistentQueue`] keeps it in the `op_queue`
+/// table so it survives a kill.
+#[derive(Debug, Default, Clone)]
 pub struct OpQueue {
     ops: BTreeMap<OpId, Op>,
     next_id: OpId,
@@ -210,7 +237,7 @@ pub struct OpQueue {
     /// Account-wide backoff after a transient failure: nothing for the account runs before then.
     holds: BTreeMap<AccountId, i64>,
     /// Messages that were moved but whose new UID is not known yet. Later operations on them wait.
-    awaiting_uid: BTreeSet<(AccountId, String, Uid)>,
+    awaiting_uid: BTreeMap<(AccountId, String, Uid), AwaitingUid>,
 }
 
 impl OpQueue {
@@ -220,6 +247,57 @@ impl OpQueue {
             next_id: 1,
             ..Self::default()
         }
+    }
+
+    /// Rebuilds a queue from stored operations and awaiting-UID entries (see
+    /// [`crate::persist::OpStore::load`]). The next id is one above the largest of `max_id` (the
+    /// largest id the store ever held, which may belong to a row that is gone) and the ids given.
+    /// Offline flags, pauses and back-off are not stored: the engine sets them again.
+    ///
+    /// Operations still marked [`OpState::Applying`] are kept as they are; call
+    /// [`OpQueue::recover_after_restart`] to put them back in the queue.
+    pub fn from_parts(ops: Vec<Op>, awaiting: Vec<AwaitingUid>, max_id: OpId) -> Self {
+        let next_id = ops
+            .iter()
+            .map(|op| op.id)
+            .max()
+            .unwrap_or(0)
+            .max(max_id)
+            .saturating_add(1);
+        Self {
+            next_id,
+            ops: ops.into_iter().map(|op| (op.id, op)).collect(),
+            awaiting_uid: awaiting
+                .into_iter()
+                .map(|a| ((a.account, a.folder.clone(), a.uid), a))
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Every operation, in id (creation) order.
+    pub fn iter(&self) -> impl Iterator<Item = &Op> {
+        self.ops.values()
+    }
+
+    /// Every message that is waiting for its new UID, in a stable order.
+    pub fn awaiting(&self) -> impl Iterator<Item = &AwaitingUid> {
+        self.awaiting_uid.values()
+    }
+
+    /// The awaiting-UID entry for the message that used to be at `from`, if any.
+    pub fn awaiting_for(&self, account: AccountId, from: (&str, Uid)) -> Option<&AwaitingUid> {
+        self.awaiting_uid.get(&(account, from.0.to_owned(), from.1))
+    }
+
+    /// Counts one more lookup by Message-ID for the message that used to be at `from`. Returns the
+    /// new count, or `None` if nothing is waiting for that address.
+    pub fn record_lookup(&mut self, account: AccountId, from: (&str, Uid)) -> Option<u32> {
+        let entry = self
+            .awaiting_uid
+            .get_mut(&(account, from.0.to_owned(), from.1))?;
+        entry.lookups = entry.lookups.saturating_add(1);
+        Some(entry.lookups)
     }
 
     /// Records a change. `undo_window_ms` is the person's Undo setting (5 000 by default); it
@@ -286,6 +364,16 @@ impl OpQueue {
     /// An operation is held back while an earlier one on the same message is unfinished, so a
     /// "mark read" never overtakes the "move" before it.
     pub fn take_due(&mut self, now_ms: i64, limit: usize) -> Vec<Op> {
+        self.take_due_matching(now_ms, limit, None)
+    }
+
+    /// Like [`OpQueue::take_due`], for one account only. The sync engine runs one task per account,
+    /// and each task must only hand out its own account's operations.
+    pub fn take_due_for(&mut self, account: AccountId, now_ms: i64, limit: usize) -> Vec<Op> {
+        self.take_due_matching(now_ms, limit, Some(account))
+    }
+
+    fn take_due_matching(&mut self, now_ms: i64, limit: usize, only: Option<AccountId>) -> Vec<Op> {
         let mut chosen = Vec::new();
         let ids: Vec<OpId> = self.ops.keys().copied().collect();
         for id in ids {
@@ -295,6 +383,9 @@ impl OpQueue {
             let Some(op) = self.ops.get(&id) else {
                 continue;
             };
+            if only.is_some_and(|a| a != op.account) {
+                continue;
+            }
             if op.state != OpState::Queued
                 || self.earliest_ms(op) > now_ms
                 || !self.account_may_run(op.account)
@@ -342,7 +433,7 @@ impl OpQueue {
         !self.awaiting_uid.is_empty()
             && self
                 .awaiting_uid
-                .contains(&(op.account, folder.to_owned(), uid))
+                .contains_key(&(op.account, folder.to_owned(), uid))
     }
 
     /// The server accepted the operation. Any backoff on the account ends.
@@ -365,13 +456,31 @@ impl OpQueue {
     /// engine has found the message by Message-ID and called [`OpQueue::repoint`], or given up and
     /// called [`OpQueue::abandon`].
     pub fn confirm_moved(&mut self, id: OpId, new_location: Option<(String, Uid)>) {
-        let Some((account, from_folder, from_uid)) = self
+        self.confirm_moved_with(id, new_location, None, 0);
+    }
+
+    /// Like [`OpQueue::confirm_moved`], and when the new UID is not known, also keeps the
+    /// `Message-ID` header (from the local row; `None` if it has none) and the confirmation time,
+    /// so the engine can find the message again even after a restart. The destination folder is
+    /// taken from the move itself.
+    pub fn confirm_moved_with(
+        &mut self,
+        id: OpId,
+        new_location: Option<(String, Uid)>,
+        message_id: Option<String>,
+        now_ms: i64,
+    ) {
+        let Some((account, from_folder, from_uid, dest)) = self
             .ops
             .get(&id)
             .filter(|op| op.state == OpState::Applying)
             .map(|op| {
                 let (folder, uid) = op.kind.target();
-                (op.account, folder.to_owned(), uid)
+                let dest = match &op.kind {
+                    OpKind::MoveTo { dest, .. } => dest.clone(),
+                    _ => String::new(),
+                };
+                (op.account, folder.to_owned(), uid, dest)
             })
         else {
             return;
@@ -382,7 +491,18 @@ impl OpQueue {
                 self.repoint(account, (&from_folder, from_uid), to);
             }
             None => {
-                self.awaiting_uid.insert((account, from_folder, from_uid));
+                self.awaiting_uid.insert(
+                    (account, from_folder.clone(), from_uid),
+                    AwaitingUid {
+                        account,
+                        folder: from_folder,
+                        uid: from_uid,
+                        dest_folder: dest,
+                        message_id,
+                        lookups: 0,
+                        created_ms: now_ms,
+                    },
+                );
             }
         }
     }
@@ -398,6 +518,34 @@ impl OpQueue {
         }) {
             op.kind.retarget(&to.0, to.1);
             changed += 1;
+        }
+        changed
+    }
+
+    /// Re-points several messages at once: every unfinished operation of `account` whose target is
+    /// the first address of a pair moves to the second. Each operation moves at most once, even
+    /// when one message's new address is another message's old address (a UIDVALIDITY change
+    /// renumbers a whole folder, so this is common there). Calling [`OpQueue::repoint`] once per
+    /// pair would move such operations twice. Awaiting-UID entries at the old addresses are
+    /// resolved. Returns how many operations changed.
+    pub fn repoint_many(&mut self, account: AccountId, moves: &[(Location, Location)]) -> usize {
+        let map: BTreeMap<(&str, Uid), &Location> = moves
+            .iter()
+            .map(|(from, to)| ((from.0.as_str(), from.1), to))
+            .collect();
+        for (from, _) in moves {
+            self.awaiting_uid.remove(&(account, from.0.clone(), from.1));
+        }
+        let mut changed = 0;
+        for op in self
+            .ops
+            .values_mut()
+            .filter(|op| op.account == account && !op.state.is_finished())
+        {
+            if let Some(to) = map.get(&op.kind.target()) {
+                op.kind.retarget(&to.0, to.1);
+                changed += 1;
+            }
         }
         changed
     }
@@ -487,14 +635,67 @@ impl OpQueue {
         }
     }
 
+    /// Puts every operation of this account that is marked [`OpState::Applying`] back to
+    /// [`OpState::Queued`] and returns how many there were.
+    ///
+    /// For the engine to call when it knows that nothing of this account is being sent any more:
+    /// its task was stopped in the middle of a call, or a step failed after the operation was handed
+    /// out. Otherwise the operation would stay "applying" in memory and never be handed out again
+    /// (until the next start). The server may or may not have applied it; every operation is safe
+    /// to repeat. Attempts already counted stay counted.
+    pub fn recover_applying(&mut self, account: AccountId) -> usize {
+        let mut n = 0;
+        for op in self
+            .ops
+            .values_mut()
+            .filter(|op| op.account == account && op.state == OpState::Applying)
+        {
+            op.state = OpState::Queued;
+            n += 1;
+        }
+        n
+    }
+
+    /// Ends the account's back-off, for when the device has a connection again (which says more
+    /// than the clock does about whether the server can be reached): the account's hold is removed,
+    /// and so is the retry time of each of its queued operations that has already been tried, so
+    /// they are due at `now_ms`. An operation that has not been tried yet keeps its own time (its
+    /// Undo window or coalescing delay), and attempts already used stay used.
+    pub fn clear_hold(&mut self, account: AccountId, now_ms: i64) {
+        self.holds.remove(&account);
+        for op in self
+            .ops
+            .values_mut()
+            .filter(|op| op.account == account && op.state == OpState::Queued && op.attempts > 0)
+        {
+            op.not_before_ms = op.not_before_ms.min(now_ms);
+        }
+    }
+
     /// When the engine should next wake up to drain the queue, or `None` if nothing is waiting.
+    ///
+    /// An operation held back behind an earlier unfinished one on the same message does not count:
+    /// it can only run once that one has finished, and the earlier one gives its own time (or is
+    /// running). Counting it would give a time in the past that [`OpQueue::take_due`] then refuses,
+    /// and a caller that sleeps until the next wake would spin.
     pub fn next_wake_ms(&self) -> Option<i64> {
+        self.next_wake_matching(None)
+    }
+
+    /// Like [`OpQueue::next_wake_ms`], for one account only.
+    pub fn next_wake_ms_for(&self, account: AccountId) -> Option<i64> {
+        self.next_wake_matching(Some(account))
+    }
+
+    fn next_wake_matching(&self, only: Option<AccountId>) -> Option<i64> {
         self.ops
             .values()
             .filter(|op| {
-                op.state == OpState::Queued
+                only.is_none_or(|a| a == op.account)
+                    && op.state == OpState::Queued
                     && self.account_may_run(op.account)
                     && !self.awaits_new_uid(op)
+                    && !self.blocked_by_earlier(op)
             })
             .map(|op| self.earliest_ms(op))
             .min()
@@ -818,6 +1019,61 @@ mod tests {
     }
 
     #[test]
+    fn an_operation_held_behind_an_earlier_one_does_not_set_the_wake_time() {
+        let mut q = OpQueue::new();
+        // A star (1.5 s) queued behind an archive (5 s) of the same message.
+        queued(&mut q, mv(1, "Archive"), 0);
+        queued(&mut q, seen(1, true), 0);
+        assert_eq!(q.next_wake_ms(), Some(5_000));
+        assert_eq!(q.next_wake_ms_for(A), Some(5_000));
+        assert!(q.take_due(1_500, 10).is_empty());
+    }
+
+    #[test]
+    fn recover_applying_puts_only_that_accounts_in_flight_operations_back() {
+        let mut q = OpQueue::new();
+        let mine = queued(&mut q, seen(1, true), 0);
+        let other = match q.enqueue(2, seen(1, true), 0, WINDOW) {
+            Enqueued::Queued(id) => id,
+            e => panic!("{e:?}"),
+        };
+        let waiting = queued(&mut q, seen(2, true), 10_000);
+        assert_eq!(q.take_due(1_500, 10).len(), 2);
+        assert_eq!(q.recover_applying(A), 1);
+        assert_eq!(q.get(mine).map(|o| o.state), Some(OpState::Queued));
+        assert_eq!(q.get(other).map(|o| o.state), Some(OpState::Applying));
+        assert_eq!(q.get(waiting).map(|o| o.state), Some(OpState::Queued));
+        assert_eq!(q.recover_applying(A), 0);
+        // Handed out again, with the attempt that was already counted still counted.
+        let again = q.take_due_for(A, 1_500, 10);
+        assert_eq!(
+            again.iter().map(|o| (o.id, o.attempts)).collect::<Vec<_>>(),
+            vec![(mine, 2)]
+        );
+    }
+
+    #[test]
+    fn clear_hold_makes_tried_operations_due_but_keeps_an_untried_ones_own_time() {
+        let mut q = OpQueue::new();
+        let tried = queued(&mut q, seen(1, true), 0);
+        let untried = queued(&mut q, mv(2, "Archive"), 4_000);
+        assert_eq!(q.take_due(1_500, 1).len(), 1);
+        let err = BackendError::Transient("timeout".into());
+        assert_eq!(
+            q.reject(tried, &err, 1_500),
+            Some(Rejection::RetryAt(6_500))
+        );
+        assert!(q.take_due(2_500, 10).is_empty(), "held");
+        // Two seconds in, the account is back online.
+        q.clear_hold(A, 2_000);
+        assert_eq!(q.get(tried).map(|o| o.not_before_ms), Some(2_000));
+        assert_eq!(q.get(untried).map(|o| o.not_before_ms), Some(9_000));
+        assert_eq!(q.next_wake_ms_for(A), Some(2_000));
+        let due: Vec<OpId> = q.take_due(2_000, 10).iter().map(|o| o.id).collect();
+        assert_eq!(due, vec![tried], "the move still waits for its Undo window");
+    }
+
+    #[test]
     fn a_transient_failure_backs_off_the_whole_account() {
         let mut q = OpQueue::new();
         let first = queued(&mut q, seen(1, true), 0);
@@ -980,11 +1236,98 @@ mod tests {
     }
 
     #[test]
+    fn take_due_for_hands_out_only_that_accounts_operations() {
+        let mut q = OpQueue::new();
+        let mine = queued(&mut q, seen(1, true), 0);
+        let theirs = match q.enqueue(2, seen(1, true), 0, WINDOW) {
+            Enqueued::Queued(id) => id,
+            other => panic!("expected a new operation, got {other:?}"),
+        };
+        assert_eq!(q.next_wake_ms_for(A), Some(1_500));
+        assert_eq!(q.next_wake_ms_for(3), None);
+        let due = q.take_due_for(A, 5_000, 10);
+        assert_eq!(due.iter().map(|o| o.id).collect::<Vec<_>>(), vec![mine]);
+        assert_eq!(q.get(theirs).map(|o| o.state), Some(OpState::Queued));
+        assert_eq!(q.next_wake_ms_for(A), None, "mine is applying");
+        q.set_offline(2, true);
+        assert_eq!(
+            q.next_wake_ms_for(2),
+            None,
+            "an offline account never wakes"
+        );
+        assert!(q.take_due_for(2, 5_000, 10).is_empty());
+    }
+
+    #[test]
+    fn repoint_many_moves_each_operation_once_even_when_addresses_swap() {
+        let mut q = OpQueue::new();
+        let a = queued(&mut q, seen(1, true), 0);
+        let b = queued(&mut q, seen(2, true), 0);
+        let c = queued(&mut q, seen(3, true), 0);
+        let moves = vec![
+            (("INBOX".to_owned(), 1), ("INBOX".to_owned(), 2)),
+            (("INBOX".to_owned(), 2), ("INBOX".to_owned(), 1)),
+        ];
+        assert_eq!(q.repoint_many(A, &moves), 2);
+        assert_eq!(q.get(a).map(|o| o.kind.target().1), Some(2));
+        assert_eq!(q.get(b).map(|o| o.kind.target().1), Some(1));
+        assert_eq!(q.get(c).map(|o| o.kind.target().1), Some(3), "untouched");
+        assert_eq!(
+            q.repoint_many(2, &moves),
+            0,
+            "other accounts are left alone"
+        );
+    }
+
+    #[test]
     fn backoff_schedule_is_capped() {
         assert_eq!(backoff_ms(0), 5_000);
         assert_eq!(backoff_ms(1), 5_000);
         assert_eq!(backoff_ms(4), 600_000);
         assert_eq!(backoff_ms(5), 3_600_000);
         assert_eq!(backoff_ms(50), 3_600_000);
+    }
+
+    #[test]
+    fn a_move_without_a_uid_keeps_where_it_went_and_how_to_find_it() {
+        let mut q = OpQueue::new();
+        let moved = queued(&mut q, mv(1, "Archive"), 0);
+        q.take_due(5_000, 10);
+        q.confirm_moved_with(moved, None, Some("<a@example.org>".into()), 5_100);
+        let entry = q.awaiting_for(A, ("INBOX", 1)).cloned();
+        assert_eq!(
+            entry,
+            Some(AwaitingUid {
+                account: A,
+                folder: "INBOX".into(),
+                uid: 1,
+                dest_folder: "Archive".into(),
+                message_id: Some("<a@example.org>".into()),
+                lookups: 0,
+                created_ms: 5_100,
+            })
+        );
+        assert_eq!(q.record_lookup(A, ("INBOX", 1)), Some(1));
+        assert_eq!(q.record_lookup(A, ("INBOX", 2)), None);
+        q.repoint(A, ("INBOX", 1), ("Archive".into(), 3));
+        assert_eq!(q.awaiting().count(), 0);
+    }
+
+    #[test]
+    fn a_rebuilt_queue_has_the_same_operations_and_hands_out_fresh_ids() {
+        let mut q = OpQueue::new();
+        let a = queued(&mut q, seen(1, true), 0);
+        let b = queued(&mut q, mv(2, "Trash"), 0);
+        let ops: Vec<Op> = q.iter().cloned().collect();
+        let mut rebuilt = OpQueue::from_parts(ops.clone(), Vec::new(), 7);
+        assert_eq!(rebuilt.iter().cloned().collect::<Vec<_>>(), ops);
+        assert_eq!((a, b), (1, 2));
+        assert_eq!(queued(&mut rebuilt, seen(3, true), 0), 8, "above max_id");
+        let mut small = OpQueue::from_parts(ops, Vec::new(), 0);
+        assert_eq!(
+            queued(&mut small, seen(3, true), 0),
+            3,
+            "above the ids held"
+        );
     }
 }

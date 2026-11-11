@@ -1,4 +1,9 @@
 name: ci
+
+# Actions are pinned by tag for now; pinning each by commit SHA is a later hardening step.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -12,6 +17,8 @@ jobs:
         working-directory: core
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -19,20 +26,110 @@ jobs:
         with:
           workspaces: core
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked -p croft-ffi --all-targets --features cli -- -D warnings
+      - run: cargo test --locked
 
   schema:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: python3 core/storage/tools/check_schema.py
 
-  # Enabled once the IMAP adapter lands: runs the core against real servers in containers.
-  # integration:
-  #   runs-on: ubuntu-latest
-  #   needs: core
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: docker compose -f test-servers/docker-compose.yml up -d --wait
-  #     - run: cd core && cargo test --features integration
+  # Builds the Rust FFI library for Android (cargo-ndk), generates the Kotlin bindings, builds the
+  # debug APK and runs the JVM unit tests. The commands are the same ones used locally
+  # (android/README.md).
+  android:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NDK_VERSION: 4.1.2
+      NDK_VERSION: 29.0.14206865
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;${{ env.NDK_VERSION }}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the debug APK and run the JVM unit tests
+        working-directory: android
+        run: ./gradlew :app:assembleDebug :app:testDebugUnitTest
+      - name: Check 16 KB page alignment of the native libraries
+        working-directory: android
+        run: |
+          tools/check-16kb-alignment.sh app/build/generated/rust/jniLibs
+          rm -rf app/build/apk-libs && unzip -q app/build/outputs/apk/debug/app-debug.apk 'lib/*' -d app/build/apk-libs
+          tools/check-16kb-alignment.sh app/build/apk-libs
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/debug/app-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: croft-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+
+  # Runs the protocol adapters against real mail servers in containers (GreenMail, Dovecot).
+  integration:
+    runs-on: ubuntu-latest
+    needs: core
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: docker compose -f test-servers/docker-compose.yml up -d --wait greenmail dovecot stalwart
+      - run: bash test-servers/stalwart/setup.sh
+      - run: cd core && cargo test --locked -p croft-protocols --features integration
+      - if: always()
+        run: docker compose -f test-servers/docker-compose.yml down -v
+
+  # The storage crate with SQLCipher, which compiles OpenSSL/SQLCipher from source.
+  sqlcipher:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo clippy --locked --all-targets --features sqlcipher -p croft-storage -- -D warnings
+      - run: cargo test --locked -p croft-storage --features sqlcipher
+
+  design:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: design/generator
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run generate
+      - run: npm test
+      - run: git diff --exit-code -- ../generated

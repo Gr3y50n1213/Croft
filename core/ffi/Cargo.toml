@@ -1,0 +1,50 @@
+[package]
+name = "croft-ffi"
+description = "Croft FFI: the small, versioned UniFFI surface the apps call"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Same floor as croft-storage (rusqlite needs it).
+rust-version = "1.89"
+
+[lib]
+# cdylib: the .so the Android app loads (and the host library the JVM tests load).
+# lib: so tests and `uniffi-bindgen --library` can use the crate normally.
+crate-type = ["cdylib", "lib"]
+
+[features]
+# Builds the `uniffi-bindgen` binary that generates the Kotlin (and later Swift) bindings.
+cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[dependencies]
+croft-engine = { path = "../engine" }
+croft-protocols = { path = "../protocols" }
+croft-storage = { path = "../storage" }
+log = "0.4.29"
+# Only for the keyset message query and its row type; the bundled SQLite comes from croft-storage.
+rusqlite = "0.41.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# `Core` owns a multi-thread runtime of its own: see the crate documentation, "Async and the runtime".
+tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "sync", "time", "net"] }
+uniffi = "0.32.2"
+# Wipes the password and token strings (and the database key) after use.
+zeroize = "1.9.1"
+
+[dev-dependencies]
+# `test-fakes`: recording stand-ins for DNS and HTTPS, so discovery is tested without a network.
+croft-protocols = { path = "../protocols", features = ["test-fakes"] }
+croft-test-support = { path = "../test-support" }
+tempfile = "3.27"
+
+# Lints: inherited from the workspace, including `unsafe_code = "forbid"`. UniFFI 0.32's proc macros
+# (`setup_scaffolding!`, `#[uniffi::export]`, the derives) expand to code that rustc does not
+# report under this lint, so no exception is needed. Checked: the crate builds with `forbid`.
+# If a future UniFFI needs one, do not weaken this silently: see the task T07 notes.
+[lints]
+workspace = true

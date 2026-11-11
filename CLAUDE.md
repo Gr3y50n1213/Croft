@@ -62,16 +62,38 @@ without the owner, and the progress files to keep.
 - Public items are documented (`missing_docs` is on).
 - Errors from the network are `BackendError::{Transient, Auth, Permanent}`: the split drives retry vs fail vs sign-in.
 - Small commits with the task ID in the message, one crate or one screen per task.
+- The repository is meant to be public. Commits, files and docs never contain the owner's name, handle, email,
+  session links or any real key or password. Test credentials are made up and marked as such.
 
 ## How to run things
+The checks that must pass before every commit (also in `.github/workflows/ci.yml`):
 ```
-cd core && cargo test                       # unit tests (no network needed)
-cd core && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings
-python3 core/storage/tools/check_schema.py  # applies migrations to SQLite and checks triggers, FTS5, queue queries
-docker compose -f test-servers/docker-compose.yml up -d   # servers for integration tests (when Docker is available)
+cd core && cargo fmt --all --check
+cd core && cargo clippy --all-targets -- -D warnings
+cd core && cargo clippy -p croft-ffi --features cli --all-targets -- -D warnings
+cd core && cargo test                                  # unit and in-process tests, no network needed
+cd core && cargo test -p croft-storage --features sqlcipher
+python3 core/storage/tools/check_schema.py             # applies migrations to SQLite and checks triggers, FTS5, queue queries
+cd design/generator && npm ci && npm run generate && npm test   # tokens; git diff must show no change in design/generated
 ```
+Integration tests against real servers (Docker):
+```
+docker compose -f test-servers/docker-compose.yml up -d --wait greenmail dovecot stalwart
+bash test-servers/stalwart/setup.sh                    # Stalwart starts empty; this creates the test users
+cd core && cargo test -p croft-protocols --features integration
+docker compose -f test-servers/docker-compose.yml down -v
+```
+Android (needs `ANDROID_HOME`, NDK r29, cargo-ndk; see `android/README.md`):
+```
+cd android && ./gradlew :app:assembleDebug :app:testDebugUnitTest
+```
+Parallel work in one container: each task gets its own git worktree; container tests then need their own
+compose project name (`-p`) and host ports (the tests read `CROFT_TEST_*_PORT`). Remove a worktree once merged:
+build folders fill the disk.
 
 ## Where things stand
-Done and tested: schema v1, sync planner, operation queue (per-kind delays, account back-off, offline hold, UID re-pointing), protocol vocabulary and the `MailBackend` trait.
-Everything else is in `docs/tasks/`, starting with T01. The first build environment could not reach
-crates.io, so no external crate has been compiled yet: expect to fix version and API details when you add them.
+Progress, task by task, is in `docs/PROGRESS.md` (newest first); choices in `docs/DECISIONS.md`; what waits on the
+owner in `docs/OPEN-ITEMS.md`; security-sensitive code to read by hand in `docs/REVIEW-QUEUE.md`.
+Done and tested: storage (SQLite, SQLCipher, migrations 0001-0004), persisted operation queue, IMAP adapter (vendored
+async-imap), JMAP adapter, account discovery, SMTP sender and outbox in the engine, sync engine (`core/engine`), FFI
+surface v3 for the app, design tokens, first Android screen. Next tasks are T11-T21 in `docs/tasks/` (the Android app).

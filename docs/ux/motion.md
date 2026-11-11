@@ -84,3 +84,14 @@ Animations hold 60 fps on a mid-range phone and use the display's full rate wher
 | Failed edge | A change the server refused | Red edge on the row, then fades after 2 s | Effects default | Edge removed at 2 s without a fade |
 | Dialog open (as built) | Open | Scale from 90 percent and fade | Effects default | Fade only; Off at once |
 | Button check | Loading ends | Spinner, then a check for 600 ms | none | Same |
+
+### Added in T14
+| Animation | Trigger | What moves | Token | Reduced-motion substitute |
+|---|---|---|---|---|
+| Row removed from the list | An archive, delete or move | The removed row fades; the rows below slide up and close the gap | Effects default (fade), spatial default (placement) | Short fade, the gap closes at once; Off: nothing |
+| New rows at the top | Mail arrives while the list is at the very top | The new rows appear above; the rest slides down | Spatial default | Rows appear without movement |
+| "N new" pill | Mail arrives above the place the person is reading | The pill rises and fades in; the list does not move | Spatial default | Fades in without travel (effects default); Off: at once |
+| Pull indicator (S17) | Pull past the top | The expressive loading indicator grows with the drag, morphs at 80 dp, spins while refreshing | Material's own | Static spinner that does not grow (it turns while refreshing at Reduced; stands still at Off) |
+| Skeleton rows | First load of a folder | Opacity pulses, one loop 1.2 s (as built; the catalogue's "shimmer") | Linear, `CroftTimings.SKELETON_SHIMMER_MS` | Static placeholders at Reduced and Off |
+| Account switcher card (S13) | Avatar tap | The card scales from 90 percent and fades in; the scrim fades | Spatial default, effects default | Fade; Off: at once |
+| Fast scroller thumb | The list scrolls | The thumb fades in, stays 1.5 s after the list stops, fades out | Effects default, `CroftTimings.FAST_SCROLLER_LINGER_MS` | Same; Off: at once |

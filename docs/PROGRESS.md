@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T13 and T14: controls, haptics, navigation, Inbox screens (11 November 2026)
+
+**Status:** merged into `main` (pull requests #3 and #4) after GitHub CI passed. Device-only items are unverified (ripple and haptic feel, scroll speed with 5,000 rows, TalkBack order).
+
+**What was built:** T13: every shared control in every state (`ui/components/`), one `Haptics` interface (levels, 40 ms guard), a debug-only gallery, the stored theme applied at start and Settings → Appearance reachable. T14: the Inbox on a fake repository shaped like the core's FFI surface: S10 (paging, sticky dates, fast scroller, "N new" pill), S11 selection, S12 drawer, S13 account switcher, S17 pull to refresh, S18 offline and sign-in banners, S19 inbox zero; scroll position survives rotation and process death; a build-only macrobenchmark module.
+
+**Checks:** neither task's tests could run in the build container (Maven Central refused one Robolectric jar). On GitHub CI: T13 green on its first run; T14 had 21 failures of 1,260 on its first run: 2 real screen bugs (the compose button had no name for screen readers; the "N new" pill faded in for one frame with animations off) and 19 test assumptions, all fixed without weakening a test (details in `docs/tasks/T14-message-list.md`).
+
+**Also:** the flaky outbox test was `after_a_refused_sign_in_remove_and_add_does_not_make_the_task_spin_and_signing_in_sends`: it read an empty outbox list as "copy filed in Sent", which is not what the engine promises. Reproduced at about 31% under load; 0 in 450 runs after the test fix. The engine was correct.
+
+**Next:** design tokens follow-up (amber colour, wait times, pull threshold and drawer width into `tokens.json`), then T15 (swipe engine).
+
+---
+
 ## T12: Theme engine and Appearance screens (11 November 2026)
 
 **Status:** done except: the screens are built and tested but not yet reachable from the app (T13 adds navigation); device-only items (feel of the cross-fade, wallpaper colours on a real Android 12+ phone, the system file and photo pickers).
@@ -25,7 +39,7 @@ unverified, the next step.
 
 **Review:** Opus, two rounds. Round 1: 2 high (a temporary keystore error could wipe all data; a new account's password could reach another account's server), 2 medium, 3 low. Round 2: 1 high (on Android 8 to 11 a keystore outage could still look like a lost key, and could replace the real key), 2 medium, 4 low. All fixed with tests. The first CI run found two failing tests; the cause was two copies of the Rust bindings under Robolectric, fixed with a custom test runner. The next CI run found a real race: a stale "needs sign-in" notice could arrive after the person signed in; the FFI layer now checks the engine's current state (20 of 20 runs pass).
 
-**Known flaky test (open):** an outbox test in `core/engine/tests/outbox.rs` has failed once each in two different sessions' runs, never reproduced and its name not captured. Next time it fails, capture the name and find the cause.
+**Known flaky test (resolved, see T13 and T14 entry):** an outbox test in `core/engine/tests/outbox.rs` has failed once each in two different sessions' runs, never reproduced and its name not captured. Next time it fails, capture the name and find the cause.
 
 ---
 

@@ -159,6 +159,8 @@ jobs:
       - run: cargo clippy --locked --all-targets --features sqlcipher -p croft-storage -- -D warnings
       - run: cargo test --locked -p croft-storage --features sqlcipher
       - run: cargo test --locked -p croft-ffi --features sqlcipher
+      - run: cargo clippy --locked -p croft-ffi --features test-server --all-targets -- -D warnings
+      - run: cargo test --locked -p croft-ffi --features test-server
 
   design:
     runs-on: ubuntu-latest

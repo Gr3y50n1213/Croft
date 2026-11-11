@@ -17,10 +17,11 @@ val coreDir = rootProject.layout.projectDirectory.dir("../core")
 val rustSources = fileTree(coreDir) {
     // Every crate croft-ffi depends on (engine -> mail-core, protocols, storage), the vendored
     // async-imap that [patch.crates-io] points at, and the workspace manifest and lock file.
-    // test-support is a dev-dependency only: the library builds do not compile it.
+    // test-support is compiled into the host library for the JVM tests (feature test-server), so a change
+    // there must rebuild it too; the Android and release libraries never enable that feature.
     include(
         "Cargo.toml", "Cargo.lock",
-        "ffi/**", "engine/**", "mail-core/**", "protocols/**", "storage/**", "vendor/**",
+        "ffi/**", "engine/**", "mail-core/**", "protocols/**", "storage/**", "vendor/**", "test-support/**",
     )
     exclude("**/target/**")
 }
@@ -40,6 +41,17 @@ val abis = listOf("arm64-v8a", "x86_64")
 // OpenSSL build needs perl and make on the build computer. The bindings generator uses the same features
 // so that it shares the host build instead of compiling everything twice.
 val rustFeatures = "sqlcipher-vendored-openssl"
+
+// T16: the host library the JVM tests load also has the in-process IMAP server (`TestImapServer`, feature `test-server` of
+// croft-ffi). It is TEST ONLY: never in the Android library (`buildRustAndroid` uses rustFeatures alone, and the check below
+// stops anyone adding it there), and the release APK is checked for its symbols (tools/check-release-outputs.sh).
+// The production Kotlin bindings are generated from the Android library, so the app cannot know the test object. The module
+// :mailtests, which runs the app's mail layer against the in-process IMAP server, uses bindings generated from the host
+// library instead (one set per classpath: two sets in one JVM would fight over the native library's callback tables).
+check(!rustFeatures.split(",").contains("test-server")) { "rustFeatures must not name test-server: it is for the host test library only" }
+val hostFeatures = "$rustFeatures,test-server"
+val androidLib = rustJniLibs.map { it.file("arm64-v8a/libcroft_ffi.so") }
+val uniffiHostKotlin = layout.buildDirectory.dir("generated/uniffi-host/kotlin")
 
 // cargo-ndk builds libcroft_ffi.so for each ABI. Release profile: a debug Rust build is tens of MB.
 // NDK r28+ links with 16 KB page alignment by default (Play requirement); see android/README.md.
@@ -68,23 +80,42 @@ tasks.register<Exec>("buildRustHost") {
     workingDir = coreDir.asFile
     inputs.files(rustSources)
     outputs.file(hostLib)
-    commandLine("cargo", "build", "--locked", "-p", "croft-ffi", "--features", rustFeatures)
+    commandLine("cargo", "build", "--locked", "-p", "croft-ffi", "--features", hostFeatures)
 }
 
-// Kotlin bindings, generated from the library's own metadata with the UniFFI version it was built with.
+// Kotlin bindings, generated from the library's own metadata with the UniFFI version it was built with. The app's bindings come
+// from the Android library itself (arm64), so they describe exactly what ships and never the test-only object.
 tasks.register<Exec>("generateUniffiBindings") {
     group = "rust"
-    description = "Generates the Kotlin bindings for croft-ffi with uniffi-bindgen."
-    dependsOn("buildRustHost")
+    description = "Generates the Kotlin bindings for croft-ffi with uniffi-bindgen, from the Android library."
+    dependsOn("buildRustAndroid")
     workingDir = coreDir.asFile
     inputs.files(rustSources)
-    inputs.file(hostLib)
+    inputs.file(androidLib)
     outputs.dir(uniffiKotlin)
     doFirst { uniffiKotlin.get().asFile.deleteRecursively() }
     commandLine(
         "cargo", "run", "--locked", "-q", "-p", "croft-ffi", "--features", "cli,$rustFeatures", "--bin", "uniffi-bindgen", "--",
-        "generate", "--library", hostLib.asFile.path, "--language", "kotlin", "--no-format",
+        "generate", "--library", androidLib.get().asFile.path, "--language", "kotlin", "--no-format",
         "--out-dir", uniffiKotlin.get().asFile.path,
+    )
+}
+
+// The bindings for the :mailtests module (the host library, which has the test-only `TestImapServer`). Same package as the
+// app's; only that module compiles them.
+tasks.register<Exec>("generateUniffiHostBindings") {
+    group = "rust"
+    description = "Generates the Kotlin bindings (with TestImapServer) from the host library, for the :mailtests module."
+    dependsOn("buildRustHost")
+    workingDir = coreDir.asFile
+    inputs.files(rustSources)
+    inputs.file(hostLib)
+    outputs.dir(uniffiHostKotlin)
+    doFirst { uniffiHostKotlin.get().asFile.deleteRecursively() }
+    commandLine(
+        "cargo", "run", "--locked", "-q", "-p", "croft-ffi", "--features", "cli,$rustFeatures", "--bin", "uniffi-bindgen", "--",
+        "generate", "--library", hostLib.asFile.path, "--language", "kotlin", "--no-format",
+        "--out-dir", uniffiHostKotlin.get().asFile.path,
     )
 }
 
@@ -153,6 +184,7 @@ android {
     }
 }
 
+
 // The shrunk build loads the Rust library by name through the generated bindings and JNA: if R8 renames or removes
 // those classes the app crashes at start, and nothing but a device run would notice. Two checks fail the release build
 // instead: the keep rules must exist (before R8 runs), and R8's own mapping must show the bindings were not renamed (after).
@@ -200,6 +232,8 @@ tasks.withType<Test>().configureEach {
     dependsOn("buildRustHost")
     // The pure swipe machine's tests (module :swipe) run with the app's, so one command (and CI) covers both.
     dependsOn(":swipe:test")
+    // T16: the mail layer against the real core and an in-process IMAP server (plain JVM tests, module :mailtests).
+    dependsOn(":mailtests:test")
     // JNA finds the host build of the library here; the generated bindings load it by name.
     systemProperty("jna.library.path", hostLibDir.asFile.path)
     systemProperty("croft.cargoVersion", cargoVersion)

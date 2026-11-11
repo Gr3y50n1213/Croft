@@ -79,6 +79,25 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
   `BackHandler`, the system back-callback API.
 - Debug-only source sets: `src/testDebug/` holds the tests that need the gallery.
 
+## The real core behind the Inbox (T16)
+- `MainActivity` opens the core **off the main thread** (`mail/MailRuntime`: `createAppSecrets`, `openCore`, `SecretStoreCredentials`, T11)
+  and builds the `MailSession` over it. With no account in the core the app still shows the fake sample mailbox (onboarding is T17); the
+  open core is kept in `MailRuntime.core` for T17.
+- `mail/CoreMessageRepository` implements `MessageRepository` over `uniffi.croft_ffi.Core` (FFI API version 5); `CoreRowActions` implements
+  `RowActions`; `FolderMapping` remembers, per account, the folder chosen for Archive or Trash when the server has none (asked once) and the
+  recent Move to folders. S30 is `ui/mail/MoveToSheet`; S49 (Undo time) is `ui/mail/InboxSettingsScreen` with `mail/MailSettings`
+  (`croft-mail.json`); the Undo time is handed to the core (`set_undo_window_ms`) at start and at every change.
+- Connectivity: `mail/ConnectivityMonitor` (`registerDefaultNetworkCallback`) calls `set_network_available`. The manifest now declares
+  `INTERNET` and `ACCESS_NETWORK_STATE` (and `tools/manifest-allowlist.json` allows them).
+- **Tests against a real server, as plain JVM tests: the module `:mailtests`** (`./gradlew :mailtests:test`, also run by
+  `:app:testDebugUnitTest`). It compiles the app's `mail/` data layer in place (not the four files that need Android: `MailSession`, `MailSettings`, `ConnectivityMonitor`, `MailRuntime`) with Kotlin bindings
+  generated from the **host** library, which is built with the `test-server` feature of `croft-ffi` and so has `TestImapServer`. The
+  app's own bindings are generated from the **Android** library (`generateUniffiBindings`), so the app cannot call, or even know,
+  the test object; `tools/check-release-outputs.sh` checks that the release `.so` files have no test-server symbols. Why a module and
+  not `app/src/test`: it runs without Robolectric (Maven Central's rate limit blocked that download in the build container).
+- Screen tests of the Inbox over the real repository with a scripted core are in `app/src/test/.../ui/mail/` (`CoreStateKit`, `CoreStatesTest`,
+  `CoreScreenshotTest`, `MoveToTest`).
+
 ## Message list on fake data (T14)
 - Screens S10 to S19 are `ui/mail/` (`InboxScreen`; the state and logic are in `InboxController`, which only talks to a
   `MessageRepository`). Settings is reached from the drawer.

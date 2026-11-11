@@ -372,12 +372,12 @@ class SwipeMachineTest {
     // ---- Settings types ----
 
     @Test
-    fun the_picker_leaves_snooze_and_move_to_out_until_their_sheets_exist_and_ends_with_none() {
+    fun the_picker_offers_move_to_since_its_sheet_exists_leaves_snooze_out_and_ends_with_none() {
         assertFalse(SwipeAction.SNOOZE in SwipeAction.picker)
-        assertFalse(SwipeAction.MOVE_TO in SwipeAction.picker)
+        assertTrue(SwipeAction.MOVE_TO in SwipeAction.picker)
         assertEquals(SwipeAction.NONE, SwipeAction.picker.last())
         assertEquals(
-            listOf(SwipeAction.TOGGLE_READ, SwipeAction.ARCHIVE, SwipeAction.DELETE, SwipeAction.TOGGLE_STAR, SwipeAction.SPAM, SwipeAction.NONE),
+            listOf(SwipeAction.TOGGLE_READ, SwipeAction.ARCHIVE, SwipeAction.DELETE, SwipeAction.MOVE_TO, SwipeAction.TOGGLE_STAR, SwipeAction.SPAM, SwipeAction.NONE),
             SwipeAction.picker,
         )
     }

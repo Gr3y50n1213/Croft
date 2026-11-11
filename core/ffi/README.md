@@ -2,14 +2,14 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 4)
+## The surface (API version 5)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
 
 `Core` (one object; `Core.open(db_path, db_key, credentials)`):
 - accounts: `discover` (async), `verify` (async), `add_account(discovered, display_name, pinned, credential)` (async; the credential is the new account's, see "Credentials"), `list_accounts`, `remove_account` (async), `signed_in` (async)
-- reading: `list_folders`, `list_messages(scope, before, limit)` (keyset paging; `MessageScope` is a folder or the unified Inbox)
+- reading: `list_folders`, `list_messages(scope, before, limit)` (keyset paging; `MessageScope` is a folder, the unified Inbox, or Starred for one account or all). Since version 5 a `MessageRow` has `thread_count` (messages sharing its conversation key in its folder) and `recipients` (names, else addresses, from the stored `to_json`), and `AccountInfo` has `last_synced_ms` (the newest folder sync)
 - observing: `next_change(after)` (async; a numbered change log, see `src/changes.rs`)
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`
 - sync and network: `sync_now`, `set_network_available`
@@ -17,6 +17,15 @@ and `discover_error_message_key` / `discover_error_default_message`.
 Callback interfaces the app implements: `CredentialProvider` (`credential`, `sign_in_needed`) and `DiscoveryObserver` (`on_probe`).
 Every callback returns `Result<_, ProviderError>`; `ProviderError` has one fieldless variant, `Failed` (see "Callbacks").
 Errors: `CoreError`, `DiscoverError`, `VerifyFailure`: fixed categories, no free text.
+
+## The test server (feature `test-server`, test only)
+`--features test-server` adds the object `TestImapServer` (`src/test_server.rs`): the in-process IMAP server of `core/test-support`
+(TLS on 127.0.0.1 with a fresh self-signed certificate, one made-up login) with calls to start it with N messages, stop it, inject a
+message, change flags as another client would, read its command log, make a folder read-only (a permanent refusal), answer
+sign-ins with "unavailable" (transient) or "wrong password", turn `UIDPLUS` and `MOVE` off, and cut connections. It is for the host
+library the Kotlin JVM tests load (`android/mailtests`) and **never for the Android library**: `android/app/build.gradle.kts` keeps it
+out of `rustFeatures` and `android/tools/check-release-outputs.sh` fails when a release `.so` carries its symbols. Run its own test
+with `cargo test -p croft-ffi --features test-server`.
 
 ## Async and the runtime
 `Core` owns a tokio multi-thread runtime (2 workers). The exported `async` methods are plain futures that the app's

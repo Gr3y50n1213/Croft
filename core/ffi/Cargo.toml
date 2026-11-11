@@ -24,6 +24,12 @@ sqlcipher = ["croft-storage/sqlcipher"]
 # Android build uses this one: the NDK has no OpenSSL to link against. Needs perl and make.
 sqlcipher-vendored-openssl = ["sqlcipher", "rusqlite/bundled-sqlcipher-vendored-openssl"]
 
+# Exports `TestImapServer`, the in-process IMAP server of `core/test-support`, so that the Kotlin
+# JVM tests can run the app's code against a real (local) server. TEST ONLY: never in the Android
+# library (the Gradle build's `rustFeatures` must not name it, and `tools/check-release-outputs.sh`
+# fails if the release `.so` holds the test symbols); only the host library the JVM tests load has it.
+test-server = ["dep:croft-test-support"]
+
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
@@ -43,6 +49,8 @@ tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "sync", "time",
 uniffi = "0.32.2"
 # Wipes the password and token strings (and the database key) after use.
 zeroize = "1.9.1"
+# Only with the `test-server` feature (test builds of the host library); see that feature.
+croft-test-support = { path = "../test-support", optional = true }
 
 [dev-dependencies]
 # `test-fakes`: recording stand-ins for DNS and HTTPS, so discovery is tested without a network.

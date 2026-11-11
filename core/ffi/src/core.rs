@@ -510,17 +510,27 @@ impl Core {
 
     /// Every account, in list order.
     pub fn list_accounts(&self) -> Result<Vec<AccountInfo>, CoreError> {
-        let stored = self
-            .inner
-            .handle
-            .read(|db| accounts::list(db.connection()))?;
+        let stored = self.inner.handle.read(|db| {
+            let conn = db.connection();
+            accounts::list(conn)?
+                .into_iter()
+                .map(|a| {
+                    let last_synced_ms = folders::list(conn, a.id)?
+                        .iter()
+                        .filter_map(|f| f.last_synced_at)
+                        .max();
+                    Ok::<_, CoreError>((a, last_synced_ms))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })?;
         Ok(stored
             .into_iter()
-            .map(|a| AccountInfo {
+            .map(|(a, last_synced_ms)| AccountInfo {
                 status: self.inner.hub.status(a.id),
                 id: a.id,
                 label: a.label,
                 email: a.email,
+                last_synced_ms,
             })
             .collect())
     }
@@ -575,10 +585,10 @@ impl Core {
         self.inner.handle.read(|db| {
             let conn = db.connection();
             let ids = match scope {
-                MessageScope::UnifiedInbox => {
+                MessageScope::UnifiedInbox | MessageScope::Starred { account: None } => {
                     accounts::list(conn)?.into_iter().map(|a| a.id).collect()
                 }
-                MessageScope::Folder { .. } => Vec::new(),
+                MessageScope::Folder { .. } | MessageScope::Starred { .. } => Vec::new(),
             };
             list::page(conn, &ids, scope, now_ms(), before, limit)
         })

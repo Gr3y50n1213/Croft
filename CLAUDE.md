@@ -85,13 +85,15 @@ bash test-servers/stalwart/setup.sh                    # Stalwart starts empty; 
 cd core && cargo test -p croft-protocols --features integration
 docker compose -f test-servers/docker-compose.yml down -v
 ```
-Android (needs `ANDROID_HOME`, NDK r29, cargo-ndk; see `android/README.md`):
+Android (needs `ANDROID_HOME`, NDK r29, cargo-ndk; see `android/README.md`). If Maven Central refuses a download,
+never use a mirror, an init script, a local repository or a hand-built classpath: push and let GitHub CI run the tests.
 ```
 cd android && ./gradlew :app:assembleDebug :app:testDebugUnitTest
 ```
 Parallel work in one container: each task gets its own git worktree; container tests then need their own
 compose project name (`-p`) and host ports (the tests read `CROFT_TEST_*_PORT`). Remove a worktree once merged:
-build folders fill the disk.
+build folders fill the disk. Never check out the same branch in two worktrees (for example `claude/croft-build`
+in the main folder and in a task worktree): a push from one leaves the other's files stale.
 
 ## Where things stand
 Progress, task by task, is in `docs/PROGRESS.md` (newest first); choices in `docs/DECISIONS.md`; what waits on the

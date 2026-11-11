@@ -34,7 +34,7 @@ import uniffi.croft_ffi.ServerSettings
 /**
  * The account screens' logic (S44, S45, S60 and "Try with sample mail") over the **real Rust core** on the JVM: the sample mailbox
  * with the network off, its rows saying they are not saved to a server, removing an account (what the confirmation lists, the order of
- * secret and rows, ids never reused), "Erase all Croft data", and the diagnostics text. Made-up names and `example.org` addresses.
+ * secret and rows, an id not reused while the database exists), "Erase all Croft data", and the diagnostics text. Made-up names and `example.org` addresses.
  */
 class AccountsTest {
     private val dir: File = Files.createTempDirectory("croft-accounts-test").toFile()
@@ -42,7 +42,10 @@ class AccountsTest {
     private val core: Core = Core.open(File(dir, "croft.db").path, null, provider)
     private val repo = CoreMessageRepository(core)
 
-    /** What happened, in order: "core:<id>" when an account's rows were deleted, then "secret:<id>" when its saved password was. */
+    /**
+     * What `CoreAccountOps.eraseEverything` asked for, in the order it asked ("quarantine", then one "account:<id>" per account, "close",
+     * "erase-storage"). The order of those calls is decided by the production class, not by these lambdas.
+     */
     private val events = CopyOnWriteArrayList<String>()
     private val secrets = HashSet<Long>()
     private var clearedLocalFiles = false
@@ -51,11 +54,17 @@ class AccountsTest {
 
     private val ops = CoreAccountOps(
         core,
-        // The owner's order: the core first (it stops the account), then the saved secret.
-        removeAccountAndSecrets = { id -> core.removeAccount(id); events += "core:$id"; synchronized(secrets) { secrets.remove(id) }; events += "secret:$id" },
+        // (The order of the core's removal and the secret's, the owner's decision, is in `AccountSecrets.removeAccount`; its test is
+        // `SecretStoreCredentialsTest`. Here the lambda only does both.)
+        removeAccountAndSecrets = { id -> events += "account:$id"; core.removeAccount(id); synchronized(secrets) { secrets.remove(id) } },
         savedSignIn = { id -> if (synchronized(secrets) { id in secrets }) SavedSignIn.PASSWORD else SavedSignIn.NONE },
+        eraseQuarantine = { events += "quarantine" },
         closeCore = { events += "close"; closed.set(true); core.close() },
-        eraseStorage = { events += "erase-storage"; storageErased = true; synchronized(secrets) { secrets.clear() } },
+        // As production does: the database file and its side files go with the secrets.
+        eraseStorage = {
+            events += "erase-storage"; storageErased = true; synchronized(secrets) { secrets.clear() }
+            dir.listFiles { f -> f.name.startsWith("croft.db") }?.forEach { it.delete() }
+        },
         clearLocalFiles = { clearedLocalFiles = true },
     )
 
@@ -150,14 +159,13 @@ class AccountsTest {
     }
 
     @Test
-    fun theCoreLetsTheAccountGoBeforeItsSavedPasswordIsDeletedAndAnIdIsNeverGivenAgain() {
+    fun removingAnAccountDeletesItsSecretAndAnIdIsNotGivenAgainWhileTheDatabaseExists() {
         val first = addReal()
         runBlocking { ops.remove(first) }
-        assertEquals("the core's rows first (the account stops), then the secret", listOf("core:$first", "secret:$first"), events.toList())
         assertTrue(synchronized(secrets) { first !in secrets })
         assertTrue(accounts().isEmpty())
         val second = addReal("bob@example.org")
-        assertNotEquals("ids are never reused, so a leftover secret could never reach another account", first, second)
+        assertNotEquals("an id is not reused while the database exists, so a leftover secret could never reach another account", first, second)
         assertTrue(second > first)
     }
 
@@ -170,18 +178,21 @@ class AccountsTest {
         runBlocking { ops.eraseEverything() }
         assertTrue(synchronized(secrets) { secrets.isEmpty() })
         assertTrue(storageErased && clearedLocalFiles)
-        assertEquals(listOf(real1, real2, sample).sorted().map { "core:$it" }.toSet(), events.filter { it.startsWith("core:") }.toSet())
-        // Every account first, then the core is closed, then the storage is erased: the order of the steps.
+        // The order of the steps is the production class's: the quarantine first, then every account, then the core is closed, then the storage.
         val order = events.toList()
-        assertTrue(order.indexOf("close") > order.indexOfLast { it.startsWith("secret:") })
+        assertEquals("quarantine", order.first())
+        assertEquals(setOf(real1, real2, sample), order.filter { it.startsWith("account:") }.map { it.removePrefix("account:").toLong() }.toSet())
+        assertTrue(order.indexOf("close") > order.indexOfLast { it.startsWith("account:") })
         assertTrue(order.indexOf("erase-storage") > order.indexOf("close"))
-        // The core was closed with nothing left in it: a core opened on the same database lists no account (and ids go on, they are never reused).
         assertTrue(closed.get())
+        // The database was deleted with the storage: a core opened on the same path is a new, empty database. Ids start again, and nothing
+        // keyed by an old id survives (secrets, quarantine, folder choices and prefs go in the same erase).
+        assertTrue(dir.listFiles { f -> f.name.startsWith("croft.db") }!!.isEmpty())
         val again = Core.open(File(dir, "croft.db").path, null, provider)
         try {
             assertTrue(again.listAccounts().isEmpty())
             val next = runBlocking { again.addAccount(deadServer("carol@example.org"), "Carol", null, null, FfiCredential.password("x".toByteArray())).id }
-            assertTrue(next > maxOf(real1, real2, sample))
+            assertEquals("a fresh install: the first account is number 1 again", 1L, next)
         } finally {
             again.close()
         }

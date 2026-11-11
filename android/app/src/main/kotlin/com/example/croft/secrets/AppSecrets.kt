@@ -501,44 +501,60 @@ class AppSecrets internal constructor(
     }
 
     /**
-     * "Erase all Croft data on this device", the secrets and the database: deletes the database and its side files (**close the core
-     * first**), every account secret, every removal mark, the wrapped database key, the whole quarantine (every earlier database,
-     * wrapped secrets and wrapped key, `superseded/` too), the key-lost notice and the loss-suspected file, and the wrapping key in the
-     * Keystore. Under the process lock. Afterwards the next [databaseKey] is a first run: nothing is left that a start could restore.
-     * Throws [SecureStorageException] (STORAGE_ERROR) when a file cannot be deleted; what was deleted stays deleted and the call can be repeated.
+     * The first step of "Erase all Croft data on this device": deletes the whole quarantine (every earlier database, wrapped secrets and
+     * wrapped key, `superseded/` too), the key-lost notice and the loss-suspected file, and stops offering a restore. **Before the first
+     * account is removed**, so that a kill at any later step cannot leave an older database waiting to be restored by a start that finds no
+     * account secret (the case in which the app restores at once). Verified: throws [SecureStorageException] (STORAGE_ERROR) when anything
+     * of the quarantine is left; the call can be repeated.
+     */
+    fun eraseQuarantine() {
+        assertNotMainThread()
+        withLock { wipeQuarantine() }
+    }
+
+    private fun wipeQuarantine() {
+        if (!quarantine.deleteAll()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+        for (f in listOf(File(dir, KEY_LOST_MARKER), File(dir, SUSPICION_FILE))) {
+            if (f.exists() && !f.delete()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+        }
+        keyLoss.acknowledge()
+        quarantineRestore.set(false)
+        offered = null
+        incidentThisStart = null
+    }
+
+    /**
+     * "Erase all Croft data on this device", the rest: after [eraseQuarantine], deletes the database and its side files (**close the core
+     * first**), every account secret, the wrapped database key, and then the wrapping key in the Keystore. Under the process lock. The
+     * order is chosen so that a kill at any point leaves nothing a start would restore: the quarantine goes first (also here, again), the
+     * database's side files before the database, the database before the wrapped key. Everything is **checked** before the Keystore key
+     * is discarded: if anything survived, [SecureStorageException] (STORAGE_ERROR) is thrown and the wrapping key is kept, so that what
+     * is still there stays usable (a discarded key with data left would make the next start declare a key loss and quarantine it).
+     * Afterwards the next [databaseKey] is a first run. Repeat the call after a failure.
      */
     fun eraseEverything() {
         assertNotMainThread()
         withLock {
+            wipeQuarantine()
+            val siblings = databaseSiblings()
+            for (f in siblings.drop(1) + siblings.first()) {
+                if (f.exists() && !f.delete()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            }
             try {
-                // The quarantine first: it holds older copies of everything else, and the next start restores from it when nothing new exists.
-                quarantine.deleteAll()
-                databaseSiblings().forEach { if (it.exists() && !it.delete()) throw IOException("cannot delete the database") }
                 secrets.clear()
-                for (f in listOf(keyFile, File(dir, KEY_LOST_MARKER), File(dir, SUSPICION_FILE))) {
-                    if (f.exists() && !f.delete()) throw IOException("cannot delete a secrets file")
-                }
+                if (secrets.hasAny()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
             } catch (e: IOException) {
                 throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
             }
-            // The wrapping key goes too, so a copy of a wrapped file taken earlier could never be opened again. A Keystore that cannot
-            // delete it now is not a reason to keep the data: the next first run replaces the entry (`WrappingKeySource.create`).
-            try { keys.discard() } catch (e: SecretBoxException) { /* replaced at the next first run */ }
-            keyLoss.acknowledge()
-            quarantineRestore.set(false)
-            offered = null
-            incidentThisStart = null
+            if (keyFile.exists() && !keyFile.delete()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            // Verified before the Keystore key goes.
+            if (quarantine.incidents().isNotEmpty() || databaseExists() || keyFile.exists()) {
+                throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            }
+            try { keys.discard() } catch (e: SecretBoxException) { /* replaced at the next first run (`WrappingKeySource.create`) */ }
             restoreChecked = false
             startCounted = false
         }
-    }
-
-    /**
-     * Removes an account's quarantined secret files (its removal asks for it, see `AccountSecrets.removeAccount`), so a later restore of
-     * an earlier database cannot bring its password back. Under the process lock. Never throws for a missing file.
-     */
-    fun purgeQuarantinedSecrets(accountId: Long) {
-        withLock { quarantine.deleteAccountSecrets(accountId) }
     }
 
     internal fun restoreFromQuarantine() {

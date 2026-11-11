@@ -153,6 +153,7 @@ fun CroftNavHost(
                 return@withContext null
             }
             try { sessionNow.folderMapping.forgetAccount(id) } catch (e: Exception) { /* swept at the next start */ }
+            try { sessionNow.anchors.forgetAccount(id) } catch (e: Exception) { /* swept at the next start */ }
             try { removeAccountPrefs(id) } catch (e: Exception) { /* swept at the next start */ }
             try { onAccountReady() } catch (e: Exception) { /* the next screen reads the core again */ }
             try { sessionNow.repository.listAccounts().size } catch (e: Exception) { REMOVED_COUNT_UNKNOWN }
@@ -167,6 +168,9 @@ fun CroftNavHost(
                 route = Route.ONBOARDING
                 true
             } catch (e: Exception) {
+                // The erase stopped part way (nothing is claimed): the core may have been closed, so the app builds its session again (a new
+                // core on the same files) and the person sees the failure and can try again.
+                try { onAccountReady() } catch (ignored: Exception) { /* the screens read the core again when it is back */ }
                 false
             }
         }

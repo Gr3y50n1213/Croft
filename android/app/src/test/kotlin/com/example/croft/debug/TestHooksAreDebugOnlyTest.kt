@@ -48,5 +48,8 @@ class TestHooksAreDebugOnlyTest {
     fun theReleaseCheckLooksForTheDebugOnlyFieldInTheMapping() {
         val script = File("../tools/check-release-outputs.sh").readText()
         assertTrue(script.contains("debugOnlySecretsFactory") && script.contains("mapping.txt"))
+        // A missing mapping fails the check (the release build is minified, so R8 always writes one): it must not pass quietly.
+        assertTrue(Regex("""bad "no R8 mapping""").containsMatchIn(script))
+        assertFalse(script.contains("skip debug test hooks"))
     }
 }

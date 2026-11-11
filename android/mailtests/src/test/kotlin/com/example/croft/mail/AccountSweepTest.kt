@@ -17,9 +17,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The start-up sweep that finishes a removal a crash cut short (M2 and M1 of the T17c review): the saved secrets, the folder choices and
- * the prefs of ids the core does not list, and the removal marks. A fake secret store records what the sweep did; the folder mapping is the
- * real file-backed one.
+ * The start-up sweep that finishes a removal a crash cut short (M2 and M1 of the T17c review): the saved secrets, the folder choices, the
+ * list positions and the prefs of ids the core does not list. A fake secret store records what the sweep did; the folder mapping and the
+ * anchors are the real file-backed ones.
  */
 class AccountSweepTest {
     private val dir: File = Files.createTempDirectory("croft-sweep-test").toFile()
@@ -27,47 +27,47 @@ class AccountSweepTest {
     @After
     fun tearDown() { dir.deleteRecursively() }
 
-    private class FakeSecrets(
-        val stored: MutableSet<Long>,
-        val marks: MutableSet<Long>,
-        val quarantined: MutableSet<Long>,
-    ) : AccountSweep.Secrets {
+    private class FakeSecrets(val stored: MutableSet<Long>) : AccountSweep.Secrets {
         override fun storedIds() = stored.toSet()
-        override fun unfinishedRemovals() = marks.toSet()
         override fun deleteSecrets(id: Long) { stored -= id }
-        override fun finishRemoval(id: Long) { stored -= id; quarantined -= id; marks -= id }
-        override fun clearMark(id: Long) { marks -= id }
     }
 
     @Test
     fun aCrashBetweenTheStepsOfARemovalIsFinishedAtTheNextStart() {
-        // The core lists account 1 only. Account 2 was removed in the core, then the app was killed (its secret, its mark, its quarantined
-        // copy and its app-side entries are left). Account 3's removal began but never reached the core (the mark is there, it is listed).
-        // Account 4 has a stray secret and nothing else.
-        val secrets = FakeSecrets(stored = mutableSetOf(1, 2, 3, 4), marks = mutableSetOf(2, 3), quarantined = mutableSetOf(2, 3, 5))
+        // The core lists account 1 only. Account 2 was removed in the core, then the app was killed: its secret, its folder choices, its
+        // list positions and its prefs are left. Account 4 has a stray secret and a declined role.
+        val secrets = FakeSecrets(stored = mutableSetOf(1, 2, 4))
         val mapping = FileFolderMapping(File(dir, "croft-folders.txt"))
-        for (id in listOf(1L, 2L, 3L, 4L)) mapping.remember(id, FolderRole.ARCHIVE, id * 100 + 3)
+        for (id in listOf(1L, 2L, 4L)) mapping.remember(id, FolderRole.ARCHIVE, id * 100 + 3)
         mapping.recordRecent(2, 202)
         mapping.decline(4, FolderRole.TRASH)
-        val prefs = AccountPrefs(order = listOf(2, 1, 3, 4), names = mapOf(1L to "One", 2L to "Two", 4L to "Four"), colours = mapOf(2L to AccountColour.AMBER, 1L to AccountColour.NEUTRAL))
+        val anchors = FileAnchorStore(File(dir, "croft-list-anchors-core.json"))
+        anchors.save("folder:1:101", ListAnchor(5, 1000, 0f))
+        anchors.save("folder:2:201", ListAnchor(6, 1000, 0f))
+        anchors.save("unified", ListAnchor(7, 1000, 0f))
+        anchors.flush()
+        val prefs = AccountPrefs(order = listOf(2, 1, 4), names = mapOf(1L to "One", 2L to "Two", 4L to "Four"), colours = mapOf(2L to AccountColour.AMBER, 1L to AccountColour.NEUTRAL))
 
-        val sweep = AccountSweep(known = setOf(1L, 3L), secretStore = secrets)
+        val sweep = AccountSweep(known = setOf(1L), secretStore = secrets)
         sweep.secrets()
         sweep.folderMapping(mapping)
+        sweep.anchors(anchors)
+        anchors.flush()
         val swept = sweep.prefs(prefs)
 
-        assertEquals("account 2's removal is finished, and the stray secret of 4 goes; 1 and 3 are listed and stay", setOf(1L, 3L), secrets.stored)
-        assertTrue("the marks are gone: 2's removal was finished, 3's never reached the core", secrets.marks.isEmpty())
-        assertEquals("quarantined copies go only for a removal that was begun (2); 3's removal did not happen; 5 is an older database's", setOf(3L, 5L), secrets.quarantined)
-        assertEquals(setOf(1L, 3L), mapping.accounts().filter { it in setOf(1L, 3L) }.toSet())
+        assertEquals("only the listed account keeps its secret", setOf(1L), secrets.stored)
+        assertEquals(setOf(1L), mapping.accounts())
         assertNull(mapping.mapped(2, FolderRole.ARCHIVE))
-        assertNull(mapping.mapped(4, FolderRole.ARCHIVE))
         assertEquals("account 1's choice stays", 103L, mapping.mapped(1, FolderRole.ARCHIVE))
-        assertEquals(listOf(1L, 3L), swept.order)
+        assertEquals(setOf(1L), anchors.accounts())
+        assertNull(anchors.load("folder:2:201"))
+        assertEquals("the unified Inbox's place is not an account's", 7L, anchors.load("unified")?.messageId)
+        assertEquals(listOf(1L), swept.order)
         assertEquals(mapOf(1L to "One"), swept.names)
         assertEquals(mapOf(1L to AccountColour.NEUTRAL), swept.colours)
-        // The folder choices are in the file too: a new process finds them already swept.
-        assertEquals(setOf(1L, 3L), FileFolderMapping(File(dir, "croft-folders.txt")).accounts())
+        // The folder choices and the list positions are in their files too: a new process finds them already swept.
+        assertEquals(setOf(1L), FileFolderMapping(File(dir, "croft-folders.txt")).accounts())
+        assertEquals(setOf(1L), FileAnchorStore(File(dir, "croft-list-anchors-core.json")).accounts())
     }
 
     @Test

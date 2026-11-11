@@ -22,7 +22,7 @@ enum class AccountColour { PRIMARY, SECONDARY, TERTIARY, AMBER, ERROR, NEUTRAL }
 /**
  * What the app itself remembers about its accounts, because the core has no field for it (S44, S45): the order of the list, the
  * name the person gave an account and its colour. Display-only: nothing here reaches a server, and nothing here is an address or a
- * secret. Keyed by the core's account id, which is never reused (a removed account's entries are dropped with [without]).
+ * secret. Keyed by the core's account id, which is not reused while the database exists; "Erase all Croft data" deletes these prefs together with the database (a removed account's entries are dropped with [without] and by the start-up sweep).
  */
 data class AccountPrefs(
     /** Account ids in the order the person chose; accounts not listed follow, by id. */

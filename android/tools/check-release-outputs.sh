@@ -58,7 +58,9 @@ mapping=app/build/outputs/mapping/release/mapping.txt
 if [ -f "$mapping" ]; then
   if grep -q 'debugOnlySecretsFactory' "$mapping"; then bad "the release build contains the debug test hooks (debugOnlySecretsFactory)"; else echo "ok   no debug test hooks in the release build"; fi
 else
-  echo "skip debug test hooks check (no R8 mapping at $mapping)"
+  # The release build is minified (isMinifyEnabled in app/build.gradle.kts), so R8 always writes a mapping; a missing one means this
+  # check could not look, which must not pass quietly.
+  bad "no R8 mapping at $mapping: cannot check that the debug test hooks are absent from the release build"
 fi
 
 "$bt/zipalign" -c -P 16 4 "$apk" && echo "ok   zipalign -c -P 16 on the APK" || bad "zipalign -P 16"

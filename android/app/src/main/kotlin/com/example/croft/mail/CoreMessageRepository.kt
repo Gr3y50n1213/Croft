@@ -212,7 +212,8 @@ class CoreMessageRepository(
     } catch (e: MailException) {
         throw e
     } catch (e: IllegalStateException) {
-        // The core was closed (an erase) while a call was on its way: not a crash.
+        // The core was closed (an erase) while a call was on its way: not a crash. Any other IllegalStateException is a bug and passes.
+        if (e.message?.contains("destroyed", ignoreCase = true) != true) throw e
         throw MailException(MailError.FAILED)
     } catch (e: CoreException) {
         throw MailException(

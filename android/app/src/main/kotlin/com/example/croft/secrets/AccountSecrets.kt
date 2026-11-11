@@ -21,7 +21,8 @@ import uniffi.croft_ffi.FfiDiscovered
  * - **Add.** The new account's password goes into `Core.addAccount`; the core uses it for the
  *   account's first connection and never asks the credential provider about a new account. Only
  *   when the call has returned is the password stored under the returned id (after clearing any
- *   entry under that id; the core never reuses an id, so there should be none). When
+ *   entry under that id; the core does not reuse an id while its database exists, and an erase deletes every secret with the
+ *   database, so there should be none). When
  *   `addAccount` fails nothing is stored. A crash between the two steps leaves an account that
  *   needs a sign-in at the next start, which is safe. If storing fails, the account is removed
  *   again so that no account exists without its secret.
@@ -34,19 +35,19 @@ import uniffi.croft_ffi.FfiDiscovered
  *   settings and its old secret, and [SignInNotSavedException] is thrown for the screen to say so. Each update has a token and the
  *   rollback only undoes that update, never a later sign-in's; if it could not be undone the plain storage failure is thrown instead.
  * Both calls are suspend functions that run on the IO dispatcher (the Keystore can make them wait).
- * - **Remove.** A removal mark is written first (durably), then `Core.removeAccount` is called (it stops the account's task and waits for
- *   a message that is being handed to the server, so nothing new is sent after it returns), then the account's secrets and its
- *   quarantined copies are deleted, then the mark. A crash anywhere leaves the mark; the sweep at the next start (`AccountSweep`) finishes
- *   the job. The order is the owner's decision of 11 November (docs/DECISIONS.md): the earlier "secret first" order let the account go on
- *   running, and sending, without its secret being read again only by chance. Ids are never reused, so a leftover could never reach
- *   another account.
+ * - **Remove.** `Core.removeAccount` is called first (it stops the account's task and waits for a message that is being handed to the
+ *   server, so nothing new is sent after it returns), then the account's secrets are deleted. A crash in between leaves a secret for an
+ *   id the core no longer lists; the sweep at the next start (`AccountSweep`) deletes it. The order is the owner's decision of 11 November
+ *   (docs/DECISIONS.md). An id is not given to another account while the database exists (the core keeps a high-water mark, tested);
+ *   after "Erase all Croft data" the database and every secret are gone together. The quarantine (T11) is not touched by a single
+ *   removal: its files belong to an earlier database whose account numbers may repeat these, and it expires by itself.
  */
 class AccountSecrets(
     private val store: SecretStore,
     private val signInNeeded: SignInNeeded,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
-    /** Deletes an account's quarantined secret files (`AppSecrets.purgeQuarantinedSecrets`); nothing to do where there is no quarantine. */
-    private val purgeQuarantined: (Long) -> Unit = {},
+    /** Told "core" after the core let the account go and "secrets" after its secrets were deleted; for tests of the order. */
+    private val onStep: (String) -> Unit = {},
 ) {
     /**
      * Adds a password account. [password] is the UTF-8 secret the person just verified; it is
@@ -127,26 +128,20 @@ class AccountSecrets(
     }
 
     /**
-     * Removes the account: the removal mark, the account from the core, its secrets and quarantined copies, the mark (in that order, see
-     * the class text). An account the core no longer has (a removal that was cut short) is not an error: what is left of it is deleted.
-     * Any other failure of the core leaves the mark, the account and its secrets in place, so the removal can be repeated.
+     * Removes the account: the account in the core first, then its secrets (see the class text). An account the core no longer has (a
+     * removal that was cut short) is not an error: what is left of it is deleted. Any other failure of the core leaves the account and its
+     * secrets in place, so the removal can be repeated.
      */
     suspend fun removeAccount(core: Core, accountId: Long) = withContext(dispatcher) {
-        store.markRemoving(accountId)
         try {
             core.removeAccount(accountId)
         } catch (e: CoreException.NoSuchAccount) {
             // Already gone: finish the rest.
         }
-        finishRemoval(accountId)
-    }
-
-    /** What is left after the core no longer has [accountId]: its secrets, its quarantined copies, the mark. Also what the start-up sweep does. */
-    fun finishRemoval(accountId: Long) {
+        onStep("core")
         store.removeAccount(accountId)
-        purgeQuarantined(accountId)
         signInNeeded.clear(accountId)
-        store.clearRemoving(accountId)
+        onStep("secrets")
     }
 
     override fun toString(): String = "[redacted]"

@@ -4,6 +4,8 @@
 
 package com.example.croft.mail
 
+import com.example.croft.mail.accounts.CoreAccountOps
+import com.example.croft.mail.accounts.SavedSignIn
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -38,8 +40,15 @@ class RemovalWithQueuedChangeTest {
         assertEquals(1, ops.size)
         assertEquals("the row leaves the list at once", 2, r.inbox().size)
 
-        // The owner's order: the core removes the account first (its task stops), the saved secret goes after.
-        r.run { r.core.removeAccount(r.account) }
+        // Through the app's removal path (`AccountOps.remove`, whose real implementation calls `AccountSecrets.removeAccount`: the core
+        // first, then the secret). The secret store is the app's and not in this module, so the lambda stands for its second step.
+        val accountOps = CoreAccountOps(
+            r.core,
+            removeAccountAndSecrets = { id -> r.core.removeAccount(id) },
+            savedSignIn = { SavedSignIn.PASSWORD },
+            eraseQuarantine = {}, closeCore = {}, eraseStorage = {}, clearLocalFiles = {},
+        )
+        r.run { accountOps.remove(r.account) }
 
         // Well past the window, and a sync request on top: the server hears nothing that changes anything.
         Thread.sleep(3_000)

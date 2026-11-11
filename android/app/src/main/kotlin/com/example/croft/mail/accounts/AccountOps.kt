@@ -49,23 +49,33 @@ interface AccountOps {
  * [AccountOps] over the real [Core].
  *
  * **Removal order** (the owner's decision, docs/DECISIONS.md): `Core.removeAccount` first (it stops the account's task and waits for a
- * message that is being handed to the server, so nothing is sent after it returns), then the saved secret and its quarantined copies,
- * then the app's own entries for the id. [removeAccountAndSecrets] is `AccountSecrets.removeAccount`, which writes a removal mark first;
- * a crash anywhere leaves the mark and the start-up sweep ([AccountSweep]) finishes the job. Ids are never reused (the core keeps a
- * high-water mark, tested), so a leftover could never reach another account.
+ * message that is being handed to the server, so nothing is sent after it returns), then the saved secret, then the app's own entries for
+ * the id. [removeAccountAndSecrets] is `AccountSecrets.removeAccount`. A crash anywhere leaves an id the core no longer lists, and the
+ * start-up sweep ([AccountSweep]) deletes what is left. An id is not given to another account while the database exists (the core keeps
+ * a high-water mark, tested), so a leftover could never reach another account.
  *
- * **Erase:** every account is removed, the core is closed ([closeCore]), the database, the secrets, the quarantine and the Keystore key
- * are deleted ([eraseStorage], `AppSecrets.eraseEverything`) and Croft's other files ([clearLocalFiles]). The next start is a fresh install.
+ * **Erase** ("Erase all Croft data on this device"), in an order that leaves nothing restorable after a kill at any step:
+ * 1. [eraseQuarantine] first: the earlier databases, wrapped secrets and wrapped key of a wrong key-loss call. With the quarantine gone, a
+ *    start that finds no account secret has nothing to restore, whatever step the app was killed at afterwards;
+ * 2. every account as [remove] does;
+ * 3. the core is closed ([closeCore]);
+ * 4. the database's side files and file, every secret, the wrapped key and the Keystore key ([eraseStorage], checked: it throws and
+ *    keeps the Keystore key if anything survives);
+ * 5. Croft's other files ([clearLocalFiles]).
+ * After step 4 the next start is a fresh install, and nothing that was keyed by an account id survives (ids start again at 1 with the
+ * new database). A step that fails stops the erase with its error; the call can be repeated.
  */
 class CoreAccountOps(
     private val core: Core,
     private val removeAccountAndSecrets: suspend (AccountId) -> Unit,
     private val savedSignIn: (AccountId) -> SavedSignIn,
-    /** Closes the core (nothing may use it afterwards). */
+    /** Deletes the quarantine (`AppSecrets.eraseQuarantine`). */
+    private val eraseQuarantine: () -> Unit,
+    /** Closes the core and forgets it (nothing may use it afterwards; the next use opens a new one). */
     private val closeCore: () -> Unit,
-    /** Deletes the database file and its side files, every secret, the quarantine and the Keystore key. */
+    /** Deletes the database file and its side files, every secret and the Keystore key (`AppSecrets.eraseEverything`). */
     private val eraseStorage: () -> Unit,
-    /** Deletes Croft's other files, and forgets the closed core (the next use opens a new one). */
+    /** Deletes Croft's other files. */
     private val clearLocalFiles: () -> Unit,
 ) : AccountOps {
     override suspend fun addSample(): AccountId = core.addDemoAccount().id
@@ -75,6 +85,8 @@ class CoreAccountOps(
     override suspend fun remove(id: AccountId) = removeAccountAndSecrets(id)
 
     override suspend fun eraseEverything() {
+        // Deleting files waits on the disk and the Keystore: not on the main thread.
+        withContext(Dispatchers.IO) { eraseQuarantine() }
         for (account in core.listAccounts()) {
             try {
                 removeAccountAndSecrets(account.id)
@@ -84,7 +96,6 @@ class CoreAccountOps(
                 // Already gone: that is what we wanted.
             }
         }
-        // Closing the core and deleting files wait on the disk and the Keystore: not on the main thread.
         withContext(Dispatchers.IO) {
             closeCore()
             eraseStorage()

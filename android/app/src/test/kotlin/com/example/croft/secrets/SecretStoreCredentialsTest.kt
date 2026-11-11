@@ -372,35 +372,31 @@ class SecretStoreCredentialsTest {
     }
 
     @Test
-    fun removingAnAccountStopsItInTheCoreFirstThenDeletesItsSecretsAndQuarantinedCopiesThenTheMark() {
+    fun removingAnAccountStopsItInTheCoreFirstThenDeletesItsSecrets() {
         val core = core(provider())
         val id = add(core)
         signIns.mark(id)
-        // What the removal's last steps see: the core has already let the account go, the removal mark is still there.
+        // What the removal sees at each of its steps: after "core" the core has let the account go and the secret is still there; after
+        // "secrets" the secret is gone. (`onStep` is told by the real `AccountSecrets.removeAccount`.)
         val seen = mutableListOf<String>()
-        val removal = AccountSecrets(store, signIns, purgeQuarantined = { purged ->
-            seen += "purge:$purged core-has-it=${core.listAccounts().any { it.id == purged }} secret=${store.has(purged, SecretKind.PASSWORD)} mark=${purged in store.removing()}"
+        val removal = AccountSecrets(store, signIns, onStep = { step ->
+            seen += "$step core-has-it=${core.listAccounts().any { it.id == id }} secret=${store.has(id, SecretKind.PASSWORD)}"
         })
         runBlocking { removal.removeAccount(core, id) }
-        assertEquals(listOf("purge:$id core-has-it=false secret=false mark=true"), seen)
-        assertFalse(store.has(id, SecretKind.PASSWORD))
-        assertTrue(core.listAccounts().isEmpty())
+        assertEquals(listOf("core core-has-it=false secret=true", "secrets core-has-it=false secret=false"), seen)
         assertTrue(signIns.accounts.value.isEmpty())
-        assertTrue("the removal mark is gone at the end", store.removing().isEmpty())
     }
 
     @Test
     fun aRemovalThatWasCutShortIsFinishedAndAnUnknownIdIsNotAnError() {
         val core = core(provider())
         val id = add(core)
-        // The app was killed after the core let the account go and before its secret was deleted: the mark and the secret are left.
-        store.markRemoving(id)
+        // The app was killed after the core let the account go and before its secret was deleted: the secret is left.
         runBlocking { core.removeAccount(id) }
         assertTrue(store.has(id, SecretKind.PASSWORD))
         // Removing it again (the core says there is no such account) finishes the job without an error.
         runBlocking { accounts().removeAccount(core, id) }
         assertFalse(store.has(id, SecretKind.PASSWORD))
-        assertTrue(store.removing().isEmpty())
         // An id that never existed: whatever is stored under it goes too.
         store.put(999, SecretKind.PASSWORD, "x".toByteArray())
         runBlocking { accounts().removeAccount(core, 999) }

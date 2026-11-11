@@ -79,10 +79,7 @@ object MailRuntime {
 
     private object NoSecrets : AccountSweep.Secrets {
         override fun storedIds() = emptySet<Long>()
-        override fun unfinishedRemovals() = emptySet<Long>()
         override fun deleteSecrets(id: Long) = Unit
-        override fun finishRemoval(id: Long) = Unit
-        override fun clearMark(id: Long) = Unit
     }
 
     /**
@@ -145,6 +142,7 @@ object MailRuntime {
             val sweep = AccountSweep(open.core.listAccounts().map { it.id }.toSet(), SecretsForSweep(open))
             sweep.secrets()
             sweep.folderMapping(FileFolderMapping(File(context.noBackupFilesDir, "croft-folders.txt")))
+            FileAnchorStore(File(context.noBackupFilesDir, "croft-list-anchors-core.json")).also { sweep.anchors(it); it.flush() }
         } catch (e: Exception) {
             // Tried again at the next start.
         }
@@ -152,10 +150,7 @@ object MailRuntime {
 
     private class SecretsForSweep(private val open: OpenedCore) : AccountSweep.Secrets {
         override fun storedIds() = open.secrets.secrets.accountIds()
-        override fun unfinishedRemovals() = open.secrets.secrets.removing()
         override fun deleteSecrets(id: Long) = open.secrets.secrets.removeAccount(id)
-        override fun finishRemoval(id: Long) = open.accountSecrets.finishRemoval(id)
-        override fun clearMark(id: Long) = open.secrets.secrets.clearRemoving(id)
     }
 
     @Synchronized
@@ -165,7 +160,7 @@ object MailRuntime {
         val secrets = TestHooks.secretsFactory?.invoke(context, dbFile) ?: createAppSecrets(context, dbFile)
         val signIn = SignInNeeded()
         val core = openCore(dbFile.path, secrets, SecretStoreCredentials(secrets.secrets, signIn))
-        val accountSecrets = AccountSecrets(secrets.secrets, signIn, purgeQuarantined = secrets::purgeQuarantinedSecrets)
+        val accountSecrets = AccountSecrets(secrets.secrets, signIn)
         val open = OpenedCore(core, secrets, accountSecrets, signIn)
         sweepOrphans(context, open)
         return open.also { opened = it }

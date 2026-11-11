@@ -43,7 +43,9 @@ private class LazyAccountOps(private val context: Context) : AccountOps {
                     else -> SavedSignIn.NONE
                 }
             },
-            closeCore = { open.core.close() },
+            eraseQuarantine = { open.secrets.eraseQuarantine() },
+            // forgetCore closes this core and clears MailRuntime's hold on it, so a failed erase leaves nothing using a closed core.
+            closeCore = { MailRuntime.forgetCore() },
             eraseStorage = { open.secrets.eraseEverything() },
             clearLocalFiles = { if (!MailRuntime.afterErase(context)) throw java.io.IOException("a file could not be deleted") },
         )

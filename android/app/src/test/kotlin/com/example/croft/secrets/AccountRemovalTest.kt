@@ -61,8 +61,10 @@ class AccountRemovalTest {
         core,
         removeAccountAndSecrets = { id -> accountSecrets().removeAccount(core, id) },
         savedSignIn = { id -> if (store.has(id, SecretKind.PASSWORD)) SavedSignIn.PASSWORD else SavedSignIn.NONE },
+        eraseQuarantine = {},
         closeCore = { core.close() },
-        eraseStorage = { store.clear() },
+        // As production does (`AppSecrets.eraseEverything`): the database file and its side files go with the secrets.
+        eraseStorage = { store.clear(); dir.listFiles { f -> f.name.startsWith("croft.db") }?.forEach { it.delete() } },
         clearLocalFiles = { files += "cleared" },
     )
 
@@ -90,7 +92,7 @@ class AccountRemovalTest {
     }
 
     @Test
-    fun eraseEverythingLeavesNoAccountAndNoSecret() {
+    fun eraseEverythingLeavesNoAccountNoSecretAndNoDatabase() {
         val core = core()
         val a = add(core, "alice@example.org")
         add(core, "bob@example.org")
@@ -102,10 +104,11 @@ class AccountRemovalTest {
         assertFalse(store.hasAny())
         assertEquals(listOf("cleared"), files)
         assertTrue(signIns.accounts.value.isEmpty())
-        // The core was closed with no account left in it; opened again on the same file it lists none, and ids are not reused.
+        // The core was closed and the database deleted: a core opened on the same path is a new, empty database, and the ids start again
+        // (an id is not reused while a database exists; an erase leaves no database and nothing keyed by an id).
         open.remove(core)
         val again = core()
         assertTrue(again.listAccounts().isEmpty())
-        assertTrue(add(again, "carol@example.org") > a)
+        assertEquals(1L, add(again, "carol@example.org"))
     }
 }

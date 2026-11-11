@@ -198,6 +198,23 @@ class AccountsScreensTest {
     }
 
     @Test
+    fun aNameTypedOnTheAccountScreenIsNotWrittenBackWhenTheAccountIsRemoved() {
+        show()
+        openAccounts()
+        tag(AccountsTags.row(2)).performClick()
+        waitFor(AccountsTags.ACCOUNT)
+        // Typed and not yet committed (no focus change): leaving the screen would commit it, unless the account is gone.
+        tag(AccountsTags.NAME).performTextReplacement("Typed late")
+        tag(AccountsTags.REMOVE).performScrollTo().performClick()
+        waitFor(AccountsTags.REMOVE_DIALOG)
+        rule.onNodeWithText("Remove").performClick()
+        waitFor(AccountsTags.ACCOUNTS)
+        waitGone(AccountsTags.row(2))
+        rule.waitForIdle()
+        assertNull("nothing is written under the removed account's id", runBlocking { prefsStore.prefs.first() }.names[2L])
+    }
+
+    @Test
     fun aSavedSignInThatIsATokenIsListedAsOne() {
         secrets.put(2, SecretKind.OAUTH_REFRESH, "made-up-token".toByteArray())
         show()

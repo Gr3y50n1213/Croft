@@ -45,7 +45,7 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
 
     /**
      * Stores the first secret of a new account: first deletes every entry under this id (the core
-     * never reuses an id, so there should be none; a leftover of a crash must not be mistaken for
+     * does not reuse an id while its database exists, and an erase deletes every secret with the database, so there should be none; a leftover of a crash must not be mistaken for
      * the new account's), then stores [secret]. Throws [SecretBoxException] when it cannot be sealed.
      */
     fun putForNewAccount(accountId: Long, kind: SecretKind, secret: ByteArray) {
@@ -98,8 +98,9 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
 
     /**
      * Deletes every entry of an account. Account removal calls it **after** `Core.removeAccount` (which stops the account's task, so
-     * nothing new is sent with this account's secret after it has returned), with a removal mark written first: a crash in between
-     * leaves a secret for an id the core no longer lists, which the sweep at the next start deletes. Ids are never reused.
+     * nothing new is sent with this account's secret after it has returned): a crash in between leaves a secret for an id the core no
+     * longer lists, which the sweep at the next start deletes. An id is not given to another account while the database exists (the core
+     * keeps a high-water mark); after "Erase all Croft data" the database and every secret are gone together.
      */
     @Synchronized
     fun removeAccount(accountId: Long) {
@@ -111,10 +112,10 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     fun hasAny(): Boolean =
         (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets")).isNotEmpty()
 
-    /** Deletes every account secret (key loss, and "Erase all Croft data"), and every removal mark ([markRemoving]). */
+    /** Deletes every account secret (key loss, and "Erase all Croft data"). A file that cannot be deleted stays: check [hasAny] afterwards. */
     @Synchronized
     fun clear() {
-        dir.listFiles { f -> f.name.startsWith(PREFIX) || f.name.startsWith(REMOVING_PREFIX) }?.forEach { it.delete() }
+        dir.listFiles { f -> f.name.startsWith(PREFIX) }?.forEach { it.delete() }
     }
 
     /** The ids that have at least one stored secret. */
@@ -123,36 +124,12 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
         (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets"))
             .mapNotNull { it.name.removePrefix(PREFIX).substringBefore('.').toLongOrNull() }.toSet()
 
-    /**
-     * Writes a durable mark that the removal of [accountId] has begun, before the core is asked to remove it. A crash anywhere in the
-     * removal leaves the mark, and the sweep at the next start finishes what the removal had left (the saved secrets, the quarantined
-     * copies, the app's own entries). The mark is empty: it holds an id, nothing else. Throws [IOException] when it cannot be written.
-     */
-    fun markRemoving(accountId: Long) {
-        writeAtomically(File(dir, "$REMOVING_PREFIX$accountId"), ByteArray(0))
-    }
-
-    /** The removal of [accountId] is finished: its mark goes. */
-    @Synchronized
-    fun clearRemoving(accountId: Long) {
-        File(dir, "$REMOVING_PREFIX$accountId").delete()
-    }
-
-    /** The ids whose removal was begun and not finished. */
-    @Synchronized
-    fun removing(): Set<Long> =
-        (dir.listFiles { f -> f.name.startsWith(REMOVING_PREFIX) } ?: throw IOException("cannot list the secrets"))
-            .mapNotNull { it.name.removePrefix(REMOVING_PREFIX).toLongOrNull() }.toSet()
-
     private fun file(accountId: Long, kind: SecretKind) = File(dir, "$PREFIX$accountId.${kind.wireName}.v1")
 
     override fun toString(): String = "[redacted]"
 
     internal companion object {
         const val PREFIX = "acct-"
-
-        /** The name of a removal mark: `removing-<id>`. It does not start with [PREFIX], so it is not a secret. */
-        const val REMOVING_PREFIX = "removing-"
 
         /** Binds a blob to its entry, so a file copied onto another account or kind does not open. */
         fun context(accountId: Long, kind: SecretKind): ByteArray =

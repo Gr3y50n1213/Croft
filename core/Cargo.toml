@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["storage", "protocols", "mail-core"]
-# crypto/ and ffi/ join the workspace when crates.io is reachable (rPGP, UniFFI); see their README files.
+members = ["storage", "protocols", "mail-core", "ffi"]
+# crypto/ joins the workspace when crates.io is reachable (rPGP); see its README file.
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,13 @@
+# Build outputs. The Rust libraries (app/build/generated/rust/jniLibs) and the generated Kotlin
+# bindings (app/build/generated/uniffi) are build outputs too: they are rebuilt by Gradle.
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+*.so
+.idea/
+*.iml
+.kotlin/
+.cxx/
+captures/

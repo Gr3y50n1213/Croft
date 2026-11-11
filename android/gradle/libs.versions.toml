@@ -1,0 +1,30 @@
+# Versions checked on 2026-11-11 against dl.google.com/android/maven2 (AGP, AndroidX, Compose),
+# repo.maven.apache.org (Kotlin, JNA, Robolectric, JUnit) and docs.rs / crates.io (UniFFI, cargo-ndk).
+[versions]
+agp = "9.5.1"
+kotlin = "2.4.21"
+composeBom = "2026.09.00"
+# The BOM maps Material 3 to 1.4.0, where MotionScheme is internal. The generated design tokens
+# need it public, which is 1.5.0; only a release candidate exists so far.
+material3 = "1.5.0-rc01"
+activityCompose = "1.13.0"
+coreKtx = "1.19.1"
+jna = "5.19.1"
+junit = "4.13.2"
+robolectric = "4.17"
+
+[libraries]
+androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "material3" }
+androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
+androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+junit = { module = "junit:junit", version.ref = "junit" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

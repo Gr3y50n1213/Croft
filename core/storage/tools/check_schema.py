@@ -79,6 +79,25 @@ try:
 except sqlite3.IntegrityError:
     check("op_awaiting_uid foreign key rejects a missing account", True)
 
+# Migration 0003: hidden rows do not count towards the folder counters.
+counts = lambda: db.execute("SELECT total_count, unread_count FROM folder WHERE id=1").fetchone()
+before = counts()  # uid 1 is visible and unread
+db.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1")
+check("hiding an unread row lowers total and unread by one", counts() == (before[0] - 1, before[1] - 1))
+db.execute("UPDATE message SET is_seen = 1 WHERE uid = 1")
+check("marking a hidden row read leaves the counters alone", counts() == (before[0] - 1, before[1] - 1))
+db.execute("UPDATE message SET local_hidden = 0, is_seen = 0 WHERE uid = 1")
+check("showing it again and marking unread in one update restores both counters", counts() == before)
+db.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1")
+db.execute("DELETE FROM message WHERE uid = 1")
+check("deleting a hidden row leaves the counters alone", counts() == (before[0] - 1, before[1] - 1))
+db.execute("INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,is_seen,local_hidden) VALUES (1,1,1,'t1',300,0,1)")
+check("inserting a hidden row leaves the counters alone", counts() == (before[0] - 1, before[1] - 1))
+db.execute("UPDATE message SET local_hidden = 0 WHERE uid = 1")
+check("counters match a fresh count of visible rows",
+      counts() == (one("SELECT count(*) FROM message WHERE folder_id=1 AND local_hidden=0"),
+                   one("SELECT count(*) FROM message WHERE folder_id=1 AND local_hidden=0 AND is_seen=0")))
+
 try:
     db.execute("INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,category) VALUES (1,1,9,'t9',0,'spam')")
     check("category check rejects unknown values", False)
@@ -93,5 +112,18 @@ db.execute("DELETE FROM account WHERE id = 1")
 check("removing an account removes its folders, messages, queue and awaiting marks",
       one("SELECT count(*) FROM folder") + one("SELECT count(*) FROM message") + one("SELECT count(*) FROM op_queue")
       + one("SELECT count(*) FROM op_awaiting_uid") == 0)
+
+# Upgrading a version-2 database that already has hidden rows corrects its counters once.
+mig = sorted(glob.glob(os.path.join(here, "..", "migrations", "*.sql")))
+old = sqlite3.connect(":memory:")
+for path in mig[:2]:
+    old.executescript(open(path).read())
+old.executescript("""INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'S','s@example.org','imap','{}',0);
+INSERT INTO folder (id,account_id,path) VALUES (1,1,'INBOX');
+INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,is_seen) VALUES (1,1,1,'t1',1,0),(1,1,2,'t2',2,1);
+UPDATE message SET local_hidden = 1 WHERE uid = 1;""")
+old.executescript(open(mig[2]).read())
+check("migration 0003 takes already hidden rows out of the counters",
+      old.execute("SELECT total_count, unread_count FROM folder WHERE id=1").fetchone() == (1, 0))
 
 sys.exit(1 if check.failed else 0)

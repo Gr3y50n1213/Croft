@@ -50,6 +50,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "queue_persistence",
         sql: include_str!("../migrations/0002_queue_persistence.sql"),
     },
+    Migration {
+        version: 3,
+        name: "counters_skip_hidden",
+        sql: include_str!("../migrations/0003_counters_skip_hidden.sql"),
+    },
 ];
 
 /// The version a fully migrated database reports in `PRAGMA user_version`.

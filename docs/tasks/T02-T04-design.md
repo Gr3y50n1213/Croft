@@ -124,6 +124,8 @@ observe a `tokio::sync::broadcast` of changed folder ids and re-run their querie
   `abandon` (which removes the old row) must not be used there. Use `repoint_after_reset` (puts `pending_ops` and the
   local flag or hidden state on the new row) and `abandon_after_reset` (fails the ops, touches no row).
 - **Plain `confirm` of a move** removes the old row and nothing follows it. The engine should use `confirm_moved*`.
-- **Known gap.** The folder counters (`unread_count`, `total_count`) are kept by the 0001 triggers and still count a
-  hidden row until it is removed, so the unread badge of a folder drops when the server confirms an archive, not at once.
-  Fixing that needs a new migration with triggers; left for the orchestrator to decide.
+- **Folder counters and hidden rows (fixed by the orchestrator).** The 0001 triggers counted a hidden row until it was
+  removed, so a folder's unread badge dropped only when the server confirmed an archive. Migration
+  `0003_counters_skip_hidden.sql` replaces the counter triggers: a hidden row counts towards neither total nor unread,
+  one UPDATE that changes both `is_seen` and `local_hidden` is counted once, and rows already hidden at upgrade time are
+  taken out once.

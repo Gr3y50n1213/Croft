@@ -1,0 +1,16 @@
+[package]
+name = "croft-test-support"
+description = "In-process IMAP test server for Croft tests (not product code)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
+tokio = { version = "1.54", features = ["net", "time", "sync", "io-util", "rt", "macros"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+
+[lints]
+workspace = true

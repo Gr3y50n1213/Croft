@@ -6,5 +6,32 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Tests that need the container mail servers in test-servers/ (GreenMail and Dovecot).
+# Start them with: docker compose -f test-servers/docker-compose.yml up -d
+integration = []
+
+[dependencies]
+async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+encoding_rs = "0.8.35"
+futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
+# `max_level_debug` compiles out every `trace!` call in the build. async-imap traces whole
+# commands (the LOGIN line with the password) and whole server responses (message headers), so
+# this is a security setting, not a tuning knob. A test in this crate checks it stays on.
+log = { version = "0.4.29", features = ["max_level_debug"] }
+rustls-native-certs = "0.8.5"
+sha2 = "0.11.1"
+tokio = { version = "1.54", features = ["net", "time", "sync", "io-util", "rt"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1.0.12"
+# Wipes the password and OAuth token from memory when a `Credential` is dropped.
+zeroize = "1.9.1"
+
+[dev-dependencies]
+croft-test-support = { path = "../test-support" }
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util"] }
+
 [lints]
 workspace = true

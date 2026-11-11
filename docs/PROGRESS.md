@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T15 and T16: swipe engine; Inbox on the real core (11 November 2026)
+
+**Status:** T15 merged (pull request #8). T16 in pull request #9.
+
+**T15:** pure swipe state machine in a plain-Kotlin `:swipe` module (48 tests), gestures and visuals for S14 to S16, S47 and S48, long-press menus on drawer mailboxes, TalkBack custom actions. First CI run: 4 failures of 1823; one real bug (after "Mark all as read" from the drawer, the drawer stayed open and covered the Undo button), a gallery entry drawn off-screen, a test timing assumption and a DataStore test race; all fixed. The amber star on a selected row now meets 3:1.
+
+**T16:** the Inbox and actions run on the real core when an account exists (the sample mailbox stays until onboarding, T17). FFI API version 5 (thread count, recipients, last-synced time, Starred scope). S30 Move to. A host-only `test-server` feature lets 22 Kotlin tests drive a real in-process IMAP server (all pass in the build container). Permissions `INTERNET` and `ACCESS_NETWORK_STATE`. Opus security review: nothing serious, 5 low items fixed (a compile-time guard so the test server can never be built for Android, a stronger release check, build inputs, CI lint, committed Python cache files).
+
+**Known gap:** Sent rows show no recipients yet: the sync does not store To addresses (follow-up in `core/protocols`, `core/storage`).
+
+**Process note:** the main folder and a task worktree briefly had the same branch checked out; a push from one left the other's files stale. Nothing was lost; `CLAUDE.md` now forbids it.
+
+---
+
 ## T16b: release build; design-token follow-up; store audit (11 November 2026)
 
 **Status:** merged (pull requests #6 and #7) after GitHub CI passed, including the new `android-release` job.

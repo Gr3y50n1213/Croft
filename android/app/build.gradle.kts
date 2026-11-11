@@ -17,10 +17,11 @@ val coreDir = rootProject.layout.projectDirectory.dir("../core")
 val rustSources = fileTree(coreDir) {
     // Every crate croft-ffi depends on (engine -> mail-core, protocols, storage), the vendored
     // async-imap that [patch.crates-io] points at, and the workspace manifest and lock file.
-    // test-support is a dev-dependency only: the library builds do not compile it.
+    // test-support is compiled into the host library for the JVM tests (feature test-server), so a change
+    // there must rebuild it too; the Android and release libraries never enable that feature.
     include(
         "Cargo.toml", "Cargo.lock",
-        "ffi/**", "engine/**", "mail-core/**", "protocols/**", "storage/**", "vendor/**",
+        "ffi/**", "engine/**", "mail-core/**", "protocols/**", "storage/**", "vendor/**", "test-support/**",
     )
     exclude("**/target/**")
 }

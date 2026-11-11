@@ -7,3 +7,4 @@ target/
 /android/.gradle/
 /android/build/
 node_modules/
+__pycache__/

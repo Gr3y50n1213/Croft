@@ -45,7 +45,7 @@ for lib in $libs; do
   syms=""; [ -z "$nm_tool" ] || syms="$("$nm_tool" -D "$lib" 2>/dev/null || true)"
   if grep -qi 'testimapserver' <<<"$syms"; then
     bad "$lib exports test-server symbols (TestImapServer): the release library was built with the test-server feature"
-  elif grep -aqiE 'testimapserver|croft[-_]test[-_]support' "$lib"; then
+  elif grep -aqiE 'testimapserver|croft[-_]test[-_]support|test-support/src' "$lib"; then
     bad "$lib contains the test server (TestImapServer / croft-test-support): the release library was built with the test-server feature"
   else
     echo "ok   $lib has no test-server symbols (checked with ${nm_tool:-grep only})"

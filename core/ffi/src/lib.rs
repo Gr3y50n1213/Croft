@@ -32,6 +32,10 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+// The test server is for the host library the JVM tests load; it must never reach an Android build.
+#[cfg(all(feature = "test-server", target_os = "android"))]
+compile_error!("the test-server feature is host-only and must never be enabled for Android");
+
 mod changes;
 mod core;
 mod credentials;

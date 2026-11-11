@@ -26,12 +26,15 @@ import com.example.croft.mail.AccountId
 import com.example.croft.mail.AccountInfo
 import com.example.croft.mail.AccountState
 import com.example.croft.mail.ChangeBatch
+import com.example.croft.mail.FolderId
 import com.example.croft.mail.FolderInfo
 import com.example.croft.mail.FolderRole
 import com.example.croft.mail.ListAnchor
 import com.example.croft.mail.MailError
+import com.example.croft.mail.MailEvent
 import com.example.croft.mail.MailException
 import com.example.croft.mail.MailSession
+import com.example.croft.mail.OpFailure
 import com.example.croft.mail.MessageId
 import com.example.croft.mail.MessageRowData
 import com.example.croft.mail.MessageScope
@@ -77,6 +80,19 @@ sealed interface EmptyKind {
 /** A bulk action waiting for the person to confirm it. */
 data class PendingConfirm(val action: SelectionAction, val count: Int)
 
+/**
+ * The Move to sheet (S30) is open for [rows], all in [account]. [fromSwipe]: the card of the single row is parked at 40 percent behind
+ * the sheet (a swipe on Move to) and goes or returns with the answer.
+ */
+data class MoveRequest(val rows: List<MessageRowData>, val account: AccountId, val fromSwipe: Boolean)
+
+/**
+ * The first use of an action for an account that has no folder for it (docs/ux/message-list.md, "Folder rules"): the sheet asks
+ * which folder to use as [role] (Archive or Trash), once; the answer is remembered ([com.example.croft.mail.FolderMapping]) and [retry]
+ * runs the action again.
+ */
+data class FolderRequest(val role: FolderRole, val account: AccountId, val retry: suspend () -> Unit)
+
 /** Strings the controller needs for snackbars; built from the resources so the controller itself holds no Context. */
 class InboxTexts(private val res: Resources) {
     fun archived(n: Int): String = res.getQuantityString(R.plurals.mail_snack_archived, n, n)
@@ -87,6 +103,8 @@ class InboxTexts(private val res: Resources) {
     val noArchive: String get() = res.getString(R.string.mail_snack_no_archive)
     val noTrash: String get() = res.getString(R.string.mail_snack_no_trash)
     val failed: String get() = res.getString(R.string.mail_snack_failed)
+    val changeFailed: String get() = res.getString(R.string.mail_snack_change_failed)
+    val retry: String get() = res.getString(R.string.mail_retry)
     val refreshFailed: String get() = res.getString(R.string.mail_snack_refresh_failed)
     fun spammed(n: Int): String = res.getQuantityString(R.plurals.mail_snack_spam, n, n)
     fun markedRead(n: Int): String = res.getQuantityString(R.plurals.mail_snack_marked_read, n, n)
@@ -95,6 +113,7 @@ class InboxTexts(private val res: Resources) {
     val nothingUnread: String get() = res.getString(R.string.mail_snack_nothing_unread)
     val synced: String get() = res.getString(R.string.mail_snack_synced)
     val replyLater: String get() = res.getString(R.string.mail_snack_reply_later)
+    val accountScreensLater: String get() = res.getString(R.string.mail_snack_account_screens)
 }
 
 /**
@@ -194,6 +213,21 @@ class InboxController(
     /** Banners the person dismissed (until the problem goes away). */
     private var dismissed by mutableStateOf<Set<BannerKind>>(emptySet())
 
+    /** Messages whose change the server refused for good: back in the list with the red edge, until Retry or another action on them. */
+    var failedRows by mutableStateOf<Set<MessageId>>(emptySet())
+        private set
+
+    /** The Move to sheet (S30), while it is open. */
+    var moveRequest by mutableStateOf<MoveRequest?>(null)
+        private set
+
+    /** The "which folder is your Archive (or Trash)" question, while it is open. */
+    var folderRequest by mutableStateOf<FolderRequest?>(null)
+        private set
+
+    /** The folder each parked Move to swipe was given, for the row to take when its card has left. */
+    private val chosenMoves = HashMap<MessageId, FolderId>()
+
     /** The row that should take focus after a removal. */
     var focusTarget by mutableStateOf<MessageId?>(null)
 
@@ -249,9 +283,10 @@ class InboxController(
         get() {
             val chosen = rows.filter { it.id in selected }
             val accountsInvolved = chosen.map { it.account }.distinct()
-            val archiveOk = accountsInvolved.all { a -> folders.any { it.account == a && it.role == FolderRole.ARCHIVE } }
+            val archiveOk = accountsInvolved.all { a -> hasFolder(a, FolderRole.ARCHIVE) }
             val spamOk = accountsInvolved.all { a -> folders.any { it.account == a && it.role == FolderRole.SPAM } }
-            return SelectionRules.toolbar(chosen, scopeRole, archiveOk, spamOk)
+            // Move to needs one account: its sheet lists that account's folders.
+            return SelectionRules.toolbar(chosen, scopeRole, archiveOk, spamOk, moveAvailable = accountsInvolved.size == 1)
         }
 
     /** The banner now shown (one at a time, the most urgent) and the account it is about. */
@@ -313,11 +348,39 @@ class InboxController(
     private suspend fun handle(batch: ChangeBatch) {
         refreshAccountsAndFolders()
         dismissed = dismissed.filterTo(HashSet()) { kind -> activeKinds().contains(kind) }
-        if (batch.failures.isNotEmpty()) {
-            haptics.perform(HapticEvent.Failure)
-            snackbar.show(texts.failed)
-        }
+        if (batch.failures.isNotEmpty()) onFailures(batch.failures)
         if (batch.everything || affects(batch)) reloadHead()
+    }
+
+    /**
+     * The server refused changes for good (or the core could not find the message again): the core has put the rows back, so they
+     * get the red edge, the Rejected haptic plays, and the snackbar says so with Retry, which runs the same actions again.
+     */
+    private fun onFailures(failures: List<OpFailure>) {
+        haptics.perform(HapticEvent.Rejected)
+        failedRows = failedRows + failures.flatMap { it.messages }
+        val ops = failures.map { it.opId }.distinct()
+        snackbar.show(texts.changeFailed, texts.retry, stayMs = session.undoWindowMs) { retryFailed(ops) }
+    }
+
+    private fun retryFailed(ops: List<OpId>) {
+        failedRows = emptySet()
+        scope.launch {
+            try {
+                ops.forEach { repository.retryFailed(it) }
+            } catch (e: MailException) {
+                if (!askForFolder(e) { retryFailed(ops) }) {
+                    haptics.perform(HapticEvent.Rejected)
+                    snackbar.show(errorText(e.error))
+                }
+            }
+        }
+    }
+
+    /** The person pressed Sign in on the banner: the app is told (the sign-in screen, T17, listens); without a listener the old note shows. */
+    fun requestSignIn(account: AccountId) {
+        session.raise(MailEvent.SignInRequested(account))
+        if (!session.hasEventListener) snackbar.show(texts.accountScreensLater)
     }
 
     private fun activeKinds(): Set<BannerKind> = buildSet {
@@ -581,6 +644,7 @@ class InboxController(
     fun perform(action: SelectionAction) {
         val count = selectedCount
         if (count == 0) return
+        if (action == SelectionAction.MOVE_TO) { openMoveSheet(rows.filter { it.id in selected }, fromSwipe = false); return }
         if (SelectionRules.needsConfirmation(action, count)) {
             pendingConfirm = PendingConfirm(action, count)
             return
@@ -624,7 +688,7 @@ class InboxController(
                     val byAccount = rows.filter { it.id in ids }.groupBy { it.account }
                     removeWithUndo(ids, texts.spammed(ids.size)) {
                         byAccount.flatMap { (account, rs) ->
-                            val spam = folders.firstOrNull { it.account == account && it.role == FolderRole.SPAM } ?: throw MailException(MailError.NO_SPAM_FOLDER)
+                            val spam = folders.firstOrNull { it.account == account && it.role == FolderRole.SPAM } ?: throw MailException(MailError.NO_SPAM_FOLDER, account)
                             repository.moveTo(rs.map { it.id }, spam.id)
                         }
                     }
@@ -635,6 +699,7 @@ class InboxController(
                     repository.deleteForever(ids)
                     snackbar.show(texts.deletedForever(ids.size))
                 }
+                SelectionAction.MOVE_TO -> Unit
                 SelectionAction.RESTORE -> {
                     val byAccount = rows.filter { it.id in ids }.groupBy { it.account }
                     removeWithUndo(ids, texts.moved(ids.size)) {
@@ -647,8 +712,12 @@ class InboxController(
             }
             haptics.perform(HapticEvent.Success)
         } catch (e: MailException) {
-            haptics.perform(HapticEvent.Rejected)
-            snackbar.show(errorText(e.error))
+            // Removed rows are put back by the failed call itself (the core changed nothing); the question or the message follows.
+            removedByMe -= ids.toSet()
+            if (!askForFolder(e) { execute(action, ids) }) {
+                haptics.perform(HapticEvent.Rejected)
+                snackbar.show(errorText(e.error))
+            }
         }
     }
 
@@ -656,14 +725,54 @@ class InboxController(
         MailError.NO_ARCHIVE_FOLDER -> texts.noArchive
         MailError.NO_TRASH_FOLDER -> texts.noTrash
         MailError.NO_SPAM_FOLDER -> texts.noSpam
-        MailError.NOT_FOUND -> texts.failed
+        MailError.NOT_FOUND, MailError.FAILED -> texts.failed
+    }
+
+    /**
+     * An account with no Archive or Trash folder (and none chosen yet): opens the question "which folder do you use?" and, once
+     * it is answered, runs [retry]. False when [e] is not that kind of refusal (the caller shows its message).
+     */
+    private fun askForFolder(e: MailException, retry: suspend () -> Unit): Boolean {
+        val account = e.account ?: return false
+        val role = when (e.error) {
+            MailError.NO_ARCHIVE_FOLDER -> FolderRole.ARCHIVE
+            MailError.NO_TRASH_FOLDER -> FolderRole.TRASH
+            else -> return false
+        }
+        if (session.folderMapping.isDeclined(account, role)) return false
+        haptics.perform(HapticEvent.Rejected)
+        folderRequest = FolderRequest(role, account, retry)
+        return true
+    }
+
+    /** The person chose [folder] as the folder to use for the pending question: it is remembered and the action runs again. */
+    fun answerFolderRequest(folder: FolderInfo) {
+        val request = folderRequest ?: return
+        folderRequest = null
+        session.folderMapping.remember(request.account, request.role, folder.id)
+        scope.launch { request.retry() }
+    }
+
+    /** "Don't offer Archive for this account": remembered; Archive is hidden for the account from now on. */
+    fun declineFolderRequest() {
+        val request = folderRequest ?: return
+        folderRequest = null
+        session.folderMapping.decline(request.account, request.role)
+        snackbar.show(errorText(if (request.role == FolderRole.TRASH) MailError.NO_TRASH_FOLDER else MailError.NO_ARCHIVE_FOLDER))
+    }
+
+    /** The question was dismissed without an answer: nothing is remembered, the action did not run. */
+    fun dismissFolderRequest() {
+        val request = folderRequest ?: return
+        folderRequest = null
+        snackbar.show(errorText(if (request.role == FolderRole.TRASH) MailError.NO_TRASH_FOLDER else MailError.NO_ARCHIVE_FOLDER))
     }
 
     private suspend fun removeWithUndo(ids: List<MessageId>, text: String, block: suspend () -> List<OpId>) {
         prepareFocus(ids)
         removedByMe += ids
         val ops = block()
-        snackbar.show(text, texts.undo, stayMs = UNDO_WINDOW_MS) {
+        snackbar.show(text, texts.undo, stayMs = session.undoWindowMs) {
             // The ids stay in removedByMe: a message that comes back through Undo is not new mail, whatever its date.
             scope.launch {
                 session.rowActions.undo(ops)
@@ -692,7 +801,17 @@ class InboxController(
     /** Whether the row of [id] is still in the list: a row that a sync removed ends the drag on it without an action. */
     fun isPresent(id: MessageId): Boolean = id in rowIds
 
-    private fun hasFolder(account: AccountId, role: FolderRole) = folders.any { it.account == account && it.role == role }
+    /**
+     * Whether [account] can do the action that needs a folder of [role]. An account with no Archive (or Trash) folder can still do it
+     * the first time: the person is asked once which folder to use (docs/ux/message-list.md), unless they chose one already (then it
+     * is that folder) or declined (then Archive is hidden for the account).
+     */
+    private fun hasFolder(account: AccountId, role: FolderRole): Boolean {
+        if (folders.any { it.account == account && it.role == role }) return true
+        if (role != FolderRole.ARCHIVE) return false
+        val mapping = session.folderMapping
+        return mapping.mapped(account, role) != null || (folders.any { it.account == account } && !mapping.isDeclined(account, role))
+    }
 
     /** What a swipe in [direction] does for [row] here: the configured action, and whether this row can do it (its account and folder). */
     fun slotOf(row: MessageRowData, direction: SwipeDirection): SwipeSlot =
@@ -712,8 +831,70 @@ class InboxController(
 
     /** An armed swipe parked its card. Only Delete forever has a dialog yet; Snooze and Move to wait for their sheets, and are not offered. */
     fun swipeParked(row: MessageRowData, action: SwipeAction) {
-        if (SwipeRules.deletesForever(action, scopeRole)) { parkedFromSwipe = true; parkedRow = row } else parkResolution = row.id to false
+        when {
+            SwipeRules.deletesForever(action, scopeRole) -> { parkedFromSwipe = true; parkedRow = row }
+            action == SwipeAction.MOVE_TO -> openMoveSheet(listOf(row), fromSwipe = true)
+            else -> parkResolution = row.id to false
+        }
     }
+
+    // ---- Move to (S30) ----
+
+    private fun openMoveSheet(chosen: List<MessageRowData>, fromSwipe: Boolean) {
+        val account = chosen.map { it.account }.distinct().singleOrNull()
+        if (account == null) { if (fromSwipe) chosen.firstOrNull()?.let { parkResolution = it.id to false }; return }
+        moveRequest = MoveRequest(chosen, account, fromSwipe)
+    }
+
+    /** The folders of the account of the open Move to sheet, and which of them the messages are in already. */
+    val moveFolders: List<FolderInfo> get() = moveRequest?.let { r -> folders.filter { it.account == r.account } }.orEmpty()
+
+    /** The folders the messages of the open sheet are in (they are not offered). */
+    val moveExcluding: Set<FolderId> get() = moveRequest?.rows?.mapTo(HashSet()) { it.folder }.orEmpty()
+
+    /** The recent destinations of the account of the open sheet. */
+    val moveRecents: List<FolderId> get() = moveRequest?.let { session.folderMapping.recents(it.account) }.orEmpty()
+
+    /** A folder was chosen in the Move to sheet: the mail moves there, with Undo. A parked card now leaves. */
+    fun pickMove(folder: FolderInfo) {
+        val request = moveRequest ?: return
+        moveRequest = null
+        val single = request.rows.singleOrNull()
+        if (request.fromSwipe && single != null) {
+            // The card slides out; the move is run when it has (removeAction).
+            chosenMoves[single.id] = folder.id
+            parkResolution = single.id to true
+        } else {
+            scope.launch { moveRows(request.rows, folder) }
+            clearSelection()
+        }
+    }
+
+    /** The sheet was dismissed: nothing moves and a parked card springs back. */
+    fun dismissMove() {
+        val request = moveRequest ?: return
+        moveRequest = null
+        if (request.fromSwipe) request.rows.singleOrNull()?.let { parkResolution = it.id to false }
+    }
+
+    private suspend fun moveRows(rowsToMove: List<MessageRowData>, folder: FolderInfo, onFailed: () -> Unit = {}) {
+        val ids = rowsToMove.map { it.id }
+        try {
+            clearFailed(ids)
+            removeWithUndo(ids, texts.moved(ids.size)) {
+                rowsToMove.flatMap { session.rowActions.moveTo(it, folder.id) }
+            }
+            haptics.perform(HapticEvent.Success)
+        } catch (e: MailException) {
+            removedByMe -= ids.toSet()
+            focusTarget = null
+            haptics.perform(HapticEvent.Rejected)
+            snackbar.show(errorText(e.error))
+            onFailed()
+        }
+    }
+
+    private fun clearFailed(ids: Collection<MessageId>) { if (failedRows.isNotEmpty()) failedRows = failedRows - ids.toSet() }
 
     private var parkedFromSwipe = false
 
@@ -754,8 +935,13 @@ class InboxController(
      */
     fun removeAction(row: MessageRowData, action: SwipeAction, onFailed: () -> Unit = {}) {
         scope.launch {
+            clearFailed(listOf(row.id))
             try {
                 when {
+                    action == SwipeAction.MOVE_TO -> {
+                        val target = chosenMoves.remove(row.id)?.let { id -> folders.firstOrNull { it.id == id } } ?: throw MailException(MailError.NOT_FOUND)
+                        moveRows(listOf(row), target, onFailed)
+                    }
                     SwipeRules.deletesForever(action, scopeRole) -> {
                         prepareFocus(listOf(row.id))
                         removedByMe += row.id
@@ -770,9 +956,11 @@ class InboxController(
             } catch (e: MailException) {
                 removedByMe -= row.id
                 focusTarget = null
-                haptics.perform(HapticEvent.Rejected)
-                snackbar.show(errorText(e.error))
                 onFailed()
+                if (!askForFolder(e) { removeAction(row, action) }) {
+                    haptics.perform(HapticEvent.Rejected)
+                    snackbar.show(errorText(e.error))
+                }
             }
         }
     }
@@ -781,6 +969,7 @@ class InboxController(
     fun act(row: MessageRowData, action: SwipeAction) {
         if (action == SwipeAction.NONE) return
         if (!canDo(row, action)) { haptics.perform(HapticEvent.Rejected); swipeNotAvailable(); return }
+        if (action == SwipeAction.MOVE_TO) { openMoveSheet(listOf(row), fromSwipe = false); return }
         if (action.removesRow) {
             if (SwipeRules.deletesForever(action, scopeRole)) { parkedFromSwipe = false; parkedRow = row; return }
             removeAction(row, action)
@@ -805,7 +994,7 @@ class InboxController(
             }
             if (ids.isEmpty()) { snackbar.show(texts.nothingUnread); return@launch }
             repository.markSeen(ids, true)
-            snackbar.show(texts.markedRead(ids.size), texts.undo, stayMs = UNDO_WINDOW_MS) { scope.launch { repository.markSeen(ids, false) } }
+            snackbar.show(texts.markedRead(ids.size), texts.undo, stayMs = session.undoWindowMs) { scope.launch { repository.markSeen(ids, false) } }
         }
     }
 
@@ -839,9 +1028,6 @@ class InboxController(
 
         private const val MAX_RESTORE_PAGES = 100
         private const val ALL_IDS_PAGE = 500
-
-        /** The Undo window of the snackbar, from the same default the core uses. */
-        private val UNDO_WINDOW_MS: Long = CroftSnackbarState.DefaultUndoWindowMs
     }
 }
 

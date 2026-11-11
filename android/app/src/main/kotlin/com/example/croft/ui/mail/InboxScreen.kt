@@ -189,7 +189,7 @@ fun InboxScreen(
             onFixStatus = { a ->
                 when (a.status) {
                     AccountState.ERROR -> controller.retry(a.id)
-                    AccountState.NEEDS_SIGN_IN -> controller.snackbar.show(laterMessage)
+                    AccountState.NEEDS_SIGN_IN -> controller.requestSignIn(a.id)
                     else -> Unit
                 }
             },
@@ -335,7 +335,7 @@ private fun InboxBody(
             onAction = { kind ->
                 when (kind) {
                     BannerKind.SERVER_PROBLEM -> banner?.second?.let { controller.retry(it.id) }
-                    BannerKind.NEEDS_SIGN_IN -> controller.snackbar.show(laterMessage)
+                    BannerKind.NEEDS_SIGN_IN -> banner?.second?.let { controller.requestSignIn(it.id) }
                     else -> Unit
                 }
             },
@@ -431,6 +431,29 @@ private fun InboxBody(
             onDismiss = { controller.resolveParked(false) },
         )
     }
+    // S30 Move to (the toolbar's Move to, a swipe on Move to, the row's own action).
+    controller.moveRequest?.let { request ->
+        MoveToSheet(
+            title = stringResource(R.string.move_title),
+            folders = controller.moveFolders,
+            recent = controller.moveRecents,
+            excluding = controller.moveExcluding,
+            onPick = controller::pickMove,
+            onDismiss = controller::dismissMove,
+        )
+    }
+    // The first Archive or Delete of an account with no such folder: which folder is yours? (remembered, asked once)
+    controller.folderRequest?.let { request ->
+        MoveToSheet(
+            title = stringResource(if (request.role == FolderRole.TRASH) R.string.choose_trash_title else R.string.choose_archive_title),
+            folders = controller.folders.filter { it.account == request.account },
+            recent = emptyList(),
+            excluding = emptySet(),
+            onPick = controller::answerFolderRequest,
+            onDismiss = controller::dismissFolderRequest,
+            footer = if (request.role == FolderRole.ARCHIVE) ({ DeclineFolderButton(stringResource(R.string.choose_decline_archive), controller::declineFolderRequest) }) else null,
+        )
+    }
     controller.pendingConfirm?.let { pending ->
         val titleRes = when (pending.action) {
             SelectionAction.ARCHIVE -> R.plurals.mail_confirm_title_archive
@@ -486,6 +509,7 @@ private fun LazyItemScope.RowItem(
         starred = row.flagged,
         encryption = if (row.encrypted) EncryptionMark.ENCRYPTED else EncryptionMark.NONE,
         pendingOffline = row.pending,
+        failed = row.id in controller.failedRows,
         isNew = row.id in controller.arrived,
         hasAttachment = row.hasAttachments,
         threadCount = row.threadCount,

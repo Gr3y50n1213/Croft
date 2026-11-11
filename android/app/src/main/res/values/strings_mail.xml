@@ -154,4 +154,24 @@
     <string name="mail_switcher_add">Add another account</string>
     <string name="mail_switcher_manage">Manage accounts</string>
     <string name="mail_switcher_selected">Showing</string>
+
+    <!-- T16: S30 Move to, the folder prompt, failures, S49 Undo time -->
+    <string name="move_title">Move to</string>
+    <string name="move_search">Search folders</string>
+    <string name="move_recent">Recent</string>
+    <string name="move_all_folders">All folders</string>
+    <string name="move_none">No folder matches.</string>
+    <string name="choose_archive_title">Choose a folder to use as Archive</string>
+    <string name="choose_trash_title">Choose a folder to use as Trash</string>
+    <string name="choose_decline_archive">Don\'t offer Archive for this account</string>
+    <string name="mail_snack_change_failed">Couldn\'t finish that change. The mail is back where it was.</string>
+    <string name="mail_retry">Retry</string>
+    <string name="settings_inbox">Inbox and categories</string>
+    <string name="settings_inbox_hint">Undo time</string>
+    <string name="inbox_settings_title">Inbox and categories</string>
+    <string name="inbox_undo_time">Undo time</string>
+    <string name="inbox_undo_time_hint">How long Undo stays after you archive, delete or move mail. The change is sent when it is over.</string>
+    <string name="inbox_undo_seconds">%1$d s</string>
+    <string name="inbox_undo_seconds_long">%1$d seconds</string>
+    <string name="inbox_settings_more">The other settings of this screen come later.</string>
 </resources>

@@ -185,6 +185,10 @@ class FakeMessageRepository(
         true
     }
 
+    override suspend fun retryFailed(opId: OpId): List<OpId> = throw MailException(MailError.NOT_FOUND)
+
+    override suspend fun setUndoWindowMs(ms: Long) = setUndoWindow(ms)
+
     override suspend fun syncNow(account: AccountId) = synchronized(lock) {
         accountList.replaceAll { a ->
             when {

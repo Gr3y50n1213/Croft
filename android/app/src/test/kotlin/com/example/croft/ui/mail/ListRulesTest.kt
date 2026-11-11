@@ -62,6 +62,19 @@ class ListRulesTest {
     }
 
     @Test
+    fun moveToIsTheLastItemOfTheOverflowMenu_whenEverythingSelectedIsInOneAccount() {
+        val one = SelectionRules.toolbar(listOf(row(1), row(2)), FolderRole.INBOX, archiveAvailable = true, moveAvailable = true)
+        assertEquals(SelectionAction.MOVE_TO, one.overflow.last())
+        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM, SelectionAction.MOVE_TO), one.overflow)
+        assertFalse("not offered when the selection spans accounts", SelectionAction.MOVE_TO in SelectionRules.toolbar(listOf(row(1)), FolderRole.INBOX, archiveAvailable = true, moveAvailable = false).overflow)
+        assertFalse("not offered for nothing selected", SelectionAction.MOVE_TO in SelectionRules.toolbar(emptyList(), FolderRole.INBOX, archiveAvailable = true, moveAvailable = true).overflow)
+        // Move to also works from Trash, Spam and Archive (it is how mail leaves them for a folder other than the Inbox).
+        for (role in listOf(FolderRole.TRASH, FolderRole.SPAM, FolderRole.ARCHIVE, FolderRole.SENT)) {
+            assertTrue(SelectionAction.MOVE_TO in SelectionRules.toolbar(listOf(row(1)), role, archiveAvailable = true, moveAvailable = true).overflow)
+        }
+    }
+
+    @Test
     fun markAsSpamIsInTheOverflowMenuExceptWhereTheSwipeRulesHideIt() {
         assertTrue(SelectionAction.SPAM in toolbar(listOf(row(1))).overflow)
         assertTrue(SelectionAction.SPAM in toolbar(listOf(row(1)), FolderRole.ARCHIVE).overflow)

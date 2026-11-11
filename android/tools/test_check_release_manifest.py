@@ -40,9 +40,16 @@ class ManifestCheck(unittest.TestCase):
         self.assertEqual(run(), [])
 
     def test_fake_permission_fails(self):
-        errs = run(extra_top='<uses-permission android:name="android.permission.INTERNET" />')
+        errs = run(extra_top='<uses-permission android:name="android.permission.READ_CONTACTS" />')
         self.assertEqual(len(errs), 1)
-        self.assertIn("android.permission.INTERNET", errs[0])
+        self.assertIn("android.permission.READ_CONTACTS", errs[0])
+
+    def test_the_two_network_permissions_of_t16_pass(self):
+        top = (
+            '<uses-permission android:name="android.permission.INTERNET" />'
+            '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />'
+        )
+        self.assertEqual(run(extra_top=top), [])
 
     def test_fake_exported_receiver_fails(self):
         errs = run(extra_app='<receiver android:name="com.example.croft.Evil" android:exported="true" />')

@@ -124,6 +124,12 @@ fn add_list_and_remove_an_account_then_list_its_folders_after_the_first_sync() {
         rig.core.list_accounts().unwrap()[0].status,
         AccountStatus::Ok
     );
+    // A completed sync stamps the account's last-synced time (the clock is the wall clock).
+    wait_server("the last-synced time", || {
+        rig.core.list_accounts().unwrap()[0]
+            .last_synced_ms
+            .is_some_and(|t| t > 1_700_000_000_000)
+    });
 
     // The unified Inbox shows the same three rows, newest (highest UID) first.
     let unified = rig
@@ -557,4 +563,65 @@ fn going_offline_and_online_is_reported_for_every_account() {
             .iter()
             .any(|m| m.flags.contains("\\Seen"))
     });
+}
+
+#[test]
+fn a_sign_in_refused_with_a_change_waiting_pauses_the_account_without_counting_an_attempt() {
+    let rig = Rig::new(three_messages);
+    rig.wait_for_inbox(3);
+    let id = rig.core.list_messages(rig.inbox(), None, 1).unwrap().rows[0].id;
+    std::thread::sleep(Duration::from_millis(300));
+    rig.core.set_undo_window_ms(1_500);
+    rig.server.clear_commands();
+
+    // The person archives a message; before the window is over the server starts refusing the
+    // login (the password was changed elsewhere) and the open connections are cut.
+    let ops = rig.core.archive(vec![id]).unwrap();
+    assert_eq!(ops.len(), 1);
+    rig.server
+        .set_misbehavior(croft_test_support::Misbehavior::AuthFailedMentioningUnavailable);
+    rig.server.drop_connections();
+
+    block(wait_for(&rig.core, "needs sign-in", || {
+        rig.core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn
+    }));
+    block(wait_for(&rig.core, "sign_in_needed call", || {
+        !rig.provider.sign_ins().is_empty()
+    }));
+    // The move is still queued, nothing was counted as an attempt, and the server saw no move.
+    let (state, attempts): (String, i64) = {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        d.connection()
+            .query_row(
+                "SELECT state, attempts FROM op_queue WHERE kind = 'move'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    };
+    assert!(state == "queued" || state == "applying", "{state}");
+    assert_eq!(attempts, 0, "an Auth failure is not a Transient attempt");
+    std::thread::sleep(Duration::from_millis(2_000));
+    assert!(rig.server.commands().iter().all(|c| !c.contains("MOVE")));
+    assert_eq!(rig.server.messages("Archive").len(), 0);
+    // The row stays out of the list (the change is applied locally) and the paused account
+    // keeps waiting: no further sign-in callbacks pile up.
+    assert_eq!(rig.count(rig.inbox()), 2);
+
+    // The server accepts the password again; signing in resumes the queue and the move is sent
+    // exactly once.
+    rig.server
+        .set_misbehavior(croft_test_support::Misbehavior::None);
+    block(rig.core.signed_in(rig.account)).unwrap();
+    wait_server("the move on the server", || {
+        rig.server.messages("Archive").len() == 1
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    let moves = rig
+        .server
+        .commands()
+        .iter()
+        .filter(|c| c.contains("MOVE") || c.contains("COPY"))
+        .count();
+    assert_eq!(moves, 1, "{:?}", rig.server.commands());
 }

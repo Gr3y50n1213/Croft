@@ -32,6 +32,7 @@ object SettingsTags {
     const val SCREEN = "settings"
     const val APPEARANCE = "settings-appearance"
     const val SWIPE_ACTIONS = "settings-swipe-actions"
+    const val INBOX = "settings-inbox"
     const val GALLERY = "settings-gallery"
     const val ABOUT = "settings-about"
 }
@@ -50,6 +51,8 @@ fun SettingsHomeScreen(
     modifier: Modifier = Modifier,
     /** S47 Swipe actions; the entry is hidden when null. */
     onOpenSwipeActions: (() -> Unit)? = null,
+    /** S49 Inbox and categories; the entry is hidden when null. */
+    onOpenInbox: (() -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.testTag(SettingsTags.SCREEN),
@@ -74,6 +77,13 @@ fun SettingsHomeScreen(
                     headlineContent = { Text(stringResource(R.string.settings_swipe_actions)) },
                     supportingContent = { Text(stringResource(R.string.settings_swipe_actions_hint)) },
                     modifier = Modifier.testTag(SettingsTags.SWIPE_ACTIONS).clickable(role = Role.Button, onClick = onOpenSwipeActions),
+                )
+            }
+            if (onOpenInbox != null) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_inbox)) },
+                    supportingContent = { Text(stringResource(R.string.settings_inbox_hint)) },
+                    modifier = Modifier.testTag(SettingsTags.INBOX).clickable(role = Role.Button, onClick = onOpenInbox),
                 )
             }
             ListItem(

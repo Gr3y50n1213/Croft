@@ -6,7 +6,12 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- No permissions: this screen only calls the local Rust library. -->
+    <!-- INTERNET: the Rust core opens its own sockets to the person's mail servers (T16 is the first task that syncs).
+         ACCESS_NETWORK_STATE: the connectivity callback that tells the core whether the device has a network (Offline banner,
+         nothing sent while offline). Both are normal permissions, granted at install; see docs/store/READINESS.md. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"

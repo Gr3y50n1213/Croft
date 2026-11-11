@@ -36,6 +36,9 @@ enum class SelectionAction {
 
     /** Move to Spam (the swipe action Mark as spam has this route too). */
     SPAM,
+
+    /** Move to a folder chosen in the Move to sheet (S30; the swipe action Move to has this route too). In the overflow menu. */
+    MOVE_TO,
 }
 
 /** The bar's buttons in order, and what goes in the overflow menu. */
@@ -52,8 +55,10 @@ object SelectionRules {
      *   Archive, Spam and Trash the Restore action (Move to inbox, Not spam, Restore) takes its place.
      * - Delete is always there; in Trash and Spam it is Delete forever.
      * - Mark as spam is in the overflow menu except in Spam, Trash, Sent, Drafts and Outbox, or where an account has no Spam folder.
+     * - Move to is the last item of the overflow menu, when [moveAvailable] (everything selected is in one account: the sheet lists
+     *   that account's folders).
      */
-    fun toolbar(selected: List<MessageRowData>, role: FolderRole, archiveAvailable: Boolean, spamAvailable: Boolean = true): SelectionToolbar {
+    fun toolbar(selected: List<MessageRowData>, role: FolderRole, archiveAvailable: Boolean, spamAvailable: Boolean = true, moveAvailable: Boolean = false): SelectionToolbar {
         val primary = ArrayList<SelectionAction>()
         when (role) {
             FolderRole.ARCHIVE, FolderRole.SPAM, FolderRole.TRASH -> primary += SelectionAction.RESTORE
@@ -66,6 +71,7 @@ object SelectionRules {
         overflow += if (selected.all { it.flagged } && selected.isNotEmpty()) SelectionAction.UNSTAR else SelectionAction.STAR
         // Mark as spam is the swipe action that the bar did not have: it goes in the overflow menu, where the swipe's rules put it.
         if (spamAvailable && SwipeRules.available(com.example.croft.swipe.SwipeAction.SPAM, role, hasArchive = true, hasSpam = true)) overflow += SelectionAction.SPAM
+        if (moveAvailable && selected.isNotEmpty()) overflow += SelectionAction.MOVE_TO
         return SelectionToolbar(primary, overflow)
     }
 

@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- Shared by the controls -->
+    <string name="control_busy">Busy</string>
+    <string name="control_cancel">Cancel</string>
+    <string name="control_done">Done</string>
+    <string name="control_selected">Selected</string>
+
+    <!-- Send button -->
+    <string name="send_label">Send</string>
+    <string name="send_schedule">Schedule</string>
+    <string name="send_sending">Sending</string>
+    <string name="send_schedule_action">Schedule send</string>
+    <string name="send_reason_no_recipient">Add a recipient</string>
+    <string name="send_reason_invalid_recipient">Fix the address</string>
+    <string name="send_reason_over_limit">Attachments are over the %1$d MB limit</string>
+    <string name="send_state_uploading">Waits in the Outbox until the attachment is uploaded</string>
+    <string name="send_state_queued">Queued in the Outbox until you are back online</string>
+    <string name="send_state_no_key">A recipient has no key. Opens the encryption check</string>
+
+    <!-- Chips -->
+    <string name="recipient_invalid">Invalid address</string>
+    <string name="recipient_invalid_state">Invalid address</string>
+    <string name="recipient_has_key">key found</string>
+    <string name="status_syncing">Syncing</string>
+    <string name="status_offline">Offline</string>
+    <string name="status_needs_sign_in">Needs sign-in</string>
+    <string name="status_server_problem">Server problem</string>
+    <string name="status_chip_description">Account %1$s, %2$s</string>
+
+    <!-- Text fields -->
+    <string name="field_show">Show</string>
+    <string name="field_hide">Hide</string>
+    <string name="field_show_password">Show password</string>
+    <string name="field_hide_password">Hide password</string>
+    <string name="field_password_shown">Password shown</string>
+    <string name="field_password_hidden">Password hidden</string>
+    <string name="field_counter">%1$d of %2$d</string>
+
+    <!-- Message row -->
+    <string name="row_unread">Unread</string>
+    <string name="row_read">Read</string>
+    <string name="row_from">From %1$s</string>
+    <string name="row_has_attachment">Has attachment</string>
+    <string name="row_starred">Starred</string>
+    <string name="row_encrypted">Encrypted</string>
+    <string name="row_signature_invalid">Signature is not valid</string>
+    <string name="row_pending">Waiting for the network</string>
+    <string name="row_failed">The server refused the change</string>
+    <string name="row_failed_state">Failed. Retry is available</string>
+    <string name="row_action_select">Select</string>
+    <string name="row_action_deselect">Deselect</string>
+    <string name="row_action_star">Star</string>
+    <string name="row_action_unstar">Remove star</string>
+
+    <!-- Attachment chip -->
+    <string name="attachment_state_not_downloaded">Not downloaded</string>
+    <string name="attachment_state_downloading">Downloading</string>
+    <string name="attachment_state_downloaded">Downloaded</string>
+    <string name="attachment_state_failed">Download failed</string>
+    <string name="attachment_state_blocked">Blocked file type</string>
+    <string name="attachment_state_over_limit">Over the size limit</string>
+    <string name="attachment_tap_download">Download</string>
+    <string name="attachment_tap_cancel">Cancel download</string>
+    <string name="attachment_tap_open">Open</string>
+    <string name="attachment_tap_retry">Retry</string>
+    <string name="attachment_tap_warning">Open with a warning</string>
+    <string name="attachment_tap_remove">Remove</string>
+    <string name="attachment_failed_line">%1$s, tap to retry</string>
+    <string name="attachment_blocked_line">%1$s, may be unsafe</string>
+    <string name="attachment_downloading_line">%1$d percent</string>
+
+    <!-- Banners -->
+    <string name="banner_needs_sign_in">Sign in again to %1$s</string>
+    <string name="banner_offline">You are offline. Changes wait and are sent later.</string>
+    <string name="banner_remote_images">Remote images are blocked</string>
+    <string name="banner_unsubscribe">This looks like a mailing list</string>
+    <string name="banner_action_sign_in">Sign in</string>
+    <string name="banner_action_show_images">Show images</string>
+    <string name="banner_action_unsubscribe">Unsubscribe</string>
+    <string name="banner_dismiss">Dismiss</string>
+
+    <!-- Bottom sheet -->
+    <string name="sheet_discard_title">Discard changes?</string>
+    <string name="sheet_discard_message">What you typed here will be lost.</string>
+    <string name="sheet_discard">Discard</string>
+
+    <!-- Settings and navigation -->
+    <string name="nav_settings">Settings</string>
+    <string name="nav_back">Back</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_appearance_hint">Colours, text size, motion and haptics</string>
+    <string name="settings_component_gallery">Component gallery</string>
+    <string name="settings_component_gallery_hint">Debug builds only</string>
+</resources>

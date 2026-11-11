@@ -8,8 +8,11 @@ use crate::SpecialUse;
 /// A fixed "now": 11 November 2026, 12:00 UTC.
 const NOW: i64 = 1_794_398_400_000;
 
-/// Runs a future on a runtime **without an I/O driver**: any socket (tokio's TCP, UDP or DNS) would
-/// panic with "IO is disabled". The demo backend must never need one.
+/// Runs a future on a tokio runtime **without an I/O driver**: a tokio TCP or UDP socket panics
+/// there with "IO is disabled". What it does **not** catch: a `std::net` socket (it needs no
+/// driver) and a name lookup (`tokio::net::lookup_host`, or `TcpStream::connect` with a host name,
+/// resolves on the blocking pool before it panics). Those are kept out by the source check
+/// (`the_demo_module_uses_no_network_api`).
 fn run<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .build()
@@ -416,54 +419,87 @@ fn every_call_works_on_a_runtime_that_has_no_network_driver() {
     });
 }
 
-/// The demo module's own source names no socket, TLS, DNS or protocol-adapter API, so it has no way
-/// to open a connection. (This file is not scanned: it names them to look for them.)
+/// The demo module's own code names no socket, name-lookup, TLS or protocol-adapter API, so it has
+/// no way to open a connection or resolve a name. This covers what the runtime without an I/O
+/// driver cannot (`std::net`, name lookups). Comment lines are skipped (the module's docs name
+/// these APIs to say they are not used); this test file is not scanned, since it names them to look
+/// for them.
 #[test]
 fn the_demo_module_uses_no_network_api() {
     let forbidden = [
         "std::net",
         "tokio::net",
+        "net::",
         "TcpStream",
         "TcpSocket",
+        "TcpListener",
         "UdpSocket",
+        "UnixStream",
+        "socket2",
         "TlsConnector",
         "tokio_rustls",
         "rustls",
         "hickory",
         "ToSocketAddrs",
+        "to_socket_addrs",
         "lookup_host",
+        "getaddrinfo",
+        "std::process",
         "ImapBackend",
         "ImapConfig",
         "JmapBackend",
         "SmtpSender",
         "SmtpConfig",
+        "SmtpImapSubmitter",
         "Discoverer",
         "Credential",
         "crate::discovery",
         "crate::jmap",
+        "crate::smtp",
+        "crate::submit::Smtp",
     ];
+    let code = |source: &'static str| -> Vec<&'static str> {
+        source
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect()
+    };
     for (name, source) in [
         ("demo/mod.rs", include_str!("mod.rs")),
         ("demo/data.rs", include_str!("data.rs")),
+        ("lines.rs", include_str!("../lines.rs")),
     ] {
-        for token in forbidden {
-            assert!(!source.contains(token), "{name} mentions {token}");
+        let lines = code(source);
+        assert!(lines.len() > 10, "{name} was read");
+        for line in &lines {
+            for token in forbidden {
+                assert!(!line.contains(token), "{name} uses {token}: {line}");
+            }
         }
         // The one `crate::imap` item it uses is the text helpers module, which has no I/O.
-        for line in source.lines().filter(|l| l.contains("crate::imap")) {
+        for line in lines.iter().filter(|l| l.contains("crate::imap")) {
             assert!(line.contains("crate::imap::text::"), "{name}: {line}");
         }
     }
     // And the text helpers it borrows have no I/O either.
-    let text = include_str!("../imap/text.rs");
-    for token in ["std::net", "tokio", "TcpStream", "rustls"] {
-        assert!(!text.contains(token), "imap/text.rs mentions {token}");
+    for line in code(include_str!("../imap/text.rs")) {
+        for token in [
+            "net::",
+            "tokio",
+            "TcpStream",
+            "rustls",
+            "lookup_host",
+            "ToSocketAddrs",
+        ] {
+            assert!(!line.contains(token), "imap/text.rs uses {token}: {line}");
+        }
     }
 }
 
-/// The control for the test above: on such a runtime a socket call through tokio really panics
-/// (so a demo call that opened one could not pass unnoticed). Nothing is sent: the panic comes
-/// before any connection attempt.
+/// The control for the runtime used above: a tokio socket call really panics there, so a demo call
+/// that opened one could not pass unnoticed. The address is an IP address, so nothing is looked up
+/// and the panic comes before any connection attempt. (A host name would be resolved first; see
+/// [`run`] for what this runtime does not cover.)
 #[test]
 fn a_socket_call_panics_on_the_runtime_without_a_network_driver() {
     let attempt = std::panic::catch_unwind(|| {
@@ -472,4 +508,44 @@ fn a_socket_call_panics_on_the_runtime_without_a_network_driver() {
         })
     });
     assert!(attempt.is_err());
+}
+
+#[test]
+fn filing_a_copy_returns_its_header_once() {
+    let b = DemoBackend::new(NOW);
+    let first = b.file_sent_copy(None, &written("copy-1")).unwrap();
+    assert_eq!(first.message_id.as_deref(), Some("<copy-1@example.org>"));
+    assert!(first.flags.seen);
+    let again = b
+        .file_sent_copy(Some("<copy-1@example.org>"), &written("copy-1"))
+        .unwrap();
+    assert_eq!(again, first, "the same copy, not a second one");
+    assert_eq!(
+        run(b.fetch_headers(SENT, &[first.uid])).unwrap(),
+        vec![first.clone()]
+    );
+    assert_eq!(b.folder(SENT).unwrap().special_use, SpecialUse::Sent);
+    assert!(b.folder("Nowhere").is_none());
+}
+
+#[test]
+fn debug_output_has_counts_and_no_message_content() {
+    let b = Arc::new(DemoBackend::new(NOW));
+    let state = DemoFolderState {
+        path: "Private folder name".into(),
+        synced: true,
+        uid_next: Some(3),
+        messages: run(b.fetch_headers(INBOX, &[1, 2])).unwrap(),
+    };
+    let text = format!("{b:?} {:?} {state:?}", b.submitter());
+    for secret in [
+        "Welcome",
+        "example.org",
+        "Maya",
+        "hike",
+        "Private folder name",
+    ] {
+        assert!(!text.contains(secret), "{secret} in {text}");
+    }
+    assert!(text.contains("messages: 20"), "{text}");
 }

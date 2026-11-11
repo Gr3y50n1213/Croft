@@ -16,6 +16,7 @@ pub mod demo;
 pub mod discovery;
 pub mod imap;
 pub mod jmap;
+pub mod lines;
 pub mod smtp;
 pub mod submit;
 pub mod types;

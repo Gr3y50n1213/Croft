@@ -8,9 +8,11 @@
 //! Why this shape of proof: the engine never creates a connection itself. It only calls the
 //! `MailBackend` and `MailSubmitter` it is given, and only the IMAP, JMAP and SMTP adapters open
 //! sockets (all through tokio). There is no connector or dialer to inject, so instead every step
-//! runs on a tokio runtime built without `enable_io`: any TCP, UDP or DNS call made through tokio
-//! panics there ("IO is disabled"), so a passing test means none was made. The demo module's own
-//! test checks that its source names no socket API at all (`std::net` included).
+//! runs on a tokio runtime built without `enable_io`: a tokio TCP or UDP socket panics there ("IO
+//! is disabled"), so a passing test means no tokio socket was opened. This runtime does **not**
+//! catch a `std::net` socket or a name lookup (`tokio::net::lookup_host` runs on the blocking pool,
+//! and `TcpStream::connect` with a host name resolves it before it panics). Those are covered by the
+//! demo module's own test, which fails if its code names a socket or lookup API at all.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -19,7 +21,9 @@ mod common;
 use std::sync::Arc;
 
 use common::create_account;
-use croft_engine::{AccountId, Engine, EngineConfig, EngineHandle, ManualClock, NewMessage};
+use croft_engine::{
+    resume_demo, AccountId, Clock, Engine, EngineConfig, EngineHandle, ManualClock, NewMessage,
+};
 use croft_protocols::demo::{ARCHIVE, INBOX, SENT, TRASH};
 use croft_protocols::{DemoBackend, MailBackend};
 use croft_storage::messages::{self, Message};
@@ -36,41 +40,75 @@ fn no_network_runtime() -> tokio::runtime::Runtime {
 }
 
 struct Rig {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     clock: ManualClock,
     backend: Arc<DemoBackend>,
-    _engine: Engine,
+    engine: Option<Engine>,
     ui: EngineHandle,
     account: AccountId,
+}
+
+/// Opens the engine (with an Outbox) on the database file and attaches the sample mailbox with
+/// the engine's sample-mailbox submitter.
+fn start(
+    path: &std::path::Path,
+    clock: &ManualClock,
+    account: AccountId,
+    backend: Arc<DemoBackend>,
+) -> (Engine, EngineHandle) {
+    let engine = Engine::open_with_outbox(
+        Db::open(path, None).unwrap(),
+        Db::open(path, None).unwrap(),
+        Arc::new(clock.clone()),
+        EngineConfig::default(),
+    )
+    .unwrap();
+    let ui = engine.handle();
+    engine
+        .attach_account_with_submitter(
+            account,
+            backend.clone(),
+            ui.demo_submitter(account, backend),
+        )
+        .unwrap();
+    (engine, ui)
 }
 
 impl Rig {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("croft.db");
-        let db = Db::open(&path, None).unwrap();
-        let account = create_account(&db, "robin@example.org");
+        let account = create_account(&Db::open(&path, None).unwrap(), "robin@example.org");
         let clock = ManualClock::new(START_MS);
-        let engine = Engine::open_with_outbox(
-            db,
-            Db::open(&path, None).unwrap(),
-            Arc::new(clock.clone()),
-            EngineConfig::default(),
-        )
-        .unwrap();
         let backend = Arc::new(DemoBackend::new(START_MS));
-        engine
-            .attach_account_with_submitter(account, backend.clone(), Arc::new(backend.submitter()))
-            .unwrap();
-        let ui = engine.handle();
+        let (engine, ui) = start(&path, &clock, account, backend.clone());
         Self {
-            _dir: dir,
+            dir,
             clock,
             backend,
-            _engine: engine,
+            engine: Some(engine),
             ui,
             account,
         }
+    }
+
+    /// The app is killed and started again: the engine is dropped without a shutdown, and the
+    /// sample mailbox is rebuilt from what the device stored, as the FFI does at `Core::open`.
+    fn kill_and_restart(&mut self) {
+        drop(self.engine.take());
+        let path = self.dir.path().join("croft.db");
+        let backend = Arc::new(
+            resume_demo(
+                &Db::open(&path, None).unwrap(),
+                self.account,
+                self.clock.now_ms(),
+            )
+            .unwrap(),
+        );
+        let (engine, ui) = start(&path, &self.clock, self.account, backend.clone());
+        self.backend = backend;
+        self.ui = ui;
+        self.engine = Some(engine);
     }
 
     async fn sync(&self) {
@@ -183,5 +221,74 @@ fn a_full_sync_every_action_and_a_send_need_no_network_and_stay_after_later_sync
         let snap = r.backend.snapshot(INBOX).await.unwrap();
         let welcome = r.by_id(INBOX, &id("welcome"));
         assert!(snap.messages[&u32::try_from(welcome.uid).unwrap()].seen);
+    });
+}
+
+const REPLY_MIME: &str = "Message-ID: <reply-2@example.org>\r\n\
+                          Date: Wed, 11 Nov 2026 12:00:00 +0000\r\n\
+                          From: Robin Sample <robin@example.org>\r\n\
+                          To: Maya Okafor <maya@example.org>\r\n\
+                          Subject: Re: Weekend hike on Saturday?\r\n\
+                          \r\n\
+                          See you at 8:30.\r\n";
+
+fn envelope(account: AccountId) -> NewMessage {
+    NewMessage {
+        account,
+        identity: None,
+        envelope_from: "robin@example.org".into(),
+        recipients: vec!["maya@example.org".into()],
+    }
+}
+
+/// A message sent from the sample mailbox is stored in the local Sent folder before the Outbox
+/// lets go of it, so an app killed before the next sync still has it after the restart (the
+/// in-memory "server" is rebuilt from the device).
+#[test]
+fn a_sent_message_is_in_sent_after_a_restart_before_any_sync() {
+    no_network_runtime().block_on(async {
+        let mut r = Rig::new();
+        r.sync().await;
+        r.ui.send(envelope(r.account), REPLY_MIME.as_bytes().to_vec())
+            .unwrap();
+        r.clock.advance(60_000);
+        // Operations and the Outbox only: no sync.
+        r.ui.run_once(r.account, false).await.unwrap();
+        assert!(r.ui.outbox(r.account).is_empty(), "sent and filed");
+        let stored = r.by_id(SENT, "<reply-2@example.org>");
+        assert!(stored.is_seen);
+
+        r.kill_and_restart();
+        assert_eq!(r.by_id(SENT, "<reply-2@example.org>").uid, stored.uid);
+        let in_memory = r.backend.snapshot(SENT).await.unwrap();
+        assert!(in_memory
+            .messages
+            .contains_key(&u32::try_from(stored.uid).unwrap()));
+        r.sync().await;
+        let copies = r
+            .rows(SENT)
+            .into_iter()
+            .filter(|m| m.message_id_hdr.as_deref() == Some("<reply-2@example.org>"))
+            .count();
+        assert_eq!(copies, 1, "kept, and once");
+        assert_eq!(r.rows(SENT).len(), 4);
+    });
+}
+
+/// The same when the Sent folder was never synced: the copy creates it on the device.
+#[test]
+fn a_message_sent_before_the_first_sync_is_kept_too() {
+    no_network_runtime().block_on(async {
+        let mut r = Rig::new();
+        r.ui.send(envelope(r.account), REPLY_MIME.as_bytes().to_vec())
+            .unwrap();
+        r.clock.advance(60_000);
+        r.ui.run_once(r.account, false).await.unwrap();
+        assert!(r.ui.outbox(r.account).is_empty());
+        r.by_id(SENT, "<reply-2@example.org>");
+        r.kill_and_restart();
+        r.sync().await;
+        r.by_id(SENT, "<reply-2@example.org>");
+        assert_eq!(r.rows(SENT).len(), 4, "the built-in three and the new one");
     });
 }

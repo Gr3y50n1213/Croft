@@ -111,6 +111,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod clock;
+mod demo;
 mod engine;
 mod handle;
 mod mime;
@@ -123,6 +124,7 @@ pub use croft_mail_core::{
     AccountId, NewMessage, Op, OpId, OpKind, OpState, OutboxEntry, OutboxId, OutboxState,
     RemovedMessage, UnreadableOp,
 };
+pub use demo::{resume_demo, REASON_COPY_NOT_STORED};
 pub use engine::{Change, Engine, EngineConfig, EngineError};
 pub use handle::{ActionError, EngineHandle, OutboxActionError, SendError};
 pub use worker::{

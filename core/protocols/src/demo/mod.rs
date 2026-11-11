@@ -7,9 +7,12 @@
 //!
 //! App-store reviewers use it to reach every screen without a real account, so it must work with
 //! no network at all. **It never opens a connection**: this module holds no host, no port, no
-//! credential and no connector, and uses no socket API (a test reads this module's source and
-//! fails if one appears; another runs every call on a runtime without an I/O driver, where any
-//! socket would panic).
+//! credential and no connector, and names no socket or name-lookup API. Two tests check that: one
+//! reads this module's source and fails if such an API (std or tokio sockets, `lookup_host`,
+//! `ToSocketAddrs`, TLS, a protocol adapter) appears; the other runs every call on a tokio runtime
+//! without an I/O driver, where a tokio socket would panic. That runtime alone would not catch a
+//! `std::net` socket or a name lookup (`tokio::net::lookup_host` runs on the blocking pool), which
+//! is why the source check exists.
 //!
 //! # Changes stay on the device
 //!
@@ -23,7 +26,10 @@
 //!
 //! [`DemoSubmitter::send`] accepts the message and sends nothing; [`DemoSubmitter::file_in_sent`]
 //! puts the copy in the sample Sent folder, from where the next sync brings it to the device. So a
-//! message written in the sample mailbox ends up in its local Sent folder. No SMTP, ever.
+//! message written in the sample mailbox ends up in its local Sent folder. No SMTP, ever. The copy
+//! lives only in memory until the device stores it, so the engine's sample-mailbox submitter
+//! (`croft_engine::demo`) uses [`DemoBackend::file_sent_copy`] and stores the row on the device
+//! before the Outbox lets go of the message.
 
 mod data;
 
@@ -33,7 +39,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 pub use data::{ARCHIVE, DEMO_ADDRESS, DEMO_NAME, DRAFTS, INBOX, SENT, TRASH};
 
 use crate::imap::text::{bracketed_message_id, decode_encoded_words, reference_ids};
-use crate::smtp::data_lines;
+use crate::lines::data_lines;
 use crate::{
     BackendError, BackendFuture, Capabilities, FlagChange, Flags, FolderStatus, MailBackend,
     MailSubmitter, MoveOutcome, RemoteFolder, RemoteHeader, RemoteSnapshot, Uid,
@@ -43,8 +49,8 @@ use crate::{
 pub const REASON_NO_SUCH_FOLDER: &str = "The sample mailbox has no such folder";
 
 /// What the device has stored for one folder of the sample mailbox, to rebuild the in-memory copy
-/// after a restart ([`DemoBackend::resume`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// after a restart ([`DemoBackend::resume`]). `Debug` prints counts only, never message content.
+#[derive(Clone, PartialEq, Eq)]
 pub struct DemoFolderState {
     /// The folder's path.
     pub path: String,
@@ -59,8 +65,18 @@ pub struct DemoFolderState {
     pub messages: Vec<RemoteHeader>,
 }
 
-/// One message in the in-memory copy.
-#[derive(Debug, Clone)]
+impl std::fmt::Debug for DemoFolderState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DemoFolderState")
+            .field("synced", &self.synced)
+            .field("uid_next", &self.uid_next)
+            .field("messages", &self.messages.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// One message in the in-memory copy. No `Debug`: it holds message content.
+#[derive(Clone)]
 struct Stored {
     header: RemoteHeader,
     /// The whole message, when known (every built-in message, and every message filed in Sent
@@ -68,7 +84,8 @@ struct Stored {
     source: Option<Arc<str>>,
 }
 
-#[derive(Debug, Clone)]
+/// One folder of the in-memory copy. No `Debug`: it holds message content.
+#[derive(Clone)]
 struct Folder {
     info: RemoteFolder,
     uid_next: Uid,
@@ -95,10 +112,21 @@ impl Folder {
     }
 }
 
-/// The sample mailbox. Cheap to build; every call answers from memory at once.
-#[derive(Debug)]
+/// The sample mailbox. Cheap to build; every call answers from memory at once. `Debug` prints
+/// counts only, never message content.
 pub struct DemoBackend {
     folders: Mutex<Vec<Folder>>,
+}
+
+impl std::fmt::Debug for DemoBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let folders = self.lock();
+        let messages: usize = folders.iter().map(|x| x.messages.len()).sum();
+        f.debug_struct("DemoBackend")
+            .field("folders", &folders.len())
+            .field("messages", &messages)
+            .finish()
+    }
 }
 
 /// The built-in set, as stored messages by folder path.
@@ -231,8 +259,23 @@ impl DemoBackend {
         Ok(f(folder))
     }
 
-    /// Files a sent message in Sent once (by Message-ID). Returns its UID there.
-    fn file_sent(&self, message_id: Option<&str>, mime: &[u8]) -> Result<Uid, BackendError> {
+    /// The sample folder at `path`, as [`MailBackend::list_folders`] lists it.
+    pub fn folder(&self, path: &str) -> Option<RemoteFolder> {
+        self.lock()
+            .iter()
+            .find(|f| f.info.path == path)
+            .map(|f| f.info.clone())
+    }
+
+    /// Files the copy of a sent message in the sample Sent folder, **once**: a message whose
+    /// Message-ID (`message_id`, else the one in `mime`) is already there is not added again.
+    /// Returns the header of the copy in Sent (with its UID and flags), so the caller can store
+    /// the row on the device at once. [`DemoSubmitter::file_in_sent`] is this without the answer.
+    pub fn file_sent_copy(
+        &self,
+        message_id: Option<&str>,
+        mime: &[u8],
+    ) -> Result<RemoteHeader, BackendError> {
         let mut header = parse_header(mime);
         if header.message_id.is_none() {
             header.message_id = message_id.map(bracketed_message_id);
@@ -243,17 +286,18 @@ impl DemoBackend {
         };
         let source: Option<Arc<str>> = std::str::from_utf8(mime).ok().map(Arc::from);
         self.with_folder(SENT, |sent| {
-            let wanted = header.message_id.clone();
-            if let Some(id) = &wanted {
-                if let Some((uid, _)) = sent
+            if let Some(id) = &header.message_id {
+                if let Some(found) = sent
                     .messages
-                    .iter()
-                    .find(|(_, m)| m.header.message_id.as_deref() == Some(id.as_str()))
+                    .values()
+                    .find(|m| m.header.message_id.as_deref() == Some(id.as_str()))
                 {
-                    return *uid;
+                    return found.header.clone();
                 }
             }
-            sent.append(Stored { header, source })
+            let mut copy = header.clone();
+            copy.uid = sent.append(Stored { header, source });
+            copy
         })
     }
 }
@@ -455,9 +499,15 @@ impl MailBackend for DemoBackend {
 
 /// "Sends" from the sample mailbox: nothing leaves the device. The message is accepted and its
 /// copy goes into the sample Sent folder, so the person sees it there after the next sync.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DemoSubmitter {
     backend: Arc<DemoBackend>,
+}
+
+impl std::fmt::Debug for DemoSubmitter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DemoSubmitter { .. }")
+    }
 }
 
 impl MailSubmitter for DemoSubmitter {
@@ -481,7 +531,7 @@ impl MailSubmitter for DemoSubmitter {
         message_id: Option<&'a str>,
         mime: &'a [u8],
     ) -> BackendFuture<'a, ()> {
-        Box::pin(async move { self.backend.file_sent(message_id, mime).map(|_| ()) })
+        Box::pin(async move { self.backend.file_sent_copy(message_id, mime).map(|_| ()) })
     }
 }
 

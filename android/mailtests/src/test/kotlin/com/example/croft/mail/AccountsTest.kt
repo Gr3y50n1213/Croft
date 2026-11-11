@@ -67,7 +67,7 @@ class AccountsTest {
 
     /** A real (never reachable) account, with a "saved password" in the fake secret set. */
     private fun addReal(email: String = "alice@example.org"): Long {
-        val id = runBlocking { core.addAccount(deadServer(email), "Alice", null, FfiCredential.password("made-up-password".toByteArray())) }
+        val id = runBlocking { core.addAccount(deadServer(email), "Alice", null, null, FfiCredential.password("made-up-password".toByteArray())).id }
         provider.store(id, "made-up-password")
         synchronized(secrets) { secrets += id }
         return id

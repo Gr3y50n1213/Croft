@@ -86,7 +86,7 @@ class Rig(
     init {
         openCore()
         account = runBlocking {
-            core.addAccount(discovered(), "Alice", server.certificateFingerprint(), FfiCredential.password(signInPassword.toByteArray()))
+            core.addAccount(discovered(), "Alice", server.certificateFingerprint(), null, FfiCredential.password(signInPassword.toByteArray())).id
         }
         // What the app does once `addAccount` has returned: store the credential under the new id.
         provider.store(account, signInPassword)

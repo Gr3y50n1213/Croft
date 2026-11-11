@@ -24,19 +24,29 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.croft_ffi.AccountStatus
 import uniffi.croft_ffi.AuthKind
 import uniffi.croft_ffi.Core
+import uniffi.croft_ffi.CoreException
 import uniffi.croft_ffi.DiscoveryObserver
 import uniffi.croft_ffi.DiscoveryProbe
 import uniffi.croft_ffi.DiscoverySource
@@ -72,12 +82,16 @@ class OnboardingFlowTest {
     /** What the adder stored under each new account's id, as text: a wiped array would show as zeros here. */
     private val storedPasswords = ConcurrentHashMap<Long, String>()
 
-    private val adder: AccountAdder = { d, name, pin, pw ->
+    /** The `confirmedFingerprint` the adder was given, per call, in order. */
+    private val confirmations = java.util.concurrent.CopyOnWriteArrayList<String?>()
+
+    private val adder: AccountAdder = { d, name, pin, confirmed, pw ->
         addStarted.set(true)
         addGate?.await()
+        confirmations += confirmed
         val credential = FfiCredential.password(pw.copyOf())
         try {
-            core.addAccount(d, name, pin, credential).also { provider.store(it, String(pw)); storedPasswords[it] = String(pw) }
+            core.addAccount(d, name, pin, confirmed, credential).id.also { provider.store(it, String(pw)); storedPasswords[it] = String(pw) }
         } finally {
             credential.close()
         }
@@ -111,12 +125,17 @@ class OnboardingFlowTest {
             observer.onProbe(DiscoveryProbe.AUTOCONFIG_SUBDOMAIN, ProbeProgress.Found)
             return found()
         }
-        override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?) {
+        override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?): String? {
             verifyHook?.invoke(password)
-            real.verify(discovered, password, pinnedFingerprint)
+            return real.verify(discovered, password, pinnedFingerprint)
         }
-        override suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray) =
-            real.addAccount(discovered, displayName, pinnedFingerprint, password)
+        override suspend fun addAccount(
+            discovered: FfiDiscovered,
+            displayName: String,
+            pinnedFingerprint: String?,
+            confirmedFingerprint: String?,
+            password: ByteArray,
+        ) = real.addAccount(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)
     }
 
     private fun flow(saved: List<String>? = null) = OnboardingFlow(backend, scope, saved)
@@ -277,7 +296,9 @@ class OnboardingFlowTest {
         assertFalse(f.snapshot().joinToString("|").contains(TEST_PASSWORD))
         assertFalse(f.state.value.toString().contains(TEST_PASSWORD))
         f.trustServer()
-        f.awaitState("the account was added") { it.addedAccount != null }
+        val added = f.awaitState("the account was added") { it.addedAccount != null }
+        // The account is removed again: with it stored (and pinned) the next sign-in for this address would be compared with its pin.
+        runBlocking { core.removeAccount(added.addedAccount!!) }
 
         // Another flow: trust, then change the host on S05: the pin belonged to the other server.
         val g = flow().toSignIn()
@@ -349,7 +370,7 @@ class OnboardingFlowTest {
         assertEquals(TEST_PASSWORD, storedPasswords[id])
         assertTrue("the flow's own array was wiped", bytes.all { it == 0.toByte() })
 
-        // The person signs in again (the new screen starts from the saved path): the account is found, not added twice.
+        // The person signs in again (the new screen starts from the saved path): the core finds the account (same address and server), it is not added twice.
         addGate = null
         val again = trustedAtSignIn()
         again.signIn("alice", pw())
@@ -359,24 +380,238 @@ class OnboardingFlowTest {
         assertWiped()
     }
 
+    /**
+     * The first attempt is held **inside a wait that cannot be cancelled** until the second one has started, so that its cancelled
+     * unwinding (which wipes its own password, and in the old code the shared one) always runs *after* the second attempt owns its
+     * array. The old flow kept one shared array (`held`) and wiped it when any attempt unwound from a cancel: that wiped the second
+     * attempt's password here every time. Nothing depends on timing: the test joins the first attempt's job before it looks.
+     */
     @Test(timeout = 60_000)
     fun aCancelledAttemptCannotWipeTheNextAttemptsPassword() {
         val entered = java.util.concurrent.atomic.AtomicInteger(0)
-        verifyHook = { entered.incrementAndGet(); awaitCancellation() }
+        val firstAttempt = CompletableDeferred<Job>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        verifyHook = {
+            if (entered.incrementAndGet() == 1) {
+                firstAttempt.complete(currentCoroutineContext()[Job]!!)
+                // Cancelled by the next attempt meanwhile, but stuck here until the test lets it go.
+                withContext(NonCancellable) { releaseFirst.await() }
+                currentCoroutineContext().ensureActive()
+            }
+            awaitCancellation()
+        }
         val f = flow().toSignIn()
         val first = pw("first-fake-password-1")
         f.signIn("alice", first)
-        await("the first check started") { entered.get().takeIf { it >= 1 } }
-        // Straight on to another attempt (S05's test) while the first one is still unwinding from its cancel.
+        val firstJob = runBlocking { withTimeout(20_000) { firstAttempt.await() } }
+
+        // Straight on to another attempt (S05's test) while the first one is still held.
         f.openServerSettings()
         val second = pw("second-fake-password-2")
         f.testConnection(second)
         await("the second check started") { entered.get().takeIf { it >= 2 } }
-        Thread.sleep(300)
+        assertTrue("the first attempt is cancelled and still unwinding", firstJob.isCancelled && !firstJob.isCompleted)
+        assertEquals("the second attempt's password is untouched so far", "second-fake-password-2", String(second))
+
+        // Now the first attempt unwinds from its cancel, completely, while the second one is current.
+        releaseFirst.complete(Unit)
+        runBlocking { withTimeout(20_000) { firstJob.join() } }
         assertTrue("the first attempt's password was wiped", first.all { it == 0.toByte() })
         assertEquals("the second attempt's password is untouched", "second-fake-password-2", String(second))
         f.close()
         assertTrue("and wiped when it ends", second.all { it == 0.toByte() })
+    }
+
+    @Test(timeout = 60_000)
+    fun openServerSettingsDoesNothingWhileTheAccountIsBeingAdded() {
+        addGate = CompletableDeferred()
+        val f = trustedAtSignIn()
+        val bytes = pw()
+        f.signIn("alice", bytes)
+        await("the add started") { addStarted.get().takeIf { it } }
+        val during = f.state.value
+        assertTrue(during.adding)
+        assertEquals(Step.SIGN_IN, during.step)
+
+        f.openServerSettings()
+        assertEquals("no S05 over the add", during.stack, f.state.value.stack)
+        assertTrue("the add goes on", f.state.value.adding)
+        assertEquals(Attempt.Working, f.state.value.attempt)
+
+        // The add finishes as if nothing had been pressed: the account is there with its whole password.
+        addGate!!.complete(Unit)
+        val done = f.awaitState("the account was added") { it.addedAccount != null }
+        assertEquals(listOf(Step.FIRST_SYNC), done.stack)
+        assertEquals(TEST_PASSWORD, storedPasswords[done.addedAccount!!])
+        assertEquals(1, core.listAccounts().size)
+        assertWiped()
+        // Once it is over, S04 can be left to S05 again (checked on a fresh flow at S04).
+        val g = flow().toSignIn()
+        g.openServerSettings()
+        assertEquals(Step.SERVER_SETTINGS, g.state.value.step)
+    }
+
+    @Test(timeout = 60_000)
+    fun signingInAgainForTheSameAddressKeepsTheAccountAndStoresTheNewPasswordUnderItsId() {
+        val pin = server.certificateFingerprint()
+        // The first sign-in: a password the server will refuse (a typo kept by an earlier attempt, say).
+        val id = runBlocking { real.addAccount(found(), "Alice", pin, null, "old-fake-password-0".toByteArray()) }
+        assertEquals("old-fake-password-0", storedPasswords[id])
+        await("the account needs a sign-in") { core.listAccounts().singleOrNull()?.takeIf { it.status == AccountStatus.NEEDS_SIGN_IN } }
+
+        // Signing in again with the right password: the core keeps the account, and the stored password is the new one.
+        val again = runBlocking { real.addAccount(found(), "Alice", pin, null, TEST_PASSWORD.toByteArray()) }
+        assertEquals("the same account", id, again)
+        assertEquals(1, core.listAccounts().size)
+        assertEquals("the new password replaced the old one", TEST_PASSWORD, storedPasswords[id])
+        // And the account really signs in with it: it syncs.
+        await("the first sync with the new password") { core.listAccounts().singleOrNull()?.lastSyncedMs }
+        assertEquals(AccountStatus.OK, core.listAccounts().single().status)
+    }
+
+    /**
+     * A self-hosted account whose trusted certificate (pin A) is not the one the server shows now. The sign-in again must not trust the
+     * new one as if it were the first time: `verify` compares with the stored pin and the screen shows the changed-certificate warning;
+     * only after the person confirmed it is the new pin stored (`confirmedFingerprint`).
+     */
+    @Test(timeout = 60_000)
+    fun aReSignInUnderAChangedCertificateAsksWithTheChangedWarning_andOnlyAfterConfirmingStoresTheNewPin() {
+        val earlier = "AB".repeat(32)
+        val id = runBlocking { real.addAccount(found(), "Alice", earlier, null, "typo-fake-password-0".toByteArray()) }
+        await("the account needs a sign-in") { core.listAccounts().singleOrNull()?.takeIf { it.status == AccountStatus.NEEDS_SIGN_IN } }
+        confirmations.clear()
+
+        val f = flow().toSignIn()
+        f.signIn("alice", pw())
+        // Not the first-use question: the core compares with the pin it holds and says the certificate changed.
+        val asked = f.awaitState("the changed-certificate warning") { it.attempt is Attempt.Trust }.attempt as Attempt.Trust
+        assertTrue("the stronger warning", asked.changed)
+        assertEquals(server.certificateFingerprint(), asked.fingerprint)
+        assertTrue("nothing was confirmed or changed yet", confirmations.isEmpty())
+        assertEquals(1, core.listAccounts().size)
+        assertNull(f.state.value.addedAccount)
+
+        // Confirmed: the new certificate is pinned, with the acknowledgement, and the account signs in over it.
+        f.trustServer()
+        val done = f.awaitState("the account was updated") { it.addedAccount != null }
+        assertEquals(id, done.addedAccount)
+        assertEquals(listOf<String?>(server.certificateFingerprint()), confirmations.toList())
+        assertEquals(TEST_PASSWORD, storedPasswords[id])
+        await("the first sync over the new pin") { core.listAccounts().singleOrNull()?.lastSyncedMs }
+        assertEquals(AccountStatus.OK, core.listAccounts().single().status)
+        assertEquals(1, core.listAccounts().size)
+        assertWiped()
+    }
+
+    /** S05: "Test connection" asked the changed-certificate warning and was answered; "Add account" for the same certificate does not ask again. */
+    @Test(timeout = 60_000)
+    fun theConfirmationOfTestConnectionCarriesToAddAccountOnS05() {
+        val earlier = "AB".repeat(32)
+        val id = runBlocking { real.addAccount(found(), "Alice", earlier, null, "typo-fake-password-0".toByteArray()) }
+        confirmations.clear()
+
+        val f = flow().toSignIn()
+        f.openServerSettings()
+        f.testConnection(pw())
+        val asked = f.awaitState("the changed-certificate warning") { it.attempt is Attempt.Trust }.attempt as Attempt.Trust
+        assertTrue(asked.changed)
+        f.trustServer()
+        f.awaitState("the test passed") { it.test == ConnectionTest.passed() }
+        assertTrue("Test connection adds nothing", confirmations.isEmpty())
+
+        f.addFromSettings(pw())
+        val done = f.awaitState("the account was updated, with no second question") { it.addedAccount != null || it.attempt is Attempt.Trust }
+        assertEquals(id, done.addedAccount)
+        assertEquals(listOf<String?>(server.certificateFingerprint()), confirmations.toList())
+        assertEquals(1, core.listAccounts().size)
+        assertWiped()
+    }
+
+    /** A question of an earlier attempt that is still on the screen cannot be answered for the attempt that replaced it. */
+    @Test(timeout = 60_000)
+    fun aQuestionOfAnEarlierAttemptCannotBeAnsweredForANewOne() {
+        val id = runBlocking { real.addAccount(found(), "Alice", "AB".repeat(32), null, "typo-fake-password-0".toByteArray()) }
+        confirmations.clear()
+        val f = flow().toSignIn()
+        f.signIn("alice", pw())
+        val first = f.awaitState("the first warning") { it.attempt is Attempt.Trust }.attempt as Attempt.Trust
+
+        // The person signs in again; the first warning may still be showing when "Trust" is pressed for it.
+        f.signIn("alice", pw())
+        f.trustServer()
+        val second = f.awaitState("the second attempt's own warning") { (it.attempt as? Attempt.Trust)?.runId?.let { r -> r != first.runId } == true }.attempt as Attempt.Trust
+        assertNotEquals(first.runId, second.runId)
+        assertNull("the stale answer trusted nothing", f.state.value.pinnedFingerprint)
+        assertNull(f.state.value.addedAccount)
+        assertTrue("and confirmed nothing", confirmations.isEmpty())
+
+        // The answer to the current question counts.
+        f.trustServer()
+        val done = f.awaitState("the account was updated") { it.addedAccount != null }
+        assertEquals(id, done.addedAccount)
+        assertEquals(listOf<String?>(server.certificateFingerprint()), confirmations.toList())
+        assertWiped()
+    }
+
+    @Test(timeout = 60_000)
+    fun aFirstUseTrustNeverSetsTheConfirmation() {
+        val f = flow().toSignIn()
+        f.signIn("alice", pw())
+        val asked = f.awaitState("the first-use question") { it.attempt is Attempt.Trust }.attempt as Attempt.Trust
+        assertFalse(asked.changed)
+        f.trustServer()
+        f.awaitState("the account was added") { it.addedAccount != null }
+        assertEquals(listOf<String?>(null), confirmations.toList())
+        assertWiped()
+    }
+
+    /**
+     * The core's own refusal is the backstop: a pin that appeared between the check and the add (another sign-in of the same address)
+     * is not replaced unconfirmed, and the person is asked on the changed-certificate warning.
+     */
+    @Test(timeout = 60_000)
+    fun aPinThatAppearedBetweenTheCheckAndTheAddIsAskedAboutAndNotReplaced() {
+        addGate = CompletableDeferred()
+        val f = trustedAtSignIn()
+        f.signIn("alice", pw())
+        await("the add started") { addStarted.get().takeIf { it } }
+        // Meanwhile the address was added elsewhere, with another certificate pinned.
+        val id = runBlocking { core.addAccount(found(), "Alice", "AB".repeat(32), null, FfiCredential.password("x".toByteArray())).id }
+        addGate!!.complete(Unit)
+
+        val asked = f.awaitState("the changed-certificate warning") { it.attempt is Attempt.Trust }.attempt as Attempt.Trust
+        assertTrue(asked.changed)
+        assertEquals(server.certificateFingerprint(), asked.fingerprint)
+        assertFalse("Back works again", f.state.value.adding)
+        assertEquals(listOf<String?>(null), confirmations.toList())
+
+        f.trustServer()
+        val done = f.awaitState("the account was updated") { it.addedAccount != null }
+        assertEquals(id, done.addedAccount)
+        assertEquals("the confirmation came after the warning only", listOf<String?>(null, server.certificateFingerprint()), confirmations.toList())
+        assertEquals(1, core.listAccounts().size)
+        assertWiped()
+    }
+
+    @Test(timeout = 60_000)
+    fun theSameAddressOnAnotherServerFailsAsAlreadyAddedAndChangesNothing() {
+        val pin = server.certificateFingerprint()
+        // An account for this address already exists, with another host name for the same machine.
+        val id = runBlocking { real.addAccount(found(host = "localhost"), "Alice", pin, null, TEST_PASSWORD.toByteArray()) }
+        val stored = storedPasswords.toMap()
+
+        // The person signs in with the settings that were found (127.0.0.1): the check passes, the add says it is there already.
+        val f = trustedAtSignIn()
+        f.signIn("alice", pw())
+        val failed = f.awaitState("the failure") { it.attempt is Attempt.Failed }.attempt as Attempt.Failed
+        val add = failed.failure as OnboardingFailure.Add
+        assertTrue(add.error is CoreException.AccountExists)
+        assertEquals("add.already_added", add.key)
+        assertEquals(Step.SIGN_IN, f.state.value.step)
+        assertNull(f.state.value.addedAccount)
+        assertEquals("nothing was added or changed", listOf(id), core.listAccounts().map { it.id })
+        assertEquals("no password was stored", stored, storedPasswords.toMap())
+        assertWiped()
     }
 
     @Test(timeout = 60_000)

@@ -149,6 +149,9 @@
     <string name="fail_add_unsupported_server">Croft can\'t use this server yet: it needs an IMAP server.</string>
     <string name="fail_add_no_credential">Croft lost the password before it could add the account. Type it again.</string>
     <string name="fail_add_schema_too_new">This device\'s Croft data was made by a newer version of Croft. Update Croft to add an account.</string>
+    <string name="fail_add_already_added">This address is already added, with different server settings. Remove that account first if you want to use these settings instead.</string>
+    <string name="fail_add_certificate_changed">The server\'s security certificate is not the one you trusted before, so Croft did not change this account. Try signing in again: Croft will show you the new certificate to check.</string>
+    <string name="fail_add_sign_in_not_saved">The password worked, but Croft could not save it on this device, so nothing was changed and the account still uses its old password. Try again.</string>
     <string name="fail_add_internal">Something went wrong inside Croft while adding the account. Try again.</string>
     <string name="fail_app_storage_unavailable">Croft couldn\'t open its secure storage on this device, so nothing was added. Try again.</string>
     <string name="fail_app_unexpected">Something unexpected went wrong. Nothing was added. Try again.</string>

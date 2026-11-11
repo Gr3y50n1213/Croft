@@ -17,6 +17,7 @@ use super::text::{
 };
 use super::text::{reference_ids, utf7_decode};
 use super::tls::{client_config, Trust};
+use crate::host::clean_host;
 use crate::types::*;
 use async_imap::imap_proto::rfc4315::UidSetMember;
 use async_imap::imap_proto::{
@@ -137,11 +138,9 @@ pub(crate) async fn connect_client(
 ) -> Result<Client<Stream>, OpError> {
     config.validate()?;
     let t = config.timeout;
-    let host = config
-        .host
-        .trim()
-        .trim_start_matches('[')
-        .trim_end_matches(']');
+    // The same cleaning `provider_for_host` applies, so both see one name (see `crate::host`).
+    let host = clean_host(&config.host);
+    let host = host.as_str();
     let addrs: Vec<_> = match timeout(t, lookup_host((host, config.port))).await {
         Err(_) => return Err(OpError::timed_out("looking up the server")),
         Ok(Err(_)) => return Err(OpError::dropped("could not look up the server")),

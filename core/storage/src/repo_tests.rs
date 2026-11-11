@@ -635,6 +635,39 @@ fn accounts_round_trip_list_status_and_cascade_delete() {
 }
 
 #[test]
+fn account_settings_are_replaced_in_place() {
+    let (db, a1, f1, a2, _f2) = two_accounts();
+    let c = db.connection();
+    let message = messages::upsert(c, a1, f1, &header(1, "Hello", 10)).unwrap();
+    let before = accounts::get(c, a1).unwrap().unwrap();
+    let config = serde_json::json!({ "port": 143, "pinned": "AA" });
+    assert!(accounts::set_settings(c, a1, "gmail", &config).unwrap());
+    let after = accounts::get(c, a1).unwrap().unwrap();
+    assert_eq!((after.provider.as_str(), &after.config), ("gmail", &config));
+    // Only the settings changed: the id, the address, the position and the account's rows stay.
+    assert_eq!(
+        (
+            after.id,
+            &after.email,
+            &after.label,
+            after.position,
+            after.created_at
+        ),
+        (
+            before.id,
+            &before.email,
+            &before.label,
+            before.position,
+            before.created_at
+        )
+    );
+    assert!(messages::get(c, a1, message).unwrap().is_some());
+    // Another account is untouched, and a missing one is reported.
+    assert_eq!(accounts::get(c, a2).unwrap().unwrap().config["port"], 993);
+    assert!(!accounts::set_settings(c, 999, "generic", &config).unwrap());
+}
+
+#[test]
 fn settings_round_trip_overwrite_and_remove() {
     let db = Db::open_in_memory().unwrap();
     let c = db.connection();

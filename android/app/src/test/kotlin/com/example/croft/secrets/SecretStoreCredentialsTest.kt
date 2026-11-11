@@ -4,6 +4,7 @@
 
 package com.example.croft.secrets
 
+import com.example.croft.mail.onboarding.SignInNotSavedException
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.io.path.createTempDirectory
@@ -59,8 +60,8 @@ class SecretStoreCredentialsTest {
     private fun core(provider: CredentialProvider): Core =
         Core.open(File(dir, "croft.db").path, null, provider).also { open += it }
 
-    private fun deadServer() = FfiDiscovered(
-        email = "alice@example.org",
+    private fun deadServer(email: String = "alice@example.org") = FfiDiscovered(
+        email = email,
         imap = ServerSettings("127.0.0.1", 1u, SecurityMode.TLS, "alice"),
         smtp = null,
         jmap = null,
@@ -155,8 +156,8 @@ class SecretStoreCredentialsTest {
 
     private fun accounts() = AccountSecrets(store, signIns)
 
-    private fun add(core: Core, password: String = Fixture.PASSWORD): Long =
-        runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", null, password.toByteArray()) }
+    private fun add(core: Core, password: String = Fixture.PASSWORD, email: String = "alice@example.org"): Long =
+        runBlocking { accounts().addPasswordAccount(core, deadServer(email), "Alice", null, null, password.toByteArray()) }
 
     @Test
     fun aNewAccountIsStoredUnderItsReturnedIdAndTheProviderWasNotAskedAboutIt() {
@@ -172,9 +173,10 @@ class SecretStoreCredentialsTest {
     fun aNewAccountNeverGetsAnotherAccountsPasswordOrTheOtherWayAround() {
         val recording = Recording(provider())
         val core = core(recording)
-        val first = add(core, "first-account-pw-Ab-1")
+        // Two addresses: the same address again would be a sign-in again for the first account.
+        val first = add(core, "first-account-pw-Ab-1", "first@example.org")
         // The second account has its own password; nothing is "staged" for it to pick up.
-        val second = add(core, "second-account-pw-Cd-2")
+        val second = add(core, "second-account-pw-Cd-2", "second@example.org")
         assertNotEquals(first, second)
         assertArrayEquals("first-account-pw-Ab-1".toByteArray(), store.get(first, SecretKind.PASSWORD))
         assertArrayEquals("second-account-pw-Cd-2".toByteArray(), store.get(second, SecretKind.PASSWORD))
@@ -188,7 +190,7 @@ class SecretStoreCredentialsTest {
         val core = core(provider())
         val jmapOnly = deadServer().copy(imap = null, jmap = "https://example.org/.well-known/jmap")
         try {
-            runBlocking { accounts().addPasswordAccount(core, jmapOnly, "Alice", null, Fixture.PASSWORD.toByteArray()) }
+            runBlocking { accounts().addPasswordAccount(core, jmapOnly, "Alice", null, null, Fixture.PASSWORD.toByteArray()) }
             fail("expected CoreException")
         } catch (e: CoreException) {
             // refused by the core
@@ -206,13 +208,93 @@ class SecretStoreCredentialsTest {
         try {
             runBlocking {
                 AccountSecrets(failing, signIns)
-                    .addPasswordAccount(core, deadServer(), "Alice", null, Fixture.PASSWORD.toByteArray())
+                    .addPasswordAccount(core, deadServer(), "Alice", null, null, Fixture.PASSWORD.toByteArray())
             }
             fail("expected SecretBoxException")
         } catch (e: SecretBoxException) {
             assertEquals(SecretBoxException.Kind.UNAVAILABLE, e.kind)
         }
         assertTrue(core.listAccounts().isEmpty())
+    }
+
+    @Test
+    fun signingInAgainForTheSameAddressKeepsTheAccountAndReplacesItsPassword() {
+        val recording = Recording(provider())
+        val core = core(recording)
+        val id = add(core, "old-account-pw-Gh-4")
+        // A leftover token of another kind of sign-in, and the mark of a sign-in that was needed.
+        store.put(id, SecretKind.OAUTH_REFRESH, "stale".toByteArray())
+        signIns.mark(id)
+
+        val again = add(core, "new-account-pw-Ij-5")
+        assertEquals("the core updated the account, it did not add one", id, again)
+        assertEquals(1, core.listAccounts().size)
+        assertArrayEquals("the new password replaced the old one", "new-account-pw-Ij-5".toByteArray(), store.get(id, SecretKind.PASSWORD))
+        assertFalse("no token may answer instead of the new password", store.has(id, SecretKind.OAUTH_REFRESH))
+        assertTrue("the sign-in-needed mark is cleared", signIns.accounts.value.isEmpty())
+        // What the core gets from the store at the next start is the new password.
+        val credential = provider().credential(id)
+        assertNotNull(credential)
+        assertTrue("the provider was never asked about it meanwhile", recording.asked.isEmpty())
+    }
+
+    @Test
+    fun signingInAgainOnAnotherServerIsRefusedAndStoresNothing() {
+        val core = core(provider())
+        val id = add(core, "first-account-pw-Kl-6")
+        val other = deadServer().copy(imap = ServerSettings("localhost", 1u, SecurityMode.TLS, "alice"))
+        try {
+            runBlocking { accounts().addPasswordAccount(core, other, "Alice", null, null, "other-account-pw-Mn-7".toByteArray()) }
+            fail("expected CoreException.AccountExists")
+        } catch (e: CoreException.AccountExists) {
+            // "This address is already added"
+        }
+        assertEquals(1, core.listAccounts().size)
+        assertArrayEquals("the old password is untouched", "first-account-pw-Kl-6".toByteArray(), store.get(id, SecretKind.PASSWORD))
+    }
+
+    @Test
+    fun ifTheNewPasswordCannotBeStoredWhenSigningInAgainTheUpdateIsUndoneAndTheAccountIsKept() {
+        val keys = MemoryKeySource()
+        val local = SecretStore(File(dir, "again"), AesGcmSecretBox(keys))
+        val core = core(SecretStoreCredentials(local, signIns))
+        val accounts = AccountSecrets(local, signIns)
+        val id = runBlocking { accounts.addPasswordAccount(core, deadServer(), "Alice", null, null, "old-account-pw-Op-8".toByteArray()) }
+        keys.unavailable = true
+        try {
+            runBlocking { accounts.addPasswordAccount(core, deadServer(), "Alice", null, null, "new-account-pw-Qr-9".toByteArray()) }
+            fail("expected SignInNotSavedException")
+        } catch (e: SignInNotSavedException) {
+            // "the account is as it was": the screen says so
+        }
+        // Unlike a new account, an account that was only signed in again is kept, with its old secret.
+        assertEquals(listOf(id), core.listAccounts().map { it.id })
+        assertTrue(local.has(id, SecretKind.PASSWORD))
+        keys.unavailable = false
+        assertArrayEquals("old-account-pw-Op-8".toByteArray(), local.get(id, SecretKind.PASSWORD))
+        // The core's update was undone, so the core runs the account with the stored (old) password again and asked the app for it.
+        assertEquals(AccountStatus.OK, core.listAccounts().single().status)
+    }
+
+    @Test
+    fun aPinnedAccountIsNotReplacedOrDroppedWithoutTheAcknowledgement_andNothingIsStored() {
+        val core = core(provider())
+        val pin = "AB".repeat(32)
+        val id = runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", pin, null, "first-account-pw-Rs-10".toByteArray()) }
+        for (other in listOf("CD".repeat(32), null)) {
+            try {
+                runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", other, null, "other-account-pw-Tu-11".toByteArray()) }
+                fail("expected CoreException.CertificateChanged")
+            } catch (e: CoreException.CertificateChanged) {
+                // the changed-certificate warning comes first
+            }
+            assertArrayEquals("the old password is untouched", "first-account-pw-Rs-10".toByteArray(), store.get(id, SecretKind.PASSWORD))
+        }
+        // After the person confirmed the warning the pin and the password are replaced.
+        val again = runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", "CD".repeat(32), "CD".repeat(32), "new-account-pw-Vw-12".toByteArray()) }
+        assertEquals(id, again)
+        assertArrayEquals("new-account-pw-Vw-12".toByteArray(), store.get(id, SecretKind.PASSWORD))
+        assertEquals(1, core.listAccounts().size)
     }
 
     @Test
@@ -239,7 +321,7 @@ class SecretStoreCredentialsTest {
         val accounts = AccountSecrets(store, signIns, kotlinx.coroutines.Dispatchers.IO)
         val id = runBlocking {
             thread = Thread.currentThread()
-            accounts.addPasswordAccount(core, deadServer(), "Alice", null, password)
+            accounts.addPasswordAccount(core, deadServer(), "Alice", null, null, password)
         }
         assertArrayEquals("the copy given to the core is wiped, the caller's array is the caller's", Fixture.PASSWORD.toByteArray(), password)
         assertArrayEquals(Fixture.PASSWORD.toByteArray(), store.get(id, SecretKind.PASSWORD))
@@ -252,7 +334,7 @@ class SecretStoreCredentialsTest {
         val local = SecretStore(File(dir, "notready"), AesGcmSecretBox(keys))
         val first = core(SecretStoreCredentials(local, signIns))
         val id = runBlocking {
-            AccountSecrets(local, signIns).addPasswordAccount(first, deadServer(), "Alice", null, Fixture.PASSWORD.toByteArray())
+            AccountSecrets(local, signIns).addPasswordAccount(first, deadServer(), "Alice", null, null, Fixture.PASSWORD.toByteArray())
         }
         first.close()
         open.remove(first)
@@ -276,14 +358,14 @@ class SecretStoreCredentialsTest {
     @Test
     fun anIdIsNeverReusedAndALeftoverUnderTheNewIdIsCleared() {
         val core = core(provider())
-        add(core)
-        val second = add(core)
+        add(core, email = "first@example.org")
+        val second = add(core, email = "second@example.org")
         runBlocking { accounts().removeAccount(core, second) }
         // A leftover of a crash, under the id the next account will get if ids were reused (2) or
         // the next one (3): both are cleared before the new secret is stored.
         store.put(2, SecretKind.OAUTH_REFRESH, "stale".toByteArray())
         store.put(3, SecretKind.OAUTH_REFRESH, "stale".toByteArray())
-        val third = add(core, "third-account-pw-Ef-3")
+        val third = add(core, "third-account-pw-Ef-3", "third@example.org")
         assertEquals("ids are never reused", 3L, third)
         assertFalse(store.has(3, SecretKind.OAUTH_REFRESH))
         assertArrayEquals("third-account-pw-Ef-3".toByteArray(), store.get(3, SecretKind.PASSWORD))

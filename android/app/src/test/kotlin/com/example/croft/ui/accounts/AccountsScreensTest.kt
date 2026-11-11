@@ -49,6 +49,7 @@ import com.example.croft.ui.onboarding.FakeBackend
 import com.example.croft.ui.onboarding.FakeFirstSync
 import com.example.croft.ui.onboarding.OnboardingEnvironment
 import com.example.croft.ui.onboarding.OnboardingTags
+import com.example.croft.ui.onboarding.fakeFound
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.CoroutineScope
@@ -91,6 +92,7 @@ class AccountsScreensTest {
     private val session = sessionAndRepo.first
     private val repo = sessionAndRepo.second
     private val ops = RecordingOps(repo, secrets)
+    private val backend = FakeBackend()
     private var initialTheme = instant
     private val themeStore: ThemeStore by lazy { themeFile.writeText(ThemeJson.encode(initialTheme)); ThemeStore.onFile(themeFile, scope) }
 
@@ -98,7 +100,7 @@ class AccountsScreensTest {
     fun tearDown() { scope.cancel(); dir.deleteRecursively() }
 
     private fun show(startAt: Route = Route.SETTINGS, session: com.example.croft.mail.MailSession = this.session) {
-        val env = OnboardingEnvironment(FakeBackend(), FakeFirstSync()) { session }
+        val env = OnboardingEnvironment(backend, FakeFirstSync()) { session }
         rule.setContent {
             CroftApp(
                 themeStore, RustInfo("9.8.7", 6u), session, startAt = startAt, onboarding = env, accountOps = ops,
@@ -240,6 +242,44 @@ class AccountsScreensTest {
         waitFor(OnboardingTags.ADD_ACCOUNT)
         back()
         waitFor(AccountsTags.ACCOUNTS)
+    }
+
+    /** From S44: Add account, S02, the address, Continue, the password, Sign in (the scripted backend answers). */
+    private fun addFromAccounts(email: String) {
+        backend.onDiscover = { e, _ -> fakeFound(e) }
+        openAccounts()
+        tag(AccountsTags.ADD).performScrollTo().performClick()
+        waitFor(OnboardingTags.ADD_ACCOUNT)
+        tag(OnboardingTags.EMAIL).performTextInput(email)
+        tag(OnboardingTags.CONTINUE).performScrollTo().performClick()
+        waitFor(OnboardingTags.SIGN_IN)
+        tag(OnboardingTags.PASSWORD).performScrollTo().performTextInput("made-up-pw-1234")
+        tag(OnboardingTags.SIGN_IN_BUTTON).performScrollTo().performClick()
+    }
+
+    @Test
+    fun addingAnAddressThatIsAlreadyAddedFromAccountsSaysSoAndKeepsTheList() {
+        // The core refuses the same address on other servers (T17d): the sign-in screen says so in plain words.
+        backend.onAdd = { _, _, _ -> throw uniffi.croft_ffi.CoreException.AccountExists() }
+        show()
+        addFromAccounts("sam@example.org")
+        waitFor(OnboardingTags.SIGN_IN_FAILURE)
+        rule.onNodeWithText("This address is already added", substring = true).assertExists()
+        assertEquals(1, backend.adds.size)
+        back(); back() // S04 to S02, and out of the flow to the list
+        waitFor(AccountsTags.ACCOUNTS)
+        for (id in 1L..3L) tag(AccountsTags.row(id)).assertIsDisplayed()
+    }
+
+    @Test
+    fun anAccountAddedFromAccountsReturnsToTheList() {
+        // Also what a re-sign-in for the same address and servers ends in: the core updates the account and the flow finishes.
+        show()
+        addFromAccounts("pat@example.org")
+        rule.waitUntil(10_000) { exists(OnboardingTags.FIRST_SYNC) }
+        rule.onNodeWithText("Continue in background").performScrollTo().performClick()
+        waitFor(AccountsTags.ACCOUNTS)
+        tag(AccountsTags.row(1)).assertIsDisplayed()
     }
 
     // ---- S45 ----

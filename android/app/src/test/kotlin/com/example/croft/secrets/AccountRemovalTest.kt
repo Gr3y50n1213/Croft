@@ -54,7 +54,7 @@ class AccountRemovalTest {
     private fun accountSecrets() = AccountSecrets(store, signIns)
 
     private fun add(core: Core, email: String): Long =
-        runBlocking { accountSecrets().addPasswordAccount(core, deadServer(email), "Alice", null, Fixture.PASSWORD.toByteArray()) }
+        runBlocking { accountSecrets().addPasswordAccount(core, deadServer(email), "Alice", null, null, Fixture.PASSWORD.toByteArray()) }
 
     private fun ops(core: Core, files: MutableList<String> = mutableListOf()) = CoreAccountOps(
         core,

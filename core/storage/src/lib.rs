@@ -12,11 +12,14 @@ pub mod accounts;
 mod db;
 mod error;
 pub mod folders;
+pub mod jmap_ids;
 pub mod messages;
 pub mod op_store;
 pub mod outbox_store;
 pub mod settings;
 
+#[cfg(test)]
+mod jmap_ids_tests;
 #[cfg(test)]
 mod op_store_tests;
 #[cfg(test)]
@@ -28,6 +31,7 @@ mod schema_checks;
 
 pub use db::Db;
 pub use error::{Result, StorageError};
+pub use jmap_ids::SqliteJmapIdStore;
 pub use op_store::SqliteOpStore;
 pub use outbox_store::SqliteOutboxStore;
 
@@ -63,6 +67,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 4,
         name: "outbox_append",
         sql: include_str!("../migrations/0004_outbox_append.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "jmap_ids",
+        sql: include_str!("../migrations/0005_jmap_ids.sql"),
     },
 ];
 

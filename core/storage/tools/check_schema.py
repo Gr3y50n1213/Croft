@@ -172,4 +172,53 @@ old.execute("INSERT INTO outbox (account_id,mime_blob,send_at) VALUES (1,x'00',0
 check("migration 0004 continues the id counter after the old rows",
       old.execute("SELECT max(id) FROM outbox").fetchone()[0] == 42)
 
+# Migration 0005: the JMAP id map hands out each UID once per mailbox and goes with its account.
+db.execute("INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (2,'J','j@example.org','jmap','{}',0)")
+db.execute("INSERT INTO jmap_mailbox (account_id,mailbox_id,uid_validity,next_uid) VALUES (2,'inbox',777,3)")
+db.executemany("INSERT INTO jmap_email_uid (account_id,mailbox_id,email_id,uid) VALUES (2,'inbox',?,?)", [("a", 1), ("b", 2)])
+def refused(sql):
+    try:
+        db.execute(sql)
+        return False
+    except sqlite3.IntegrityError:
+        return True
+check("jmap_email_uid refuses a UID at or above next_uid",
+      refused("INSERT INTO jmap_email_uid VALUES (2,'inbox','x',3)"))
+check("jmap_email_uid refuses a UID used twice in one mailbox",
+      refused("INSERT INTO jmap_email_uid VALUES (2,'inbox','x',2)"))
+check("jmap_email_uid refuses the same email twice in one mailbox",
+      refused("INSERT INTO jmap_email_uid VALUES (2,'inbox','a',2)"))
+check("a UID is never reassigned", refused("UPDATE jmap_email_uid SET uid = 9 WHERE email_id = 'a'"))
+check("next_uid never goes down", refused("UPDATE jmap_mailbox SET next_uid = 1 WHERE mailbox_id = 'inbox'"))
+check("uid_validity 0 is refused", refused("UPDATE jmap_mailbox SET uid_validity = 0"))
+check("an entry needs its mailbox row", refused("INSERT INTO jmap_email_uid VALUES (2,'nope','x',1)"))
+check("a mailbox row needs its account", refused("INSERT INTO jmap_mailbox VALUES (99,'inbox',5,1)"))
+db.execute("DELETE FROM jmap_email_uid WHERE email_id = 'b'")
+check("removing an entry does not lower next_uid",
+      one("SELECT next_uid FROM jmap_mailbox WHERE account_id=2 AND mailbox_id='inbox'") == 3)
+db.execute("INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (3,'K','k@example.org','jmap','{}',0)")
+db.execute("INSERT INTO jmap_mailbox (account_id,mailbox_id,uid_validity,next_uid) VALUES (3,'inbox',5,2)")
+db.execute("INSERT INTO jmap_email_uid VALUES (3,'inbox','a',1)")
+check("two accounts number the same mailbox id independently",
+      one("SELECT count(*) FROM jmap_email_uid WHERE email_id='a'") == 2)
+db.execute("INSERT INTO jmap_account_state VALUES (2,'s1')")
+db.execute("DELETE FROM jmap_mailbox WHERE account_id=2 AND mailbox_id='inbox'")
+check("deleting a mailbox row removes its entries", one("SELECT count(*) FROM jmap_email_uid WHERE account_id=2") == 0)
+db.execute("DELETE FROM account WHERE id = 2")
+check("deleting the account removes its JMAP map",
+      one("SELECT count(*) FROM jmap_mailbox WHERE account_id=2") == 0
+      and one("SELECT count(*) FROM jmap_account_state WHERE account_id=2") == 0
+      and one("SELECT count(*) FROM jmap_mailbox WHERE account_id=3") == 1)
+
+# Upgrading a version-4 database leaves it intact and adds the three tables.
+old = sqlite3.connect(":memory:")
+for path in mig[:4]:
+    old.executescript(open(path).read())
+old.executescript("INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'S','s@example.org','imap','{}',0);")
+old.executescript(open(mig[4]).read())
+check("migration 0005 adds the JMAP id tables to a version-4 database",
+      {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE name LIKE 'jmap_%' AND type='table'")}
+      == {"jmap_mailbox", "jmap_email_uid", "jmap_account_state"}
+      and old.execute("SELECT count(*) FROM account").fetchone()[0] == 1)
+
 sys.exit(1 if check.failed else 0)

@@ -23,6 +23,9 @@ zeroize = { version = "1.9.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27"
+# The JMAP id map is also tested together with the JMAP adapter and its in-process test server.
+croft-test-support = { path = "../test-support" }
+tokio = { version = "1.54", features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

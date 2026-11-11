@@ -51,6 +51,7 @@ enum Op<'a> {
     MoveTo(&'a str, &'a [Uid], &'a str),
     DeleteForever(&'a str, &'a [Uid]),
     Append(&'a str, &'a [&'a str], &'a str),
+    CreateFolder(&'a str),
 }
 
 /// What an [`Op`] produced.
@@ -84,6 +85,10 @@ impl Op<'_> {
                 Out::Done
             }
             Op::Append(f, flags, msg) => Out::Uid(c.append(f, flags, msg).await?),
+            Op::CreateFolder(f) => {
+                c.create_folder(f).await?;
+                Out::Done
+            }
         })
     }
 }
@@ -174,6 +179,17 @@ impl ImapBackend {
             conn.logout().await;
             state.saved_cache = conn.cache;
         }
+    }
+
+    /// Creates a folder (for example an Archive when the server has none). Succeeds if it
+    /// already exists. Not part of [`MailBackend`] yet; see [`append_message`](Self::append_message).
+    pub fn create_folder<'a>(&'a self, folder: &'a str) -> BackendFuture<'a, ()> {
+        Box::pin(async move {
+            match self.run(Op::CreateFolder(folder)).await? {
+                Out::Done => Ok(()),
+                _ => Err(unexpected()),
+            }
+        })
     }
 
     /// Adds a message to a folder, with the given flags (for example `\Seen`, `\Draft`), and

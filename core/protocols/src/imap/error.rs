@@ -187,7 +187,7 @@ pub(crate) fn refusal(detail: &str, doing: &str) -> OpError {
         "the folder is read-only"
     } else if up.contains("NOPERM") || up.contains("AUTHORIZATIONFAILED") {
         "no permission"
-    } else if up.contains("ALREADYEXISTS") {
+    } else if up.contains("ALREADYEXISTS") || up.contains("ALREADY EXISTS") {
         "that folder already exists"
     } else {
         "the server refused"

@@ -790,3 +790,13 @@ async fn probe_certificate_reads_the_fingerprint_without_signing_in() {
     let plain = TestServer::start_default().await;
     assert!(probe_certificate(&plain_config(&plain)).await.is_err());
 }
+
+#[tokio::test]
+async fn create_folder_is_idempotent() {
+    let server = TestServer::start_default().await;
+    let b = backend(&server);
+    b.create_folder("Receipts").await.unwrap();
+    b.create_folder("Receipts").await.unwrap();
+    let folders = b.list_folders().await.unwrap();
+    assert_eq!(folders.iter().filter(|f| f.path == "Receipts").count(), 1);
+}

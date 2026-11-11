@@ -797,6 +797,19 @@ impl Conn {
         Ok(())
     }
 
+    /// Creates a folder. Succeeds when it already exists.
+    pub(crate) async fn create_folder(&mut self, folder: &str) -> Result<(), OpError> {
+        let q = folder_arg(folder).ok_or_else(bad_folder)?;
+        match self.exec(&format!("CREATE {q}"), "create the folder").await {
+            Ok(_) => Ok(()),
+            Err(OpError {
+                error: BackendError::Permanent(m),
+                ..
+            }) if m.starts_with("that folder already exists") => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Adds a message to a folder and returns its new UID when the server says (`APPENDUID`).
     pub(crate) async fn append(
         &mut self,

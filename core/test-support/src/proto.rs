@@ -518,6 +518,16 @@ fn handle(
             }
             format!("* ENABLED {}\r\n{tag} OK Enabled\r\n", enabled.join(" "))
         }
+        "CREATE" => {
+            let Some(name) = toks.first().and_then(Tok::text) else {
+                return format!("{tag} BAD Missing folder\r\n");
+            };
+            if st.folders.iter().any(|f| f.name == name) {
+                return format!("{tag} NO [ALREADYEXISTS] Mailbox already exists\r\n");
+            }
+            st.folders.push(Folder::new(name, None));
+            format!("{tag} OK Create completed\r\n")
+        }
         "LIST" => list(st, tag, toks),
         "STATUS" => status(st, sess, tag, toks),
         "SELECT" | "EXAMINE" => select(st, sess, tag, cmd == "SELECT", toks),

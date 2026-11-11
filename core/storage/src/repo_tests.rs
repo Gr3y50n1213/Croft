@@ -67,6 +67,88 @@ fn file_bytes(path: &std::path::Path) -> Vec<u8> {
     std::fs::read(path).unwrap()
 }
 
+/// Every file in `dir` with its bytes, sorted by name: a byte-for-byte picture of the directory.
+fn dir_snapshot(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// Asserts the same file names, and the same bytes in each file except `-shm` (SQLite's shared
+/// memory index: it holds read-lock marks and is rebuilt from the `-wal`, never data).
+fn assert_files_unchanged(before: &[(String, Vec<u8>)], dir: &std::path::Path) {
+    let after = dir_snapshot(dir);
+    let names = |v: &[(String, Vec<u8>)]| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&after), names(before), "directory listing changed");
+    for ((name, was), (_, now)) in before.iter().zip(&after) {
+        if !name.ends_with("-shm") {
+            assert!(
+                was == now,
+                "{name} changed ({} -> {} bytes)",
+                was.len(),
+                now.len()
+            );
+        }
+    }
+}
+
+/// Builds `<dir>/live.db` the way a crashed app leaves it: a WAL-mode database whose latest
+/// changes (including `user_version`) exist only in a non-empty `-wal` file, never checkpointed
+/// into the main file. The writer connection stays open (with auto-checkpoint off) while its files
+/// are copied, so the copy is a snapshot of the crash state. `with_shm` also copies the `-shm`
+/// index file, which a crash leaves next to the `-wal`.
+fn live_wal_snapshot(
+    dir: &std::path::Path,
+    key: Option<&[u8; 32]>,
+    user_version: u32,
+    with_shm: bool,
+) -> std::path::PathBuf {
+    let src = tempfile::tempdir().unwrap();
+    let src_db = src.path().join("live.db");
+    let writer = Connection::open(&src_db).unwrap();
+    if let Some(key) = key {
+        let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        writer
+            .execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
+            .unwrap();
+    }
+    let mode: String = writer
+        .pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    writer
+        .execute_batch(
+            "CREATE TABLE from_the_future (x INTEGER); INSERT INTO from_the_future VALUES (1);",
+        )
+        .unwrap();
+    writer
+        .pragma_update(None, "user_version", user_version)
+        .unwrap();
+
+    let dst = dir.join("live.db");
+    std::fs::copy(&src_db, &dst).unwrap();
+    std::fs::copy(src.path().join("live.db-wal"), dir.join("live.db-wal")).unwrap();
+    if with_shm {
+        std::fs::copy(src.path().join("live.db-shm"), dir.join("live.db-shm")).unwrap();
+    }
+    drop(writer);
+    assert!(
+        std::fs::metadata(dir.join("live.db-wal")).unwrap().len() > 0,
+        "the snapshot must carry a live -wal"
+    );
+    dst
+}
+
 // ---- connection, migrations -------------------------------------------------------------------
 
 #[test]
@@ -149,6 +231,142 @@ fn a_database_newer_than_the_app_is_refused_and_the_file_is_unchanged() {
     );
 }
 
+/// Finding 1: refusing a database must not checkpoint (or delete) a leftover `-wal`.
+#[test]
+fn a_too_new_database_with_a_live_wal_is_refused_without_touching_any_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = live_wal_snapshot(dir.path(), None, latest_version() + 1, true);
+    let before = dir_snapshot(dir.path());
+    assert!(before.iter().any(|(n, _)| n == "live.db-wal"));
+
+    let err = Db::open(&path, None).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            StorageError::SchemaTooNew(SchemaTooNew { database, .. })
+                if database == latest_version() + 1
+        ),
+        "{err}"
+    );
+    // Main file and -wal byte for byte, and no file added or removed.
+    assert_files_unchanged(&before, dir.path());
+}
+
+/// Same, when the `-shm` index is missing (a copied database): the read-only connection may have
+/// to create the `-shm`, which holds no data; the main file and the `-wal` must still be intact.
+#[test]
+fn a_too_new_database_with_a_wal_but_no_shm_keeps_its_main_file_and_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = live_wal_snapshot(dir.path(), None, latest_version() + 1, false);
+    let main = file_bytes(&path);
+    let wal = file_bytes(&dir.path().join("live.db-wal"));
+
+    let err = Db::open(&path, None).unwrap_err();
+    assert!(matches!(err, StorageError::SchemaTooNew(_)), "{err}");
+    assert_eq!(file_bytes(&path), main);
+    assert_eq!(file_bytes(&dir.path().join("live.db-wal")), wal);
+}
+
+/// A leftover `-wal` on a database that is *not* too new is still recovered normally.
+#[test]
+fn a_current_database_with_a_live_wal_still_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = live_wal_snapshot(dir.path(), None, latest_version(), true);
+    let db = Db::open(&path, None).unwrap();
+    assert_eq!(db.schema_version().unwrap(), latest_version());
+    let rows: i64 = db
+        .connection()
+        .query_row("SELECT count(*) FROM from_the_future", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rows, 1, "data that only lived in the -wal must be kept");
+}
+
+/// Finding 2: many openers of one brand-new file at once.
+#[test]
+fn concurrent_opens_of_a_new_file_all_succeed_and_migrate_exactly_once() {
+    const THREADS: usize = 4;
+    for round in 0..20 {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("croft.db");
+        let barrier = std::sync::Barrier::new(THREADS);
+        let results: Vec<(usize, u32)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        let db = Db::open(&path, None).unwrap_or_else(|e| {
+                            panic!("round {round}: open failed: {e}");
+                        });
+                        (db.migrations_run_on_open(), db.schema_version().unwrap())
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (_, version) in &results {
+            assert_eq!(*version, latest_version(), "round {round}");
+        }
+        let ran: usize = results.iter().map(|(n, _)| n).sum();
+        assert_eq!(
+            ran,
+            crate::MIGRATIONS.len(),
+            "round {round}: each migration must run exactly once across all openers"
+        );
+    }
+}
+
+/// Finding 3: a migration that fails rolls back completely and says which step and SQLite code.
+#[test]
+fn a_failing_migration_rolls_back_and_leaves_the_file_at_version_0() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("croft.db");
+    {
+        // An existing object the migration also wants to create.
+        let raw = Connection::open(&path).unwrap();
+        raw.execute_batch("CREATE TABLE message_fts (x INTEGER);")
+            .unwrap();
+    }
+    let err = Db::open(&path, None).unwrap_err();
+    assert!(
+        matches!(err, StorageError::Migration { version: 1, .. }),
+        "{err}"
+    );
+    // Finding 6: the category and the SQLite code are in the text, nothing else.
+    let text = err.to_string();
+    assert!(text.contains("sqlite3 code"), "{text}");
+    assert!(!text.contains("message_fts"), "{text}");
+
+    let raw = Connection::open(&path).unwrap();
+    let version: u32 = raw
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 0);
+    let tables: Vec<String> = raw
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        tables,
+        vec!["message_fts".to_owned()],
+        "no table of the failed migration may survive (no `account`)"
+    );
+}
+
+/// Finding 4: a key that is refused must not leave a file behind.
+#[cfg(not(feature = "sqlcipher"))]
+#[test]
+fn a_refused_key_creates_no_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("croft.db");
+    let err = Db::open(&path, Some(&[7u8; 32])).unwrap_err();
+    assert!(matches!(err, StorageError::EncryptionUnavailable), "{err}");
+    assert!(!path.exists(), "no file may exist after a refused key");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
 #[test]
 fn open_enables_foreign_keys_and_wal() {
     let dir = tempfile::tempdir().unwrap();
@@ -224,8 +442,44 @@ mod encrypted {
     #[test]
     fn key_must_be_32_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let err = Db::open(&dir.path().join("croft.db"), Some(&[1u8; 5])).unwrap_err();
-        assert!(matches!(err, StorageError::InvalidKey), "{err}");
+        let path = dir.path().join("croft.db");
+        for bad in [&[1u8; 5][..], &[1u8; 33][..], &[][..]] {
+            let err = Db::open(&path, Some(bad)).unwrap_err();
+            assert!(matches!(err, StorageError::InvalidKey), "{err}");
+            // Finding 4: refused before the file is created.
+            assert!(!path.exists(), "no file may exist after InvalidKey");
+        }
+    }
+
+    /// Finding 1, wrong-key path: an encrypted database with a live `-wal` must not be
+    /// checkpointed or changed by a failed open.
+    #[test]
+    fn wrong_key_with_a_live_wal_touches_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        live_wal_snapshot(dir.path(), Some(&key), latest_version(), true);
+        let path = dir.path().join("live.db");
+        let before = dir_snapshot(dir.path());
+
+        for bad in [Some(&[8u8; 32][..]), None] {
+            let err = Db::open(&path, bad).unwrap_err();
+            assert!(matches!(err, StorageError::WrongKeyOrNotADatabase), "{err}");
+            assert_files_unchanged(&before, dir.path());
+        }
+    }
+
+    /// Finding 1, too-new path with a key and a live `-wal`.
+    #[test]
+    fn too_new_encrypted_database_with_a_live_wal_touches_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = [7u8; 32];
+        live_wal_snapshot(dir.path(), Some(&key), latest_version() + 1, true);
+        let path = dir.path().join("live.db");
+        let before = dir_snapshot(dir.path());
+
+        let err = Db::open(&path, Some(&key)).unwrap_err();
+        assert!(matches!(err, StorageError::SchemaTooNew(_)), "{err}");
+        assert_files_unchanged(&before, dir.path());
     }
 }
 
@@ -251,23 +505,95 @@ fn transaction_commits_on_ok_and_rolls_back_on_err() {
     assert_eq!(labels, vec!["Kept".to_owned()]);
 }
 
+/// Each case first proves that the *raw* error text contains the marker (so the test can fail),
+/// then that the crate error's `Display` and `Debug` do not.
 #[test]
 fn errors_do_not_leak_values() {
+    const MARKER: &str = "hunter2-marker";
+    let check = |raw: &dyn std::fmt::Display, err: StorageError| {
+        let raw = raw.to_string();
+        assert!(raw.contains(MARKER), "test is vacuous, raw error: {raw}");
+        for text in [err.to_string(), format!("{err:?}")] {
+            assert!(!text.contains(MARKER), "leaked: {text}");
+            assert!(!text.contains("secret.person"), "leaked: {text}");
+        }
+    };
     let db = Db::open_in_memory().unwrap();
-    // Violates the protocol CHECK; the value must not appear in the error text.
-    let err = db
-        .connection()
+    let c = db.connection();
+
+    // 1. SqlInputError: SQLite echoes the offending token and the error carries the whole SQL.
+    let raw = c
+        .prepare("SELECT secret.person@example.org FROM hunter2-marker WHERE")
+        .unwrap_err();
+    assert!(
+        matches!(raw, rusqlite::Error::SqlInputError { .. }),
+        "{raw:?}"
+    );
+    // (The full Debug of the raw error includes the SQL text.)
+    assert!(format!("{raw:?}").contains(MARKER));
+    assert!(format!("{raw:?}").contains("secret.person"));
+    let raw_text = format!("{raw:?}");
+    check(&raw_text, StorageError::from(raw));
+
+    // 2. FromSqlConversionFailure / InvalidColumnType: a row holding the marker, read as a number.
+    c.execute_batch(&format!(
+        "CREATE TEMP TABLE leak (\"{MARKER}\" TEXT); INSERT INTO leak VALUES ('{MARKER}');"
+    ))
+    .unwrap();
+    let raw = c
+        .query_row(&format!("SELECT \"{MARKER}\" FROM leak"), [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap_err();
+    assert!(
+        matches!(
+            raw,
+            rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..)
+        ),
+        "{raw:?}"
+    );
+    let raw_text = raw.to_string();
+    check(&raw_text, StorageError::from(raw));
+
+    // 3. SqliteFailure whose message quotes an identifier ("UNIQUE constraint failed: <table>.<col>").
+    c.execute_batch(
+        "CREATE TEMP TABLE \"hunter2-marker\" (v TEXT UNIQUE); INSERT INTO \"hunter2-marker\" VALUES ('x');",
+    )
+    .unwrap();
+    let raw = c
+        .execute("INSERT INTO \"hunter2-marker\" VALUES ('x')", [])
+        .unwrap_err();
+    let raw_text = raw.to_string();
+    check(&raw_text, StorageError::from(raw));
+
+    // 4. The original check: a CHECK violation on `account` with a personal address in the row.
+    // SQLite's text only names the constraint here, so there is no vacuity guard: the values must
+    // simply not show up in the crate error.
+    let raw = c
         .execute(
-            "INSERT INTO account (label,email,protocol,config_json,created_at) VALUES ('x','secret.person@example.org','carrier-pigeon','{}',0)",
+            "INSERT INTO account (label,email,protocol,config_json,created_at) VALUES ('x','secret.person@example.org','hunter2-marker','{}',0)",
             [],
         )
-        .map_err(StorageError::from)
         .unwrap_err();
+    let err = StorageError::from(raw);
     for text in [err.to_string(), format!("{err:?}")] {
-        assert!(!text.contains("secret.person"), "{text}");
-        assert!(!text.contains("carrier-pigeon"), "{text}");
+        assert!(
+            !text.contains(MARKER) && !text.contains("secret.person"),
+            "{text}"
+        );
     }
-    let bad_json = settings::get::<serde_json::Value>(
+
+    // 5. A JSON error whose serde text quotes the value: `invalid type: string "..."`.
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TABLE setting (key TEXT, value_json TEXT, updated_at INTEGER); INSERT INTO setting VALUES ('k', '\"{MARKER}\"', 0);"
+    ))
+    .unwrap();
+    let raw = serde_json::from_str::<u32>(&format!("\"{MARKER}\"")).unwrap_err();
+    let err = settings::get::<u32>(&conn, "k").unwrap_err();
+    check(&raw, err);
+    // Syntax errors too (the original check).
+    let bad = settings::get::<serde_json::Value>(
         &{
             let c = Connection::open_in_memory().unwrap();
             c.execute_batch("CREATE TABLE setting (key TEXT, value_json TEXT, updated_at INTEGER); INSERT INTO setting VALUES ('k', '{\"password\": hunter2', 0);").unwrap();
@@ -276,7 +602,7 @@ fn errors_do_not_leak_values() {
         "k",
     )
     .unwrap_err();
-    assert!(!bad_json.to_string().contains("hunter2"));
+    assert!(!bad.to_string().contains("hunter2"));
 }
 
 // ---- accounts, settings ----------------------------------------------------------------------
@@ -613,6 +939,11 @@ fn blank_subject_without_ids_gets_a_per_message_key() {
 
 /// Every SQL statement written as a raw string in the account-scoped repositories must mention
 /// `account_id`. (`accounts.rs` and `settings.rs` are the documented exceptions.)
+///
+/// This is a text scan and only a cheap tripwire: a statement can mention `account_id` and still be
+/// wrong. The behavioural cross-account tests above (`account_2_cannot_list_read_update_or_delete_
+/// account_1_messages`, `folders_of_another_account_are_invisible_and_undeletable`) are the real
+/// guard.
 #[test]
 fn every_query_in_folders_and_messages_filters_on_account_id() {
     for (name, src) in [

@@ -601,6 +601,57 @@ impl JmapBackend {
         Ok(rows)
     }
 
+    /// `Email/get` of the message's `blobId` and `size` (and `mailboxIds`, so a message someone
+    /// moved away counts as gone from this folder), then a download of that blob. The state lock
+    /// is let go before the download, so other calls on the account do not wait for a big message.
+    async fn fetch_body_inner(&self, folder: &str, uid: Uid) -> Result<RawMessage, BackendError> {
+        let (session, blob_id, size) = {
+            let mut st = self.state.lock().await;
+            let mb = self.mailbox(&mut st, folder).await?;
+            let by_uid = self.store(&mut st, &mb.id, self.ids.email_ids(&mb.id, &[uid]))?;
+            let Some(email_id) = by_uid.get(&uid).cloned() else {
+                return Ok(RawMessage::Gone);
+            };
+            let (emails, _) = self
+                .get_emails(
+                    &mut st,
+                    &[email_id],
+                    &["id", "blobId", "size", "mailboxIds"],
+                )
+                .await?;
+            let Some(email) = emails
+                .into_iter()
+                .find(|e| e.mailboxes().contains(mb.id.as_str()))
+            else {
+                return Ok(RawMessage::Gone);
+            };
+            let Some(blob_id) = email.blob_id().map(str::to_owned) else {
+                return Err(malformed());
+            };
+            let size = email.size().unwrap_or(0);
+            (self.session(&mut st).await?, blob_id, size)
+        };
+        if size > MAX_MESSAGE_BYTES {
+            return Ok(RawMessage::TooLarge { size });
+        }
+        let max = usize::try_from(MAX_MESSAGE_BYTES).unwrap_or(usize::MAX);
+        let body = self
+            .client
+            .download(
+                &session,
+                &blob_id,
+                "message/rfc822",
+                "message.eml",
+                size,
+                max,
+            )
+            .await?;
+        Ok(match body {
+            Some(b) => RawMessage::Found(b),
+            None => RawMessage::Gone,
+        })
+    }
+
     async fn find_by_message_id_inner(
         &self,
         folder: &str,
@@ -954,5 +1005,11 @@ impl MailBackend for JmapBackend {
 
     fn delete_forever<'a>(&'a self, folder: &'a str, uids: &'a [Uid]) -> BackendFuture<'a, ()> {
         Box::pin(self.delete_forever_inner(folder, uids))
+    }
+
+    /// Downloads the message's blob (`Email/get` of `blobId` and `size` first). Downloading never
+    /// changes `$seen`.
+    fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
+        Box::pin(self.fetch_body_inner(folder, uid))
     }
 }

@@ -42,7 +42,7 @@ use crate::imap::text::{bracketed_message_id, decode_encoded_words, reference_id
 use crate::lines::data_lines;
 use crate::{
     BackendError, BackendFuture, Capabilities, FlagChange, Flags, FolderStatus, MailBackend,
-    MailSubmitter, MoveOutcome, RemoteFolder, RemoteHeader, RemoteSnapshot, Uid,
+    MailSubmitter, MoveOutcome, RawMessage, RemoteFolder, RemoteHeader, RemoteSnapshot, Uid,
 };
 
 /// Reason given for a folder the sample mailbox does not have.
@@ -495,6 +495,46 @@ impl MailBackend for DemoBackend {
             })
         })
     }
+
+    /// Serves [`DemoBackend::message_source`]. A message whose source the device did not keep (one
+    /// written in the sample mailbox before the app last started) gets a short stand-in built from
+    /// its header, so it still opens.
+    fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
+        Box::pin(async move {
+            self.with_folder(folder, |f| match f.messages.get(&uid) {
+                None => RawMessage::Gone,
+                Some(m) => match &m.source {
+                    Some(source) => RawMessage::Found(source.as_bytes().to_vec()),
+                    None => RawMessage::Found(stand_in_source(&m.header).into_bytes()),
+                },
+            })
+        })
+    }
+}
+
+/// A plain message with the header's sender, subject and Message-ID and a one-line body, for a
+/// sample message whose source was not kept. Header values come from the sample mailbox itself;
+/// line breaks are taken out so none can start a header of its own.
+fn stand_in_source(header: &RemoteHeader) -> String {
+    let clean = |s: &str| s.replace(['\r', '\n'], " ");
+    let mut out = String::new();
+    if let Some(addr) = &header.from_addr {
+        match &header.from_name {
+            Some(name) => out.push_str(&format!(
+                "From: \"{}\" <{}>\r\n",
+                clean(name).replace('"', "'"),
+                clean(addr)
+            )),
+            None => out.push_str(&format!("From: <{}>\r\n", clean(addr))),
+        }
+    }
+    out.push_str(&format!("Subject: {}\r\n", clean(&header.subject)));
+    if let Some(id) = &header.message_id {
+        out.push_str(&format!("Message-ID: {}\r\n", clean(id)));
+    }
+    out.push_str("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n");
+    out.push_str("The sample mailbox keeps only the header of this message.\r\n");
+    out
 }
 
 /// "Sends" from the sample mailbox: nothing leaves the device. The message is accepted and its

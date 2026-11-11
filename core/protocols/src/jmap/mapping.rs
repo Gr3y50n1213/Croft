@@ -230,6 +230,8 @@ pub(crate) struct RawEmail {
     sent_at: Option<String>,
     #[serde(default)]
     size: Option<u64>,
+    #[serde(default, rename = "blobId")]
+    blob_id: Option<String>,
     #[serde(default, rename = "messageId")]
     message_id: Option<Vec<String>>,
     #[serde(default, rename = "inReplyTo")]
@@ -247,6 +249,16 @@ pub(crate) struct RawEmail {
 }
 
 impl RawEmail {
+    /// The blob that holds the whole message (`blobId`), when it was asked for.
+    pub fn blob_id(&self) -> Option<&str> {
+        self.blob_id.as_deref()
+    }
+
+    /// The message's size in bytes (`size`), when it was asked for.
+    pub fn size(&self) -> Option<u64> {
+        self.size
+    }
+
     /// The flags, from the keywords.
     pub fn flags(&self) -> Flags {
         self.keywords

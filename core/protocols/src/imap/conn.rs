@@ -45,6 +45,10 @@ const MAX_SIGN_IN_REPLIES: usize = 10_000;
 /// How fast an `APPEND` literal is assumed to go out at least, so the deadline for a big message
 /// grows with its size (one second per 16 KiB on top of the command deadline).
 const APPEND_BYTES_PER_SECOND: usize = 16 * 1024;
+/// How fast a fetched message is assumed to arrive at least, so the deadline for reading a big
+/// message grows with the size the server announced (one second per 16 KiB on top of the command
+/// deadline, the same allowance as for `APPEND`).
+const FETCH_BYTES_PER_SECOND: u64 = 16 * 1024;
 
 /// The flags of every message the last time a folder was read, with the mod-sequence it was read
 /// at. Lets CONDSTORE/QRESYNC servers answer with deltas.
@@ -83,7 +87,8 @@ enum Item {
     Vanished(Vec<RangeInclusive<u32>>),
     List(ListItem),
     Status(FolderStatus, bool),
-    Fetch(FetchItem),
+    /// Boxed: a fetched message body makes the item far larger than the other variants.
+    Fetch(Box<FetchItem>),
 }
 
 struct ListItem {
@@ -97,6 +102,10 @@ struct FetchItem {
     uid: Option<Uid>,
     flags: Option<Flags>,
     header: Option<RemoteHeader>,
+    /// `RFC822.SIZE`.
+    size: Option<u32>,
+    /// The whole message, from `BODY[]` (the answer to `BODY.PEEK[]`).
+    body: Option<Vec<u8>>,
 }
 
 /// Everything a finished command sent back.
@@ -452,7 +461,17 @@ impl Conn {
     /// and more than `max_items` untagged replies is refused. All three drop the connection and
     /// are `Transient`.
     async fn exec(&mut self, command: &str, doing: &str) -> Result<Reply, OpError> {
-        match timeout(self.deadline, self.exec_inner(command, doing)).await {
+        self.exec_within(self.deadline, command, doing).await
+    }
+
+    /// [`Conn::exec`] with another overall deadline (a big message gets more time).
+    async fn exec_within(
+        &mut self,
+        deadline: Duration,
+        command: &str,
+        doing: &str,
+    ) -> Result<Reply, OpError> {
+        match timeout(deadline, self.exec_inner(command, doing)).await {
             Ok(result) => result,
             Err(_) => Err(OpError::too_slow(doing)),
         }
@@ -776,16 +795,65 @@ impl Conn {
             );
             let reply = self.exec(&cmd, "read message headers").await?;
             for item in reply.items {
-                if let Item::Fetch(FetchItem {
-                    header: Some(h), ..
-                }) = item
-                {
-                    out.push(h);
+                if let Item::Fetch(f) = item {
+                    if let Some(h) = f.header {
+                        out.push(h);
+                    }
                 }
             }
         }
         out.sort_by(|a, b| b.date_ms.cmp(&a.date_ms).then(b.uid.cmp(&a.uid)));
         Ok(out)
+    }
+
+    /// The whole message at `uid`, without marking it read: the folder is opened read-only
+    /// (`EXAMINE`) and the content is fetched with `BODY.PEEK[]`. The size is read first
+    /// (`RFC822.SIZE`), and a message over [`MAX_MESSAGE_BYTES`] is refused before any of it is
+    /// downloaded. Answers from the server about other messages are ignored, and a body longer
+    /// than the limit (a server that misreported the size) is refused too.
+    pub(crate) async fn fetch_body(
+        &mut self,
+        folder: &str,
+        uid: Uid,
+    ) -> Result<RawMessage, OpError> {
+        self.select(folder, false, None).await?;
+        let reply = self
+            .exec(
+                &format!("UID FETCH {uid} (UID RFC822.SIZE)"),
+                "read a message",
+            )
+            .await?;
+        let size = reply.items.iter().find_map(|item| match item {
+            Item::Fetch(f) if f.uid == Some(uid) => f.size,
+            _ => None,
+        });
+        let Some(size) = size else {
+            return Ok(RawMessage::Gone);
+        };
+        if u64::from(size) > MAX_MESSAGE_BYTES {
+            return Ok(RawMessage::TooLarge {
+                size: u64::from(size),
+            });
+        }
+        let allowance = Duration::from_secs(u64::from(size) / FETCH_BYTES_PER_SECOND);
+        let reply = self
+            .exec_within(
+                self.deadline.saturating_add(allowance),
+                &format!("UID FETCH {uid} (UID BODY.PEEK[])"),
+                "read a message",
+            )
+            .await?;
+        let body = reply.items.into_iter().find_map(|item| match item {
+            Item::Fetch(f) if f.uid == Some(uid) => f.body,
+            _ => None,
+        });
+        Ok(match body {
+            Some(b) if b.len() as u64 > MAX_MESSAGE_BYTES => RawMessage::TooLarge {
+                size: b.len() as u64,
+            },
+            Some(b) => RawMessage::Found(b),
+            None => RawMessage::Gone,
+        })
     }
 
     pub(crate) async fn find_by_message_id(
@@ -1170,13 +1238,10 @@ fn search_results(reply: &Reply) -> Vec<Uid> {
 /// Flags from a `FLAGS` fetch reply, merged into `into` by UID.
 fn apply_flag_fetches(reply: &Reply, into: &mut BTreeMap<Uid, Flags>) {
     for item in &reply.items {
-        if let Item::Fetch(FetchItem {
-            uid: Some(u),
-            flags: Some(f),
-            ..
-        }) = item
-        {
-            into.insert(*u, f.clone());
+        if let Item::Fetch(fetch) = item {
+            if let (Some(u), Some(f)) = (fetch.uid, &fetch.flags) {
+                into.insert(u, f.clone());
+            }
         }
     }
 }
@@ -1240,7 +1305,7 @@ fn item_of(resp: &Response<'_>) -> Option<Item> {
             }))
         }
         Response::Vanished { uids, .. } => Some(Item::Vanished(uids.clone())),
-        Response::Fetch(_, attrs) => Some(Item::Fetch(fetch_item(attrs))),
+        Response::Fetch(_, attrs) => Some(Item::Fetch(Box::new(fetch_item(attrs)))),
         _ => None,
     }
 }
@@ -1258,17 +1323,29 @@ fn fetch_item(attrs: &[AttributeValue<'_>]) -> FetchItem {
     let mut uid = None;
     let mut flags = None;
     let mut has_envelope = false;
+    let mut size = None;
+    let mut body = None;
     for a in attrs {
         match a {
             AttributeValue::Uid(u) => uid = Some(*u),
             AttributeValue::Flags(f) => flags = Some(flags_from(f.iter().map(|s| s.as_ref()))),
             AttributeValue::Envelope(_) => has_envelope = true,
+            AttributeValue::Rfc822Size(n) => size = Some(*n),
+            // `BODY[]`: the whole message (no section, no partial range).
+            AttributeValue::BodySection {
+                section: None,
+                index: None,
+                data: Some(data),
+            } => body = Some(data.to_vec()),
+            AttributeValue::Rfc822(Some(data)) => body = Some(data.to_vec()),
             _ => {}
         }
     }
     FetchItem {
         uid,
         flags,
+        size,
+        body,
         header: if has_envelope {
             header_from(attrs)
         } else {

@@ -88,6 +88,8 @@ pub(crate) struct HttpRequest<'a> {
     pub body: &'a [u8],
     /// Largest body accepted in the answer.
     pub max_response: usize,
+    /// Extra time on top of the deadline, for an answer known to be big (a message download).
+    pub extra_time: Duration,
 }
 
 /// The HTTP side of one account: how to trust the server and how long to wait.
@@ -124,7 +126,8 @@ impl Http {
             )
             .into());
         }
-        let allowance = Duration::from_secs((req.body.len() / (256 * 1024)) as u64);
+        let allowance = Duration::from_secs((req.body.len() / (256 * 1024)) as u64)
+            .saturating_add(req.extra_time);
         let written = AtomicBool::new(false);
         let run = self.exchange(req, &written);
         match timeout(self.deadline.saturating_add(allowance), run).await {
@@ -613,6 +616,7 @@ mod tests {
             content_type: Some("application/json"),
             body: b"{}",
             max_response: 10,
+            extra_time: Duration::ZERO,
         };
         let head = request_head(&req);
         assert!(head.starts_with("POST /jmap/ HTTP/1.1\r\nHost: mail.example.org:8443\r\n"));
@@ -632,6 +636,7 @@ mod tests {
             content_type: Some("application/json"),
             body: &[0u8; 123_456],
             max_response: 10,
+            extra_time: Duration::ZERO,
         };
         let head = request_head(&req);
         assert!(head.contains(&format!("\r\nAuthorization: {auth}\r\n")));
@@ -653,6 +658,7 @@ mod tests {
             content_type: None,
             body: b"",
             max_response: 10,
+            extra_time: Duration::ZERO,
         };
         let err = http.send(&req).await.unwrap_err();
         assert!(matches!(err.error, BackendError::Permanent(_)));

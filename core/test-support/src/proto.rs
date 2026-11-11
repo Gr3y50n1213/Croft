@@ -815,9 +815,21 @@ fn uid_fetch(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> String
                 .and_then(|t| t.parse::<u64>().ok());
         }
     }
-    let Some((f, _)) = selected(st, sess) else {
+    let Some((f, rw)) = selected(st, sess) else {
         return format!("{tag} BAD No folder selected\r\n");
     };
+    // `BODY[]` (not `BODY.PEEK[]`) sets `\Seen` on a folder opened read-write, as RFC 3501 says,
+    // so a test can tell whether a client peeked.
+    let sets_seen = rw && items.iter().any(|i| i.eq_ignore_ascii_case("BODY[]"));
+    if sets_seen {
+        f.highest_modseq += 1;
+        let modseq = f.highest_modseq;
+        for m in f.messages.iter_mut() {
+            if in_set(&set, m.uid) && m.flags.insert("\\Seen".to_string()) {
+                m.modseq = modseq;
+            }
+        }
+    }
     let mut out = String::new();
     for (i, m) in f.messages.iter().enumerate() {
         if !in_set(&set, m.uid) {
@@ -840,6 +852,8 @@ fn uid_fetch(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> String
                 parts.push(format!("INTERNALDATE \"{}\"", m.internal_date));
             } else if up == "ENVELOPE" {
                 parts.push(format!("ENVELOPE {}", envelope(&m.raw)));
+            } else if up == "BODY.PEEK[]" || up == "BODY[]" {
+                parts.push(format!("BODY[] {{{}}}\r\n{}", m.raw.len(), m.raw));
             } else if up.starts_with("BODY.PEEK[HEADER.FIELDS")
                 || up.starts_with("BODY[HEADER.FIELDS")
             {

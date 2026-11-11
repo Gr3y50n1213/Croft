@@ -94,3 +94,20 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
 - Macrobenchmark (device only): the `:macrobenchmark` module and the app's `benchmark` build type (release-like, debug-signed,
   profileable). With a device attached: `./gradlew :macrobenchmark:connectedBenchmarkAndroidTest`. It scrolls the 5,000-row Inbox
   and records frame timing; there is no result yet.
+
+## Release build (T16b)
+- `./gradlew :app:assembleRelease :app:bundleRelease` makes `app-release-unsigned.apk` and `app-release.aab`: R8 and resource
+  shrinking on, not debuggable, no signing config, and no dependency-info block (`dependenciesInfo` off; F-Droid rejects it).
+- No signing keys are in the repository. The owner signs afterwards, with a key kept outside it: for the APK, `zipalign -P 16 -p 4`
+  is already satisfied, then `apksigner sign --ks <keystore> app-release-unsigned.apk`; for the AAB, `jarsigner -keystore <keystore>
+  app-release.aab <alias>` (Play re-signs with its own key when Play App Signing is on). F-Droid builds and signs from source.
+- Keep rules: `app/proguard-rules.pro`, one reason per rule. `checkReleaseKeepRules` fails the build before R8 if the UniFFI
+  (`uniffi.croft_ffi.**`) and JNA (`com.sun.jna.**`) rules are missing; `checkReleaseMapping` fails after R8 if its `mapping.txt`
+  shows either package renamed. This does not replace a device run: start the release build, sign in and sync by hand before any upload.
+- `tools/check-release-outputs.sh [bundletool.jar]` (after the build) checks unsigned, not debuggable, no dependency blob, the
+  manifest allowlist, 16 KB alignment (`check-16kb-alignment.sh`, `zipalign -c -P 16`, and the AAB's `PAGE_ALIGNMENT_16K` with bundletool).
+- Manifest allowlist: `tools/manifest-allowlist.json` (permissions and exported components, each with a reason). A new permission or
+  exported component fails `tools/check-release-manifest.py` until it is added there with its justification; tests are in
+  `tools/test_check_release_manifest.py` (`python3 -m unittest discover -s tools`). CI job: `android-release`.
+- The application ID is defined once, in `gradle.properties` (`croft.applicationId`); the Kotlin `package` lines and
+  `design/generated/kotlin/CroftTokens.kt` carry the same name and move in one commit when it changes.

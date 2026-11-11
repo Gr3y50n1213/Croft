@@ -136,15 +136,24 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
     // The generated bindings call the Rust library through JNA. Android needs the aar (it carries
     // libjnidispatch.so); the JVM unit tests need the plain jar.
     implementation("${libs.jna.get()}@aar")
+    // T12 theme engine. Material Color Utilities (Apache-2.0): only the com.google.android.material.color.utilities
+    // classes are used. They ship inside this artifact (there is no separate one); its resources need the transitive
+    // AndroidX Views libraries for the build to link, and R8 removes what the app does not call.
+    implementation(libs.material.components)
+    implementation(libs.androidx.datastore)
+    implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.jna)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

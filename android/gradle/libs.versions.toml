@@ -12,11 +12,19 @@ coreKtx = "1.19.1"
 jna = "5.19.1"
 junit = "4.13.2"
 robolectric = "4.17"
+# T12: colour maths, settings storage, JSON and JVM screenshot tests.
+# com.google.android.material:material-color-utilities does not exist; Google ships its (Java) port of the
+# Material Color Utilities inside com.google.android.material:material, so that is used, utilities classes only.
+materialComponents = "1.14.0"
+datastore = "1.3.0"
+kotlinxSerialization = "1.11.0"
+roborazzi = "1.78.0"
 
 [libraries]
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 androidx-compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "material3" }
 androidx-compose-ui = { module = "androidx.compose.ui:ui" }
+androidx-compose-material-icons-core = { module = "androidx.compose.material:material-icons-core" }
 androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
 androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
@@ -24,6 +32,11 @@ androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx"
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 junit = { module = "junit:junit", version.ref = "junit" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+material-components = { module = "com.google.android.material:material", version.ref = "materialComponents" }
+androidx-datastore = { module = "androidx.datastore:datastore", version.ref = "datastore" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+roborazzi = { module = "io.github.takahirom.roborazzi:roborazzi", version.ref = "roborazzi" }
+roborazzi-compose = { module = "io.github.takahirom.roborazzi:roborazzi-compose", version.ref = "roborazzi" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

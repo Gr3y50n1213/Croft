@@ -5,23 +5,20 @@
 package com.example.croft
 
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import com.example.croft.design.CroftMode
-import com.example.croft.design.CroftPreset
-import com.example.croft.design.croftColorScheme
-import com.example.croft.design.croftMotionScheme
+import com.example.croft.theme.CroftThemeProvider
+import com.example.croft.theme.ThemeSettings
 
-/** The app theme: colours and motion from the generated design tokens, light or dark with the system. */
+/**
+ * The app theme. The work is in `com.example.croft.theme` (T12): colours from the generated tokens or the runtime
+ * Material Color Utilities, shape, font, text size and motion from [settings]. The defaults are Moss, Standard and
+ * System, which is also what a stored file that cannot be read falls back to.
+ */
 @Composable
 fun CroftTheme(
-    preset: CroftPreset = CroftPreset.DEFAULT,
+    settings: ThemeSettings = ThemeSettings.Default,
+    systemDark: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val mode = if (isSystemInDarkTheme()) CroftMode.DARK else CroftMode.LIGHT
-    MaterialTheme(
-        colorScheme = croftColorScheme(preset, mode),
-        motionScheme = croftMotionScheme(),
-        content = content,
-    )
+    CroftThemeProvider(settings = settings, systemDark = systemDark, content = content)
 }

@@ -879,8 +879,10 @@ async fn a_server_without_tls_and_a_closed_port_are_different_errors() {
 }
 
 #[tokio::test]
-async fn a_provider_that_rejects_a_normal_password_gets_its_own_explanation() {
-    // A server standing in for the provider: the settings say Gmail, the sign-in is refused.
+async fn a_pin_does_not_make_a_provider_domain_with_an_untrusted_certificate_usable() {
+    // A server standing in for the provider with a self-signed certificate: even with a matching
+    // pin passed in, `verify` ignores the pin on a provider domain. (The provider's own sign-in
+    // explanation is tested against a trusted certificate in tests/certificates.rs.)
     let srv = server(TlsMode::Implicit).await;
     let mut settings = found_via_srv("_imaps", &srv).await;
     let pin = CertFingerprint::of_der(&srv.certificate_der().unwrap());
@@ -888,7 +890,6 @@ async fn a_provider_that_rejects_a_normal_password_gets_its_own_explanation() {
         pinned_cert: Some(pin),
         ..quick()
     };
-    let mut messages = std::collections::HashSet::new();
     for provider in [
         Provider::Gmail,
         Provider::Outlook,
@@ -896,17 +897,11 @@ async fn a_provider_that_rejects_a_normal_password_gets_its_own_explanation() {
         Provider::Fastmail,
     ] {
         settings.provider = Some(provider);
-        let err = verify(&settings, password("my normal password"), options)
+        let err = verify(&settings, password("correct horse"), options)
             .await
             .unwrap_err();
-        assert_eq!(err, VerifyError::NeedsAppPasswordOrOAuth(provider));
-        assert_ne!(err.message(), VerifyError::WrongPassword.message());
-        assert!(messages.insert(err.message()));
+        assert_eq!(err, VerifyError::ConnectionIntercepted);
     }
-    assert!(messages.iter().any(|m| m.contains("app password")));
-    // The right password still works for them.
-    let ok = verify(&settings, password("correct horse"), options).await;
-    assert!(ok.is_ok());
 }
 
 #[tokio::test]

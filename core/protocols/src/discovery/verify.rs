@@ -31,6 +31,18 @@
 //! 4. An expired certificate, one made for another name, or any other certificate fault is
 //!    [`VerifyError::CertificateInvalid`]: there is nothing for the person to trust, so none is
 //!    offered.
+//!
+//! # Why a self-signed certificate is offered whatever name it was made for
+//!
+//! A certificate that chains to nothing Croft trusts (`UnknownIssuer`) is offered for
+//! trust-on-first-use even when it was made for another server name. The pinned connection checks
+//! the exact SHA-256 fingerprint, which is stronger than a name check, and self-hosted servers
+//! often use certificates whose name does not match how the person reaches them (an IP address,
+//! a local name, a different alias). A certificate that chains to a trusted authority but is
+//! expired or made for another name is refused without any offer: that is a fault the server's
+//! owner has to fix.
+//!
+//! A provider-table domain never takes a pin: [`VerifyOptions::pinned_cert`] is ignored there.
 
 use super::{DiscoveredSettings, Provider};
 use crate::imap::{
@@ -181,8 +193,13 @@ pub async fn verify(
         return Err(VerifyError::JmapOnly);
     };
     let mut config = server.to_config().with_timeout(options.timeout);
-    if let Some(pin) = options.pinned_cert {
-        config = config.with_pinned_cert(pin);
+    // A provider-table domain never takes a pin: real providers have valid certificates, so a
+    // pin could only ever pin an interceptor's certificate. The caller's pin is ignored for the
+    // check and for the sign-in, and a certificate problem stays `ConnectionIntercepted`.
+    if settings.provider.is_none() {
+        if let Some(pin) = options.pinned_cert {
+            config = config.with_pinned_cert(pin);
+        }
     }
     let backend =
         ImapBackend::new(config.clone(), credential).map_err(|_| VerifyError::BadSettings)?;
@@ -204,8 +221,15 @@ pub async fn verify(
             // The certificate passed a moment ago, so this is normally a refused sign-in. A
             // certificate that changed in between is also `Auth` in the adapter, so look again
             // (no credential is sent) rather than call it a wrong password.
+            // Only an actual certificate problem replaces the answer. If the server cannot be
+            // reached now (it dropped us after the refusal), the refusal still stands.
             if let Err(problem) = check_certificate(&config).await {
-                return Err(explain_certificate(problem, settings, &config));
+                if !matches!(
+                    problem,
+                    CertificateProblem::CannotConnect | CertificateProblem::NoSecureConnection
+                ) {
+                    return Err(explain_certificate(problem, settings, &config));
+                }
             }
             Err(match settings.provider {
                 Some(provider) => VerifyError::NeedsAppPasswordOrOAuth(provider),
@@ -226,6 +250,10 @@ fn explain_certificate(
 ) -> VerifyError {
     match problem {
         CertificateProblem::CannotConnect => VerifyError::CannotConnect,
+        // On a provider domain a missing secure connection is a downgrade attempt, not a quirk.
+        CertificateProblem::NoSecureConnection if settings.provider.is_some() => {
+            VerifyError::ConnectionIntercepted
+        }
         CertificateProblem::NoSecureConnection => VerifyError::NoSecureConnection,
         _ if settings.provider.is_some() => VerifyError::ConnectionIntercepted,
         CertificateProblem::UnknownIssuer { fingerprint } => {
@@ -320,6 +348,11 @@ mod tests {
         assert_eq!(
             ex(P::NoSecureConnection, &own, &plain),
             VerifyError::NoSecureConnection
+        );
+        // On a provider domain, no secure connection is interception, not a plain failure.
+        assert_eq!(
+            ex(P::NoSecureConnection, &table, &plain),
+            VerifyError::ConnectionIntercepted
         );
         for p in [
             P::UnknownIssuer { fingerprint: fp },

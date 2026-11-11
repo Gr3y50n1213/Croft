@@ -32,6 +32,7 @@ use tokio_rustls::TlsAcceptor;
 const PASSWORD: &str = "correct horse";
 
 static CA: OnceLock<Issuer<'static, KeyPair>> = OnceLock::new();
+static CA_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
 static INIT: Once = Once::new();
 
 /// Makes the private authority and tells the platform root store about it. Every test calls this
@@ -46,7 +47,9 @@ fn private_ca() -> &'static Issuer<'static, KeyPair> {
             .push(DnType::CommonName, "Croft test authority");
         let key = KeyPair::generate().unwrap();
         let cert = params.self_signed(&key).unwrap();
-        let path = std::env::temp_dir().join(format!("croft-test-ca-{}.pem", std::process::id()));
+        // The directory lives in a static, so it stays until the test process ends.
+        let dir = CA_DIR.get_or_init(|| tempfile::tempdir().unwrap());
+        let path = dir.path().join("croft-test-ca.pem");
         std::fs::write(&path, cert.pem()).unwrap();
         // Edition 2021: safe. Done once, before any test reads the root store.
         std::env::set_var("SSL_CERT_FILE", &path);
@@ -111,6 +114,9 @@ enum Behaviour {
     /// Behaves for the first connection (the certificate check) and answers every later one with
     /// a fatal TLS alert, so signing in fails with a `Permanent` error from the adapter.
     AlertsAfterTheFirstConnection,
+    /// Answers a failed `LOGIN`, closes the connection, and stops listening, so later
+    /// connections are refused.
+    VanishesAfterAFailedLogin,
 }
 
 struct Server {
@@ -143,9 +149,18 @@ async fn serve(identity: Identity, behaviour: Behaviour) -> Server {
     let port = listener.local_addr().unwrap().port();
     let log = Arc::new(Mutex::new(Vec::new()));
     let seen = log.clone();
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let stopper = stop.clone();
     tokio::spawn(async move {
         let mut accepted = 0usize;
-        while let Ok((mut tcp, _)) = listener.accept().await {
+        loop {
+            let mut tcp = tokio::select! {
+                accepted = listener.accept() => match accepted {
+                    Ok((tcp, _)) => tcp,
+                    Err(_) => break,
+                },
+                _ = stop.notified() => break,
+            };
             accepted += 1;
             if behaviour == Behaviour::AlertsAfterTheFirstConnection && accepted > 1 {
                 // A TLS record: alert, fatal, handshake_failure.
@@ -156,6 +171,7 @@ async fn serve(identity: Identity, behaviour: Behaviour) -> Server {
             }
             let acceptor = acceptor.clone();
             let log = seen.clone();
+            let stopper = stopper.clone();
             tokio::spawn(async move {
                 let Ok(tls) = acceptor.accept(tcp).await else {
                     return;
@@ -174,6 +190,17 @@ async fn serve(identity: Identity, behaviour: Behaviour) -> Server {
                             log.lock().unwrap().push("LOGIN ***".into());
                             if args.contains(PASSWORD) {
                                 format!("{tag} OK done\r\n")
+                            } else if behaviour == Behaviour::VanishesAfterAFailedLogin {
+                                // Stop listening first, then answer and hang up.
+                                stopper.notify_one();
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                let _ = writer
+                                    .write_all(
+                                        format!("{tag} NO [AUTHENTICATIONFAILED] nope\r\n")
+                                            .as_bytes(),
+                                    )
+                                    .await;
+                                return;
                             } else {
                                 format!("{tag} NO [AUTHENTICATIONFAILED] nope\r\n")
                             }
@@ -463,4 +490,64 @@ async fn a_wrong_password_behind_a_valid_pin_is_a_wrong_password() {
     .unwrap_err();
     assert_eq!(err, VerifyError::WrongPassword);
     assert!(server.saw_sign_in());
+}
+
+#[tokio::test]
+async fn a_dropped_re_check_after_a_refused_sign_in_stays_a_wrong_password() {
+    private_ca();
+    let server = serve(
+        Identity::new(Leaf::Good),
+        Behaviour::VanishesAfterAFailedLogin,
+    )
+    .await;
+    let err = verify(
+        &settings(server.port, None),
+        password("not the password"),
+        options(None),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, VerifyError::WrongPassword);
+}
+
+#[tokio::test]
+async fn a_pin_is_ignored_on_a_provider_domain() {
+    private_ca();
+    let identity = Identity::new(Leaf::SelfSigned);
+    let fingerprint = identity.fingerprint();
+    let server = serve(identity, Behaviour::Normal).await;
+    let err = verify(
+        &settings(server.port, Some(Provider::Fastmail)),
+        password(PASSWORD),
+        options(Some(fingerprint)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, VerifyError::ConnectionIntercepted);
+    assert!(!server.saw_sign_in(), "{:?}", server.commands());
+}
+
+#[tokio::test]
+async fn a_provider_that_rejects_a_normal_password_gets_its_own_explanation() {
+    private_ca();
+    let server = serve(Identity::new(Leaf::Good), Behaviour::Normal).await;
+    let mut messages = std::collections::HashSet::new();
+    for provider in [
+        Provider::Gmail,
+        Provider::Outlook,
+        Provider::ICloud,
+        Provider::Fastmail,
+    ] {
+        let found = settings(server.port, Some(provider));
+        let err = verify(&found, password("my normal password"), options(None))
+            .await
+            .unwrap_err();
+        assert_eq!(err, VerifyError::NeedsAppPasswordOrOAuth(provider));
+        assert_ne!(err.message(), VerifyError::WrongPassword.message());
+        assert!(messages.insert(err.message()));
+        // The right password still works.
+        let ok = verify(&found, password(PASSWORD), options(None)).await;
+        assert!(ok.is_ok());
+    }
+    assert!(messages.iter().any(|m| m.contains("app password")));
 }

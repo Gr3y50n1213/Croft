@@ -477,6 +477,7 @@ dependencies = [
  "rcgen",
  "rustls-native-certs",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "webpki-roots",

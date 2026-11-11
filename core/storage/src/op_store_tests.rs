@@ -582,6 +582,62 @@ fn a_confirmed_move_with_a_new_uid_shows_the_copy_in_the_destination() {
 }
 
 #[test]
+fn a_confirmed_move_takes_the_fetched_message_and_the_remote_content_choice_along() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let c = db(&q).connection();
+    let old = row(&q, f.a1, "INBOX", 1).unwrap();
+    c.execute(
+        "INSERT INTO message_raw (message_id, account_id, raw, fetched_at) VALUES (?1, ?2, x'414243', 5)",
+        [old.id, f.a1],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO message_body (message_id, text_plain, remote_blocked, trackers_removed, truncated)
+         VALUES (?1, 'hello', 3, 1, 1)",
+        [old.id],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO attachment (message_id, part_id, filename, mime_type, content_id, shown_inline, executable)
+         VALUES (?1, '4', 'logo.png', 'image/png', 'logo@example.org', 1, 0)",
+        [old.id],
+    )
+    .unwrap();
+    c.execute(
+        "UPDATE message SET remote_allowed = 1 WHERE id = ?1",
+        [old.id],
+    )
+    .unwrap();
+
+    let moved = add(&mut q, f.a1, mv(1, "Archive"), 0);
+    q.take_due(WINDOW, 10).unwrap();
+    q.confirm_moved(moved, Some(("Archive".into(), 78)))
+        .unwrap();
+
+    let copy = row(&q, f.a1, "Archive", 78).unwrap();
+    let c = db(&q).connection();
+    assert_eq!(
+        crate::reading::raw(c, f.a1, copy.id).unwrap().as_deref(),
+        Some(&b"ABC"[..])
+    );
+    let body = crate::reading::body(c, f.a1, copy.id).unwrap().unwrap();
+    assert_eq!(
+        (body.remote_blocked, body.trackers_removed, body.truncated),
+        (3, 1, true)
+    );
+    let a = crate::reading::attachments(c, f.a1, copy.id).unwrap();
+    assert_eq!(a[0].content_id.as_deref(), Some("logo@example.org"));
+    assert!(a[0].shown_inline);
+    assert!(crate::reading::remote_allowed(c, f.a1, copy.id).unwrap());
+    assert_eq!(
+        count(&q, "SELECT count(*) FROM message_raw"),
+        1,
+        "the old copy went with its row"
+    );
+}
+
+#[test]
 fn a_move_whose_destination_row_already_exists_keeps_that_row() {
     let f = fixture();
     let mut q = open(&f.path);

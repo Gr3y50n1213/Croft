@@ -619,27 +619,39 @@ fn copy_message(
         "INSERT INTO message (account_id, folder_id, uid, message_id_hdr, thread_key, subject, from_name,
                               from_addr, to_json, cc_json, date_ts, size, snippet, is_seen, is_flagged,
                               is_answered, is_draft, keywords_json, has_attachments, category,
-                              snoozed_until, pending_ops, body_state, local_hidden)
+                              snoozed_until, pending_ops, body_state, local_hidden, remote_allowed)
          SELECT account_id, ?3, ?4, message_id_hdr, thread_key, subject, from_name,
                 from_addr, to_json, cc_json, date_ts, size, snippet, is_seen, is_flagged,
                 is_answered, is_draft, keywords_json, has_attachments, category,
-                snoozed_until, pending_ops, body_state, 0
+                snoozed_until, pending_ops, body_state, 0, remote_allowed
            FROM message WHERE account_id = ?1 AND id = ?2",
         params![account, source_id, to_folder, to.1],
     )?;
     let new_id = tx.last_insert_rowid();
     tx.execute(
-        "INSERT INTO message_body (message_id, headers_raw, text_plain, html_clean)
-         SELECT ?3, b.headers_raw, b.text_plain, b.html_clean
+        "INSERT INTO message_body (message_id, headers_raw, text_plain, html_clean, remote_blocked,
+                                   trackers_removed, truncated)
+         SELECT ?3, b.headers_raw, b.text_plain, b.html_clean, b.remote_blocked,
+                b.trackers_removed, b.truncated
            FROM message_body b JOIN message m ON m.id = b.message_id
           WHERE m.account_id = ?1 AND m.id = ?2",
         params![account, source_id, new_id],
     )?;
     tx.execute(
-        "INSERT INTO attachment (message_id, part_id, filename, mime_type, size, cached_path)
-         SELECT ?3, a.part_id, a.filename, a.mime_type, a.size, a.cached_path
+        "INSERT INTO attachment (message_id, part_id, filename, mime_type, size, cached_path,
+                                 content_id, shown_inline, executable)
+         SELECT ?3, a.part_id, a.filename, a.mime_type, a.size, a.cached_path,
+                a.content_id, a.shown_inline, a.executable
            FROM attachment a JOIN message m ON m.id = a.message_id
           WHERE m.account_id = ?1 AND m.id = ?2",
+        params![account, source_id, new_id],
+    )?;
+    // The fetched message goes with it, so the moved copy opens offline and keeps its attachments.
+    tx.execute(
+        "INSERT INTO message_raw (message_id, account_id, raw, fetched_at)
+         SELECT ?3, r.account_id, r.raw, r.fetched_at
+           FROM message_raw r JOIN message m ON m.id = r.message_id
+          WHERE r.account_id = ?1 AND m.account_id = ?1 AND m.id = ?2",
         params![account, source_id, new_id],
     )?;
     Ok(())

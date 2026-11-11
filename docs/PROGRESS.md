@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T17d: sign-in hardening (11 November 2026)
+
+**Status:** draft pull request `task/t17d` (CI only; not merged). Fixes the low-severity findings the two T17b reviews left. **FFI API version 7** (new `CoreError::AccountExists`); the other branch that bumps the version must take the next number when it merges second.
+
+**What was built:** (1) `add_account` decides what an address that is already added means: same email (not the sample mailbox) with the same IMAP host, port and user name updates that account (same id; new settings and pin under the provider rule; the task restarts with the new credential and leaves the needs-sign-in state), another server or unreadable settings is `AccountExists`. One lock covers add, re-add and remove. The app's own shortcut is gone; `AccountSecrets` replaces the stored password under the same id, and keeps an existing account if storing fails. (2) `croft_protocols::clean_host` (trim, brackets, trailing dot, lower case) is used by `connect_client`, `provider_for_host` and the same-server check. (3) A stored pin on a provider's host is ignored at start (the account is not refused). (4) `verify` builds its settings in `prepare`, which a test calls with a pin on provider hosts. (5) `SERVER_DOMAINS` gains `outlook.office.com` and `messagingengine.com`; `lookup` reads one table that a test checks against `provider_for_host`; a Rust test reads `ProviderHosts.kt` as text and compares it with `SERVER_DOMAINS`; the single pin's doc says it must not be applied to a provider's SMTP host. (6) The L1 test holds the first attempt in a non-cancellable wait. (7) Nothing in the sign-in path reads the database on the main thread any more. (8) `openServerSettings` does nothing while adding.
+
+**Checks:** `cargo fmt --check`, both clippy runs, `cargo test` (all crates), `cargo test -p croft-storage --features sqlcipher`, `cargo test -p croft-ffi --features sqlcipher` and `--features test-server`, `check_schema.py`: all pass in the build container. `:mailtests` (40 tests, Rust host library through JNA, in-process IMAP server): all pass. Checked by breaking the code: removing `with_host_provider` from `prepare` fails the new `verify` test; removing an entry from `ProviderHosts.kt` fails the drift test; dropping the sign-in-state clear or the sample-mailbox check fails the re-add tests; removing the `adding` guard fails the `openServerSettings` test; the old flow (`dec4299`) fails the new L1 test, 5 runs out of 5 (its second attempt's password is wiped).
+
+**Not run here:** the `:app` unit tests (no Android SDK, Maven Central refuses the container), so `FailureCopyTest`, `SecretStoreCredentialsTest` and the Compose tests ran only on CI. The integration job (Docker servers) ran only on CI.
+
+**Notes:** the label of an existing account is kept on a re-add (the person may have renamed it); the sample mailbox is never matched; user names are compared exactly, the address and the host without regard to case. `SecretStoreCredentialsTest` and the core's id test added one address twice and now use two addresses (the same address again is a re-add). `ui/onboarding/FailureCopy.kt` got one line for the new key. The SMTP side of the pin rule is only documented: nothing sends through the stored SMTP settings yet.
+
+---
+
 ## T17b: sign-in screens (11 November 2026)
 
 **Status:** draft pull request `task/t17b` (CI only; not merged). Part of T17: S01 Welcome, S02 Add account, S03 Finding your server, S04 Sign in, S05 Server settings, S09 First sync, the failure copy and the trust prompt. S44, S45, S60 and the demo mailbox (`DemoBackend`) are other parts of T17.

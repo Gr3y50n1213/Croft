@@ -4,7 +4,7 @@ Crate / folder: `core/ffi` (calls `core/engine`, `core/storage`, `core/protocols
 
 Depends on: T04 (`EngineHandle`), T05 (discovery), T06 (send), T07 (the first surface). Blocks: T11, T14 to T21 (everything in the app that talks to the core).
 
-**Status: built (API version 4 after the T11 review; version 3 on branch `task/t10`).** The "Final surface" section at the end is what was built; the "Proposed surface" above it is kept for the reasoning. See "As built" at the very end for where the code differs from the decision.
+**Status: built (API version 5 after T16; version 4 after the T11 review; version 3 on branch `task/t10`).** The "Final surface" section at the end is what was built; the "Proposed surface" above it is kept for the reasoning. See "As built" at the very end for where the code differs from the decision.
 
 ## Read first
 `CLAUDE.md` (architecture and security rules), `core/ffi/README.md`, `core/ffi/src/lib.rs`, `docs/tasks/T02-T04-design.md`, `docs/ux/server-contract.md`, `docs/ux/state-machines.md` (account connection, outgoing message), `android/README.md` (how the host library is loaded in JVM tests).
@@ -103,3 +103,27 @@ Security review follow-up (still API version 3, which is unmerged):
 - `signed_in` with a provider that answers `NotReady` returns `Ok`: the person did sign in, the account leaves the needs-sign-in state, and the backend asks again by itself.
 - Code: `core/ffi/src/credentials.rs` (`Asked`, `AccountBackend`), tests `a_provider_that_is_not_ready_does_not_pause_the_account_and_is_asked_again` and `signed_in_with_a_provider_that_is_not_ready_is_not_a_missing_credential` in `core/ffi/src/tests/server.rs`.
 
+
+### API version 5 (T16): what the Inbox needs from the list, additive
+`FFI_API_VERSION` and `EXPECTED_FFI_API_VERSION` are both 5. Nothing was removed or renamed; every addition is scoped by `account_id`.
+- **`MessageRow.thread_count: u32`**: the messages that share the row's `thread_key` in the row's own folder (this one included; rows hidden by a
+  waiting move or delete are not counted), computed in the same statement as the row (a correlated subquery over the `message_thread` index). 1 when alone.
+  In the unified scopes each row is counted in its own folder.
+- **`MessageRow.recipients: Vec<String>`**: names, else addresses, of the To list, read from `message.to_json` (an array whose items are strings or
+  objects with `name` and/or `address`; at most 20; a damaged value gives none). **The sync does not store `to_json` yet** (`RemoteHeader` has no
+  recipients, and `messages::upsert` says recipients are "never touched"), so every synced row has an empty list until a later task adds the To header to
+  `RemoteHeader`, the IMAP and JMAP adapters and `upsert`. The Sent folder's rows therefore show no recipients in the app until then (the field and the app's
+  mapping are in place and tested with a value written straight into the database).
+- **`AccountInfo.last_synced_ms: Option<i64>`**: the newest `folder.last_synced_at` of the account, `None` until a folder has synced.
+- **`MessageScope::Starred { account: Option<i64> }`**: flagged messages across the folders of one account, or of every account merged by date, keyset-paged like the
+  others, leaving out rows hidden by a waiting move or delete and snoozed rows. **Also left out: messages in Trash and Junk** (the orchestrator's text said only "excluding hidden
+  rows"; a starred message that was deleted would otherwise show in Starred, and the T14 fake already excluded them). One line in `core/ffi/src/list.rs` (`starred_rows`) if
+  that is not wanted. No new index: the statement reads the account's rows through `message_thread` (account first) and filters on `is_flagged`.
+- `mark_seen` and `set_flagged` still return nothing (Undo for a flag is the opposite call inside 1.5 s). `encrypted` and Snoozed are not in the surface.
+- **`test-server` feature** (off by default; not part of the surface): `TestImapServer` in `core/ffi/src/test_server.rs`, for the host library of the Kotlin JVM tests only
+  (see `core/ffi/README.md`). The Android library never has it; `android/tools/check-release-outputs.sh` checks the release `.so` for its symbols.
+- **Tests.** Rust (`core/ffi/src/tests/local.rs`, `server.rs`): `the_version_is_5`, `a_rows_thread_count_is_its_conversation_in_its_own_folder`,
+  `recipients_come_from_the_stored_to_list_and_a_damaged_value_gives_none`, `an_accounts_last_synced_time_is_its_newest_folder_sync`,
+  `the_starred_scope_lists_flagged_rows_across_folders_newest_first_one_account_or_all`, `rows_of_equal_date_keep_their_order_across_starred_pages`,
+  `a_sign_in_refused_with_a_change_waiting_pauses_the_account_without_counting_an_attempt` (reads `op_queue.attempts`), the last-synced check in
+  `add_list_and_remove_an_account_...`, and `test_server::tests::the_server_starts_with_messages_and_stops` (with the feature).

@@ -6,8 +6,8 @@
 // They have no Android or Compose types, so they run without Robolectric (`./gradlew :mailtests:test`; also a dependency of
 // `:app:testDebugUnitTest`, so one command and CI run both), like :swipe.
 //
-// There is no main code here. The tests compile the app's own data layer in place (`app/src/main/kotlin/.../mail`, minus the one
-// file that needs an Android Context) and UniFFI bindings generated from the host library, which is built with croft-ffi's
+// There is no main code here. The tests compile the app's own data layer in place (`app/src/main/kotlin/.../mail`, minus the
+// files that need Android) and UniFFI bindings generated from the host library, which is built with croft-ffi's
 // `test-server` feature so that they hold `TestImapServer`. The Android library never has that feature (see app/build.gradle.kts).
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -24,8 +24,8 @@ kotlin {
         getByName("test") {
             kotlin.srcDir(rootProject.layout.projectDirectory.dir("app/src/main/kotlin/com/example/croft/mail"))
             kotlin.srcDir(rootProject.layout.projectDirectory.dir("app/build/generated/uniffi-host/kotlin"))
-            // The only file of that folder that needs Android (a Context).
-            kotlin.exclude("**/MailSession.kt")
+            // The files of that folder that need Android (a Context, DataStore, the platform's connectivity service, the Keystore).
+            kotlin.exclude("**/MailSession.kt", "**/MailSettings.kt", "**/ConnectivityMonitor.kt", "**/MailRuntime.kt")
         }
     }
 }

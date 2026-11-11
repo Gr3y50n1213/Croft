@@ -25,4 +25,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "croft"
 include(":app")
+include(":swipe")
 include(":macrobenchmark")

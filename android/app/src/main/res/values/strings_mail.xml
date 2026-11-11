@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- S10 Inbox: search pill, chips, bottom bar, list -->
+    <string name="mail_search_in_mail">Search in mail</string>
+    <string name="mail_open_menu">Open menu</string>
+    <string name="mail_account_button">Account %1$s</string>
+    <string name="mail_account_button_status">Account %1$s, %2$s</string>
+    <string name="mail_all_accounts">All accounts</string>
+    <string name="mail_compose">Compose</string>
+    <string name="mail_category_all">All</string>
+    <string name="mail_categories">Categories</string>
+    <string name="mail_nav_mail">Mail</string>
+    <string name="mail_nav_calendar">Calendar</string>
+    <string name="mail_nav_contacts">Contacts</string>
+    <string name="mail_list_description">Messages</string>
+    <string name="mail_loading">Loading messages</string>
+    <string name="mail_fast_scroller">Scroll by date</string>
+    <string name="mail_to">To %1$s</string>
+
+    <!-- Row time and announcements -->
+    <string name="mail_time_just_now">just now</string>
+    <plurals name="mail_time_minutes_ago">
+        <item quantity="one">%d minute ago</item>
+        <item quantity="other">%d minutes ago</item>
+    </plurals>
+    <plurals name="mail_time_hours_ago">
+        <item quantity="one">%d hour ago</item>
+        <item quantity="other">%d hours ago</item>
+    </plurals>
+    <plurals name="mail_thread_count">
+        <item quantity="one">%d message in the conversation</item>
+        <item quantity="other">%d messages in the conversation</item>
+    </plurals>
+    <string name="mail_date_today">Today</string>
+    <string name="mail_date_yesterday">Yesterday</string>
+    <string name="mail_date_this_week">This week</string>
+
+    <!-- S11 Selection mode -->
+    <plurals name="mail_selected_count">
+        <item quantity="one">%d selected</item>
+        <item quantity="other">%d selected</item>
+    </plurals>
+    <string name="mail_selection_exit">Exit selection</string>
+    <string name="mail_select_all">Select all</string>
+    <string name="mail_select_all_in_folder">Select all %1$s in this folder</string>
+    <string name="mail_selection_all_in_folder">All %1$s in this folder are selected</string>
+    <string name="mail_selection_swipe_off">Swipe, Compose and the bar are off while you select</string>
+    <string name="mail_action_archive">Archive</string>
+    <string name="mail_action_delete">Delete</string>
+    <string name="mail_action_delete_forever">Delete forever</string>
+    <string name="mail_action_mark_read">Mark as read</string>
+    <string name="mail_action_mark_unread">Mark as unread</string>
+    <string name="mail_action_star">Star</string>
+    <string name="mail_action_unstar">Remove star</string>
+    <string name="mail_action_restore">Restore</string>
+    <string name="mail_action_not_spam">Not spam</string>
+    <string name="mail_action_move_to_inbox">Move to inbox</string>
+    <string name="mail_more_actions">More actions</string>
+
+    <!-- Results, Undo and confirmations -->
+    <string name="mail_undo">Undo</string>
+    <plurals name="mail_snack_archived">
+        <item quantity="one">%d conversation archived</item>
+        <item quantity="other">%d conversations archived</item>
+    </plurals>
+    <plurals name="mail_snack_deleted">
+        <item quantity="one">%d conversation deleted</item>
+        <item quantity="other">%d conversations deleted</item>
+    </plurals>
+    <plurals name="mail_snack_deleted_forever">
+        <item quantity="one">%d conversation deleted for good</item>
+        <item quantity="other">%d conversations deleted for good</item>
+    </plurals>
+    <plurals name="mail_snack_moved">
+        <item quantity="one">%d conversation moved</item>
+        <item quantity="other">%d conversations moved</item>
+    </plurals>
+    <string name="mail_snack_no_archive">Couldn\'t archive. This account has no Archive folder.</string>
+    <string name="mail_snack_no_trash">Couldn\'t delete. This account has no Trash folder.</string>
+    <string name="mail_snack_failed">Couldn\'t finish that. Try again.</string>
+    <string name="mail_snack_refresh_failed">Couldn\'t refresh. Changes will sync when the account is back.</string>
+    <string name="mail_snack_account_screens">This opens from the account screens, which come next.</string>
+    <plurals name="mail_confirm_title_archive">
+        <item quantity="one">Archive %d conversation?</item>
+        <item quantity="other">Archive %d conversations?</item>
+    </plurals>
+    <plurals name="mail_confirm_title_delete">
+        <item quantity="one">Delete %d conversation?</item>
+        <item quantity="other">Delete %d conversations?</item>
+    </plurals>
+    <plurals name="mail_confirm_title_delete_forever">
+        <item quantity="one">Delete %d conversation for good?</item>
+        <item quantity="other">Delete %d conversations for good?</item>
+    </plurals>
+    <string name="mail_confirm_message_undo">You can undo this for a few seconds afterwards.</string>
+    <string name="mail_confirm_message_forever">This cannot be undone.</string>
+
+    <!-- S17 New mail and pull to refresh -->
+    <plurals name="mail_new_pill">
+        <item quantity="one">%d new</item>
+        <item quantity="other">%d new</item>
+    </plurals>
+    <plurals name="mail_new_pill_description">
+        <item quantity="one">%d new message. Scroll to the top</item>
+        <item quantity="other">%d new messages. Scroll to the top</item>
+    </plurals>
+    <string name="mail_refreshing">Refreshing</string>
+    <string name="mail_pull_to_refresh">Pull to refresh</string>
+    <string name="mail_release_to_refresh">Release to refresh</string>
+
+    <!-- S18 Server problems -->
+    <string name="banner_server_problem">Couldn\'t reach the server for %1$s. Croft will keep trying.</string>
+    <string name="banner_action_retry">Retry</string>
+
+    <!-- S19 Empty states -->
+    <string name="mail_empty_inbox_title">You\'re all caught up</string>
+    <string name="mail_empty_last_synced">Last synced %1$s</string>
+    <string name="mail_empty_never_synced">Not synced yet</string>
+    <string name="mail_empty_illustration">Illustration</string>
+    <string name="mail_empty_trash_title">Trash is empty</string>
+    <string name="mail_empty_trash_body">Messages you delete wait here until you empty the Trash.</string>
+    <string name="mail_empty_spam_title">No spam</string>
+    <string name="mail_empty_spam_body">Mail your server marks as spam shows up here.</string>
+    <string name="mail_empty_folder_title">This folder is empty</string>
+    <string name="mail_empty_folder_body">Nothing is stored in it right now.</string>
+    <string name="mail_empty_search_title">No results for \"%1$s\"</string>
+    <string name="mail_empty_search_local">Only mail on this device was searched.</string>
+    <string name="mail_empty_search_server">Search server</string>
+
+    <!-- S12 Navigation drawer -->
+    <string name="mail_drawer_title">Croft Mail</string>
+    <string name="mail_drawer_labels">Labels</string>
+    <string name="mail_drawer_unread">%1$d unread</string>
+    <string name="mail_folder_inbox">Inbox</string>
+    <string name="mail_folder_starred">Starred</string>
+    <string name="mail_folder_snoozed">Snoozed</string>
+    <string name="mail_folder_sent">Sent</string>
+    <string name="mail_folder_drafts">Drafts</string>
+    <string name="mail_folder_outbox">Outbox</string>
+    <string name="mail_folder_archive">Archive</string>
+    <string name="mail_folder_spam">Spam</string>
+    <string name="mail_folder_trash">Trash</string>
+
+    <!-- S13 Account switcher -->
+    <string name="mail_switcher_title">Accounts</string>
+    <string name="mail_switcher_close">Close</string>
+    <string name="mail_switcher_up_to_date">Up to date</string>
+    <string name="mail_switcher_synced_at">Synced %1$s</string>
+    <string name="mail_switcher_add">Add another account</string>
+    <string name="mail_switcher_manage">Manage accounts</string>
+    <string name="mail_switcher_selected">Showing</string>
+</resources>

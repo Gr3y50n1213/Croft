@@ -32,6 +32,7 @@ object SettingsTags {
     const val SCREEN = "settings"
     const val APPEARANCE = "settings-appearance"
     const val GALLERY = "settings-gallery"
+    const val ABOUT = "settings-about"
 }
 
 /**
@@ -41,6 +42,7 @@ object SettingsTags {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsHomeScreen(
+    info: com.example.croft.RustInfo?,
     onOpenAppearance: () -> Unit,
     onOpenGallery: (() -> Unit)?,
     onBack: () -> Unit,
@@ -63,6 +65,16 @@ fun SettingsHomeScreen(
                 headlineContent = { Text(stringResource(R.string.settings_appearance)) },
                 supportingContent = { Text(stringResource(R.string.settings_appearance_hint)) },
                 modifier = Modifier.testTag(SettingsTags.APPEARANCE).clickable(role = Role.Button, onClick = onOpenAppearance),
+            )
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_about)) },
+                supportingContent = {
+                    Text(
+                        if (info != null) stringResource(R.string.core_version, info.croftVersion) + ". " + stringResource(R.string.ffi_api_version, info.ffiApiVersion.toString())
+                        else stringResource(R.string.core_unavailable),
+                    )
+                },
+                modifier = Modifier.testTag(SettingsTags.ABOUT),
             )
             if (onOpenGallery != null) {
                 ListItem(

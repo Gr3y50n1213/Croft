@@ -244,6 +244,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "croft-engine"
+version = "0.1.0"
+dependencies = [
+ "croft-mail-core",
+ "croft-protocols",
+ "croft-storage",
+ "croft-test-support",
+ "log",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "croft-mail-core"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,25 @@
+# Mail servers the integration tests run against. Not yet run: the environment this file was written
+# in has no Docker daemon, so image tags and ports below are from each project's documentation.
+# Add Dovecot + Postfix and the second JMAP server here when the IMAP adapter lands.
+services:
+  greenmail:
+    image: greenmail/standalone:latest
+    environment:
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.users=test:test@localhost,alice:alice@localhost
+    ports: ["3025:3025", "3143:3143", "3993:3993", "3465:3465"]   # SMTP, IMAP, IMAPS, SMTPS
+
+  stalwart:
+    image: stalwartlabs/stalwart:latest
+    ports: ["8080:8080", "1143:143", "1993:993", "1587:587"]   # admin/JMAP, IMAP, IMAPS, submission
+    volumes: ["stalwart-data:/opt/stalwart"]
+
+  radicale:
+    image: tomsquest/docker-radicale:latest
+    ports: ["5232:5232"]                                      # CalDAV and CardDAV
+    volumes: ["radicale-data:/data"]
+
+volumes:
+  stalwart-data:
+  radicale-data:

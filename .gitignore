@@ -1,0 +1,9 @@
+target/
+*.db
+*.db-wal
+*.db-shm
+.env
+.venv*/
+/android/.gradle/
+/android/build/
+node_modules/

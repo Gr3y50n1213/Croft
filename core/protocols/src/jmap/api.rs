@@ -64,8 +64,10 @@ pub(crate) struct Responses {
 }
 
 impl Responses {
-    /// Reads a `{"methodResponses": [...], "sessionState": ...}` answer. The calls must come back
-    /// in the order they were sent, one answer each.
+    /// Reads a `{"methodResponses": [...], "sessionState": ...}` answer. Every call must be
+    /// answered, under its own call id. A call can also produce extra answers with the same id
+    /// (the `Email/set` that `onSuccessUpdateEmail` implies, RFC 8621 section 7.5); the first
+    /// answer for a call is the call's own, and the others are ignored.
     pub fn parse(body: &[u8], expected_calls: usize) -> Result<Self, BackendError> {
         #[derive(Deserialize)]
         struct Raw {
@@ -75,20 +77,20 @@ impl Responses {
             session_state: Option<String>,
         }
         let raw: Raw = serde_json::from_slice(body).map_err(|_| malformed())?;
-        if raw.method_responses.len() != expected_calls {
-            return Err(malformed());
-        }
-        for (i, (_, _, id)) in raw.method_responses.iter().enumerate() {
-            if *id != call_id(i) {
-                return Err(malformed());
+        let mut items: Vec<Option<(String, Value)>> = vec![None; expected_calls];
+        for (name, args, id) in raw.method_responses {
+            let index = (0..expected_calls)
+                .find(|i| call_id(*i) == id)
+                .ok_or_else(malformed)?;
+            if items[index].is_none() {
+                items[index] = Some((name, args));
             }
         }
+        if items.iter().any(Option::is_none) {
+            return Err(malformed());
+        }
         Ok(Self {
-            items: raw
-                .method_responses
-                .into_iter()
-                .map(|(name, args, _)| Some((name, args)))
-                .collect(),
+            items,
             session_state: raw.session_state,
         })
     }
@@ -328,12 +330,22 @@ mod tests {
             Err(ApiError::Method(kind)) => assert_eq!(kind, "cannotCalculateChanges"),
             other => panic!("{other:?}"),
         }
-        // Wrong count, wrong ids and wrong names are all malformed.
+        // A missing answer, an unknown id and a wrong name are all malformed.
         assert!(Responses::parse(body, 3).is_err());
         let wrong_id = br#"{"methodResponses":[["Mailbox/get",{},"zzz"]]}"#;
         assert!(Responses::parse(wrong_id, 1).is_err());
         let mut r = Responses::parse(br#"{"methodResponses":[["Email/get",{},"c0"]]}"#, 1).unwrap();
         assert!(r.take(0, "Mailbox/get").is_err());
+    }
+
+    #[test]
+    fn extra_answers_for_one_call_are_ignored() {
+        // The Email/set that onSuccessUpdateEmail implies carries the call id of the submission.
+        let body = br#"{"methodResponses":[["Email/import",{"a":1},"c0"],
+            ["EmailSubmission/set",{"b":2},"c1"],["Email/set",{"c":3},"c1"]]}"#;
+        let mut r = Responses::parse(body, 2).unwrap();
+        assert_eq!(r.take(1, "EmailSubmission/set").unwrap()["b"], 2);
+        assert_eq!(r.take(0, "Email/import").unwrap()["a"], 1);
     }
 
     #[test]

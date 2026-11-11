@@ -2,13 +2,13 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 5)
+## The surface (API version 6)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
 
 `Core` (one object; `Core.open(db_path, db_key, credentials)`):
-- accounts: `discover` (async), `verify` (async), `add_account(discovered, display_name, pinned, credential)` (async; the credential is the new account's, see "Credentials"), `list_accounts`, `remove_account` (async), `signed_in` (async)
+- accounts: `discover` (async), `verify` (async), `add_account(discovered, display_name, pinned, credential)` (async; the credential is the new account's, see "Credentials"), `add_demo_account()` (async, since version 6; see "The sample mailbox"), `list_accounts`, `remove_account` (async), `signed_in` (async)
 - reading: `list_folders`, `list_messages(scope, before, limit)` (keyset paging; `MessageScope` is a folder, the unified Inbox, or Starred for one account or all). Since version 5 a `MessageRow` has `thread_count` (messages sharing its conversation key in its folder) and `recipients` (names, else addresses, from the stored `to_json`), and `AccountInfo` has `last_synced_ms` (the newest folder sync)
 - observing: `next_change(after)` (async; a numbered change log, see `src/changes.rs`)
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`
@@ -17,6 +17,21 @@ and `discover_error_message_key` / `discover_error_default_message`.
 Callback interfaces the app implements: `CredentialProvider` (`credential`, `sign_in_needed`) and `DiscoveryObserver` (`on_probe`).
 Every callback returns `Result<_, ProviderError>`; `ProviderError` has one fieldless variant, `Failed` (see "Callbacks").
 Errors: `CoreError`, `DiscoverError`, `VerifyFailure`: fixed categories, no free text.
+
+## The sample mailbox (version 6)
+`add_demo_account() -> AccountInfo` adds "Try with sample mail" for store review (T17): about twenty fictional messages
+(people and addresses at `example.org` / `example.com` only) in Inbox, Sent, Drafts, Trash and Archive, served from memory by
+`DemoBackend` (`core/protocols/src/demo/`). It takes no credential and no secret, the `CredentialProvider` is never asked about it,
+and it **never opens a connection** (no server adapter is built for it; `set_network_available` does not apply to it and its
+status is never Offline). Calling it again returns the same account: there is at most one. `AccountInfo.is_demo` is true for it;
+the app shows "Not saved to server" on its rows from that flag (rows have no flag of their own).
+
+Read, star, move, archive, trash and delete forever work and are confirmed at once by the in-memory copy, so a sync agrees with
+them. At `Core.open` the copy is rebuilt from what the device stored, so a sync after a restart undoes nothing either. The account
+row stores only `{"version":1,"kind":"demo"}` in `config_json` (no migration). Sending, once the app's engine has an Outbox, files
+the message in the sample Sent folder and sends nothing. `remove_account` removes it and all its rows like any other account;
+`signed_in` returns at once for it. Tests: `src/tests/demo.rs` (with a provider that panics if asked), the backend's own tests,
+and `core/engine/tests/demo.rs` (sync, every action and a send on a runtime with no I/O driver).
 
 ## The test server (feature `test-server`, test only)
 `--features test-server` adds the object `TestImapServer` (`src/test_server.rs`): the in-process IMAP server of `core/test-support`

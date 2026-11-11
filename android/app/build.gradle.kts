@@ -129,6 +129,10 @@ tasks.withType<Test>().configureEach {
     systemProperty("croft.cargoVersion", cargoVersion)
     // Robolectric downloads its Android jars from Maven Central at run time. Behind a proxy or
     // mirror, set ROBOLECTRIC_REPO_URL to the Maven repository to use instead.
+    // Screenshot tests (Roborazzi): verify (default), record-goldens or off. See ScreenshotKit.
+    systemProperty("croft.screenshots", providers.gradleProperty("croft.screenshots").getOrElse("verify"))
+    // Screenshot tests draw many large pictures on native graphics.
+    maxHeapSize = "3g"
     System.getenv("ROBOLECTRIC_REPO_URL")?.let { systemProperty("robolectric.dependency.repo.url", it) }
 }
 

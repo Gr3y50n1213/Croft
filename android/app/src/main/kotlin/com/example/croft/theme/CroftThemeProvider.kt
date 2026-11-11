@@ -124,9 +124,8 @@ internal fun resolveColorScheme(s: ThemeSettings, systemDark: Boolean, context: 
     if (s.source == ColourSource.WALLPAPER && wallpaperColoursAvailable()) {
         val dynamic = wallpaperScheme(context, mode)
         return if (mode == CroftMode.PURE_BLACK) {
-            dynamic.copy(
-                background = Color.Black, surface = Color.Black, surfaceDim = Color.Black, surfaceContainerLowest = Color.Black,
-            )
+            val black = Color(ThemeEngine.PURE_BLACK)
+            dynamic.copy(background = black, surface = black, surfaceDim = black, surfaceContainerLowest = black)
         } else dynamic
     }
     return s.colorScheme(mode)

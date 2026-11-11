@@ -53,5 +53,7 @@ object ThemeEngine {
     /** The generated style of a preset as a [ThemeStyle] (its id is stored in the tokens). */
     fun styleOf(p: CroftPreset): ThemeStyle = ThemeStyle.entries.first { it.id == p.style }
 
-    private const val BLACK = 0xFF000000L
+    /** Pure black, the one colour the theme defines itself: #000000 (docs/ux/theme.md). */
+    const val PURE_BLACK = 0xFF000000L
+    private const val BLACK = PURE_BLACK
 }

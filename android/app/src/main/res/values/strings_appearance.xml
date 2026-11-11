@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- Shared -->
+    <string name="appearance_back">Back</string>
+    <string name="appearance_more_options">More options</string>
+    <string name="appearance_selected">Selected</string>
+    <string name="appearance_apply">Apply</string>
+    <string name="appearance_cancel">Cancel</string>
+
+    <!-- S50 Appearance -->
+    <string name="appearance_title">Appearance</string>
+    <string name="appearance_section_mode">Mode</string>
+    <string name="appearance_mode_system">System</string>
+    <string name="appearance_mode_light">Light</string>
+    <string name="appearance_mode_dark">Dark</string>
+    <string name="appearance_pure_black">Pure black</string>
+    <string name="appearance_pure_black_hint">Dark mode only</string>
+    <string name="appearance_section_source">Colour source</string>
+    <string name="appearance_source_croft">Croft</string>
+    <string name="appearance_source_wallpaper">Wallpaper</string>
+    <string name="appearance_source_custom">Custom</string>
+    <string name="appearance_section_palette">Palette</string>
+    <string name="appearance_section_style">Style</string>
+    <string name="appearance_section_contrast">Contrast</string>
+    <string name="appearance_contrast_standard">Standard</string>
+    <string name="appearance_contrast_medium">Medium</string>
+    <string name="appearance_contrast_high">High</string>
+    <string name="appearance_link_custom">Custom colour</string>
+    <string name="appearance_link_layout">Layout and density</string>
+    <string name="appearance_link_motion">Motion and haptics</string>
+    <string name="appearance_reset">Reset appearance</string>
+    <string name="appearance_reset_title">Reset appearance?</string>
+    <string name="appearance_reset_body">Colours, layout, text size and motion go back to Moss, Standard and System. Your mail is not touched.</string>
+    <string name="appearance_reset_confirm">Reset</string>
+    <string name="appearance_export">Export theme</string>
+    <string name="appearance_import">Import theme</string>
+    <string name="appearance_palette_applied">%1$s applied</string>
+    <string name="appearance_undo">Undo</string>
+    <string name="appearance_reset_done">Appearance reset</string>
+    <string name="appearance_imported">Theme imported</string>
+    <string name="appearance_exported">Theme saved as croft-theme.json</string>
+    <string name="appearance_import_empty">That file is empty. Choose a croft-theme.json file.</string>
+    <string name="appearance_import_too_big">That file is too big to be a Croft theme.</string>
+    <string name="appearance_import_not_json">That file is not a theme file. Choose a croft-theme.json file.</string>
+    <string name="appearance_import_not_a_theme">That file is not a Croft theme, so nothing was changed.</string>
+    <string name="appearance_import_too_new">That theme was saved by a newer version of Croft. Update Croft to use it.</string>
+    <string name="appearance_import_unreadable">Croft could not read that file.</string>
+    <string name="appearance_wallpaper_hint">Colours come from your wallpaper.</string>
+
+    <!-- Palettes -->
+    <string name="palette_moss">Moss</string>
+    <string name="palette_wax">Wax</string>
+    <string name="palette_slate">Slate</string>
+    <string name="palette_heather">Heather</string>
+    <string name="palette_ochre">Ochre</string>
+    <string name="palette_peat">Peat</string>
+    <string name="palette_tide">Tide</string>
+    <string name="palette_rowan">Rowan</string>
+    <string name="palette_custom">Custom</string>
+    <string name="palette_swatch_description">%1$s palette</string>
+
+    <!-- Styles -->
+    <string name="style_tonal_spot">Tonal spot</string>
+    <string name="style_neutral">Neutral</string>
+    <string name="style_vibrant">Vibrant</string>
+    <string name="style_expressive">Expressive</string>
+    <string name="style_fidelity">Fidelity</string>
+    <string name="style_monochrome">Monochrome</string>
+
+    <!-- Preview (fake data) -->
+    <string name="preview_description">Preview of your inbox with the current look</string>
+    <string name="preview_search">Search in mail</string>
+    <string name="preview_chip_all">All</string>
+    <string name="preview_chip_primary">Primary</string>
+    <string name="preview_chip_updates">Updates</string>
+    <string name="preview_sender_one">Sam Rivera</string>
+    <string name="preview_subject_one">Lunch on Friday?</string>
+    <string name="preview_snippet_one">Are you free around noon? I can book the table.</string>
+    <string name="preview_time_one">9:12</string>
+    <string name="preview_sender_two">Hollis Printing</string>
+    <string name="preview_subject_two">Your proof is ready</string>
+    <string name="preview_snippet_two">The proof is attached. Tell us if the colours look right.</string>
+    <string name="preview_time_two">Mon</string>
+    <string name="preview_sender_three">Dana Whitfield</string>
+    <string name="preview_subject_three">Notes from the call</string>
+    <string name="preview_snippet_three">Three things we agreed, and who does what.</string>
+    <string name="preview_time_three">Sun</string>
+    <string name="preview_compose">Compose</string>
+    <string name="preview_snackbar">Archived</string>
+    <string name="preview_snackbar_action">Undo</string>
+    <string name="preview_nav_inbox">Inbox</string>
+    <string name="preview_nav_calendar">Calendar</string>
+    <string name="preview_nav_contacts">Contacts</string>
+    <string name="preview_unread">Unread</string>
+
+    <!-- S51 Custom colour -->
+    <string name="custom_title">Custom colour</string>
+    <string name="custom_wheel_description">Colour wheel. Drag to pick a hue.</string>
+    <string name="custom_wheel_state">Hue %1$d degrees</string>
+    <string name="custom_wheel_hue_up">Next hue</string>
+    <string name="custom_wheel_hue_down">Previous hue</string>
+    <string name="custom_seed">Seed</string>
+    <string name="custom_hex">Hex</string>
+    <string name="custom_hex_error">Use six digits, like 4F6F52.</string>
+    <string name="custom_from_photo">From photo</string>
+    <string name="custom_photo_failed">Croft could not find a colour in that picture.</string>
+    <string name="custom_note_adjusted">Colours below 4.5 to 1 contrast are adjusted automatically.</string>
+    <string name="custom_note_grey">This style makes the scheme look nearly grey. Try Vibrant or Expressive for more colour.</string>
+    <string name="custom_section_style">Style</string>
+    <string name="custom_section_contrast">Contrast</string>
+
+    <!-- S52 Layout and density -->
+    <string name="layout_title">Layout and density</string>
+    <string name="layout_section_density">Density</string>
+    <string name="layout_density_comfortable">Comfortable</string>
+    <string name="layout_density_default">Default</string>
+    <string name="layout_density_compact">Compact</string>
+    <string name="layout_section_roundness">Roundness</string>
+    <string name="layout_roundness_tight">Tight</string>
+    <string name="layout_roundness_standard">Standard</string>
+    <string name="layout_roundness_round">Round</string>
+    <string name="layout_section_list_style">List style</string>
+    <string name="layout_list_container">Container</string>
+    <string name="layout_list_flat">Flat</string>
+    <string name="layout_section_avatars">Avatars</string>
+    <string name="layout_avatars_letters">Letters</string>
+    <string name="layout_avatars_photos">Photos</string>
+    <string name="layout_avatars_hidden">Hidden</string>
+    <string name="layout_avatars_photos_hint">Photos come from contacts, only if you allow it.</string>
+    <string name="layout_section_unread">Unread emphasis</string>
+    <string name="layout_unread_bold_dot">Bold and dot</string>
+    <string name="layout_unread_bold">Bold</string>
+    <string name="layout_unread_dot">Dot</string>
+    <string name="layout_unread_hint">Unread is never shown by colour alone.</string>
+    <string name="layout_section_text_size">Text size</string>
+    <string name="layout_text_size_value">%1$d percent</string>
+    <string name="layout_text_size_hint">Multiplied with the size set in Android settings.</string>
+    <string name="layout_section_ui_font">Interface font</string>
+    <string name="layout_section_reading_font">Reading font</string>
+    <string name="layout_reading_hint">Used for message bodies. The interface keeps its own font.</string>
+    <string name="layout_font_system">System</string>
+    <string name="layout_font_croft_sans">Croft Sans</string>
+    <string name="layout_font_atkinson">Atkinson Hyperlegible</string>
+    <string name="layout_font_serif">Serif</string>
+    <string name="layout_font_sample">The quick brown fox jumps over the lazy dog. 0123456789</string>
+    <string name="layout_density_description">%1$s: rows about %2$d dp tall</string>
+
+    <!-- S53 Motion and haptics -->
+    <string name="motion_title">Motion and haptics</string>
+    <string name="motion_section_animation">Animation</string>
+    <string name="motion_anim_system">Follow system</string>
+    <string name="motion_anim_system_hint">Uses the phone setting</string>
+    <string name="motion_anim_full">Full</string>
+    <string name="motion_anim_full_hint">Expressive springs</string>
+    <string name="motion_anim_reduced">Reduced</string>
+    <string name="motion_anim_reduced_hint">Short fades, no overshoot</string>
+    <string name="motion_anim_off">Off</string>
+    <string name="motion_anim_off_hint">Everything is instant</string>
+    <string name="motion_section_haptics">Haptics</string>
+    <string name="motion_haptics_off">Off</string>
+    <string name="motion_haptics_off_hint">No vibration from the app</string>
+    <string name="motion_haptics_subtle">Subtle</string>
+    <string name="motion_haptics_subtle_hint">Swipe threshold, errors, send</string>
+    <string name="motion_haptics_full">Full</string>
+    <string name="motion_haptics_full_hint">Adds ticks and toggles</string>
+    <string name="motion_section_try">Try it</string>
+    <string name="motion_try_hint">Each button plays the haptic and the matching motion so you can feel the difference between levels.</string>
+    <string name="motion_try_threshold">Threshold</string>
+    <string name="motion_try_success">Success</string>
+    <string name="motion_try_error">Error</string>
+    <string name="motion_try_toggle">Toggle</string>
+    <string name="motion_try_tick">Tick</string>
+    <string name="motion_try_drag_start">Drag start</string>
+    <string name="motion_try_stage_description">Motion sample</string>
+
+    <!-- S08 Pick your look -->
+    <string name="look_title">Pick your look</string>
+    <string name="look_section_colour">Colour</string>
+    <string name="look_wallpaper">Use my wallpaper colours</string>
+    <string name="look_live_preview">live preview</string>
+    <string name="look_continue">Continue</string>
+</resources>

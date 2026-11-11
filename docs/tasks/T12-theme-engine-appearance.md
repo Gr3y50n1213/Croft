@@ -28,3 +28,35 @@ Theme engine and the screens S50 (Appearance), S51 (Custom colour), S52 (Layout 
 - A Compose test proves a theme change does not change the layout bounds of the preview.
 - Reduced-motion test: with Animation level Reduced or Off the theme change is a plain cross-fade or instant.
 - On a device (not checkable here): that the cross-fade looks smooth, wallpaper colours on a real Android 12+ phone, and the text-size slider feel.
+
+## Result (session notes, T12)
+
+### Where things are
+- Theme engine: `android/app/src/main/kotlin/com/example/croft/theme/` (`ThemeSettings`, `ThemeJson`, `ThemeStore`, `ThemeEngine`, `McuSchemes`, `CroftThemeProvider`, `ScaledShapes`, `Contrast`). `CroftTheme` in `com/example/croft/CroftTheme.kt` now takes `ThemeSettings` and delegates to it.
+- Screens: `.../ui/appearance/` (`AppearanceScreen` S50, `CustomColourScreen` S51, `LayoutDensityScreen` S52, `MotionHapticsScreen` S53, `PickYourLookScreen` S08, `AppearanceFlow` for the drill-down, `AppearancePreview` and `InboxSample`). They are not linked from the app yet: T13 adds the navigation and the settings entry; `MainActivity` is unchanged. `ThemeStore.create(context)` is the DataStore to collect there.
+- Strings: `res/values/strings_appearance.xml`. Fonts: `res/font/` (Croft Sans = Inter Regular, Medium, Bold; Atkinson Hyperlegible Regular, Bold), licence texts in `assets/licenses/` (both SIL OFL 1.1, no reserved font names).
+
+### Choices to copy into `docs/DECISIONS.md`
+| Date | Choice | Why |
+|---|---|---|
+| 2026-11-11 | Runtime colour: `com.google.android.material:material:1.14.0` (Apache-2.0), only its `com.google.android.material.color.utilities` classes, wrapped in `theme/McuSchemes.kt`. The artifact `com.google.android.material:material-color-utilities` named in this task does not exist. | Google's own Java port of the library (same HCT model as Android dynamic colour). Reproduces all 72 generated preset tables exactly (test). The artifact pulls the AndroidX Views libraries transitively (its resources need them to link); R8 removes what is unused. The third-party Kotlin port `com.materialkolor:material-color-utilities` was not used (MIT wrapper, not Google's code). |
+| 2026-11-11 | Screenshot tests: Roborazzi 1.78.0 (`roborazzi`, `roborazzi-compose`, Apache-2.0) on Robolectric 4.17 native graphics, library only (no Gradle plugin). Paparazzi only has `2.0.0-alpha05`. Pictures go to `android/app/build/outputs/screenshots/` (not committed); 8 golden pictures are committed in `android/app/src/test/screenshots/` and compared with a 1 percent tolerance; refresh with `./gradlew :app:testDebugUnitTest -Pcroft.screenshots=record-goldens`. Helper: `android/app/src/test/kotlin/com/example/croft/ui/ScreenshotKit.kt`. | Roborazzi runs on the Robolectric already used by the project, needs no emulator, and works without its Gradle plugin, so AGP 9.5 compatibility of the plugin does not matter. |
+| 2026-11-11 | Settings file: `croft-theme.json` is the stored shape of `docs/ux/theme.md` plus a leading `"version": 1`. A file without `version` counts as 1; a higher version is refused. | Needed to tell a newer file from a corrupt one. `docs/ux/theme.md` should show the field. |
+| 2026-11-11 | Other new libraries: `androidx.datastore:datastore:1.3.0`, `org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0` (JSON values only, no compiler plugin), `androidx.compose.material:material-icons-core` (BOM version). All Apache-2.0. | Spec asks for DataStore; JSON is needed for export and import; the icon core set has Back, Check, More. |
+
+### Licence list (add to `LICENSES.md`)
+Inter 3.x (Croft Sans), Copyright 2020 The Inter Project Authors, SIL OFL 1.1; Atkinson Hyperlegible, Copyright 2020 Braille Institute of America, Inc., SIL OFL 1.1. Both texts are in `android/app/src/main/assets/licenses/`. The font files came from the `@expo-google-fonts/inter` 0.4.2 and `@expo-google-fonts/atkinson-hyperlegible` 0.4.1 npm packages (the TTFs of the Google Fonts release).
+
+### Motion catalogue entries to add to `docs/ux/motion.md`
+| Animation | Trigger | What moves | Token | Reduced-motion substitute |
+|---|---|---|---|---|
+| Try it stage (S53) | Press a Try it button | Square pops from 70 percent to 100 percent | Spatial default | Short fade (Effects default); Off: nothing |
+| Appearance drill-down (S50 to S51, S52, S53) | Open or close | Shared axis X | Spatial default (move), Effects default (fade) | Cross-fade; Off: instant |
+Theme change itself is already in the catalogue (Effects slow; Reduced and Off swap at once).
+
+### Not done in this task
+- High contrast chosen automatically when the system's high-contrast text is on (needs a hidden platform setting; the contrast level is only what the person picks).
+- `croft://theme?...` link and QR (optional).
+- Wiring `ThemeStore` into `MainActivity` and a settings entry for S50 (T13).
+- The `Haptics` interface: S53 Try it buttons call `onTry(TryItEvent)`, which T13 connects.
+- "Off" makes the theme change and the drill-down instant; the Material components' own springs still run at Off until every component reads `LocalMotionLevel` (T13 gallery).

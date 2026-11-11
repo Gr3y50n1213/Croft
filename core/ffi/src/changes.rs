@@ -14,10 +14,10 @@
 //! `everything = true`: re-run every query.
 
 use std::collections::{BTreeSet, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use croft_engine::{
-    Change, REASON_AMBIGUOUS_COPY, REASON_LOST_AFTER_MOVE, REASON_LOST_AFTER_RESET,
+    Change, EngineHandle, REASON_AMBIGUOUS_COPY, REASON_LOST_AFTER_MOVE, REASON_LOST_AFTER_RESET,
 };
 use tokio::sync::{broadcast, watch};
 
@@ -51,6 +51,9 @@ struct State {
 pub(crate) struct Hub {
     provider: Arc<dyn CredentialProvider>,
     state: Mutex<State>,
+    /// The engine, whose own flag decides whether a `SignInNeeded` notice is still true. Unset in
+    /// unit tests of the hub alone (the notice is then trusted).
+    engine: OnceLock<EngineHandle>,
     seq: watch::Sender<u64>,
 }
 
@@ -60,8 +63,14 @@ impl Hub {
         Arc::new(Self {
             provider,
             state: Mutex::new(State::default()),
+            engine: OnceLock::new(),
             seq,
         })
+    }
+
+    /// Connects the engine whose per-account state vets `SignInNeeded` notices.
+    pub(crate) fn attach_engine(&self, engine: EngineHandle) {
+        let _ = self.engine.set(engine);
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -113,9 +122,9 @@ impl Hub {
                 op_id: op,
                 reason: failure_reason(&reason),
             })]),
-            Change::SignInNeeded { account } => {
-                self.sign_in_needed(account);
-            }
+            // The notice carries no authority: it may have waited in the broadcast past a
+            // `signed_in`. Only the engine's current flag counts.
+            Change::SignInNeeded { account } => self.sign_in_notice(account),
             // Sending is not on this surface yet (it comes with its own version bump, see
             // `docs/tasks/T10-ffi-mail-surface.md`): an outbox change only tells the app that
             // something about the account changed.
@@ -125,9 +134,29 @@ impl Hub {
         }
     }
 
+    /// A `SignInNeeded` notice from the engine: acted on only while the engine still has the
+    /// account paused. The engine is asked with the hub's lock held, so the check and the insert
+    /// cannot straddle a `signed_in` (which clears the engine first and the hub second). The
+    /// engine never takes the hub's lock, so the order hub, then engine, is the only one.
+    fn sign_in_notice(&self, account: i64) {
+        let newly = {
+            let mut st = self.lock();
+            let current = self
+                .engine
+                .get()
+                .is_none_or(|engine| engine.needs_sign_in(account));
+            current && st.needs_sign_in.insert(account)
+        };
+        self.announce_sign_in(account, newly);
+    }
+
     /// The account needs a sign-in. Tells the provider once per entry into the state.
     pub(crate) fn sign_in_needed(&self, account: i64) {
         let newly = self.lock().needs_sign_in.insert(account);
+        self.announce_sign_in(account, newly);
+    }
+
+    fn announce_sign_in(&self, account: i64, newly: bool) {
         if newly {
             let provider = self.provider.clone();
             // The app's callback may take a moment (keystore, UI hand-off): not on a runtime

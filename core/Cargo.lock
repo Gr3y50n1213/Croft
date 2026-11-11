@@ -458,11 +458,18 @@ dependencies = [
 name = "croft-ffi"
 version = "0.1.0"
 dependencies = [
+ "croft-engine",
  "croft-protocols",
  "croft-storage",
+ "croft-test-support",
+ "log",
+ "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]

@@ -476,6 +476,7 @@ dependencies = [
 name = "croft-mail-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "croft-protocols",
 ]
 

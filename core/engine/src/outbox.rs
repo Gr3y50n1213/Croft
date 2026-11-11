@@ -479,6 +479,7 @@ mod tests {
         NewMessage {
             account,
             identity: None,
+            draft: None,
             envelope_from: "a@example.org".into(),
             recipients: vec!["b@example.org".into()],
         }

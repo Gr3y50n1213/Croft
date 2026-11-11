@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["storage", "protocols", "mail-core", "ffi", "test-support", "engine"]
+members = ["storage", "protocols", "mail-core", "ffi", "test-support", "engine", "reader"]
 # vendor/ holds third-party source with local patches (see vendor/async-imap/CROFT-PATCHES.md). It is
 # a path dependency inside the workspace folder, which Cargo would otherwise make a member, so it
 # is excluded: our fmt and clippy checks must not run on code that is not ours.

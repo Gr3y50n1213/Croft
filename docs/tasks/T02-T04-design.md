@@ -160,3 +160,59 @@ observe a `tokio::sync::broadcast` of changed folder ids and re-run their querie
   `0003_counters_skip_hidden.sql` replaces the counter triggers: a hidden row counts towards neither total nor unread,
   one UPDATE that changes both `is_seen` and `local_hidden` is counted once, and rows already hidden at upgrade time are
   taken out once.
+
+## 7. What T04 changed from this note (recorded by the T04 build)
+
+The engine is `core/engine` (`croft-engine`), as section 1 says. Its public API is `Engine` (open, `add_account`
+with a task, `attach_account` without one, `remove_account`, `shutdown`), `EngineHandle` (the UI side, below),
+`Change`, `Clock` / `SystemClock` / `ManualClock`, `EngineConfig`, `ActionError`, `EngineError`.
+
+- **Locking (decision).** The queue owns the store, which owns the `Db`; all three sit behind one `std::sync::Mutex`
+  shared by the account tasks and the UI handle. It is held only for short synchronous sections (one queue change, one
+  sync transaction, one chunk of headers) and never across an `.await`, so never during a network call. Sync writes go
+  through `PersistentQueue::store_mut()` → `SqliteOpStore::db_mut()` → `Db::transaction`.
+- **One operation at a time per account (decision, as in section 4).** Different accounts run in parallel.
+  `EngineHandle::run_once` (background jobs, tests) takes the same per-account turn as the task.
+- **The queue is shared by all accounts**, so each account task uses the new `take_due_for` / `next_wake_ms_for`.
+  `next_wake_ms` (both forms) now skips an operation held behind an earlier unfinished one on the same message: it
+  reported a time in the past that `take_due` then refused, and a task sleeping until the next wake would spin until
+  the earlier one (an archive in its Undo window) ran.
+- **UIDVALIDITY reset is one transaction, not the `_after_reset` calls of section 6.** New
+  `PersistentQueue::reset_folder(account, &FolderReset)` writes, in one batch: the folder's rows cleared, the fresh
+  headers of the matched messages, every re-pointed operation's pending count and local value on its new row, the
+  folder's new status (UIDVALIDITY), and the failed operations. Three `LocalEffect`s were added for it (`ClearFolder`,
+  `PutHeader`, `SetFolderStatus`). Why: an operation's UID means something only with the stored UIDVALIDITY. With
+  separate commits, a kill between re-pointing operations and storing the new UIDVALIDITY makes the next start read
+  UIDs in the wrong numbering and act on another message. All Message-ID lookups and header fetches happen first, with
+  nothing changed; a failure leaves the folder as it was and the next sync starts the reset again. Re-pointing uses the
+  new `OpQueue::repoint_many`, because a renumbered folder often maps one message's new UID onto another's old UID
+  (per-pair `repoint` would move such operations twice). `repoint_after_reset` / `abandon_after_reset` still exist; the
+  engine no longer uses them.
+- **Awaiting entry whose source folder is reset (section 6 left this to T04).** Resolved inside the reset and never left
+  waiting: looked up in its destination by the stored Message-ID before anything changes; found → re-pointed there (the
+  destination row is written from its fetched header in the same batch); not found → its operations fail. The old row
+  went with the folder, and nothing is ever written at the old address.
+- **Awaiting entry whose destination folder is reset.** Found there → re-pointed in the reset batch. Not found → left
+  waiting and counted by the usual lookups (up to 3), not failed at once: its old hidden row is in the source folder,
+  which was not reset, so waiting is safe.
+- **Folder check before every operation (new).** Before an operation is sent, the folder's UIDVALIDITY is read
+  (`folder_status`) and compared with the stored one; if it changed, that folder is synced (reset) first and the
+  operation continues as re-pointed, or fails. Without it, an operation queued before the server renumbered a folder,
+  and sent before the next sync noticed, goes to whichever message now has the old UID. Cost: one STATUS per operation.
+  A small window remains between that STATUS and the STORE/MOVE: closing it needs the adapter to check UIDVALIDITY when
+  it selects the folder for a write, which `MailBackend` does not offer (reported, not changed: `core/protocols` is
+  another task's).
+- **Lookups.** The lookup straight after a move without a new UID counts as the first of the three. A `Transient` error
+  on a lookup is not counted; a `Permanent` one (folder gone) counts as "not found".
+- **Sync details.** Rows protected from server flags, removal and the section 6 release are the queue's
+  `pending_uids` plus the old addresses of awaiting entries (their rows are kept until the lookup). The plan is worked out
+  again under the lock right before it is applied, so an action taken while a snapshot was on its way is never
+  overwritten. A snapshot is skipped when CONDSTORE says nothing changed (same UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ).
+  Folders the server no longer lists are not deleted locally yet.
+- **Retries.** The engine cannot tell a dropped connection from a busy server (both are `Transient`): the platform's
+  connectivity callback calls `EngineHandle::set_online`; any `Transient` while online goes to `reject`.
+- **Finished operations** are purged at the start of each full sync, so `EngineHandle::operation(id)` shows a failed or
+  confirmed one until then; failures are also announced as `Change::OperationFailed`.
+- **IDLE** is not in `MailBackend`; the account loop wakes on the next due operation, a periodic full sync
+  (`EngineConfig::sync_interval_ms`, 15 min) and a `Notify` poked by every UI action. The place to add IDLE is marked in
+  `worker.rs` (`run_loop`).

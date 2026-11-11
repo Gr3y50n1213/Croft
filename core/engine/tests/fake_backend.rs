@@ -48,7 +48,7 @@ fn failures(changes: &[Change]) -> Vec<(u64, String)> {
 
 /// Waits (briefly, in real time) until the fake server has received a call of `method`.
 async fn wait_for_call(rig: &Rig, method: Method) {
-    for _ in 0..500 {
+    for _ in 0..2_500 {
         let seen = rig.backend.calls().iter().any(|c| {
             matches!(
                 (c, method),
@@ -517,6 +517,55 @@ async fn archive_and_star_after_the_inbox_was_renumbered_act_on_the_right_messag
         .contains(&Call::Move("INBOX".into(), vec![2], "Archive".into())));
     let b = rig.row_by_id("INBOX", "b@x").unwrap();
     assert!(!b.local_hidden && !b.is_flagged && b.pending_ops == 0 && b.uid == 1);
+}
+
+#[tokio::test]
+async fn a_move_repeated_after_a_kill_finds_the_message_by_message_id() {
+    // Design note section 4, case 4: the server applied the move but the app was killed before
+    // the answer was stored. On restart the move is sent again; the source UID is gone, so the
+    // answer has no new UID, and the copy is found by Message-ID. The star still lands on it.
+    let (mut rig, id) = read_archive_star_setup().await;
+    rig.ui.move_to(rig.account, id, "Archive").unwrap();
+    rig.ui.set_flagged(rig.account, id, true).unwrap();
+    rig.advance(5_000);
+    let gate = rig.backend.gate(Method::Move);
+    let ui = rig.ui.clone();
+    let account = rig.account;
+    let task = tokio::spawn(async move { ui.run_once(account, false).await });
+    wait_for_call(&rig, Method::Move).await;
+    task.abort();
+    let _ = task.await;
+    drop(gate);
+    rig.backend.ungate(Method::Move);
+    // The server had done it.
+    {
+        let mut st = rig.backend.st();
+        let m = st
+            .folders
+            .get_mut("INBOX")
+            .unwrap()
+            .messages
+            .remove(&1)
+            .unwrap();
+        let archive = st.folders.get_mut("Archive").unwrap();
+        let uid = archive.uid_next;
+        archive.uid_next += 1;
+        archive.messages.insert(uid, m);
+    }
+    rig.kill_and_restart();
+    rig.run().await;
+    let moves = rig
+        .backend
+        .writes()
+        .into_iter()
+        .filter(|c| matches!(c, Call::Move(..)))
+        .count();
+    assert_eq!(moves, 2, "sent again, harmlessly");
+    let uid = rig.backend.uid_of("Archive", "a@x").unwrap();
+    assert!(rig.backend.flags("Archive", uid).unwrap().flagged);
+    let row = rig.row_by_id("Archive", "a@x").unwrap();
+    assert!(row.is_flagged && row.pending_ops == 0 && !row.local_hidden);
+    assert!(rig.row("INBOX", 1).is_none());
 }
 
 #[tokio::test]

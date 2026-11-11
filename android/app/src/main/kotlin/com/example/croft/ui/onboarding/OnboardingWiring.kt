@@ -45,9 +45,9 @@ private class AppOnboardingBackend(private val context: Context) : OnboardingBac
         } catch (e: UnsatisfiedLinkError) {
             throw StorageUnavailableException()
         }
-        return CoreOnboardingBackend(open.core) { discovered, name, pin, acceptChanged, password ->
+        return CoreOnboardingBackend(open.core) { discovered, name, pin, confirmed, password ->
             try {
-                open.accountSecrets.addPasswordAccount(open.core, discovered, name, pin, acceptChanged, password)
+                open.accountSecrets.addPasswordAccount(open.core, discovered, name, pin, confirmed, password)
             } catch (e: SecretBoxException) {
                 throw StorageUnavailableException()
             } catch (e: IOException) {
@@ -65,9 +65,9 @@ private class AppOnboardingBackend(private val context: Context) : OnboardingBac
         discovered: FfiDiscovered,
         displayName: String,
         pinnedFingerprint: String?,
-        acceptChangedCertificate: Boolean,
+        confirmedFingerprint: String?,
         password: ByteArray,
-    ): Long = real().addAccount(discovered, displayName, pinnedFingerprint, acceptChangedCertificate, password)
+    ): Long = real().addAccount(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)
 
     override fun toString(): String = "[redacted]"
 }

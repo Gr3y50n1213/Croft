@@ -45,25 +45,26 @@ interface OnboardingBackend {
     /**
      * Adds the verified account and keeps [password] in the secret store under the account's id, which is returned. For an address
      * that is already added with the same server the id is the existing account's and the new password replaces the old one.
-     * [acceptChangedCertificate] is true **only** after the person confirmed the changed-certificate warning in this attempt: without
-     * it the core refuses to replace or drop a pin it holds (`CoreException.CertificateChanged`).
+     * [confirmedFingerprint] is the certificate the person confirmed on the **changed-certificate** warning (never one from an ordinary
+     * first-use question), or null. Without it, equal to [pinnedFingerprint], the core refuses to replace a pin it holds, to add a pin to
+     * an account that had none, and it never drops one (`CoreException.CertificateChanged`).
      */
     suspend fun addAccount(
         discovered: FfiDiscovered,
         displayName: String,
         pinnedFingerprint: String?,
-        acceptChangedCertificate: Boolean,
+        confirmedFingerprint: String?,
         password: ByteArray,
     ): Long
 }
 
 /**
- * Where the password is stored once the core has added the account: `(discovered, displayName, pinnedFingerprint, acceptChangedCertificate, password)` to the
+ * Where the password is stored once the core has added the account: `(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)` to the
  * account's id. In the app this is `AccountSecrets.addPasswordAccount` (core call first, then the secret store, and a new account
  * is removed again if the store fails; an account that was only signed in again is kept, with the new password replacing the old);
  * the JVM tests give a plain call to the core and store the password themselves.
  */
-typealias AccountAdder = suspend (FfiDiscovered, String, String?, Boolean, ByteArray) -> Long
+typealias AccountAdder = suspend (FfiDiscovered, String, String?, String?, ByteArray) -> Long
 
 /** [OnboardingBackend] over the real [Core]. */
 class CoreOnboardingBackend(private val core: Core, private val adder: AccountAdder) : OnboardingBackend {
@@ -86,8 +87,8 @@ class CoreOnboardingBackend(private val core: Core, private val adder: AccountAd
     /**
      * Adds the account. **The core decides** what an address that is already added means (`add_account`): the same server is the
      * person signing in again, so the account keeps its id and gets the new settings, pin and password; another server fails with
-     * `CoreException.AccountExists` ("This address is already added"), and a trusted certificate is never replaced or dropped without
-     * [acceptChangedCertificate] (`CoreException.CertificateChanged`). That is also what makes a second sign-in harmless when the
+     * `CoreException.AccountExists` ("This address is already added"), and a trusted certificate is never replaced, added or dropped without
+     * [confirmedFingerprint] (`CoreException.CertificateChanged`). That is also what makes a second sign-in harmless when the
      * first one did add the account but its screen was gone before it could say so (the add runs to its end even then, see
      * `OnboardingFlow`): the second one finds the account and refreshes it. Nothing here reads the database.
      */
@@ -95,9 +96,9 @@ class CoreOnboardingBackend(private val core: Core, private val adder: AccountAd
         discovered: FfiDiscovered,
         displayName: String,
         pinnedFingerprint: String?,
-        acceptChangedCertificate: Boolean,
+        confirmedFingerprint: String?,
         password: ByteArray,
-    ): Long = adder(discovered, displayName, pinnedFingerprint, acceptChangedCertificate, password)
+    ): Long = adder(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)
 
     override fun toString(): String = "[redacted]"
 }

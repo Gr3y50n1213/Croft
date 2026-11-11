@@ -157,7 +157,7 @@ class SecretStoreCredentialsTest {
     private fun accounts() = AccountSecrets(store, signIns)
 
     private fun add(core: Core, password: String = Fixture.PASSWORD, email: String = "alice@example.org"): Long =
-        runBlocking { accounts().addPasswordAccount(core, deadServer(email), "Alice", null, false, password.toByteArray()) }
+        runBlocking { accounts().addPasswordAccount(core, deadServer(email), "Alice", null, null, password.toByteArray()) }
 
     @Test
     fun aNewAccountIsStoredUnderItsReturnedIdAndTheProviderWasNotAskedAboutIt() {
@@ -190,7 +190,7 @@ class SecretStoreCredentialsTest {
         val core = core(provider())
         val jmapOnly = deadServer().copy(imap = null, jmap = "https://example.org/.well-known/jmap")
         try {
-            runBlocking { accounts().addPasswordAccount(core, jmapOnly, "Alice", null, false, Fixture.PASSWORD.toByteArray()) }
+            runBlocking { accounts().addPasswordAccount(core, jmapOnly, "Alice", null, null, Fixture.PASSWORD.toByteArray()) }
             fail("expected CoreException")
         } catch (e: CoreException) {
             // refused by the core
@@ -208,7 +208,7 @@ class SecretStoreCredentialsTest {
         try {
             runBlocking {
                 AccountSecrets(failing, signIns)
-                    .addPasswordAccount(core, deadServer(), "Alice", null, false, Fixture.PASSWORD.toByteArray())
+                    .addPasswordAccount(core, deadServer(), "Alice", null, null, Fixture.PASSWORD.toByteArray())
             }
             fail("expected SecretBoxException")
         } catch (e: SecretBoxException) {
@@ -244,7 +244,7 @@ class SecretStoreCredentialsTest {
         val id = add(core, "first-account-pw-Kl-6")
         val other = deadServer().copy(imap = ServerSettings("localhost", 1u, SecurityMode.TLS, "alice"))
         try {
-            runBlocking { accounts().addPasswordAccount(core, other, "Alice", null, false, "other-account-pw-Mn-7".toByteArray()) }
+            runBlocking { accounts().addPasswordAccount(core, other, "Alice", null, null, "other-account-pw-Mn-7".toByteArray()) }
             fail("expected CoreException.AccountExists")
         } catch (e: CoreException.AccountExists) {
             // "This address is already added"
@@ -259,10 +259,10 @@ class SecretStoreCredentialsTest {
         val local = SecretStore(File(dir, "again"), AesGcmSecretBox(keys))
         val core = core(SecretStoreCredentials(local, signIns))
         val accounts = AccountSecrets(local, signIns)
-        val id = runBlocking { accounts.addPasswordAccount(core, deadServer(), "Alice", null, false, "old-account-pw-Op-8".toByteArray()) }
+        val id = runBlocking { accounts.addPasswordAccount(core, deadServer(), "Alice", null, null, "old-account-pw-Op-8".toByteArray()) }
         keys.unavailable = true
         try {
-            runBlocking { accounts.addPasswordAccount(core, deadServer(), "Alice", null, false, "new-account-pw-Qr-9".toByteArray()) }
+            runBlocking { accounts.addPasswordAccount(core, deadServer(), "Alice", null, null, "new-account-pw-Qr-9".toByteArray()) }
             fail("expected SignInNotSavedException")
         } catch (e: SignInNotSavedException) {
             // "the account is as it was": the screen says so
@@ -280,10 +280,10 @@ class SecretStoreCredentialsTest {
     fun aPinnedAccountIsNotReplacedOrDroppedWithoutTheAcknowledgement_andNothingIsStored() {
         val core = core(provider())
         val pin = "AB".repeat(32)
-        val id = runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", pin, false, "first-account-pw-Rs-10".toByteArray()) }
+        val id = runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", pin, null, "first-account-pw-Rs-10".toByteArray()) }
         for (other in listOf("CD".repeat(32), null)) {
             try {
-                runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", other, false, "other-account-pw-Tu-11".toByteArray()) }
+                runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", other, null, "other-account-pw-Tu-11".toByteArray()) }
                 fail("expected CoreException.CertificateChanged")
             } catch (e: CoreException.CertificateChanged) {
                 // the changed-certificate warning comes first
@@ -291,7 +291,7 @@ class SecretStoreCredentialsTest {
             assertArrayEquals("the old password is untouched", "first-account-pw-Rs-10".toByteArray(), store.get(id, SecretKind.PASSWORD))
         }
         // After the person confirmed the warning the pin and the password are replaced.
-        val again = runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", "CD".repeat(32), true, "new-account-pw-Vw-12".toByteArray()) }
+        val again = runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", "CD".repeat(32), "CD".repeat(32), "new-account-pw-Vw-12".toByteArray()) }
         assertEquals(id, again)
         assertArrayEquals("new-account-pw-Vw-12".toByteArray(), store.get(id, SecretKind.PASSWORD))
         assertEquals(1, core.listAccounts().size)
@@ -321,7 +321,7 @@ class SecretStoreCredentialsTest {
         val accounts = AccountSecrets(store, signIns, kotlinx.coroutines.Dispatchers.IO)
         val id = runBlocking {
             thread = Thread.currentThread()
-            accounts.addPasswordAccount(core, deadServer(), "Alice", null, false, password)
+            accounts.addPasswordAccount(core, deadServer(), "Alice", null, null, password)
         }
         assertArrayEquals("the copy given to the core is wiped, the caller's array is the caller's", Fixture.PASSWORD.toByteArray(), password)
         assertArrayEquals(Fixture.PASSWORD.toByteArray(), store.get(id, SecretKind.PASSWORD))
@@ -334,7 +334,7 @@ class SecretStoreCredentialsTest {
         val local = SecretStore(File(dir, "notready"), AesGcmSecretBox(keys))
         val first = core(SecretStoreCredentials(local, signIns))
         val id = runBlocking {
-            AccountSecrets(local, signIns).addPasswordAccount(first, deadServer(), "Alice", null, false, Fixture.PASSWORD.toByteArray())
+            AccountSecrets(local, signIns).addPasswordAccount(first, deadServer(), "Alice", null, null, Fixture.PASSWORD.toByteArray())
         }
         first.close()
         open.remove(first)

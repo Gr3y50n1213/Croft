@@ -70,18 +70,18 @@ class FakeBackend : OnboardingBackend {
         return verifiedAgainst ?: pinnedFingerprint
     }
 
-    /** Whether each add was given `acceptChangedCertificate`, in order. */
-    val acceptFlags = CopyOnWriteArrayList<Boolean>()
+    /** The `confirmedFingerprint` each add was given, in order. */
+    val confirmations = CopyOnWriteArrayList<String?>()
 
     override suspend fun addAccount(
         discovered: FfiDiscovered,
         displayName: String,
         pinnedFingerprint: String?,
-        acceptChangedCertificate: Boolean,
+        confirmedFingerprint: String?,
         password: ByteArray,
     ): Long {
         val text = String(password)
-        acceptFlags += acceptChangedCertificate
+        confirmations += confirmedFingerprint
         adds += pinnedFingerprint to text
         return onAdd(discovered, pinnedFingerprint, text)
     }

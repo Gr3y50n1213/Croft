@@ -41,8 +41,8 @@ sealed interface Attempt {
     data object Working : Attempt
     data class Failed(val failure: OnboardingFailure) : Attempt
 
-    /** The server's certificate is not one Croft knows. [changed] is true when a certificate the person trusted before is not the one shown now. */
-    data class Trust(val host: String, val fingerprint: String, val changed: Boolean) : Attempt
+    /** The server's certificate is not one Croft knows. [changed] is true when a certificate the person trusted before is not the one shown now (the stronger warning). [runId] names the attempt that asked: an answer only counts for that attempt, never for a newer one. */
+    data class Trust(val host: String, val fingerprint: String, val changed: Boolean, val runId: Long) : Attempt
 }
 
 /**
@@ -107,16 +107,26 @@ class OnboardingFlow(
      * and [close] wipe [password]; a cancelled attempt that is still unwinding can never wipe the next attempt's array, because each
      * attempt has its own and only touches the shared fields while it is still [run].
      */
-    private class Run(val discovered: FfiDiscovered, val add: Boolean, val password: ByteArray) {
+    private class Run(val id: Long, val discovered: FfiDiscovered, val add: Boolean, val password: ByteArray) {
         /**
-         * The certificate the person confirmed on the **changed-certificate** warning (not on an ordinary first-use question) in this
-         * attempt, or null. Only a pin equal to it is added with `acceptChangedCertificate`: the core never replaces or drops a trusted
-         * certificate otherwise.
+         * The certificate the person confirmed on the **changed-certificate** warning (not on an ordinary first-use question), or null.
+         * It is handed to `add_account` as `confirmedFingerprint`: the core never replaces, adds or drops a trusted certificate unless
+         * this is exactly the fingerprint being stored.
          */
         @Volatile var confirmedChange: String? = null
 
         fun wipe() = password.fill(0)
     }
+
+    /** The numbers of the attempts ([Run.id], [Attempt.Trust.runId]). */
+    private val runs = AtomicLong()
+
+    /**
+     * The certificate confirmed on the changed-certificate warning on this screen, carried from one attempt to the next so that S05's
+     * "Test connection" and then "Add account" ask once. It only applies to an attempt whose pin is that same fingerprint
+     * ([begin]), and is set again by every answer ([trustServer]), so a first-use answer clears it.
+     */
+    @Volatile private var confirmedChange: String? = null
 
     /** The attempt that is current (running, or waiting on the trust question). */
     @Volatile private var run: Run? = null
@@ -145,6 +155,7 @@ class OnboardingFlow(
     fun continueWithEmail() {
         val s = mutable.value
         if (s.step != Step.ADD_ACCOUNT || !EmailInput.isValid(s.email)) return
+        confirmedChange = null
         mutable.update { it.copy(discovered = null, attempt = Attempt.Idle, test = null, pinnedFingerprint = null) }
         push(Step.FINDING)
         startLookup()
@@ -284,7 +295,8 @@ class OnboardingFlow(
     private fun begin(d: FfiDiscovered, add: Boolean, password: ByteArray) {
         // The attempt before this one (waiting on a trust question, say) is over: its password is wiped.
         run?.wipe()
-        val r = Run(d, add, password)
+        val r = Run(runs.incrementAndGet(), d, add, password)
+        r.confirmedChange = confirmedChange?.takeIf { it.equals(mutable.value.pinnedFingerprint, ignoreCase = true) }
         run = r
         job?.cancel()
         job = scope.launch { execute(r) }
@@ -338,7 +350,7 @@ class OnboardingFlow(
     private fun onAddCertificateChanged(r: Run, e: CoreException.CertificateChanged, host: String?, pin: String?) {
         if (run !== r) { r.wipe(); return }
         if (pin == null) { fail(r, OnboardingFailure.Add(e, host)); return }
-        mutable.update { it.copy(adding = false, attempt = Attempt.Trust(host.orEmpty(), pin, changed = true)) }
+        mutable.update { it.copy(adding = false, attempt = Attempt.Trust(host.orEmpty(), pin, changed = true, runId = r.id)) }
     }
 
     /**
@@ -351,11 +363,8 @@ class OnboardingFlow(
      */
     private suspend fun addAccountToCompletion(r: Run, pin: String?): Long = withContext(NonCancellable) {
         val copy = r.password.copyOf()
-        // Only the certificate the person confirmed on the changed-certificate warning may replace a trusted one.
-        val confirmed = r.confirmedChange
-        val acceptChanged = pin != null && confirmed != null && confirmed.equals(pin, ignoreCase = true)
         try {
-            backend.addAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), pin, acceptChanged, copy)
+            backend.addAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), pin, r.confirmedChange, copy)
         } finally {
             copy.fill(0)
         }
@@ -364,8 +373,8 @@ class OnboardingFlow(
     private fun onVerifyFailed(r: Run, f: VerifyFailure, host: String?) {
         if (run !== r) { r.wipe(); return }
         val trust = when (f) {
-            is VerifyFailure.UntrustedCertificate -> Attempt.Trust(host.orEmpty(), f.fingerprint, changed = false)
-            is VerifyFailure.CertificateChanged -> Attempt.Trust(host.orEmpty(), f.fingerprint, changed = true)
+            is VerifyFailure.UntrustedCertificate -> Attempt.Trust(host.orEmpty(), f.fingerprint, changed = false, runId = r.id)
+            is VerifyFailure.CertificateChanged -> Attempt.Trust(host.orEmpty(), f.fingerprint, changed = true, runId = r.id)
             else -> null
         }
         mutable.update { it.copy(test = if (it.step == Step.SERVER_SETTINGS) ConnectionTest.stoppedAt(ConnectionTest.stepOf(f)) else null) }
@@ -393,8 +402,11 @@ class OnboardingFlow(
     fun trustServer() {
         val trust = mutable.value.attempt as? Attempt.Trust ?: return
         val r = run ?: return
+        // A question of an earlier attempt, still on the screen, must not be answered for the current one.
+        if (trust.runId != r.id) return
         // Set, not kept: an ordinary first-use answer clears an earlier confirmation, and only the changed-certificate warning sets it.
         r.confirmedChange = if (trust.changed) trust.fingerprint else null
+        confirmedChange = r.confirmedChange
         mutable.update { it.copy(pinnedFingerprint = trust.fingerprint) }
         job?.cancel()
         job = scope.launch { execute(r) }
@@ -402,7 +414,7 @@ class OnboardingFlow(
 
     /** Cancel on the trust question: nothing is trusted, the password is wiped. */
     fun cancelTrust() {
-        job?.cancel(); endRun()
+        job?.cancel(); endRun(); confirmedChange = null
         mutable.update { it.copy(attempt = Attempt.Idle, test = null) }
     }
 
@@ -422,14 +434,14 @@ class OnboardingFlow(
         // Adding the account cannot be stopped half way, so Back waits for it (the press is taken and does nothing). Checking the
         // password can be cancelled, and is.
         if (s.adding) return true
-        job?.cancel(); job = null; lookups.incrementAndGet(); endRun()
+        job?.cancel(); job = null; lookups.incrementAndGet(); endRun(); confirmedChange = null
         mutable.update { it.copy(stack = it.stack.dropLast(1), attempt = Attempt.Idle, lookup = Lookup.Idle, test = null) }
         return true
     }
 
     /** The screen is going away: stops what runs and wipes the password. */
     fun close() {
-        job?.cancel(); job = null; lookups.incrementAndGet(); endRun()
+        job?.cancel(); job = null; lookups.incrementAndGet(); endRun(); confirmedChange = null
     }
 
     private fun push(step: Step) = mutable.update { it.copy(stack = it.stack + step) }

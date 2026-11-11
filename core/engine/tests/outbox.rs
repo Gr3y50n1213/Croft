@@ -1190,10 +1190,17 @@ async fn after_a_refused_sign_in_remove_and_add_does_not_make_the_task_spin_and_
     t.smtp.clear_reply(Stage::Auth);
     t.ui.signed_in(t.account);
     wait_until("the message to be sent", || t.smtp.accepted().len() == 1).await;
-    wait_until("the outbox to empty", || t.ui.outbox(t.account).is_empty()).await;
-    assert_eq!(t.imap.messages("Sent").len(), 1);
+    // Wait for the copy itself. The Outbox list is empty as soon as the server has accepted the
+    // message (`OutboxState::shows_in_outbox`: only Queued, Sending and Failed are listed), which
+    // is before the copy is appended to Sent, so an empty list says nothing about the copy.
+    wait_until("the copy to be filed", || {
+        t.imap.messages("Sent").len() == 1
+    })
+    .await;
+    assert!(t.ui.outbox(t.account).is_empty());
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(t.smtp.accepted().len(), 1);
+    assert_eq!(t.imap.messages("Sent").len(), 1);
     t.engine.shutdown().await;
 }
 

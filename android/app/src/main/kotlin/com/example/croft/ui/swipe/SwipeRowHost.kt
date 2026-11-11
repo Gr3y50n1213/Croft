@@ -169,6 +169,12 @@ internal class SwipeRowDriver(private val scope: CoroutineScope) {
     var specs: SwipeSpecs = SwipeSpecs(snap(), snap(), snap())
     var callbacks: SwipeCallbacks = SwipeCallbacks({}, { _, _ -> }, {}, {})
     private var slid = false
+
+    /** The preview's own demonstration is moving the card: no haptics for it, and a touch ends it. */
+    var silent = false
+
+    /** A finger is on the card (a touch ends the demonstration). */
+    var touched by mutableStateOf(false)
     private var offsetJob: Job? = null
     private var releaseVelocityPx = 0f
 
@@ -189,7 +195,45 @@ internal class SwipeRowDriver(private val scope: CoroutineScope) {
     /** The finger took hold: whatever moved the card stops where it is. Returns the card's place in px. */
     fun takeOver(): Float {
         offsetJob?.cancel()
+        silent = false
+        touched = true
         return offsetPx
+    }
+
+    /** The finger is up or the gesture was left to someone else. */
+    fun touchEnded() { touched = false }
+
+    /**
+     * The looped demonstration of S47: each of [directions] in turn, the card is dragged past the arm point, held, released, and
+     * the commit plays (a removing action collapses and then the row is restored, so the loop can go on). It makes no sound or
+     * vibration, waits [pauseMs] between stages, gives way at once to a finger, and never runs at Animation level Off.
+     */
+    suspend fun runDemo(directions: List<SwipeDirection>, pauseMs: Long) {
+        if (level == MotionLevel.OFF || directions.isEmpty()) return
+        while (true) {
+            for (d in directions) {
+                kotlinx.coroutines.delay(pauseMs)
+                if (touched || state.phase != SwipePhase.IDLE || widthPx == 0) continue
+                silent = true
+                var t = 0L
+                val sign = d.physicalSign(rtl)
+                val reach = DEMO_REACH * widthPx / density
+                try {
+                    animate(0f, reach, 0f, specs.defaultSpatial) { v, _ ->
+                        if (touched) throw kotlinx.coroutines.CancellationException("a finger took the card")
+                        t += FRAME_MS
+                        drag(sign * v, t)
+                    }
+                    kotlinx.coroutines.delay(pauseMs)
+                    if (!touched) release(0f, t + FRAME_MS)
+                    snapshotFlow { state.phase == SwipePhase.IDLE }.first { it }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    if (!touched) throw e
+                } finally {
+                    silent = false
+                }
+            }
+        }
     }
 
     /** A drag event: [dxDp] is the finger's distance from where it took hold of the card, in dp. */
@@ -212,7 +256,7 @@ internal class SwipeRowDriver(private val scope: CoroutineScope) {
 
     private fun apply(effects: List<SwipeEffect>) {
         for (e in effects) when (e) {
-            is SwipeEffect.Haptic -> haptics.perform(e.kind.toEvent())
+            is SwipeEffect.Haptic -> if (!silent) haptics.perform(e.kind.toEvent())
             is SwipeEffect.Commit -> commit(e.action)
             is SwipeEffect.Park -> { park(); callbacks.onPark(e.action) }
             SwipeEffect.SpringBack -> springBack()
@@ -323,6 +367,8 @@ fun SwipeRowHost(
     onParkResolutionHandled: () -> Unit,
     modifier: Modifier = Modifier,
     trailing: @Composable () -> Unit = {},
+    /** The directions to demonstrate in a loop (S47's preview), or null. */
+    demo: List<SwipeDirection>? = null,
     content: @Composable (card: SwipeCardLook?) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -360,6 +406,8 @@ fun SwipeRowHost(
     val rightInset = insetOverride?.let { with(density) { it.toPx() } } ?: systemInsets.getRight(density, layoutDirection).toFloat()
     val guard by rememberUpdatedState(BackGuard(leftInset, rightInset, windowWidth))
 
+    LaunchedEffect(demo, level, settings) { if (demo != null) driver.runDemo(demo, SwipeLooks.PREVIEW_PAUSE_MS) }
+
     // A row that leaves while it is being dragged ends the drag without an action.
     LaunchedEffect(alive) { if (!alive) driver.cancel(SwipeCancel.ROW_REMOVED) }
     LaunchedEffect(parkResolution) {
@@ -373,11 +421,6 @@ fun SwipeRowHost(
     val direction by remember { derivedStateOf { driver.state.direction } }
     val available = remember(direction, settings, slotOf) { direction?.let { slotOf(it).available } ?: true }
 
-    val colours = swipePillColours(action, available)
-    val pillColour by animateColorAsState(if (armed) colours.full else colours.container, scheme.defaultEffectsSpec(), label = "swipe-pill-colour")
-    val iconColour by animateColorAsState(if (armed) colours.onFull else colours.onContainer, scheme.defaultEffectsSpec(), label = "swipe-icon-colour")
-    // The icon grows to 1.2 at the arm point with the fast spatial spring; at Reduced and Off only colour, a disc behind the icon and
-    // the haptic signal it.
     val iconScale by animateFloatAsState(if (armed && level == MotionLevel.FULL) SwipeTokens.armedIconScale else 1f, scheme.fastSpatialSpec(), label = "swipe-icon-scale")
 
     val cardRadiusDp by remember(theme.roundness, theme.listStyle) {
@@ -443,6 +486,7 @@ fun SwipeRowHost(
                         // A swipe: from here the card follows the finger one to one, from wherever it is.
                         val tracker = VelocityTracker()
                         val base = driver.takeOver()
+                        try {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             if (!aliveNow || !enabledNow) {
@@ -467,45 +511,22 @@ fun SwipeRowHost(
                             change.consume()
                             driver.drag(dxDp, change.uptimeMillis)
                         }
+                        } finally { driver.touchEnded() }
                     }
                 },
         ) {
             if (showPill) {
-                val pillSide by remember { derivedStateOf { if (driver.offsetPx >= 0f) Alignment.CenterStart else Alignment.CenterEnd } }
-                Box(Modifier.matchParentSize().padding(horizontal = SwipeTokens.geometry.insetFromEdge.dp).clearAndSetSemantics { }) {
-                    Box(
-                        Modifier
-                            .align(pillSide)
-                            .layout { measurable, constraints ->
-                                val rowH = constraints.maxHeight
-                                val geo = SwipeGeometry.pill(SwipeTokens.geometry, abs(driver.offsetPx) / driver.density, rowH / driver.density)
-                                val full = SwipeGeometry.committedPill(SwipeTokens.geometry, driver.widthPx / driver.density, rowH / driver.density)
-                                val w = (min(geo.width, full.width) * driver.density).roundToInt().coerceAtLeast(0)
-                                val p = measurable.measure(Constraints.fixed(w, rowH))
-                                layout(w, rowH) { p.place(0, 0) }
-                            }
-                            .clip(CircleShape)
-                            .background(pillColour),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            if (level != MotionLevel.FULL && armed) Box(Modifier.size((SwipeLooks.ICON_DP + 12).dp).clip(CircleShape).background(iconColour.copy(alpha = DISC_ALPHA)))
-                            Icon(
-                                iconOf(action),
-                                contentDescription = null,
-                                tint = iconColour,
-                                modifier = Modifier
-                                    .size(SwipeLooks.ICON_DP.dp)
-                                    .graphicsLayer {
-                                        val rowH = heightPx / driver.density
-                                        val visible = SwipeGeometry.pill(SwipeTokens.geometry, abs(driver.offsetPx) / driver.density, rowH).iconVisible
-                                        alpha = if (visible) 1f else 0f
-                                        scaleX = iconScale; scaleY = iconScale
-                                    },
-                            )
-                        }
-                    }
-                }
+                SwipePill(
+                    offsetPx = { driver.offsetPx },
+                    rowWidthPx = { driver.widthPx },
+                    density = driver.density,
+                    action = action,
+                    available = available,
+                    armed = armed,
+                    icon = iconOf(action),
+                    modifier = Modifier.matchParentSize(),
+                    iconScale = { iconScale },
+                )
             }
             Box(Modifier.absoluteOffset { IntOffset(driver.offsetPx.roundToInt(), 0) }) { content(cardLook) }
         }
@@ -514,6 +535,12 @@ fun SwipeRowHost(
 }
 
 private const val DISC_ALPHA = 0.16f
+
+/** How far the demonstration drags: past the arm point at every sensitivity (as a fraction of the row width). */
+private const val DEMO_REACH = 0.5f
+
+/** The step of the demonstration's time stamps. */
+private const val FRAME_MS = 16L
 
 /** The strips at the window edges that belong to the system, and the window width (px). */
 private class BackGuard(val left: Float, val right: Float, val windowWidth: Int)
@@ -524,4 +551,104 @@ private suspend fun AwaitPointerEventScope.ignoreRestOfGesture(consume: Boolean 
         val event = awaitPointerEvent(PointerEventPass.Initial)
         if (consume) event.changes.forEach { it.consume() }
     } while (event.changes.any { it.pressed })
+}
+
+
+/**
+ * The pill that fills the space the card leaves (docs/ux/swipe.md): row height, [SwipeGeometry]'s width for the card's offset, 4 dp from
+ * the card and 8 dp from the row's outer edge, a stadium whose radius is half its smaller side, the action's icon centred once the pill is
+ * wide enough, its tonal colour below the arm point and its full colour armed. At Reduced and Off, where the icon does not grow, an armed
+ * pill also puts a soft disc behind the icon, so the arm point is still a change of shape and not only of colour. Decorative: screen
+ * readers reach the action through the row's custom actions.
+ */
+@Composable
+internal fun SwipePill(
+    offsetPx: () -> Float,
+    rowWidthPx: () -> Int,
+    density: Float,
+    action: SwipeAction,
+    available: Boolean,
+    armed: Boolean,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    iconScale: () -> Float = { 1f },
+) {
+    val level = LocalMotionLevel.current
+    val scheme = MaterialTheme.motionScheme
+    val colours = swipePillColours(action, available)
+    val pillColour by animateColorAsState(if (armed) colours.full else colours.container, scheme.defaultEffectsSpec(), label = "swipe-pill-colour")
+    val iconColour by animateColorAsState(if (armed) colours.onFull else colours.onContainer, scheme.defaultEffectsSpec(), label = "swipe-icon-colour")
+    val rightwards by remember { derivedStateOf { offsetPx() >= 0f } }
+    var rowHeightPx by remember { mutableStateOf(0) }
+    Box(modifier.padding(horizontal = SwipeTokens.geometry.insetFromEdge.dp).onSizeChanged { rowHeightPx = it.height }.clearAndSetSemantics { }) {
+        Box(
+            Modifier
+                .align(if (rightwards) Alignment.CenterStart else Alignment.CenterEnd)
+                .layout { measurable, constraints ->
+                    val rowH = constraints.maxHeight
+                    val geo = SwipeGeometry.pill(SwipeTokens.geometry, abs(offsetPx()) / density, rowH / density)
+                    val full = SwipeGeometry.committedPill(SwipeTokens.geometry, rowWidthPx() / density, rowH / density)
+                    val w = (min(geo.width, full.width) * density).roundToInt().coerceAtLeast(0)
+                    val p = measurable.measure(Constraints.fixed(w, rowH))
+                    layout(w, rowH) { p.place(0, 0) }
+                }
+                .clip(CircleShape)
+                .background(pillColour),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                if (level != MotionLevel.FULL && armed) Box(Modifier.size((SwipeLooks.ICON_DP + 12).dp).clip(CircleShape).background(iconColour.copy(alpha = DISC_ALPHA)))
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = iconColour,
+                    modifier = Modifier
+                        .size(SwipeLooks.ICON_DP.dp)
+                        .graphicsLayer {
+                            val visible = SwipeGeometry.pill(SwipeTokens.geometry, abs(offsetPx()) / density, rowHeightPx / density).iconVisible
+                            alpha = if (visible) 1f else 0f
+                            scaleX = iconScale(); scaleY = iconScale()
+                        },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A row held in the middle of a swipe, drawn without a finger (the component gallery, and screenshots): the page behind it, the
+ * pill and the card at [offsetDp] from the resting place, to the right when positive. [content] receives the card look.
+ */
+@Composable
+fun SwipeRowFrozen(
+    offsetDp: Float,
+    action: SwipeAction,
+    armed: Boolean,
+    modifier: Modifier = Modifier,
+    available: Boolean = true,
+    icon: ImageVector? = null,
+    content: @Composable (card: SwipeCardLook) -> Unit,
+) {
+    val density = LocalDensity.current
+    val theme = LocalThemeSettings.current
+    var widthPx by remember { mutableStateOf(0) }
+    val offsetPx = offsetDp * density.density
+    val rest = if (theme.listStyle == ListStyle.FLAT) 0f else theme.roundness.swipeCardRadiusDp.toFloat()
+    val radius = SwipeGeometry.cardRadius(SwipeTokens.geometry, abs(offsetDp), rest, theme.roundness.swipeCardRadiusDp.toFloat())
+    Box(modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer).onSizeChanged { widthPx = it.width }) {
+        SwipePill(
+            offsetPx = { offsetPx },
+            rowWidthPx = { widthPx },
+            density = density.density,
+            action = action,
+            available = available,
+            armed = armed,
+            icon = icon ?: swipeIcon(action, null),
+            modifier = Modifier.matchParentSize(),
+            iconScale = { if (armed) SwipeTokens.armedIconScale else 1f },
+        )
+        Box(Modifier.absoluteOffset { IntOffset(offsetPx.roundToInt(), 0) }) {
+            content(SwipeCardLook(RoundedCornerShape(radius.dp), theme.contrast == CroftContrast.HIGH))
+        }
+    }
 }

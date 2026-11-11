@@ -9,21 +9,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 
 /**
  * The first screen: proves the Rust core is loaded and answering. `info` is null when the library
- * could not be loaded or speaks another FFI API version.
+ * could not be loaded or speaks another FFI API version. The Settings button opens the settings list.
  */
 @Composable
-fun HelloScreen(info: RustInfo?) {
+fun HelloScreen(info: RustInfo?, onOpenSettings: () -> Unit = {}) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier.safeDrawingPadding().padding(24.dp),
@@ -36,6 +38,9 @@ fun HelloScreen(info: RustInfo?) {
                 Text(text = stringResource(R.string.ffi_api_version, info.ffiApiVersion.toString()), style = MaterialTheme.typography.bodyMedium)
             } else {
                 Text(text = stringResource(R.string.core_unavailable), color = MaterialTheme.colorScheme.error)
+            }
+            FilledTonalButton(onClick = onOpenSettings, modifier = Modifier.padding(top = 16.dp).testTag("open-settings")) {
+                Text(stringResource(R.string.nav_settings))
             }
         }
     }

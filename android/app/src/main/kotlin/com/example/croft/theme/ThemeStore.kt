@@ -57,6 +57,15 @@ class ThemeStore(private val dataStore: DataStore<ThemeSettings>) {
                 ),
             )
 
+        @Volatile private var shared: ThemeStore? = null
+
+        /**
+         * The one store of this process. DataStore refuses two instances on one file, and an activity can be created many
+         * times, so the activity asks for this one.
+         */
+        fun shared(context: Context): ThemeStore =
+            shared ?: synchronized(this) { shared ?: create(context).also { shared = it } }
+
         /** A store on any file, for tests. */
         fun onFile(file: File, scope: CoroutineScope): ThemeStore =
             ThemeStore(DataStoreFactory.create(serializer = ThemeSettingsSerializer, scope = scope, produceFile = { file }))

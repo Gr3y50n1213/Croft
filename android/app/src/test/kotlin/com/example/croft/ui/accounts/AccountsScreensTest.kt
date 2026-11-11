@@ -365,6 +365,8 @@ class AccountsScreensTest {
 
     @Test
     fun removeFromTheAccountScreenListsWhatGoesAndReturnsToTheList() {
+        // The list names what the device really holds for the account (the removal list reads the secret store).
+        secrets.put(2, SecretKind.PASSWORD, "made-up-password".toByteArray())
         show()
         openAccounts()
         tag(AccountsTags.row(2)).performClick()

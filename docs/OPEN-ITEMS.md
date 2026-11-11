@@ -18,6 +18,18 @@ Things only the owner can decide or do. Newest first within each section.
 - iOS bundle ID: `com.example.croft` (not used yet).
 - Publisher name, domain, contact and security-report address: `PUBLISHER_NAME`, `example.org`, `security@example.org`.
 
+## Placeholders from T17c
+- **Privacy policy address.** S60 and S01 open `https://example.org/croft/privacy` (`AboutLinks.PRIVACY_POLICY_URL` in `android/app/src/main/kotlin/com/example/croft/ui/accounts/Links.kt`). It is a placeholder: host the policy (`docs/store/PRIVACY-POLICY.draft.md`) at a stable public address and change that one constant before the first store upload.
+- **Source link.** S60 opens the project's GitHub repository (`AboutLinks.SOURCE_URL`, same file). It names the repository's owner account in the address; if the public repository will live elsewhere, change that constant.
+- **Licence texts.** S60's licence screen lists each library with its licence name; it does not bundle the full licence texts. Check with the licence review whether the stores' and the licences' notice rules need them in the app.
+
+## Left out of S45 for T18 and later
+S45 (Account) has no entry yet for these, because the core has no storage for them (no disabled placeholders, Apple 2.1):
+- **Identities and signatures** (T18, compose): the core's `identity` table exists, with no FFI to read or write it.
+- **Sync window** (how far back to sync): no core setting yet.
+- **Server settings** (opens S05 pre-filled): the core cannot read an account's server settings back, and cannot change them (needs a core call to read and one to update a stored account; the S05 screen exists).
+- The account name and colour live in the app (`croft-accounts.json`); the Inbox, the drawer and the account switcher still show the core's label and the avatar colours they have; use `AccountPrefs.nameOf` and `colourOf` there when they are revisited.
+
 ## Accounts, money, legal (not for Claude to do)
 - **Launch plan (owner, 11 Nov 2026):** soft launch on F-Droid first, then the official launch on Google Play and the Apple App Store. No store accounts yet; they are needed before the official launch (see `docs/ROADMAP.md` "Store lead times": the Play closed test needs 12 testers for 14 days, and Google and Apple account checks take days to weeks). F-Droid needs no paid account, but submitting means a merge request to F-Droid's data repository on GitLab (a free GitLab account, the owner's), and a real application ID instead of `com.example.croft`.
 - Trademark: a preliminary web search (not legal advice) found no email product named Croft; the closest is Croft Technology, Inc. with live US marks in class 42 (not email). See `docs/store/TRADEMARK-PRELIM.md`. A lawyer's clearance search is still advised before the official launch.

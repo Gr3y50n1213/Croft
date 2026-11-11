@@ -312,12 +312,12 @@ async fn sign_in(
                     "the sign-in details contain characters IMAP cannot carry",
                 ));
             };
-            (Zeroizing::new(format!("LOGIN {} {}", &*user, &*pass)), None)
+            (Zeroizing::new(format!("LOGIN {} {}", *user, *pass)), None)
         }
         Credential::OAuth2 { user, access_token } => {
             let raw = Zeroizing::new(format!(
                 "user={user}\u{1}auth=Bearer {}\u{1}\u{1}",
-                &**access_token
+                **access_token
             ));
             let encoded =
                 Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(raw.as_bytes()));

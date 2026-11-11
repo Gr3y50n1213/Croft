@@ -367,7 +367,7 @@ async fn greenmail_imaps_refuses_without_a_pin_and_with_the_wrong_pin() {
     let none = ImapBackend::new(cfg.clone(), Credential::password("test")).unwrap();
     assert!(matches!(
         none.list_folders().await,
-        Err(BackendError::Permanent(_))
+        Err(BackendError::Auth(_))
     ));
     let wrong = ImapBackend::new(
         cfg.with_pinned_cert(CertFingerprint::of_der(b"not the certificate")),
@@ -376,7 +376,7 @@ async fn greenmail_imaps_refuses_without_a_pin_and_with_the_wrong_pin() {
     .unwrap();
     assert!(matches!(
         wrong.list_folders().await,
-        Err(BackendError::Permanent(_))
+        Err(BackendError::Auth(_))
     ));
 }
 
@@ -445,18 +445,13 @@ async fn dovecot_probe_reads_the_known_certificate_and_a_wrong_pin_is_refused() 
     let mut cfg = dovecot_imaps(&user).config;
     cfg.pinned_cert = Some(CertFingerprint::of_der(b"someone else"));
     let b = ImapBackend::new(cfg, Credential::password("testpass")).unwrap();
-    assert!(matches!(
-        b.list_folders().await,
-        Err(BackendError::Permanent(_))
-    ));
+    assert!(matches!(b.list_folders().await, Err(BackendError::Auth(_))));
 
-    // Unpinned: the self-signed certificate does not validate against public roots.
+    // Unpinned: the self-signed certificate does not validate against public roots. Certificate
+    // failures are `Auth` (the account pauses, queued operations stay), not `Permanent`.
     let unpinned = ImapConfig::new("localhost", 31993, Security::Tls, &user);
     let b = ImapBackend::new(unpinned, Credential::password("testpass")).unwrap();
-    assert!(matches!(
-        b.list_folders().await,
-        Err(BackendError::Permanent(_))
-    ));
+    assert!(matches!(b.list_folders().await, Err(BackendError::Auth(_))));
 }
 
 #[tokio::test]

@@ -9,11 +9,17 @@
 //! operation is safe to repeat). TLS is always on, with certificates validated against public
 //! roots or a pinned fingerprint; see [`ImapConfig`] and [`Security`].
 //!
-//! Error classes: network failures, timeouts, and servers that are busy are
-//! [`BackendError::Transient`]; a rejected `LOGIN`/`AUTHENTICATE` is [`BackendError::Auth`]; a
-//! tagged `NO`, a certificate that is not accepted, or a request the adapter refuses by design is
+//! Error classes: network failures, timeouts, a command that runs past its deadline or a server
+//! that sends far too much, and servers that are busy (only a bracketed `[UNAVAILABLE]`,
+//! `[INUSE]` or `[SERVERBUG]` code counts, never free text) are [`BackendError::Transient`]; a
+//! rejected `LOGIN`/`AUTHENTICATE`, a server that hangs up while the answer is awaited, and a
+//! certificate that cannot be verified are [`BackendError::Auth`] (the account pauses and the
+//! queued operations are kept); a tagged `NO`, or a request the adapter refuses by design, is
 //! [`BackendError::Permanent`]. Error text is fixed wording and never contains the password,
-//! server text, message data or addresses.
+//! server text, message data or addresses. The details are in the `error` module.
+//!
+//! The adapter uses a patched copy of `async-imap` (`core/vendor/async-imap`, see its
+//! `CROFT-PATCHES.md`): the stock crate logs whole commands, including the password.
 
 // Build-time guard, for debug and release builds alike. Croft's patched async-imap (core/vendor)
 // no longer logs commands or responses; this is the second lock. Nothing in this crate logs at

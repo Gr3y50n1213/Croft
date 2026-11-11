@@ -5,6 +5,28 @@ unverified, the next step.
 
 ---
 
+## T17c: accounts, About, sample mail on the core (11 November 2026)
+
+**Status:** draft pull request `task/t17c` (#15, CI only; not merged). The last part of T17: S44 Accounts, S45 Account, S60 About and diagnostics, and "Try with sample mail" on the core's own sample account. No core or FFI change (FFI API version stays 6), no new permission, no new dependency.
+
+**Sample mail:** S01's button calls `add_demo_account()` (no network, no password) and opens the Inbox over the core session. The app's session is now always over the core, with or without accounts, so the sample account persists and a restart opens the Inbox. Rows of the sample account say "Not saved to server" (`AccountInfo.is_demo` turned into `MessageRowData.localOnly`; the core flags no message rows). The old Kotlin fake-data Inbox (`FakeMessageRepository`, `FakeData`) cannot be reached in the running app any more: it stays for tests and screenshots; while the core cannot be opened the session is an empty stand-in (`MailSession.coreUnavailable`, never drawn) and S01 says so.
+
+**S44:** one row per account (name, address, status chip from the core: OK, Syncing, Needs sign-in, Offline, Server problem; the sample mailbox is labelled and shows no address), Add account (the S02 flow, back to S44 when done; also wired to the Inbox's account switcher, "Manage accounts" goes to S44), Move up / Move down (order kept by the app in `croft-accounts.json`), Remove (lists the messages and folders with counts, queued changes, drafts and outbox, and the saved password; then removes). The last account removed returns to S01.
+
+**Remove order:** the saved password first, then the core's rows (`AccountSecrets.removeAccount`, T11). A crash between them leaves an account that needs a sign-in and can be removed again; the other order could leave a password for a deleted id. Ids are never reused (high-water mark in the core, tested; `SecretStore.putForNewAccount` clears anything under a new id).
+
+**S45:** name (app-side), status, colour (six theme roles, app-side), folder mapping for Trash, Archive, Junk, Sent and Drafts (`FolderMapping`; a folder the server marks is shown and used, the person chooses only where there is none), Remove, Erase all data. **Left out, listed in `docs/OPEN-ITEMS.md` for T18:** identities and signatures, sync window (no core storage), server settings (the core cannot read them back, so S05 could not be pre-filled).
+
+**S60:** version, privacy policy (view intent; the address is a **placeholder**, `AboutLinks.PRIVACY_POLICY_URL`, also linked on S01), source link, open-source licences, Copy diagnostics (versions, account count and states only), Erase all Croft data (confirmation with the list, then every account through the core and its secret, the secret store, the app's files, the settings stores back to defaults, then S01), and the "not affiliated with Google, Microsoft or Apple" note. **Licence list:** a checked-in JSON made by `android/tools/gen_licences.py` from `cargo metadata` (Rust crates), the release runtime classpath and POMs (Kotlin libraries) plus OpenSSL, SQLCipher, SQLite and the fonts; CI (`test_gen_licences.py`) fails when `Cargo.lock` or `libs.versions.toml` changed without a new list. It shows names and licence names, not full licence texts (open item).
+
+**Tests:** `:mailtests` (real core, run locally: all pass): 7 new tests (sample mail with `set_network_available(false)`, Inbox rows and unified Inbox, flag change stays local, rows say not saved, removal plan, removal order and ids never reused, erase everything, diagnostics with no address or host, account prefs) and the existing 37. Plain JUnit (CI): removal and erase over the real core and a real `SecretStore` (`AccountRemovalTest`), the licence list. Robolectric (CI only; the Robolectric jar cannot be downloaded here): `AccountsScreensTest` (S44 chips, remove list and confirm deletes the secret, cancel, failure, last account returns to S01, reorder, add opens S02, S45 name and colour, folder mapping saves, remove from S45, S60 version and note, privacy and source links fire view intents, licences list, diagnostics on the clipboard, reset erases after confirmation, sample-mail flow with the network off from S01 to the Inbox, Settings and Accounts, a failing sample open) and 27 screenshots (S44, S45, S60: compact and expanded, light and dark, font 1.0 and 2.0, plus one right-to-left). Main and test sources compile locally (`compileDebugKotlin`, `compileDebugUnitTestKotlin`).
+
+**Existing tests adapted:** `OnboardingTestKit.fakeSession` lost its `usesFakeData = false` argument (the flag is now `coreUnavailable`, false by default). Nothing weakened.
+
+**Unverified:** TalkBack on the new screens, the real Keystore, the privacy address.
+
+---
+
 ## T17b: sign-in screens (11 November 2026)
 
 **Status:** draft pull request `task/t17b` (CI only; not merged). Part of T17: S01 Welcome, S02 Add account, S03 Finding your server, S04 Sign in, S05 Server settings, S09 First sync, the failure copy and the trust prompt. S44, S45, S60 and the demo mailbox (`DemoBackend`) are other parts of T17.

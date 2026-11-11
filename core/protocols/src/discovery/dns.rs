@@ -20,7 +20,8 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::net::NetError;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver as Inner, TokioResolver};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 /// DNS lookups through the operating system's name servers.
 pub struct HickoryResolver {
@@ -36,25 +37,36 @@ impl HickoryResolver {
         Ok(Self { inner })
     }
 
-    /// Uses the given name servers (port 53, UDP with TCP fallback) instead of the system's.
-    pub fn with_name_servers(servers: &[IpAddr]) -> Result<Self, ResolveError> {
+    /// Uses the given name servers (UDP, with TCP fallback) instead of the system's. Use port 53
+    /// unless the platform says otherwise. Each query waits 3 seconds for an answer and is tried
+    /// twice, which stays inside discovery's 10 second request limit.
+    pub fn with_name_servers(servers: &[SocketAddr]) -> Result<Self, ResolveError> {
+        Self::with_name_servers_and_timing(servers, Duration::from_secs(3), 2)
+    }
+
+    fn with_name_servers_and_timing(
+        servers: &[SocketAddr],
+        timeout: Duration,
+        attempts: usize,
+    ) -> Result<Self, ResolveError> {
         if servers.is_empty() {
             return Err(ResolveError::Failed);
         }
         let name_servers = servers
             .iter()
-            .map(|ip| {
-                NameServerConfig::new(
-                    *ip,
-                    true,
-                    vec![ConnectionConfig::udp(), ConnectionConfig::tcp()],
-                )
+            .map(|addr| {
+                let mut udp = ConnectionConfig::udp();
+                udp.port = addr.port();
+                let mut tcp = ConnectionConfig::tcp();
+                tcp.port = addr.port();
+                NameServerConfig::new(addr.ip(), true, vec![udp, tcp])
             })
             .collect();
         let config = ResolverConfig::from_parts(None, vec![], name_servers);
-        let inner = Inner::builder_with_config(config, TokioRuntimeProvider::default())
-            .build()
-            .map_err(|_| ResolveError::Failed)?;
+        let mut builder = Inner::builder_with_config(config, TokioRuntimeProvider::default());
+        builder.options_mut().timeout = timeout;
+        builder.options_mut().attempts = attempts;
+        let inner = builder.build().map_err(|_| ResolveError::Failed)?;
         Ok(Self { inner })
     }
 }
@@ -124,5 +136,129 @@ impl Resolver for HickoryResolver {
                 .map_err(|e| map_error(&e))?;
             Ok(lookup.iter().collect())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hickory_resolver::proto::op::{Message, ResponseCode};
+    use hickory_resolver::proto::rr::rdata::{A, SRV};
+    use hickory_resolver::proto::rr::{Name, RData, Record, RecordType};
+    use std::sync::{Arc, Mutex};
+    use tokio::net::UdpSocket;
+
+    /// A tiny DNS server on a local UDP port: two SRV records (one of them the root name) for
+    /// `_imaps._tcp.example.test`, an address for `host.example.test`, and "no such name" for
+    /// everything else. Returns its address and the list of names it was asked about.
+    async fn dns_server() -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = asked.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+                let Ok(query) = Message::from_vec(&buf[..n]) else {
+                    continue;
+                };
+                let mut reply = query.clone().into_response();
+                let Some(q) = query.queries.first() else {
+                    continue;
+                };
+                let name = q.name().to_ascii();
+                log.lock().unwrap().push(name.clone());
+                match (name.as_str(), q.query_type()) {
+                    ("_imaps._tcp.example.test.", RecordType::SRV) => {
+                        let n = |s: &str| Name::from_ascii(s).unwrap();
+                        reply.add_answer(Record::from_rdata(
+                            q.name().clone(),
+                            60,
+                            RData::SRV(SRV::new(10, 5, 993, n("Mail.Example.Test."))),
+                        ));
+                        reply.add_answer(Record::from_rdata(
+                            q.name().clone(),
+                            60,
+                            RData::SRV(SRV::new(20, 0, 0, Name::root())),
+                        ));
+                    }
+                    ("host.example.test.", RecordType::A) => {
+                        reply.add_answer(Record::from_rdata(
+                            q.name().clone(),
+                            60,
+                            RData::A(A::new(192, 0, 2, 7)),
+                        ));
+                    }
+                    ("host.example.test.", _) => {}
+                    _ => reply.metadata.response_code = ResponseCode::NXDomain,
+                }
+                let _ = socket.send_to(&reply.to_vec().unwrap(), from).await;
+            }
+        });
+        (addr, asked)
+    }
+
+    #[tokio::test]
+    async fn the_real_resolver_reads_srv_and_address_answers() {
+        let (addr, asked) = dns_server().await;
+        let resolver = HickoryResolver::with_name_servers(&[addr]).unwrap();
+
+        let records = resolver
+            .lookup_srv("_imaps._tcp.example.test")
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        let mail = records.iter().find(|r| r.port == 993).unwrap();
+        assert_eq!(
+            (mail.priority, mail.weight, mail.target.as_str()),
+            (10, 5, "mail.example.test")
+        );
+        // The root name comes through as an empty target: "not offered".
+        assert!(records.iter().any(|r| r.target.is_empty()));
+
+        assert_eq!(
+            resolver.lookup_ip("host.example.test").await.unwrap(),
+            vec![IpAddr::from([192, 0, 2, 7])]
+        );
+        assert_eq!(
+            resolver.lookup_srv("_imap._tcp.example.test").await,
+            Err(ResolveError::NotFound)
+        );
+        assert_eq!(
+            resolver.lookup_ip("nothing.example.test").await,
+            Err(ResolveError::NotFound)
+        );
+
+        // Every query went out fully qualified and exactly as asked: no search suffix added.
+        let asked = asked.lock().unwrap().clone();
+        assert!(
+            asked.iter().all(|n| n.ends_with("example.test.")),
+            "{asked:?}"
+        );
+        assert!(asked.contains(&"_imaps._tcp.example.test.".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_name_server_is_a_failure_not_a_missing_name() {
+        // A port nobody listens on: UDP gets no answer, TCP is refused.
+        let port = {
+            let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            s.local_addr().unwrap().port()
+        };
+        let resolver = HickoryResolver::with_name_servers_and_timing(
+            &[SocketAddr::from(([127, 0, 0, 1], port))],
+            Duration::from_millis(300),
+            1,
+        )
+        .unwrap();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            resolver.lookup_srv("_imaps._tcp.example.test"),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_ne!(err, ResolveError::NotFound);
+        assert!(HickoryResolver::with_name_servers(&[]).is_err());
     }
 }

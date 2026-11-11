@@ -19,6 +19,11 @@ A person who registers their own OAuth client with Google or Microsoft pastes it
 - **Setup help.** A "Use your own client" section in S04 (and S45 for re-sign-in) with a plain-language guide: where to register, which client type, the redirect value to copy (copy button), and that a Google project left in Testing status issues refresh tokens that expire after 7 days, so the person should publish it (implementer **confirms** this from Google's page before writing it). Wording follows `READINESS.md` row 10; the shared-client path is not built, and "Gmail" and "Outlook" appear as words only, no logos.
 - **Re-sign-in.** Needs sign-in on an OAuth account starts the flow again for that account and resumes the paused queue.
 
+**Store rules (from the 11 November audit)**
+- Authorization Code with PKCE through the system browser tab (Custom Tabs), never an embedded view.
+- Ship no shared client ID or client secret; Google's 100-user cap and verification apply only to a shared client.
+- The redirect activity is exported and BROWSABLE: keep its intent filter narrow.
+
 ## Done when
 - Rust unit tests: PKCE challenge matches the RFC 7636 appendix B vector; `state` mismatch, missing code and `access_denied` redirects are rejected with the right typed error; the authorisation URL contains the expected scope, challenge method and redirect and no secret.
 - Rust tests against an in-process fake token endpoint (in `core/test-support`): code exchange, refresh with rotation, `invalid_grant` giving `Auth`, a slow endpoint giving `Transient`; a test that requests to any other host fail.

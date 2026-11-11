@@ -12,7 +12,7 @@ import { emitCss } from './emit-css.ts';
 import { emitKotlin } from './emit-kotlin.ts';
 import { emitSwift } from './emit-swift.ts';
 import { emitTs } from './emit-ts.ts';
-import { buildAllSchemes } from './schemes.ts';
+import { buildAllSchemes, buildStatusColors } from './schemes.ts';
 import { flatten, genericTree, loadTokens } from './tokens.ts';
 
 export const OUTPUT_FILES = {
@@ -32,11 +32,12 @@ export function render(tokensPath: string): Record<string, string> {
   const generic = genericTree(tokens);
   const leaves = flatten(generic);
   const schemes = buildAllSchemes(tokens);
+  const status = buildStatusColors(tokens);
   const files = {
-    [OUTPUT_FILES.kotlin]: emitKotlin(tokens, generic, schemes),
-    [OUTPUT_FILES.css]: emitCss(tokens, leaves, schemes),
-    [OUTPUT_FILES.swift]: emitSwift(tokens, generic, schemes),
-    [OUTPUT_FILES.ts]: emitTs(tokens, generic, schemes),
+    [OUTPUT_FILES.kotlin]: emitKotlin(tokens, generic, schemes, status),
+    [OUTPUT_FILES.css]: emitCss(tokens, leaves, schemes, status),
+    [OUTPUT_FILES.swift]: emitSwift(tokens, generic, schemes, status),
+    [OUTPUT_FILES.ts]: emitTs(tokens, generic, schemes, status),
   };
   return Object.fromEntries(Object.entries(files).map(([k, v]) => [k, v.endsWith('\n') ? v : `${v}\n`]));
 }

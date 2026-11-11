@@ -4,13 +4,13 @@
 
 // TypeScript output: the same values as a module the web app imports.
 
-import { ROLES, CONTRASTS, MODES, presetsOf } from './schemes.ts';
-import type { SchemeEntry } from './schemes.ts';
+import { ROLES, CONTRASTS, MODES, presetsOf, statusNames } from './schemes.ts';
+import type { SchemeEntry, StatusEntry } from './schemes.ts';
 import type { Tokens } from './tokens.ts';
 import { MPL_HEADER_SLASH } from './header.ts';
 import { springLinearEasing } from './spring.ts';
 
-export function emitTs(tokens: Tokens, generic: Record<string, unknown>, schemes: SchemeEntry[]): string {
+export function emitTs(tokens: Tokens, generic: Record<string, unknown>, schemes: SchemeEntry[], status: StatusEntry[]): string {
   const presets = presetsOf(tokens);
   const out: string[] = [];
   const push = (...lines: string[]) => out.push(...lines);
@@ -63,6 +63,23 @@ export function emitTs(tokens: Tokens, generic: Record<string, unknown>, schemes
   push("  contrast: CroftContrast = 'standard',");
   push('): CroftColorRoles {');
   push('  return croftSchemes[preset][mode][contrast];', '}', '');
+
+  push('/** Status colours (amber): colour for icons, a container fill and the text on it, per mode then contrast. */');
+  push('export const croftStatus = {');
+  for (const name of statusNames(status)) {
+    push(`  ${name}: {`);
+    for (const mode of MODES) {
+      push(`    ${mode}: {`);
+      for (const contrast of CONTRASTS) {
+        const e = status.find((x) => x.name === name && x.mode === mode && x.contrast === contrast.id);
+        if (!e) throw new Error(`missing status ${name}/${mode}/${contrast.id}`);
+        push(`      ${contrast.id}: { color: '${e.colors.color}', container: '${e.colors.container}', onContainer: '${e.colors.onContainer}' },`);
+      }
+      push('    },');
+    }
+    push('  },');
+  }
+  push('} as const;', '');
 
   // Spring easings for the web, one per spring token.
   push('/** CSS `linear()` easings that approximate each spring, with the time to settle in seconds. */');

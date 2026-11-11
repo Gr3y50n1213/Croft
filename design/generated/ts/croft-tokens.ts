@@ -140,6 +140,20 @@ export const croftTokens = {
     ],
     "minGapMs": 40,
     "defaultLevel": "subtle"
+  },
+  "timing": {
+    "buttonSuccessHoldMs": 600,
+    "loadingOffersCancelMs": 10000,
+    "snackbarMinMs": 4000,
+    "newRowTintMs": 1200,
+    "failedEdgeMs": 2000,
+    "skeletonShimmerMs": 1200,
+    "newRowMarkMs": 1300,
+    "fastScrollerLingerMs": 1500
+  },
+  "layout": {
+    "pullToRefreshArmDp": 80,
+    "expandedWidthFromDp": 840
   }
 } as const;
 
@@ -3852,6 +3866,27 @@ export function croftColors(
 ): CroftColorRoles {
   return croftSchemes[preset][mode][contrast];
 }
+
+/** Status colours (amber): colour for icons, a container fill and the text on it, per mode then contrast. */
+export const croftStatus = {
+  amber: {
+    light: {
+      standard: { color: '#9F6D00', container: '#FFDEAE', onContainer: '#281900' },
+      medium: { color: '#8F6200', container: '#FFDEAE', onContainer: '#281900' },
+      high: { color: '#7F5600', container: '#FFDEAE', onContainer: '#1A0F00' },
+    },
+    dark: {
+      standard: { color: '#FFBA3E', container: '#604100', onContainer: '#FFDEAE' },
+      medium: { color: '#FFCC7D', container: '#604100', onContainer: '#FFEEDA' },
+      high: { color: '#FFDEAE', container: '#604100', onContainer: '#FFF8F3' },
+    },
+    pureBlack: {
+      standard: { color: '#FFBA3E', container: '#604100', onContainer: '#FFDEAE' },
+      medium: { color: '#FFCC7D', container: '#604100', onContainer: '#FFEEDA' },
+      high: { color: '#FFDEAE', container: '#604100', onContainer: '#FFF8F3' },
+    },
+  },
+} as const;
 
 /** CSS `linear()` easings that approximate each spring, with the time to settle in seconds. */
 export const croftSpringEasings = {

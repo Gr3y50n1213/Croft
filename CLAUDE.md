@@ -62,6 +62,8 @@ without the owner, and the progress files to keep.
 - Public items are documented (`missing_docs` is on).
 - Errors from the network are `BackendError::{Transient, Auth, Permanent}`: the split drives retry vs fail vs sign-in.
 - Small commits with the task ID in the message, one crate or one screen per task.
+- Store rules: every build follows Google Play's rules; Apple's rules apply only to the Apple builds, but keep
+  behaviour consistent across platforms (prefer a design that satisfies both over platform-only behaviour).
 - The repository is meant to be public. Commits, files and docs never contain the owner's name, handle, email,
   session links or any real key or password. Test credentials are made up and marked as such.
 

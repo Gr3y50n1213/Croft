@@ -5,7 +5,7 @@
 // Swift output: SwiftUI colours from hex, token constants and spring animations.
 
 import { ROLES, MODES, CONTRASTS, presetsOf } from './schemes.ts';
-import type { SchemeEntry } from './schemes.ts';
+import type { SchemeEntry, StatusEntry } from './schemes.ts';
 import { pascal } from './tokens.ts';
 import type { Tokens } from './tokens.ts';
 import { MPL_HEADER_SLASH } from './header.ts';
@@ -68,6 +68,7 @@ export function emitSwift(
   tokens: Tokens,
   generic: Record<string, unknown>,
   schemes: SchemeEntry[],
+  status: StatusEntry[],
 ): string {
   const presets = presetsOf(tokens);
   const out: string[] = [];
@@ -164,6 +165,23 @@ export function emitSwift(
   push('        _ contrast: CroftContrast = .standard');
   push('    ) -> CroftColors {');
   push('        CroftColors(roles(preset, mode, contrast))', '    }');
+  push('}', '');
+
+  push('struct CroftStatusRoles {', '    let color: UInt32', '    let container: UInt32', '    let onContainer: UInt32', '}', '');
+  push('struct CroftStatusKey: Hashable {', '    let mode: CroftMode', '    let contrast: CroftContrast', '}', '');
+  push('/// Status colours from tokens.json (a fixed HCT hue and chroma at set tones). Pure black uses the dark tones.');
+  push('enum CroftStatus {');
+  for (const name of [...new Set(status.map((x) => x.name))]) {
+    push(`    private static let ${name}Table: [CroftStatusKey: CroftStatusRoles] = [`);
+    for (const e of status.filter((x) => x.name === name)) {
+      push(`        CroftStatusKey(mode: .${e.mode}, contrast: .${e.contrast}): CroftStatusRoles(color: ${swHex(e.colors.color)}, container: ${swHex(e.colors.container)}, onContainer: ${swHex(e.colors.onContainer)}),`);
+    }
+    push('    ]', '');
+    push(`    static func ${name}(_ mode: CroftMode, _ contrast: CroftContrast = .standard) -> CroftStatusRoles {`);
+    push(`        guard let roles = ${name}Table[CroftStatusKey(mode: mode, contrast: contrast)] else {`);
+    push('            preconditionFailure("CroftStatus is missing a mode and contrast combination")');
+    push('        }', '        return roles', '    }');
+  }
   push('}', '');
 
   push('/// A spring from tokens.json. SwiftUI takes `response` (2 pi / sqrt(stiffness)) and a damping fraction.');

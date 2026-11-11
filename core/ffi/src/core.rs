@@ -16,7 +16,9 @@ use croft_engine::{
     resume_demo, ActionError, Engine, EngineConfig, EngineHandle, OpId, SystemClock,
 };
 use croft_protocols::demo::DEMO_ADDRESS;
-use croft_protocols::discovery::{verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions};
+use croft_protocols::discovery::{
+    provider_for_host, verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions,
+};
 use croft_protocols::{CertFingerprint, DemoBackend};
 use croft_storage::accounts::{self, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
@@ -521,7 +523,10 @@ impl Core {
     /// A credential that is not valid UTF-8 fails with `NoCredential` before anything is written.
     ///
     /// `pinned_fingerprint` is the certificate the person trusted (see `verify`); it is ignored
-    /// for a well-known provider.
+    /// for a well-known provider. A pin for a well-known provider's own server (`imap.gmail.com`)
+    /// whose settings carry no provider (the person changed the port or typed the host by hand) is
+    /// refused with `BadSettings`: a provider's real certificate is always valid, so a pin there
+    /// could only pin an interceptor's.
     pub async fn add_account(
         &self,
         discovered: FfiDiscovered,
@@ -533,8 +538,13 @@ impl Core {
             .imap
             .clone()
             .ok_or(CoreError::UnsupportedServer)?;
-        let pin = match (&pinned_fingerprint, discovered.provider) {
-            (Some(text), None) => Some(Self::pin_from_text(text)?.to_string()),
+        let pin = match (
+            &pinned_fingerprint,
+            discovered.provider,
+            provider_for_host(&imap.host),
+        ) {
+            (Some(text), None, None) => Some(Self::pin_from_text(text)?.to_string()),
+            (Some(_), None, Some(_)) => return Err(CoreError::BadSettings),
             _ => None,
         };
         let settings = StoredSettings {

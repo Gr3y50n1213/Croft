@@ -79,6 +79,7 @@ pub use net::{
     FetchError, FetchLimits, HttpFetch, HttpResponse, HttpsUrl, NetFuture, ResolveError, Resolver,
     SrvRecord,
 };
+pub use provider::provider_for_host;
 pub use verify::{verify, Verified, VerifyError, VerifyOptions};
 
 use crate::imap::{ImapConfig, Security};

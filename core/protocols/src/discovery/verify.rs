@@ -192,14 +192,13 @@ pub async fn verify(
     let Some(server) = &settings.imap else {
         return Err(VerifyError::JmapOnly);
     };
+    let settings = &*with_host_provider(settings);
     let mut config = server.to_config().with_timeout(options.timeout);
     // A provider-table domain never takes a pin: real providers have valid certificates, so a
     // pin could only ever pin an interceptor's certificate. The caller's pin is ignored for the
     // check and for the sign-in, and a certificate problem stays `ConnectionIntercepted`.
-    if settings.provider.is_none() {
-        if let Some(pin) = options.pinned_cert {
-            config = config.with_pinned_cert(pin);
-        }
+    if let Some(pin) = pin_for(settings, options.pinned_cert) {
+        config = config.with_pinned_cert(pin);
     }
     let backend =
         ImapBackend::new(config.clone(), credential).map_err(|_| VerifyError::BadSettings)?;
@@ -238,6 +237,34 @@ pub async fn verify(
         }
         Err(BackendError::Transient(_)) => Err(VerifyError::CannotConnect),
         Err(BackendError::Permanent(_)) => Err(VerifyError::ServerProblem),
+    }
+}
+
+/// The settings with `provider` filled in from the IMAP host when it is a listed provider's own
+/// server. A provider's server is that provider's whatever the `provider` field says: the caller may
+/// have changed the port or typed the host by hand, and that must not remove the protection against
+/// trusting an interceptor's certificate.
+fn with_host_provider(settings: &DiscoveredSettings) -> std::borrow::Cow<'_, DiscoveredSettings> {
+    let from_host = settings
+        .imap
+        .as_ref()
+        .and_then(|server| super::provider::provider_for_host(&server.host));
+    match (settings.provider, from_host) {
+        (None, Some(provider)) => std::borrow::Cow::Owned(DiscoveredSettings {
+            provider: Some(provider),
+            ..settings.clone()
+        }),
+        _ => std::borrow::Cow::Borrowed(settings),
+    }
+}
+
+/// The pin the connection may use: the caller's, unless the settings are a provider's (a pin could
+/// only ever pin an interceptor's certificate there).
+fn pin_for(settings: &DiscoveredSettings, pin: Option<CertFingerprint>) -> Option<CertFingerprint> {
+    if settings.provider.is_none() {
+        pin
+    } else {
+        None
     }
 }
 
@@ -312,6 +339,62 @@ mod tests {
             provider,
             auth_hint: super::super::AuthHint::Password,
         }
+    }
+
+    fn on_host(host: &str, provider: Option<Provider>) -> DiscoveredSettings {
+        DiscoveredSettings {
+            imap: Some(super::super::ImapServer {
+                host: host.into(),
+                port: 143,
+                security: crate::imap::Security::StartTls,
+                username: "u".into(),
+            }),
+            ..found(provider)
+        }
+    }
+
+    #[test]
+    fn a_providers_own_host_is_the_providers_even_when_the_provider_field_is_empty_and_never_takes_a_pin(
+    ) {
+        let pin = CertFingerprint::from_bytes([2; 32]);
+        let fp = CertFingerprint::from_bytes([1; 32]);
+        // The settings were edited by hand (another port, another security): `provider` was dropped.
+        for (host, provider) in [
+            ("imap.gmail.com", Provider::Gmail),
+            ("outlook.office365.com", Provider::Outlook),
+            ("IMAP.MAIL.ME.COM", Provider::ICloud),
+            ("imap.fastmail.com", Provider::Fastmail),
+        ] {
+            let edited = on_host(host, None);
+            let effective = with_host_provider(&edited);
+            assert_eq!(effective.provider, Some(provider), "{host}");
+            assert_eq!(pin_for(&effective, Some(pin)), None, "{host}: no pin");
+            // An unknown issuer is interception, with no offer to trust it.
+            assert_eq!(
+                explain_certificate(
+                    CertificateProblem::UnknownIssuer { fingerprint: fp },
+                    &effective,
+                    &ImapConfig::tls(host, "u")
+                ),
+                VerifyError::ConnectionIntercepted,
+                "{host}"
+            );
+            // The same settings with the field kept give the same answer.
+            assert_eq!(
+                with_host_provider(&on_host(host, Some(provider))).provider,
+                Some(provider)
+            );
+        }
+        // A server of the person's own is untouched and may take a pin.
+        let own = on_host("mail.example.org", None);
+        let effective = with_host_provider(&own);
+        assert_eq!(effective.provider, None);
+        assert_eq!(pin_for(&effective, Some(pin)), Some(pin));
+        // A well-known provider field with another host stays as it is.
+        assert_eq!(
+            with_host_provider(&on_host("mail.example.org", Some(Provider::Gmail))).provider,
+            Some(Provider::Gmail)
+        );
     }
 
     #[test]

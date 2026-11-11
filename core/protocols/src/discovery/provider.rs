@@ -82,6 +82,40 @@ pub(crate) fn lookup(domain: &str) -> Option<&'static Entry> {
     }
 }
 
+/// The domains whose servers are a listed provider's own: the mailbox domains of [`lookup`] plus the
+/// domain the provider's mail servers sit under (`outlook.office365.com`).
+const SERVER_DOMAINS: [(&str, Provider); 11] = [
+    ("gmail.com", Provider::Gmail),
+    ("googlemail.com", Provider::Gmail),
+    ("outlook.com", Provider::Outlook),
+    ("hotmail.com", Provider::Outlook),
+    ("live.com", Provider::Outlook),
+    ("office365.com", Provider::Outlook),
+    ("icloud.com", Provider::ICloud),
+    ("me.com", Provider::ICloud),
+    ("mac.com", Provider::ICloud),
+    ("fastmail.com", Provider::Fastmail),
+    ("fastmail.fm", Provider::Fastmail),
+];
+
+/// The listed provider that owns the server `host`, if any: the host is one of the provider's
+/// domains or a name under one (`imap.gmail.com`, `outlook.office365.com`). Case and a trailing dot
+/// do not matter. This is the check that stops a certificate pin for a provider's own server:
+/// settings that name `imap.gmail.com` are Gmail's whatever the `provider` field says, so changing
+/// the port or typing the host by hand cannot turn the interceptor's certificate into a trusted one.
+pub fn provider_for_host(host: &str) -> Option<Provider> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    SERVER_DOMAINS
+        .iter()
+        .find(|(domain, _)| {
+            host == *domain
+                || host
+                    .strip_suffix(domain)
+                    .is_some_and(|rest| rest.ends_with('.'))
+        })
+        .map(|(_, provider)| *provider)
+}
+
 impl Entry {
     /// IMAP settings for this provider. The user name is the whole address, which every listed
     /// provider accepts.
@@ -137,6 +171,39 @@ mod tests {
             "mail.gmail.com",
         ] {
             assert!(lookup(other).is_none(), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_server_host_of_a_listed_provider_is_recognised_whatever_its_case() {
+        for (host, provider) in [
+            ("imap.gmail.com", Provider::Gmail),
+            ("IMAP.Gmail.COM.", Provider::Gmail),
+            ("gmail.com", Provider::Gmail),
+            ("imap.googlemail.com", Provider::Gmail),
+            ("outlook.office365.com", Provider::Outlook),
+            ("smtp.office365.com", Provider::Outlook),
+            ("imap.mail.me.com", Provider::ICloud),
+            ("imap.fastmail.com", Provider::Fastmail),
+        ] {
+            assert_eq!(provider_for_host(host), Some(provider), "{host}");
+        }
+        // Every host the table itself uses is a provider's.
+        for domain in ["gmail.com", "outlook.com", "icloud.com", "fastmail.com"] {
+            let e = lookup(domain).unwrap();
+            assert_eq!(provider_for_host(e.imap_host), Some(e.provider));
+            assert_eq!(provider_for_host(e.smtp_host), Some(e.provider));
+        }
+        for other in [
+            "mail.example.org",
+            "gmail.com.evil.example",
+            "notgmail.com",
+            "imap.gmail.com.evil.example",
+            "acme.com",
+            "127.0.0.1",
+            "",
+        ] {
+            assert_eq!(provider_for_host(other), None, "{other}");
         }
     }
 

@@ -1,0 +1,19 @@
+{
+  "_comment": "Approved permissions and exported components of the release merged manifest. Add an entry only with the task or store-checklist row that justifies it (docs/store/READINESS.md). ${applicationId} stands for the application id.",
+  "uses-permission": {
+    "${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "AndroidX core adds this signature-level permission (declared by the app itself, protectionLevel signature) so that dynamically registered receivers are not exported; not grantable to other apps."
+  },
+  "permission": {
+    "${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "The declaration paired with the uses-permission above; must stay protectionLevel=signature."
+  },
+  "exported": {
+    "activity:${applicationId}.MainActivity": {
+      "why": "The launcher activity.",
+      "permission": null
+    },
+    "receiver:androidx.profileinstaller.ProfileInstallReceiver": {
+      "why": "AndroidX profileinstaller (baseline profiles): lets the shell trigger profile installation. Only the system or adb can hold android.permission.DUMP, so other apps cannot call it.",
+      "permission": "android.permission.DUMP"
+    }
+  }
+}

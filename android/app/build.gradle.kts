@@ -106,7 +106,21 @@ android {
 
     buildFeatures { compose = true }
 
+    // F-Droid rejects the encrypted dependency block AGP adds by default, and it makes builds non-reproducible.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     buildTypes {
+        // Distribution build: R8 and resource shrinking, not debuggable. No signing config: CI and F-Droid build it
+        // unsigned and the owner signs outside the repository (android/README.md, "Release build").
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
         // For the macrobenchmark module (T14): the release build, signed with the debug key so it installs, and profileable
         // (app/src/benchmark/AndroidManifest.xml) so that the benchmark can measure it. Not for distribution.
         create("benchmark") {
@@ -137,6 +151,47 @@ android {
             jniLibs.directories.add("build/generated/rust/jniLibs")
         }
     }
+}
+
+// The shrunk build loads the Rust library by name through the generated bindings and JNA: if R8 renames or removes
+// those classes the app crashes at start, and nothing but a device run would notice. Two checks fail the release build
+// instead: the keep rules must exist (before R8 runs), and R8's own mapping must show the bindings were not renamed (after).
+val rulesFile = layout.projectDirectory.file("proguard-rules.pro")
+val mappingFile = layout.buildDirectory.file("outputs/mapping/release/mapping.txt")
+val checkReleaseKeepRules = tasks.register("checkReleaseKeepRules") {
+    group = "verification"
+    description = "Fails if proguard-rules.pro lacks the UniFFI/JNA keep rules."
+    inputs.file(rulesFile)
+    doLast {
+        val text = rulesFile.asFile.readText()
+        for (needle in listOf("uniffi.croft_ffi.**", "com.sun.jna.**")) {
+            check(Regex("(?m)^-keep\\S*\\s+(class|interface)\\s+" + Regex.escape(needle)).containsMatchIn(text)) {
+                "proguard-rules.pro has no -keep rule for $needle (the shrunk app would not load the Rust library)"
+            }
+        }
+    }
+}
+val checkReleaseMapping = tasks.register("checkReleaseMapping") {
+    group = "verification"
+    description = "Fails if R8 renamed a UniFFI or JNA class, using R8's mapping.txt."
+    inputs.file(mappingFile)
+    doLast {
+        // mapping.txt lists "original -> obfuscated:"; a kept class maps to its own name.
+        val renamed = mappingFile.get().asFile.useLines { lines ->
+            lines.filter { it.startsWith("uniffi.croft_ffi.") || it.startsWith("com.sun.jna.") }
+                .filter { it.endsWith(":") }
+                // D8 desugaring creates and renames these; nothing looks them up by name.
+                .filter { !it.contains("ExternalSynthetic") }
+                .filter { it.substringBefore(" -> ") != it.substringAfter(" -> ").removeSuffix(":") }
+                .take(5).toList()
+        }
+        check(renamed.isEmpty()) { "R8 renamed classes that JNA/UniFFI look up by name: $renamed" }
+    }
+}
+afterEvaluate {
+    tasks.matching { it.name == "minifyReleaseWithR8" }.configureEach { dependsOn(checkReleaseKeepRules) }
+    checkReleaseMapping.configure { mustRunAfter("minifyReleaseWithR8") }
+    tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach { finalizedBy(checkReleaseMapping) }
 }
 
 tasks.named("preBuild") { dependsOn("generateUniffiBindings", "buildRustAndroid") }

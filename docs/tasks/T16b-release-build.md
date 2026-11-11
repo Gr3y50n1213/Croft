@@ -25,3 +25,8 @@ Depends on: T07 (the Gradle project), T16 (so the release build has real code to
 - The 16 KB script and `zipalign -c -P 16` pass on the release APK; the bundle config shows 16 KB alignment.
 - A test or script confirms the release APK has no dependency-info signing block (`dependenciesInfo` off) and `android:debuggable` is not set.
 - On a device (not checkable here): the shrunk release build starts, signs in and syncs against a test server (R8 can break reflection and JNA); run by hand before any upload.
+
+## Status (done)
+- Built: release build type, `proguard-rules.pro`, `checkReleaseKeepRules` and `checkReleaseMapping`, `tools/check-release-manifest.py` with `tools/manifest-allowlist.json` and its tests, `tools/check-release-outputs.sh`, CI job `android-release`. See `android/README.md`, "Release build".
+- The allowlist starts with no permission of the app's own (the app declares none today, so INTERNET is not listed: T17 adds it). It lists AndroidX's signature-level `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` and `ProfileInstallReceiver` (guarded by DUMP).
+- Not done here: the `docs/OPEN-ITEMS.md` application-ID item (outside this task's edit scope; the README documents it) and the on-device run of the shrunk build.

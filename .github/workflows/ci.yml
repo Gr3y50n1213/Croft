@@ -80,6 +80,48 @@ jobs:
           name: croft-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
 
+  # The unsigned release build (R8 and resource shrinking on) and its gates: the keep rules for UniFFI and JNA (Gradle,
+  # during the build), the manifest allowlist, no dependency-info block, not debuggable, 16 KB alignment of the APK and
+  # the AAB. Uploads nothing: signing is the owner's, outside the repository (android/README.md, "Release build").
+  android-release:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NDK_VERSION: 4.1.2
+      NDK_VERSION: 29.0.14206865
+      BUNDLETOOL_VERSION: 1.18.3
+      BUNDLETOOL_SHA256: a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;${{ env.NDK_VERSION }}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test the manifest check
+        working-directory: android
+        run: python3 -m unittest discover -s tools
+      - name: Build the unsigned release APK and AAB
+        working-directory: android
+        run: ./gradlew :app:assembleRelease :app:bundleRelease
+      - name: Check the release outputs (unsigned, manifest allowlist, 16 KB alignment)
+        working-directory: android
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
+          echo "$BUNDLETOOL_SHA256  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
+          tools/check-release-outputs.sh "$RUNNER_TEMP/bundletool.jar"
+
   # Runs the protocol adapters against real mail servers in containers (GreenMail, Dovecot).
   integration:
     runs-on: ubuntu-latest

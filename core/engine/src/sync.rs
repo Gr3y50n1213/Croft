@@ -471,7 +471,10 @@ impl Worker {
             let same = still_targets == targets.keys().copied().collect()
                 && still_out == moved_out.iter().map(|a| a.uid).collect()
                 && still_in == moved_in.iter().map(|a| (a.folder.clone(), a.uid)).collect();
-            if !same {
+            // The danger set was worked out before the lookups and the chunk yields: an action
+            // since then (a pending flag change turned into a delete, say) may have changed it.
+            // Do not go on with the old answer; the reset starts again at the next sync.
+            if !same || !self.danger_holds(&q, path, &targets, &danger, &moved_out, &moved_in)? {
                 return Ok(false);
             }
             let reset = FolderReset {
@@ -498,9 +501,10 @@ impl Worker {
     }
 
     /// Deletes the folder's rows in chunks of [`LOCK_CHUNK`], one lock hold each, except rows that
-    /// an unfinished operation or awaiting entry points at (re-read under every chunk's lock; the
-    /// reset needs their Message-IDs, and the final batch removes them). Returns false when the
-    /// engine is stopping.
+    /// an unfinished operation or awaiting entry points at, and every other row with the same
+    /// Message-ID as a row that has a destructive operation (see [`Worker::evidence_copies`]);
+    /// both are re-read under every chunk's lock. The reset needs them, and the final batch
+    /// removes them. Returns false when the engine is stopping.
     async fn clear_rows_in_chunks(&self, folder_id: i64, path: &str) -> Result<bool, EngineError> {
         let account = self.account();
         let uids = {
@@ -514,7 +518,8 @@ impl Worker {
             }
             {
                 let mut q = self.shared.lock();
-                let keep = self.protected(&q, path);
+                let mut keep = self.protected(&q, path);
+                keep.extend(self.evidence_copies(&q, folder_id, path)?);
                 let gone: Vec<Uid> = chunk
                     .iter()
                     .filter(|u| !keep.contains(u))
@@ -527,6 +532,38 @@ impl Worker {
             self.emit_folder(folder_id);
         }
         Ok(true)
+    }
+
+    /// The rows of the folder that show a destructive operation's message to have more than one
+    /// copy: every row with the same Message-ID as a row that has a delete forever or a move to
+    /// Trash or Junk waiting. A reset that is cut short leaves the old UIDVALIDITY stored, so the
+    /// next one starts again and counts the copies once more; if an earlier chunk had deleted the
+    /// other copy, the count would say "one" and the operation would be re-pointed to whichever
+    /// message the server names. The final batch removes these rows with the rest.
+    fn evidence_copies(
+        &self,
+        q: &Queue,
+        folder_id: i64,
+        path: &str,
+    ) -> Result<BTreeSet<Uid>, StorageError> {
+        let mut ids: Vec<String> = Vec::new();
+        for (uid, id) in self.reset_targets(q, folder_id, path)? {
+            if let Some(id) = id {
+                if self.has_destructive_op(q, (path, uid))? {
+                    ids.push(id);
+                }
+            }
+        }
+        if ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        messages::uids_with_message_ids(
+            q.store().db().connection(),
+            self.account(),
+            folder_id,
+            &ids,
+        )
     }
 
     /// Which of the reset's operations must not be re-pointed on a guess (see [`Danger`]).
@@ -565,6 +602,36 @@ impl Worker {
             }
         }
         Ok(danger)
+    }
+
+    /// True when every operation still answers "destructive or not" as [`Danger`] says it did.
+    fn danger_holds(
+        &self,
+        q: &Queue,
+        path: &str,
+        targets: &BTreeMap<Uid, Option<String>>,
+        danger: &Danger,
+        moved_out: &[AwaitingUid],
+        moved_in: &[AwaitingUid],
+    ) -> Result<bool, StorageError> {
+        for uid in targets.keys() {
+            if self.has_destructive_op(q, (path, *uid))? != danger.targets.contains(uid) {
+                return Ok(false);
+            }
+        }
+        for entry in moved_out {
+            let now = self.has_destructive_op(q, (path, entry.uid))?;
+            if now != danger.moved_out.contains(&entry.uid) {
+                return Ok(false);
+            }
+        }
+        for entry in moved_in {
+            let now = self.has_destructive_op(q, (entry.folder.as_str(), entry.uid))?;
+            if now != danger.moved_in.contains(&(entry.folder.clone(), entry.uid)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     async fn fetch_one(&self, folder: &str, uid: Uid) -> Result<Option<RemoteHeader>, EngineError> {

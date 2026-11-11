@@ -449,6 +449,28 @@ pub fn count_other_copies(
     Ok(u64::try_from(n).unwrap_or(0))
 }
 
+/// The UIDs of the rows of a folder of this account whose `Message-ID` header is one of
+/// `message_ids`. The engine uses it to keep every copy of a message that has a destructive
+/// operation waiting while a reset deletes the folder's other rows.
+pub fn uids_with_message_ids(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    message_ids: &[&str],
+) -> Result<BTreeSet<Uid>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT uid FROM message WHERE account_id = ?1 AND folder_id = ?2 AND message_id_hdr = ?3",
+    )?;
+    let mut out = BTreeSet::new();
+    for id in message_ids {
+        let rows = stmt.query_map(params![account_id, folder_id, id], |r| r.get::<_, i64>(0))?;
+        for row in rows {
+            out.insert(Uid::try_from(row?).map_err(|_| StorageError::OutOfRange("uid"))?);
+        }
+    }
+    Ok(out)
+}
+
 /// Deletes every row of a folder of this account, keeping the folder (its UIDVALIDITY changed, so
 /// the cached UIDs mean nothing). Returns how many rows went.
 pub fn delete_all_in_folder(conn: &Connection, account_id: i64, folder_id: i64) -> Result<usize> {

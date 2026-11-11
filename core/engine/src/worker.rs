@@ -31,9 +31,11 @@ pub const REASON_LOST_AFTER_RESET: &str =
 
 /// Shown when a destructive operation (delete forever, or a move to Trash or Junk) on a message
 /// that was moved is given up because the destination folder holds more than one copy and the
-/// engine cannot tell which one is the message.
+/// engine cannot tell which one is the message. It does not say whether anything was done: an
+/// earlier step may have reached the server without its confirmation being stored, and the
+/// engine cannot know.
 pub const REASON_AMBIGUOUS_COPY: &str =
-    "Couldn't tell which copy of the message to use, so nothing was deleted";
+    "Couldn't tell which copy of the message to use, so this change was stopped";
 
 /// What a cycle did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

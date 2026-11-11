@@ -594,3 +594,230 @@ async fn a_delete_is_given_up_when_two_old_uids_would_map_to_one_new_uid_after_a
     assert_eq!(rig.listed("INBOX").len(), 3, "no row stays hidden");
     assert_eq!(rig.ui.operation(doomed).unwrap().state, OpState::Failed);
 }
+
+// ---- 7. third review: evidence kept, a stale danger set, back-off, one turn per account ---------
+
+/// Waits (briefly, in real time) until the fake server has received a Message-ID lookup.
+async fn wait_for_find(rig: &Rig) {
+    for _ in 0..2_500 {
+        if rig
+            .backend
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::Find(..)))
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    panic!("the server never got a lookup");
+}
+
+#[tokio::test]
+async fn a_reset_cut_short_after_its_first_chunk_keeps_the_other_copy_of_a_message_being_deleted() {
+    // UID 5 and UID 9 are the same message (dup@x); UID 5 has a delete waiting. The server
+    // renumbers the folder; the reset is cut short after the first chunk of deletions. Row 9 must
+    // still be there at the next sync, or "two copies" can no longer be seen and the delete is
+    // re-pointed to whichever copy the server names.
+    let mut rig = Rig::new();
+    rig.backend.st().condstore = true;
+    for i in 0..1_500 {
+        let id = if i == 4 || i == 8 {
+            "dup@x".to_owned()
+        } else {
+            format!("m{i}@x")
+        };
+        rig.backend.add("INBOX", &id, Flags::default());
+    }
+    rig.sync().await;
+    rig.backend.clear_calls();
+    rig.drain_changes();
+    let doomed = rig
+        .ui
+        .delete_forever(rig.account, row_id(&rig, "INBOX", 5))
+        .unwrap();
+    rig.backend.change_uid_validity("INBOX", 300);
+    // The second chunk of deletions fails (the disk, a kill): the first one is already done.
+    rig.ui.read(|db| {
+        db.connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_one_row BEFORE DELETE ON message WHEN OLD.uid = 600
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+    });
+    assert!(matches!(
+        rig.ui.run_once(rig.account, true).await,
+        Err(EngineError::Storage(_))
+    ));
+    assert!(rig.row("INBOX", 9).is_some(), "the other copy is kept");
+    assert!(rig.row("INBOX", 100).is_none(), "the first chunk did go");
+    rig.ui.read(|db| {
+        db.connection()
+            .execute_batch("DROP TRIGGER refuse_one_row;")
+            .unwrap();
+    });
+    rig.drain_changes();
+    rig.advance(10_000);
+    rig.sync().await;
+    rig.advance(10_000);
+    rig.run().await;
+
+    let failed = failures(&rig.drain_changes());
+    assert_eq!(failed, vec![(doomed, REASON_LOST_AFTER_RESET.to_owned())]);
+    assert_eq!(deletes(&rig), 0, "nothing was deleted on a guess");
+    assert_eq!(row_count(&rig, "INBOX"), 1_500);
+    assert_eq!(rig.ui.operation(doomed).unwrap().state, OpState::Failed);
+}
+
+#[tokio::test]
+async fn a_pending_change_that_becomes_a_delete_during_a_reset_restarts_the_reset() {
+    // The danger set is worked out before the lookups. While the lookups are on their way the
+    // person turns a pending "mark read" on UID 2 into a delete: the reset must not go on with the
+    // old answer (re-pointing the delete on a guess), but start again and see the two copies.
+    let mut rig = Rig::new();
+    rig.backend.add("INBOX", "other@x", Flags::default());
+    rig.backend.add("INBOX", "dup@x", Flags::default());
+    rig.backend.add("INBOX", "dup@x", Flags::default());
+    rig.sync().await;
+    rig.backend.clear_calls();
+    rig.drain_changes();
+    let message = row_id(&rig, "INBOX", 2);
+    rig.ui.mark_seen(rig.account, message, true).unwrap();
+    rig.backend.change_uid_validity("INBOX", 300);
+
+    let gate = rig.backend.gate(Method::Find);
+    let ui = rig.ui.clone();
+    let account = rig.account;
+    let task = tokio::spawn(async move { ui.run_once(account, true).await });
+    wait_for_find(&rig).await;
+    let doomed = rig.ui.delete_forever(rig.account, message).unwrap();
+    rig.backend.ungate(Method::Find);
+    gate.open.notify_one();
+    task.await.unwrap().unwrap();
+
+    let stored = rig.ui.read(|db| {
+        folders::find_by_path(db.connection(), rig.account, "INBOX")
+            .unwrap()
+            .unwrap()
+    });
+    assert_eq!(
+        stored.uid_validity,
+        Some(100),
+        "the reset started again instead of going on with a stale answer"
+    );
+    assert!(failures(&rig.drain_changes()).is_empty(), "not decided yet");
+
+    rig.advance(10_000);
+    rig.sync().await;
+    rig.advance(10_000);
+    rig.run().await;
+    // The pending "mark read" on the same message goes with the delete.
+    let failed = failures(&rig.drain_changes());
+    assert!(failed.contains(&(doomed, REASON_LOST_AFTER_RESET.to_owned())));
+    assert_eq!(failed.len(), 2, "{failed:?}");
+    assert_eq!(deletes(&rig), 0, "nothing was deleted on a guess");
+    assert_eq!(rig.backend.st().folders["INBOX"].messages.len(), 3);
+    assert_eq!(row_count(&rig, "INBOX"), 3);
+}
+
+#[tokio::test]
+async fn repeated_online_callbacks_do_not_end_the_back_off_but_a_return_from_offline_does() {
+    let rig = Rig::new();
+    rig.backend.add("INBOX", "a@x", Flags::default());
+    rig.sync().await;
+    rig.backend.clear_calls();
+    let message = row_id(&rig, "INBOX", 1);
+    rig.ui.mark_seen(rig.account, message, true).unwrap();
+    rig.backend.st().fail_all = Some(BackendError::Transient("server down".into()));
+    rig.advance(1_500);
+    rig.run().await;
+    for wait in [5_000, 30_000, 120_000] {
+        rig.advance(wait);
+        rig.run().await;
+    }
+    assert_eq!(rig.backend.calls().len(), 4);
+    rig.backend.st().fail_all = None;
+
+    // The platform reports "connected" again and again while the device never lost its connection.
+    for _ in 0..5 {
+        rig.ui.set_online(rig.account, true);
+        rig.run().await;
+    }
+    assert!(rig.backend.writes().is_empty(), "the back-off still holds");
+
+    rig.ui.set_online(rig.account, false);
+    rig.ui.set_online(rig.account, true);
+    rig.run().await;
+    assert_eq!(rig.backend.writes().len(), 1, "the connection came back");
+}
+
+#[tokio::test]
+async fn an_operation_held_mid_send_by_a_removed_account_is_not_sent_again_by_the_re_added_one() {
+    let db = Db::open_in_memory().unwrap();
+    let account = create_account(&db, "one@example.org");
+    let clock = ManualClock::new(1_000_000);
+    let backend = FakeBackend::new(Arc::new(clock.clone()));
+    backend.add("INBOX", "a@x", Flags::default());
+    let engine = Engine::open(db, Arc::new(clock.clone()), EngineConfig::default()).unwrap();
+    engine.attach_account(account, backend.clone()).unwrap();
+    let ui = engine.handle();
+    ui.run_once(account, true).await.unwrap();
+    let message = ui.read(|db| {
+        let f = folders::find_by_path(db.connection(), account, "INBOX")
+            .unwrap()
+            .unwrap();
+        messages::find_by_uid(db.connection(), account, f.id, 1)
+            .unwrap()
+            .unwrap()
+            .id
+    });
+    ui.mark_seen(account, message, true).unwrap();
+    clock.advance(2_000);
+    backend.clear_calls();
+
+    // A run_once is in the middle of sending the change.
+    let gate = backend.gate(Method::SetFlag);
+    let first = {
+        let ui = ui.clone();
+        tokio::spawn(async move { ui.run_once(account, false).await })
+    };
+    for _ in 0..2_500 {
+        if backend
+            .calls()
+            .iter()
+            .any(|c| matches!(c, Call::SetFlag(..)))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    // The account is removed and added again meanwhile. The new task must wait for the old send.
+    engine.remove_account(account).await;
+    engine.add_account(account, backend.clone()).unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let sent = |b: &FakeBackend| {
+        b.calls()
+            .iter()
+            .filter(|c| matches!(c, Call::SetFlag(..)))
+            .count()
+    };
+    assert_eq!(sent(&backend), 1, "the new task sent it again, at once");
+
+    backend.ungate(Method::SetFlag);
+    gate.open.notify_one();
+    first.await.unwrap().unwrap();
+    ui.run_once(account, false).await.unwrap();
+    assert_eq!(sent(&backend), 1, "sent once");
+    assert!(backend.flags("INBOX", 1).unwrap().seen);
+    let states: Vec<_> = (1..10)
+        .filter_map(|i| ui.operation(i))
+        .map(|o| o.state)
+        .collect();
+    // (The new task's first sync may already have purged the finished operation.)
+    assert!(
+        states.iter().all(|s| *s == OpState::Confirmed),
+        "{states:?}"
+    );
+    engine.shutdown().await;
+}

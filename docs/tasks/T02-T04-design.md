@@ -269,3 +269,36 @@ with a task, `attach_account` without one, `remove_account`, `shutdown`), `Engin
   UI only holds ids it received from the call that queued the operation.
 - **New storage helpers** (`core/storage/src/`, no migration): `folders::set_validity_only`, `messages::count_in_folder`,
   `messages::uids_in_folder`, `messages::count_other_copies`.
+
+### Review fixes to the engine (third pass over T04)
+
+- **A reset cut short no longer deletes its own evidence (medium-high).** A reset deletes the folder's rows in
+  chunks before its final batch. If it was cut short (stop, storage error, a UI action making the final check fail),
+  the old UIDVALIDITY stays and the next sync starts again, and counts the copies of a Message-ID again. A chunk that
+  had deleted the other copy of a message with a delete forever or a move to Trash/Junk waiting made that count
+  "one", so the operation was re-pointed to whichever message the server named. `clear_rows_in_chunks` now also keeps
+  (re-read under every chunk's lock) every row whose Message-ID equals that of a reset target with a destructive
+  operation (`evidence_copies`, new storage helper `messages::uids_with_message_ids`); the final `ClearFolder` removes
+  them. Test: `a_reset_cut_short_after_its_first_chunk_keeps_the_other_copy_of_a_message_being_deleted`. The operation
+  is failed with `REASON_LOST_AFTER_RESET` (the reset's one reason), as in the uncut case.
+- **The danger set is checked again in the final batch (medium).** `danger` is worked out before the lookups and the
+  chunk yields, and the `same` check compares UID sets only. Under the final batch's lock `danger_holds` now asks
+  `has_destructive_op` again for every target, awaiting source and awaiting destination, and if any answer differs from
+  the stored `Danger` the reset returns `Ok(false)` (nothing changed; it starts again at the next sync). Test:
+  `a_pending_change_that_becomes_a_delete_during_a_reset_restarts_the_reset` (the delete is queued while the lookups
+  wait on the fake server's gate; the stored UIDVALIDITY is still the old one, and the next sync fails the delete).
+- **`set_online(true)` ends the back-off only after being offline (low-medium).** The connectivity callback can fire
+  many times while the device stays connected; each call used to wipe the hold while the server kept failing. The hold
+  is now cleared only when the account was offline before the call; a repeated "online" still asks for a full sync.
+  Test: `repeated_online_callbacks_do_not_end_the_back_off_but_a_return_from_offline_does`.
+- **One turn per account id, for the life of the engine (low).** The per-account `turn` lives in `Shared`, keyed by
+  account id, and every `AccountSlot` of that account holds a clone. `remove_account` + `add_account` while a
+  `run_once` is in the middle of a send used to give the new task a new, free turn whose first cycle ran
+  `recover_applying` and sent the in-flight operation again. The new task now waits for the old `run_once`, which
+  confirms its operation first. The turns are never removed (one small value per account id). Test:
+  `an_operation_held_mid_send_by_a_removed_account_is_not_sent_again_by_the_re_added_one`.
+- **`REASON_AMBIGUOUS_COPY` no longer claims "nothing was deleted" (low).** A recovered operation may follow a step
+  the server did apply (a move to Trash whose confirmation was not stored), so the text, kept under the same
+  constant name, is now "Couldn't tell which copy of the message to use, so this change was stopped": it says what the
+  engine did, not what the server did. Existing tests compare with the constant.
+

@@ -136,8 +136,10 @@ pub(crate) struct AccountSlot {
     /// Poked by every UI action, `sync_now`, `set_online` and shutdown.
     pub(crate) wake: Notify,
     /// Held for a whole cycle, so an account never runs two operations at once even when
-    /// `run_once` is called while the task is running.
-    pub(crate) turn: tokio::sync::Mutex<()>,
+    /// `run_once` is called while the task is running. One per account id in [`Shared`], shared
+    /// by every slot the account has over time, so a task started after a remove and re-add waits
+    /// for a `run_once` of the old slot that is still in the middle of a send.
+    pub(crate) turn: Arc<tokio::sync::Mutex<()>>,
     pub(crate) full_sync_wanted: AtomicBool,
     pub(crate) needs_sign_in: AtomicBool,
     pub(crate) stopping: AtomicBool,
@@ -159,6 +161,9 @@ pub(crate) struct Shared {
     clock: Arc<dyn Clock>,
     changes: broadcast::Sender<Change>,
     accounts: Mutex<BTreeMap<AccountId, Arc<AccountSlot>>>,
+    /// The per-account turns, kept for the life of the engine (one small value per account id) so
+    /// that they survive `remove_account` and a later `add_account`.
+    turns: Mutex<BTreeMap<AccountId, Arc<tokio::sync::Mutex<()>>>>,
     undo_window_ms: AtomicI64,
     pub(crate) config: EngineConfig,
 }
@@ -196,6 +201,16 @@ impl Shared {
 
     fn slots(&self) -> MutexGuard<'_, BTreeMap<AccountId, Arc<AccountSlot>>> {
         self.accounts.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The account's turn: the same one for every slot the account ever has.
+    fn turn(&self, account: AccountId) -> Arc<tokio::sync::Mutex<()>> {
+        self.turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(account)
+            .or_default()
+            .clone()
     }
 
     pub(crate) fn slot(&self, account: AccountId) -> Option<Arc<AccountSlot>> {
@@ -298,6 +313,7 @@ impl Engine {
             clock,
             changes,
             accounts: Mutex::new(BTreeMap::new()),
+            turns: Mutex::new(BTreeMap::new()),
             undo_window_ms: AtomicI64::new(config.undo_window_ms.max(0)),
             config,
         });
@@ -326,7 +342,7 @@ impl Engine {
             account,
             backend,
             wake: Notify::new(),
-            turn: tokio::sync::Mutex::new(()),
+            turn: self.shared.turn(account),
             full_sync_wanted: AtomicBool::new(true),
             needs_sign_in: AtomicBool::new(false),
             stopping: AtomicBool::new(false),

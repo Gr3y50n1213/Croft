@@ -1138,4 +1138,16 @@ fn a_reset_stores_the_validity_alone_and_the_row_helpers_count_what_they_say() {
         0
     );
     assert_eq!(messages::count_in_folder(c, a1 + 100, f1).unwrap(), 0);
+    assert_eq!(
+        messages::uids_with_message_ids(c, a1, f1, &["<dup@x>", "<nothing@x>"])
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(
+        messages::uids_with_message_ids(c, a1 + 100, f1, &["<dup@x>"])
+            .unwrap()
+            .is_empty()
+    );
 }

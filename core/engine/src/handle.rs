@@ -219,15 +219,21 @@ impl EngineHandle {
     /// platform's connectivity callbacks). While offline nothing is sent and no attempts are
     /// used up; actions still work locally. Going online sends what waited, in order, and syncs.
     ///
-    /// Coming back online also ends the account's back-off: a connection that was lost says
-    /// nothing about how long the server needs, so operations that were waiting out a retry delay
-    /// are tried at once (their attempts stay counted).
+    /// Coming back online **from offline** also ends the account's back-off: a connection that
+    /// was lost says nothing about how long the server needs, so operations that were waiting out a
+    /// retry delay are tried at once (their attempts stay counted). A repeated "online" while the
+    /// account was already online keeps the back-off (the server may still be failing) and only
+    /// asks for a sync.
     pub fn set_online(&self, account: AccountId, online: bool) {
         let now = self.shared.now();
         {
             let mut q = self.shared.lock();
+            let was_offline = q.queue().is_offline(account);
             q.set_offline(account, !online);
-            if online && q.clear_hold(account, now).is_err() {
+            // Only a return from offline says anything about the server: the platform sends the
+            // "connected" callback many times while the device stays connected, and each one must
+            // not wipe the back-off of a server that keeps failing.
+            if online && was_offline && q.clear_hold(account, now).is_err() {
                 log::warn!("account {account}: could not end the back-off");
             }
         }

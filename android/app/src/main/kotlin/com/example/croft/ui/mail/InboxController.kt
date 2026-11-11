@@ -633,10 +633,8 @@ class InboxController(
         removedByMe += ids
         val ops = block()
         snackbar.show(text, texts.undo, stayMs = UNDO_WINDOW_MS) {
-            scope.launch {
-                removedByMe -= ids.toSet()
-                ops.forEach { repository.undo(it) }
-            }
+            // The ids stay in removedByMe: a message that comes back through Undo is not new mail, whatever its date.
+            scope.launch { ops.forEach { repository.undo(it) } }
         }
     }
 

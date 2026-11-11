@@ -47,7 +47,8 @@ pub trait MailBackend: Send + Sync {
 
     /// Finds a message in a folder by its Message-ID header: the UID of the newest match, or
     /// `None`. Used when a server has no UIDPLUS (so a move gave no new UID) and after a
-    /// UIDVALIDITY change.
+    /// UIDVALIDITY change. An adapter may return `None` when several different messages match
+    /// (the JMAP adapter does), so a caller never acts on a guess.
     fn find_by_message_id<'a>(
         &'a self,
         folder: &'a str,

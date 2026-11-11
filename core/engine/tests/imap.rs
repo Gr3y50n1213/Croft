@@ -32,7 +32,7 @@ fn imap(server: &TestServer) -> ImapBackend {
         server.username(),
     )
     .with_timeout(Duration::from_secs(5));
-    ImapBackend::new(config, Credential::Password(server.password())).unwrap()
+    ImapBackend::new(config, Credential::password(server.password())).unwrap()
 }
 
 fn msg(id: &str) -> String {

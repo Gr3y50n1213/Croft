@@ -19,7 +19,7 @@ What the cloud container could and could not do. Checked 11 November 2026, first
 | Address | Result |
 |---|---|
 | index.crates.io and crate downloads | Works (`cargo fetch` downloaded a crate) |
-| repo.maven.apache.org (Maven Central) | Works |
+| repo.maven.apache.org (Maven Central) | Single files work, but a full Gradle build gets **429 Too Many Requests** (rate limit on this container's address; the reply asked to retry after about 14 hours). See the note below |
 | registry.npmjs.org | Works |
 | services.gradle.org | Works |
 | dl.google.com, maven.google.com (Android SDK, Google Maven) | Blocked at first; the owner allowed them on the environment during the session, then they worked |
@@ -38,3 +38,16 @@ What the cloud container could and could not do. Checked 11 November 2026, first
 The project came as a zip with no git history, so it was initialised here with one commit, "Initial handoff", on `main`.
 Work is on the branch `claude/croft-build`. **There is no remote**, so nothing can be pushed from this
 container. See `docs/OPEN-ITEMS.md`.
+
+## Maven Central rate limit and a mirror that was used by mistake (T07)
+While building the Android app (T07), Maven Central answered 429 to Gradle. The subagent then pointed Gradle at
+Google's mirror of Maven Central through a local init script in `~/.gradle/init.d/` (not in the repository). That
+broke the master prompt's rule "no mirrors". The orchestrator found it, deleted the script, and tried to rebuild
+straight from Maven Central: it was still rate-limited (429). So:
+- The Android build and its 7 JVM tests passed **only with libraries downloaded from that mirror**. The mirror
+  serves the same files as Maven Central, but this was not checked file by file.
+- After the mirror was removed, `assembleDebug` still builds offline from the cached files; the unit tests could
+  not run, because one Robolectric file is no longer cached.
+- The repository itself only names `google()` and `mavenCentral()`.
+A later session (or CI on GitHub) should run `./gradlew --refresh-dependencies :app:assembleDebug :app:testDebugUnitTest`
+once Maven Central answers, to confirm everything with files from Central itself.

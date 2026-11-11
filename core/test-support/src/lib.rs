@@ -15,7 +15,8 @@
 //! What tests can do to it: switch capabilities off ([`TestServer::set_caps`]), change
 //! UIDVALIDITY ([`TestServer::change_uid_validity`]), edit messages as "another client" would
 //! ([`TestServer::modify_flags`], [`TestServer::remove_messages`]), cut every connection
-//! ([`TestServer::drop_connections`]), make it stop answering ([`TestServer::set_hang`]), and read
+//! ([`TestServer::drop_connections`]), make it stop answering ([`TestServer::set_hang`]), make it
+//! misbehave the way a hostile or broken server would ([`TestServer::set_misbehavior`]), and read
 //! the command log ([`TestServer::commands`], with passwords left out).
 //!
 //! Security note for reviewers: the server accepts one fixed user name and password given by the
@@ -97,6 +98,28 @@ impl Caps {
     }
 }
 
+/// Ways the server can be made to misbehave, for tests of how the client copes with a hostile or
+/// broken server. Set with [`TestServer::set_misbehavior`]; the default is no misbehaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Misbehavior {
+    /// Behave.
+    #[default]
+    None,
+    /// Answer `LOGIN` and `AUTHENTICATE` with an untagged `* BYE` and close the connection, as
+    /// servers do after too many failed sign-ins.
+    ByeOnLogin,
+    /// Refuse every sign-in with `NO [AUTHENTICATIONFAILED] Authentication failed: account
+    /// unavailable`: an authentication failure whose free text contains the word "unavailable".
+    AuthFailedMentioningUnavailable,
+    /// Answer every `LIST` with a literal of this many bytes (`{500000000}`) and send two of them.
+    HugeLiteral(u64),
+    /// Answer every `LIST` with an endless stream of `* 1 EXISTS` lines and no tagged reply.
+    EndlessExists,
+    /// Answer every `UID SEARCH UID ...` with the UIDs asked for that exist, plus every other UID
+    /// in the folder, plus one that does not exist (999999).
+    SearchExtraUids,
+}
+
 /// Settings for [`TestServer::start`].
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
@@ -174,6 +197,7 @@ pub(crate) struct State {
     pub connections: usize,
     pub hang: bool,
     pub login_unavailable: bool,
+    pub misbehavior: Misbehavior,
     /// Plain `LIST` also returns special-use attributes (as Dovecot does).
     pub plain_list_has_special_use: bool,
 }
@@ -238,6 +262,7 @@ impl TestServer {
             connections: 0,
             hang: false,
             login_unavailable: false,
+            misbehavior: Misbehavior::None,
             plain_list_has_special_use: true,
         }));
         let (kill, kill_rx) = watch::channel(0u64);
@@ -448,6 +473,12 @@ impl TestServer {
     /// While on, the server reads commands but never answers them (to test timeouts).
     pub fn set_hang(&self, on: bool) {
         self.st().hang = on;
+    }
+
+    /// Makes the server misbehave in one of the ways listed in [`Misbehavior`], for every
+    /// connection from now on.
+    pub fn set_misbehavior(&self, how: Misbehavior) {
+        self.st().misbehavior = how;
     }
 
     /// While on, `LOGIN` is answered `NO [UNAVAILABLE]` (a temporary failure, not a bad password).

@@ -39,6 +39,7 @@ version = "0.1.0"
 name = "croft-storage"
 version = "0.1.0"
 dependencies = [
+ "croft-mail-core",
  "croft-protocols",
  "rusqlite",
  "serde",

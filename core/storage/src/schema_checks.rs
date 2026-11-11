@@ -253,6 +253,94 @@ fn cancelled_op_is_never_due() {
     assert_eq!(due(c, 99999), 0);
 }
 
+#[test]
+fn local_hidden_exists_and_defaults_to_0() {
+    let db = fixture();
+    let c = db.connection();
+    assert_eq!(
+        one::<i64>(c, "SELECT count(*) FROM message WHERE local_hidden = 0"),
+        one::<i64>(c, "SELECT count(*) FROM message")
+    );
+}
+
+#[test]
+fn a_hidden_row_is_left_out_of_the_visible_list() {
+    let db = fixture();
+    let c = db.connection();
+    c.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1", [])
+        .unwrap();
+    let mut stmt = c
+        .prepare(
+            "SELECT uid FROM message WHERE folder_id=1 AND local_hidden = 0 ORDER BY date_ts DESC",
+        )
+        .unwrap();
+    let uids: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(uids, vec![2, 3]);
+}
+
+fn add_awaiting(c: &Connection) {
+    c.execute(
+        "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,message_id_hdr,created_at) VALUES (1,'INBOX',1,'Archive','<a@example.org>',5)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn op_awaiting_uid_keeps_destination_and_message_id_and_starts_lookups_at_0() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    let row: (String, String, i64) = c
+        .query_row(
+            "SELECT dest_folder, message_id_hdr, lookups FROM op_awaiting_uid",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("Archive".to_owned(), "<a@example.org>".to_owned(), 0));
+}
+
+#[test]
+fn op_awaiting_uid_has_one_row_per_old_address() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    let err = c
+        .execute(
+            "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (1,'INBOX',1,'Trash',6)",
+            [],
+        )
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn op_awaiting_uid_foreign_key_rejects_a_missing_account() {
+    let db = fixture();
+    let err = db
+        .connection()
+        .execute(
+            "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (99,'INBOX',2,'Trash',6)",
+            [],
+        )
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn removing_an_account_removes_its_awaiting_marks() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    c.execute("DELETE FROM account WHERE id = 1", []).unwrap();
+    assert_eq!(one::<i64>(c, "SELECT count(*) FROM op_awaiting_uid"), 0);
+}
+
 fn is_constraint(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::ConstraintViolation)
 }
@@ -297,4 +385,89 @@ fn opening_applies_every_migration_and_sets_user_version() {
     let db = Db::open_in_memory().unwrap();
     assert_eq!(db.migrations_run_on_open(), MIGRATIONS.len());
     assert_eq!(db.schema_version().unwrap(), crate::latest_version());
+}
+
+// Migration 0003: rows hidden by a pending move or delete do not count towards folder counters.
+
+fn folder1_counters(c: &Connection) -> (i64, i64) {
+    pair(c, "SELECT total_count, unread_count FROM folder WHERE id=1")
+}
+
+#[test]
+fn hiding_and_showing_rows_keeps_folder_counters_equal_to_visible_rows() {
+    let db = fixture();
+    let c = db.connection();
+    assert_eq!(folder1_counters(c), (3, 2));
+    c.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1", [])
+        .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "hiding an unread row lowers both"
+    );
+    c.execute("UPDATE message SET is_seen = 1 WHERE uid = 1", [])
+        .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "a hidden row's read state does not count"
+    );
+    c.execute(
+        "UPDATE message SET local_hidden = 0, is_seen = 0 WHERE uid = 1",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (3, 2),
+        "one update changing both is counted once"
+    );
+    c.execute("UPDATE message SET local_hidden = 1 WHERE uid = 3", [])
+        .unwrap();
+    c.execute("DELETE FROM message WHERE uid = 3", []).unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "deleting a hidden row changes nothing"
+    );
+    c.execute(
+        "INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,is_seen,local_hidden) VALUES (1,1,9,'t9',0,0,1)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        folder1_counters(c),
+        (2, 1),
+        "inserting a hidden row changes nothing"
+    );
+    assert_eq!(
+        folder1_counters(c),
+        pair(
+            c,
+            "SELECT count(*), coalesce(sum(1 - is_seen), 0) FROM message WHERE folder_id=1 AND local_hidden=0"
+        )
+    );
+}
+
+#[test]
+fn migration_3_takes_already_hidden_rows_out_of_the_counters() {
+    // Build a version-2 database by hand, hide a row under the old triggers, then run migration 3.
+    let c = Connection::open_in_memory().unwrap();
+    for m in &MIGRATIONS[..2] {
+        c.execute_batch(m.sql).unwrap();
+    }
+    c.execute_batch(
+        "INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'Sam','sam@example.org','imap','{}',0);
+         INSERT INTO folder (id,account_id,path,special_use) VALUES (1,1,'INBOX','inbox');
+         INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,is_seen) VALUES (1,1,1,'t1',1,0),(1,1,2,'t2',2,1);
+         UPDATE message SET local_hidden = 1 WHERE uid = 1;",
+    )
+    .unwrap();
+    assert_eq!(
+        folder1_counters(&c),
+        (2, 1),
+        "old triggers still count the hidden row"
+    );
+    c.execute_batch(MIGRATIONS[2].sql).unwrap();
+    assert_eq!(folder1_counters(&c), (1, 0));
 }

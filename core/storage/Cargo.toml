@@ -13,6 +13,7 @@ rust-version = "1.89"
 sqlcipher = ["rusqlite/bundled-sqlcipher", "dep:zeroize"]
 
 [dependencies]
+croft-mail-core = { path = "../mail-core" }
 croft-protocols = { path = "../protocols" }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = "1.0.229"

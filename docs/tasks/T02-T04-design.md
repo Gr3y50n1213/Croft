@@ -103,3 +103,60 @@ to four messages at once per account; that is a later speed-up and does not chan
 The UI never waits for the network. A person's action calls the engine handle, which in one SQLite transaction
 applies the `LocalEffect`s and stores the op, then wakes the account's task (`tokio::sync::Notify`). Screens
 observe a `tokio::sync::broadcast` of changed folder ids and re-run their queries.
+
+## 6. What T02 changed from this note (recorded by the T02 build)
+
+- **No separate `Restore` effect.** A cancelled or failed flag op is `SetSeen` / `SetFlagged` with the value to put back,
+  and a cancelled or failed move or delete is `Unhide`. The value is the one of the latest unfinished op on the same
+  flag of the same message if there is one, otherwise the opposite of what the finished op set. (The note's plain
+  "previous value" is wrong when a second change is made while the first is in flight.)
+- **Batch and load.** `Batch` also has `purged` (finished rows to delete). `load()` returns `StoredQueue` with `max_id`
+  and `unreadable` rows. It loads unfinished rows only and deletes finished ones, because nothing reads them after a
+  restart (unreadable rows excepted, see below).
+- **Ids are never reused (review fix).** This replaces the "ids can be reused after a purge" decision in section 3. The
+  largest id ever written is kept in the app-wide `setting` table, key `op_queue.max_id` (a JSON number, no migration),
+  and is raised in the same transaction as the insert of an op with a larger id. `load()` returns
+  `max(that value, MAX(id) of op_queue)`. `MAX(id)` alone shrinks when rows are purged or deleted on load.
+- **Hidden copies and unhide (review fix).** After a confirmed move the copy at the new address is shown, unless an
+  unfinished `MoveTo` or `DeleteForever` was re-pointed at it: then `CopyMessage` is followed by `Hide` (an existing
+  destination row is no longer forced visible). A failed or cancelled move or delete emits `Unhide` only when no other
+  unfinished `MoveTo` or `DeleteForever` targets the same address, the same way flag restores look at later flag ops.
+- **`repoint` to its own address (review fix)** returns 0 and writes nothing. (`repoint_after_reset` may legitimately
+  keep the same address: the new row after the reset needs its pending count.)
+- **JSON lives in storage** (`core/storage/src/op_store.rs`), so mail-core has no serde. A row whose `v` is not 1, or
+  that cannot be read, is marked `failed` with a plain reason, its `pending_ops` is released and a hidden message is
+  shown again (using `target_key`, which is `<uid>@<folder path>` whatever the payload version). This is done once, in
+  the load that first meets the row. It is reported by `PersistentQueue::unreadable()`.
+  **Review fix:** the row is not deleted by later loads. A failed row whose `last_error` is one of the two unreadable
+  reasons is kept and listed again in `unreadable` at every load, until the engine has told the person and calls
+  `PersistentQueue::acknowledge_unreadable(ids)`, which deletes them in one batch (a kill in between loses nothing).
+  A damaged row with no usable `target_key` releases nothing, because the message is unknown, but is reported. Its
+  message may stay hidden or keep a stale `pending_ops`. **No code path clears that on sync** (checked: `messages::upsert`
+  never touches `local_hidden` or `pending_ops`, and nothing else writes them outside the queue), so it would stay stuck.
+  **T04 must therefore, during a full folder sync, set `local_hidden = 0` and `pending_ops = 0` on every row of that
+  folder that has no unfinished op in the queue** (the queue's `pending_uids` says which have one). That also repairs rows
+  left over by any other bug.
+- **Awaiting entry.** `AwaitingUid` (dest, Message-ID, lookups, created time) is stored in `op_awaiting_uid`.
+  `confirm_moved_with(id, loc, message_id, now_ms)` is the call the engine should use; `confirm_moved(id, loc)` keeps
+  working and stores no Message-ID. `record_lookup` counts the lookups from section 4.
+- **UIDVALIDITY reset (section 4, case 3).** After a reset the old address may belong to a different message, so
+  `abandon` (which removes the old row) must not be used there. Which call the engine uses:
+  - Ops whose address is in the **reset folder**, no awaiting entry: `repoint_after_reset` (puts `pending_ops` and the
+    local flag or hidden state on the new row) or `abandon_after_reset` (fails the ops, touches no row).
+  - An **awaiting-UID entry** (a confirmed move with no new UID) whose destination folder was reset: the old address is in
+    the move's source folder, which was not reset, so its hidden row still exists. Use the same two `_after_reset` calls:
+    when the address has an awaiting entry they also resolve the entry and remove the old hidden row (its pending count
+    goes with it; `repoint_after_reset` puts the count and the local flag values on the new row). `repoint` and `abandon`
+    (the non-reset forms) are for the same awaiting entry when no reset is involved: they copy or remove the row as in
+    section 4, case 2.
+  - If the **source** folder of an awaiting entry is the one that was reset, its old row was dropped with the folder and
+    the old address may be another message now. The `_after_reset` calls would remove that other row. In that case the
+    engine should not resolve the entry with them until the folder has been synced again and the row at the old
+    address is known to be gone or hidden. T02 does not guard this: T04 decides it, and it is rare (a move out of a folder
+    whose UIDVALIDITY changes before the new UID was found).
+- **Plain `confirm` of a move** removes the old row and nothing follows it. The engine should use `confirm_moved*`.
+- **Folder counters and hidden rows (fixed by the orchestrator).** The 0001 triggers counted a hidden row until it was
+  removed, so a folder's unread badge dropped only when the server confirmed an archive. Migration
+  `0003_counters_skip_hidden.sql` replaces the counter triggers: a hidden row counts towards neither total nor unread,
+  one UPDATE that changes both `is_seen` and `local_hidden` is counted once, and rows already hidden at upgrade time are
+  taken out once.

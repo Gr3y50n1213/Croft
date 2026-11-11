@@ -219,7 +219,7 @@ async fn tls_upgrade(
     match timeout(t, connector.connect(name, tcp)).await {
         Err(_) => Err(OpError::timed_out("setting up the secure connection")),
         Ok(Err(e)) => Err(error::from_io(&e, "setting up the secure connection")),
-        Ok(Ok(tls)) => Ok(Stream::Tls(Box::new(tls.into()))),
+        Ok(Ok(tls)) => Ok(Stream::Tls(Box::new(tls))),
     }
 }
 

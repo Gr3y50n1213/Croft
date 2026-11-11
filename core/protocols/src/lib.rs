@@ -8,6 +8,8 @@
 //! This crate holds the shared vocabulary ([`types`]), the trait ([`backend`]) and the IMAP
 //! adapter ([`imap`]). SMTP, JMAP and DAV arrive in later tasks.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod backend;
 pub mod imap;
 pub mod types;

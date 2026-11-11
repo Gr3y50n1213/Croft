@@ -14,6 +14,7 @@ pub mod backend;
 pub mod discovery;
 pub mod imap;
 pub mod smtp;
+pub mod submit;
 pub mod types;
 
 pub use backend::{BackendFuture, MailBackend};
@@ -24,4 +25,5 @@ pub use imap::{
 pub use smtp::{
     probe_certificate as probe_smtp_certificate, SendReceipt, SmtpConfig, SmtpSecurity, SmtpSender,
 };
+pub use submit::{MailSubmitter, SmtpImapSubmitter};
 pub use types::*;

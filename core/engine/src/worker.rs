@@ -89,7 +89,7 @@ impl Worker {
         EngineError::Backend(e)
     }
 
-    fn sign_in_needed(&self) {
+    pub(crate) fn sign_in_needed(&self) {
         if !self.slot.needs_sign_in.swap(true, Ordering::SeqCst) {
             self.shared.emit(Change::SignInNeeded {
                 account: self.account(),
@@ -180,8 +180,11 @@ impl Worker {
             return None;
         }
         let next_op = self.shared.lock().queue().next_wake_ms_for(self.account());
-        let target = next_op
-            .map_or(next_full, |t| t.min(next_full))
+        let next_mail = self.outbox_wake_ms();
+        let target = [next_op, next_mail]
+            .into_iter()
+            .flatten()
+            .fold(next_full, i64::min)
             .max(hold_until);
         Some(u64::try_from(target.saturating_sub(self.shared.now())).unwrap_or(0))
     }
@@ -200,6 +203,10 @@ impl Worker {
             self.shared.lock().purge_finished()?;
         }
         self.run_due_ops().await?;
+        // Mail waiting in the Outbox goes before a sync, which can take a long time. A sign-in
+        // failure while sending stops the cycle here: the queue shares the credential, so nothing
+        // of the account runs until `signed_in`.
+        self.run_outbox().await?;
         if full && !self.stop_now() {
             self.sync_all().await?;
             self.run_due_ops().await?;
@@ -583,5 +590,6 @@ pub(crate) fn error_class(e: &EngineError) -> &'static str {
         EngineError::UnknownAccount(_) => "unknown account",
         EngineError::AccountExists(_) => "account exists",
         EngineError::NoRuntime => "no runtime",
+        EngineError::NoOutbox => "no outbox",
     }
 }

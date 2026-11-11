@@ -10,7 +10,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use croft_mail_core::{
-    AccountId, CancelError, Enqueued, Op, OpId, OpKind, QueueError, UnreadableOp,
+    AccountId, CancelError, Enqueued, NewMessage, Op, OpId, OpKind, OutboxEntry, OutboxError,
+    OutboxId, QueueError, RemovedMessage, UnreadableOp,
 };
 use croft_protocols::Uid;
 use croft_storage::messages::Message;
@@ -18,6 +19,7 @@ use croft_storage::{folders, messages, Db, StorageError};
 use tokio::sync::broadcast;
 
 use crate::engine::{Change, EngineError, Shared};
+use crate::mime;
 use crate::worker::Worker;
 
 /// Why a UI action was refused. Nothing was changed.
@@ -55,6 +57,92 @@ impl std::error::Error for ActionError {}
 impl From<StorageError> for ActionError {
     fn from(e: StorageError) -> Self {
         Self::Storage(e)
+    }
+}
+
+/// Why [`EngineHandle::send`] refused. Nothing was stored.
+#[derive(Debug)]
+pub enum SendError {
+    /// The engine was opened without an Outbox ([`crate::Engine::open`]).
+    NoOutbox,
+    /// No account with this id was added.
+    UnknownAccount(AccountId),
+    /// The account was added without a submitter, so it cannot send.
+    NoSubmitter(AccountId),
+    /// The message has a `Bcc:` header. A Bcc recipient belongs in `NewMessage::recipients` only:
+    /// the bytes are sent as stored, so a header would show the recipient to everyone else.
+    BccHeader,
+    /// The envelope has no recipient.
+    NoRecipients,
+    /// The envelope sender is empty.
+    NoSender,
+    /// The database failed.
+    Storage(StorageError),
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoOutbox => f.write_str("the engine has no outbox"),
+            Self::UnknownAccount(a) => write!(f, "no backend for account {a}"),
+            Self::NoSubmitter(a) => write!(f, "account {a} cannot send mail"),
+            Self::BccHeader => f.write_str("the message has a Bcc header"),
+            Self::NoRecipients => f.write_str("the message has no recipients"),
+            Self::NoSender => f.write_str("the message has no sender"),
+            Self::Storage(e) => write!(f, "database error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SendError {}
+
+impl From<StorageError> for SendError {
+    fn from(e: StorageError) -> Self {
+        Self::Storage(e)
+    }
+}
+
+/// Why an Outbox action (Undo, Retry, Edit, Discard) was refused. Nothing was changed.
+#[derive(Debug)]
+pub enum OutboxActionError {
+    /// The engine was opened without an Outbox ([`crate::Engine::open`]).
+    NoOutbox,
+    /// No such message in this account (or it is finished and gone).
+    NoSuchMessage,
+    /// Too late to undo: the Undo window has closed or the message already started to go out.
+    TooLate,
+    /// The message is in a state that does not allow this: for example it is being sent, or it is
+    /// not Failed (Retry).
+    WrongState,
+    /// The database failed.
+    Storage(StorageError),
+}
+
+impl fmt::Display for OutboxActionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoOutbox => f.write_str("the engine has no outbox"),
+            Self::NoSuchMessage => f.write_str("no such message"),
+            Self::TooLate => f.write_str("too late to undo"),
+            Self::WrongState => f.write_str("the message is already being sent"),
+            Self::Storage(e) => write!(f, "database error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for OutboxActionError {}
+
+impl From<OutboxError<StorageError>> for OutboxActionError {
+    fn from(e: OutboxError<StorageError>) -> Self {
+        use croft_mail_core::{ActionError as Action, UndoError};
+        match e {
+            OutboxError::Undo(UndoError::NotFound) | OutboxError::Action(Action::NotFound) => {
+                Self::NoSuchMessage
+            }
+            OutboxError::Undo(UndoError::TooLate) => Self::TooLate,
+            OutboxError::Action(Action::WrongState) => Self::WrongState,
+            OutboxError::Store(e) => Self::Storage(e),
+        }
     }
 }
 
@@ -209,6 +297,111 @@ impl EngineHandle {
         Ok(())
     }
 
+    /// Sends a message: stores it in the Outbox (message and bytes are on disk when this returns)
+    /// and wakes the account's task. Nothing reaches the server before the Undo window has passed
+    /// ([`EngineHandle::set_undo_window_ms`]), and nothing while the account is offline: the
+    /// message waits and goes out once, when the connection is back. Returns the id for the
+    /// "Sending... Undo" snackbar ([`EngineHandle::undo_send`]).
+    ///
+    /// `message` is the envelope: `envelope_from` is the identity's address and `recipients` are
+    /// To, Cc and Bcc as bare addresses. `mime` is the whole RFC 5322 message with a Message-ID
+    /// (it is how the copy in Sent is recognised) and **without a `Bcc:` header**: it is refused
+    /// with [`SendError::BccHeader`], because the bytes are sent exactly as stored. It should be
+    /// 7-bit or UTF-8 text, or the copy in Sent cannot be saved ([`croft_protocols::submit`]).
+    pub fn send(&self, message: NewMessage, mime: Vec<u8>) -> Result<OutboxId, SendError> {
+        if mime::has_bcc_header(&mime) {
+            return Err(SendError::BccHeader);
+        }
+        if message.recipients.is_empty() {
+            return Err(SendError::NoRecipients);
+        }
+        if message.envelope_from.trim().is_empty() {
+            return Err(SendError::NoSender);
+        }
+        let account = message.account;
+        let slot = self
+            .shared
+            .slot(account)
+            .ok_or(SendError::UnknownAccount(account))?;
+        if slot.submitter.is_none() {
+            return Err(SendError::NoSubmitter(account));
+        }
+        let now = self.shared.now();
+        let window = self.shared.undo_window_ms();
+        let id = {
+            let mut ob = self.shared.outbox().ok_or(SendError::NoOutbox)?;
+            ob.queue(message, mime, now, window)?
+        };
+        self.shared.emit(Change::Outbox { account });
+        self.shared.poke(account);
+        Ok(id)
+    }
+
+    /// Undo send: takes the message back if it is still waiting and its window is open, so
+    /// nothing is ever sent, and returns it (with its bytes) to reopen the composer.
+    /// [`OutboxActionError::TooLate`] once the window has closed.
+    pub fn undo_send(
+        &self,
+        account: AccountId,
+        id: OutboxId,
+    ) -> Result<RemovedMessage, OutboxActionError> {
+        let now = self.shared.now();
+        let removed = {
+            let mut ob = self.shared.outbox().ok_or(OutboxActionError::NoOutbox)?;
+            ob.undo(account, id, now)?
+        };
+        self.shared.emit(Change::Outbox { account });
+        Ok(removed)
+    }
+
+    /// The Outbox screen's rows for the account: Queued, Sending and Failed messages, oldest
+    /// first. Empty when the engine has no Outbox. Before offering Retry on an entry for which
+    /// [`OutboxEntry::may_have_been_sent`] is true, ask the person to check Sent.
+    pub fn outbox(&self, account: AccountId) -> Vec<OutboxEntry> {
+        self.shared
+            .outbox()
+            .map(|ob| ob.outbox().visible(account).into_iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Retry on a Failed message: it is queued again, due now. The attempts start afresh.
+    pub fn retry_send(&self, account: AccountId, id: OutboxId) -> Result<(), OutboxActionError> {
+        let now = self.shared.now();
+        {
+            let mut ob = self.shared.outbox().ok_or(OutboxActionError::NoOutbox)?;
+            ob.retry(account, id, now)?;
+        }
+        self.shared.emit(Change::Outbox { account });
+        self.shared.poke(account);
+        Ok(())
+    }
+
+    /// Edit on a Queued or Failed message: takes it out of the Outbox and returns it with its
+    /// bytes so the composer can reopen it. A message that is being sent cannot be taken back
+    /// ([`OutboxActionError::WrongState`]).
+    pub fn edit_back_to_draft(
+        &self,
+        account: AccountId,
+        id: OutboxId,
+    ) -> Result<RemovedMessage, OutboxActionError> {
+        let removed = {
+            let mut ob = self.shared.outbox().ok_or(OutboxActionError::NoOutbox)?;
+            ob.edit_back_to_draft(account, id)?
+        };
+        self.shared.emit(Change::Outbox { account });
+        Ok(removed)
+    }
+
+    /// Discard on a Queued or Failed message (the screen has asked): drops it and its bytes.
+    pub fn discard_send(&self, account: AccountId, id: OutboxId) -> Result<(), OutboxActionError> {
+        {
+            let mut ob = self.shared.outbox().ok_or(OutboxActionError::NoOutbox)?;
+            ob.discard(account, id)?;
+        }
+        self.shared.emit(Change::Outbox { account });
+        Ok(())
+    }
+
     /// Changes notifications: changed folders, failed operations, sign-in needed. Screens re-run
     /// their queries when they get one.
     pub fn subscribe(&self) -> broadcast::Receiver<Change> {
@@ -237,6 +430,11 @@ impl EngineHandle {
                 log::warn!("account {account}: could not end the back-off");
             }
         }
+        // The Outbox follows the same connection state. (Its own lock, taken after the queue's
+        // is let go: the two are never held together.)
+        if let Some(mut ob) = self.shared.outbox() {
+            ob.set_offline(account, !online);
+        }
         if online {
             self.shared.request_full_sync(account);
         }
@@ -248,9 +446,14 @@ impl EngineHandle {
     }
 
     /// The person signed in again after [`Change::SignInNeeded`] (the caller has already given the
-    /// backend the new credential). The account's queue and syncs run again.
+    /// backend and the submitter the new credential). The account's queue, its Outbox and its
+    /// syncs run again. A refused sign-in while sending stops the account's queue too, because
+    /// they share one credential.
     pub fn signed_in(&self, account: AccountId) {
         self.shared.lock().resume(account);
+        if let Some(mut ob) = self.shared.outbox() {
+            ob.resume(account);
+        }
         self.shared.clear_sign_in(account);
         self.shared.request_full_sync(account);
     }

@@ -65,6 +65,33 @@
 //! the row back. A database error does not make the task spin: it waits `sync_retry_ms`, doubled
 //! each time (at most 16 times), before it tries again.
 //!
+//! # Sending
+//!
+//! Open the engine with [`Engine::open_with_outbox`] and add each account that can send with
+//! [`Engine::add_account_with_submitter`] (a [`croft_protocols::MailSubmitter`], such as
+//! [`croft_protocols::SmtpImapSubmitter`]). [`EngineHandle::send`] stores the message in the
+//! persisted Outbox (`croft_mail_core::PersistentOutbox`) with its send time at the end of the Undo
+//! window and returns an id for the "Sending... Undo" snackbar ([`EngineHandle::undo_send`]);
+//! [`EngineHandle::outbox`], `retry_send`, `edit_back_to_draft` and `discard_send` are the Outbox
+//! screen. The account task sends what is due, one message at a time and never while offline, then
+//! saves the copy in Sent (looking the Message-ID up first, so a crash in between never makes two
+//! copies). Screens hear of it as [`Change::Outbox`], [`Change::SendFailed`] and
+//! [`Change::NotFiled`].
+//!
+//! * **Own connection, own lock.** The Outbox lives on a second connection to the same database
+//!   file behind its own `Mutex`, never held together with the queue's and never across an
+//!   `.await` ([`Engine::open_with_outbox`] says why).
+//! * **Never twice.** A message is marked sending on disk before it is handed to the submitter. If
+//!   the process dies, the next start fails it as "May not have been sent; check Sent before
+//!   retrying" and announces it once. If the send future is dropped while the process lives, the
+//!   same happens at once. The engine itself never drops a send: `shutdown` and `remove_account`
+//!   wait for it (the submitter's own deadline ends the wait).
+//! * **One credential.** A refused sign-in while sending puts the account in the same state as one
+//!   from IMAP: [`Change::SignInNeeded`], and nothing of the account (queue, syncs, Outbox) runs
+//!   until [`EngineHandle::signed_in`].
+//! * **The message has no `Bcc:` header** ([`SendError::BccHeader`]); Bcc recipients are only in
+//!   the envelope.
+//!
 //! # Message-ID lookups never guess before something is destroyed
 //!
 //! A message that moved (no new UID in the answer) or whose folder was renumbered is found again by
@@ -81,13 +108,18 @@
 mod clock;
 mod engine;
 mod handle;
+mod mime;
+mod outbox;
 mod sync;
 mod worker;
 
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use croft_mail_core::{AccountId, Op, OpId, OpKind, OpState, UnreadableOp};
+pub use croft_mail_core::{
+    AccountId, NewMessage, Op, OpId, OpKind, OpState, OutboxEntry, OutboxId, OutboxState,
+    RemovedMessage, UnreadableOp,
+};
 pub use engine::{Change, Engine, EngineConfig, EngineError};
-pub use handle::{ActionError, EngineHandle};
+pub use handle::{ActionError, EngineHandle, OutboxActionError, SendError};
 pub use worker::{
     MAX_LOOKUPS, REASON_AMBIGUOUS_COPY, REASON_LOST_AFTER_MOVE, REASON_LOST_AFTER_RESET,
 };

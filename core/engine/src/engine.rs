@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use croft_mail_core::{AccountId, OpId, PersistentQueue};
-use croft_protocols::{BackendError, MailBackend};
-use croft_storage::{folders, Db, SqliteOpStore, StorageError};
+use croft_mail_core::{AccountId, OpId, OutboxId, PersistentOutbox, PersistentQueue};
+use croft_protocols::{BackendError, MailBackend, MailSubmitter};
+use croft_storage::{folders, Db, SqliteOpStore, SqliteOutboxStore, StorageError};
 use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinHandle;
 
@@ -22,6 +22,9 @@ use crate::worker::Worker;
 
 /// The queue and the database, behind the one lock (see the crate documentation).
 pub(crate) type Queue = PersistentQueue<SqliteOpStore<Db>>;
+
+/// The Outbox and its own connection to the database file (see the crate documentation).
+pub(crate) type Outbox = PersistentOutbox<SqliteOutboxStore<Db>>;
 
 /// Settings for [`Engine::open`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +94,33 @@ pub enum Change {
         /// The account.
         account: AccountId,
     },
+    /// The account's Outbox changed (a message was queued, taken back, started sending, was
+    /// sent, failed or went back to wait for a retry): re-run the query behind
+    /// [`EngineHandle::outbox`].
+    Outbox {
+        /// The account.
+        account: AccountId,
+    },
+    /// A message could not be sent and is in the Outbox as Failed, or it may not have been sent
+    /// (the app stopped while it was going out, or the connection dropped after the message body).
+    /// The screen tells the person once; the reason is `last_error` of the entry in
+    /// [`EngineHandle::outbox`], and for "may not have been sent" the person should look in Sent
+    /// before choosing Retry.
+    SendFailed {
+        /// The account.
+        account: AccountId,
+        /// The Outbox message.
+        id: OutboxId,
+    },
+    /// A message was sent but its copy could not be saved in the Sent folder, and the engine gave
+    /// up on the copy. The message itself is not in the Outbox any more. The screen says "Sent,
+    /// but couldn't save a copy" once.
+    NotFiled {
+        /// The account.
+        account: AccountId,
+        /// The Outbox message that was sent.
+        id: OutboxId,
+    },
 }
 
 /// Why an engine call failed. Never contains message content, passwords or addresses.
@@ -107,6 +137,8 @@ pub enum EngineError {
     AccountExists(AccountId),
     /// [`Engine::add_account`] was called outside a tokio runtime.
     NoRuntime,
+    /// The engine was opened with [`Engine::open`] and has no Outbox.
+    NoOutbox,
 }
 
 impl fmt::Display for EngineError {
@@ -117,6 +149,7 @@ impl fmt::Display for EngineError {
             Self::UnknownAccount(a) => write!(f, "no backend for account {a}"),
             Self::AccountExists(a) => write!(f, "account {a} already has a backend"),
             Self::NoRuntime => f.write_str("no tokio runtime to run the account task on"),
+            Self::NoOutbox => f.write_str("the engine was opened without an outbox"),
         }
     }
 }
@@ -133,6 +166,16 @@ impl From<StorageError> for EngineError {
 pub(crate) struct AccountSlot {
     pub(crate) account: AccountId,
     pub(crate) backend: Arc<dyn MailBackend>,
+    /// Sends the account's mail and files the copy in Sent. `None`: the account cannot send.
+    pub(crate) submitter: Option<Arc<dyn MailSubmitter>>,
+    /// True while a message is being handed to the server. [`Engine::shutdown`] and
+    /// [`Engine::remove_account`] then keep waiting instead of cancelling the send.
+    pub(crate) sending: AtomicBool,
+    /// After a transient failure to send, nothing of this account is sent before this time (the
+    /// Outbox keeps the same hold in memory; the task needs it to know when to wake).
+    pub(crate) send_hold_ms: AtomicI64,
+    /// The same for saving copies in Sent.
+    pub(crate) file_hold_ms: AtomicI64,
     /// Poked by every UI action, `sync_now`, `set_online` and shutdown.
     pub(crate) wake: Notify,
     /// Held for a whole cycle, so an account never runs two operations at once even when
@@ -153,11 +196,21 @@ impl AccountSlot {
     pub(crate) fn needs_sign_in(&self) -> bool {
         self.needs_sign_in.load(Ordering::SeqCst)
     }
+
+    pub(crate) fn sending(&self) -> bool {
+        self.sending.load(Ordering::SeqCst)
+    }
 }
 
 /// Everything the account tasks and the handles share.
 pub(crate) struct Shared {
     queue: Mutex<Queue>,
+    /// The Outbox, on its own connection and behind its own lock; `None` when the engine was
+    /// opened with [`Engine::open`]. Never held together with `queue`, never across an `.await`.
+    outbox: Option<Mutex<Outbox>>,
+    /// Messages found Sending at open (now Failed, "may not have been sent") whose account has not
+    /// been announced yet: (account, id).
+    recovered: Mutex<Vec<(AccountId, OutboxId)>>,
     clock: Arc<dyn Clock>,
     changes: broadcast::Sender<Change>,
     accounts: Mutex<BTreeMap<AccountId, Arc<AccountSlot>>>,
@@ -176,6 +229,19 @@ impl Shared {
     /// (every change is one committed batch or nothing), so the lock is taken over.
     pub(crate) fn lock(&self) -> MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The Outbox, or `None` when this engine has none. Held only for short synchronous sections,
+    /// never across an `.await`, and never at the same time as [`Shared::lock`].
+    pub(crate) fn outbox(&self) -> Option<MutexGuard<'_, Outbox>> {
+        self.outbox
+            .as_ref()
+            .map(|m| m.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// True when the engine was opened with an Outbox.
+    pub(crate) fn has_outbox(&self) -> bool {
+        self.outbox.is_some()
     }
 
     pub(crate) fn now(&self) -> i64 {
@@ -305,11 +371,62 @@ impl Engine {
     /// was in flight when the app stopped back in the queue (every operation is safe to repeat).
     ///
     /// Reads the database, so call it from a worker thread, not the UI thread.
+    ///
+    /// An engine opened this way has no Outbox: [`EngineHandle::send`] refuses with
+    /// [`crate::SendError::NoOutbox`]. Use [`Engine::open_with_outbox`] to be able to send.
     pub fn open(db: Db, clock: Arc<dyn Clock>, config: EngineConfig) -> Result<Self, EngineError> {
+        Self::build(db, None, clock, config)
+    }
+
+    /// Like [`Engine::open`], and also opens the Outbox on `outbox_db`: a **second connection to the
+    /// same database file** (`Db::open` with the same path and key). Why a second connection:
+    /// the queue owns the first one, and the Outbox store needs a `&mut Db` of its own for every
+    /// call, so two stores cannot share one `Db` without a lock around the whole database that
+    /// the screens' reads would also have to take. WAL lets two connections of one process write
+    /// in turn (each write is a short transaction; a busy wait is at most a few milliseconds),
+    /// and the Outbox has its own lock, so the queue's lock is never held while an Outbox
+    /// message is written. `outbox_db` must be a file database: an in-memory one is a different
+    /// database and has none of the account rows the Outbox refers to.
+    ///
+    /// Messages that were being sent when the app stopped are Failed with "May not have been sent;
+    /// check Sent before retrying" at this point, never sent again. Each is announced once, as a
+    /// [`Change::SendFailed`], when its account is added ([`Engine::add_account_with_submitter`]),
+    /// so subscribe before adding the accounts.
+    ///
+    /// Reads and writes the database, so call it from a worker thread, not the UI thread.
+    pub fn open_with_outbox(
+        db: Db,
+        outbox_db: Db,
+        clock: Arc<dyn Clock>,
+        config: EngineConfig,
+    ) -> Result<Self, EngineError> {
+        Self::build(db, Some(outbox_db), clock, config)
+    }
+
+    fn build(
+        db: Db,
+        outbox_db: Option<Db>,
+        clock: Arc<dyn Clock>,
+        config: EngineConfig,
+    ) -> Result<Self, EngineError> {
         let queue = PersistentQueue::open(SqliteOpStore::new(db))?;
+        let outbox = outbox_db
+            .map(|db| PersistentOutbox::open(SqliteOutboxStore::new(db)))
+            .transpose()?;
+        let recovered = outbox
+            .as_ref()
+            .map(|o| {
+                o.recovered_after_restart()
+                    .iter()
+                    .filter_map(|id| o.outbox().get(*id).map(|e| (e.account, e.id)))
+                    .collect()
+            })
+            .unwrap_or_default();
         let (changes, _) = broadcast::channel(config.change_capacity.max(1));
         let shared = Arc::new(Shared {
             queue: Mutex::new(queue),
+            outbox: outbox.map(Mutex::new),
+            recovered: Mutex::new(recovered),
             clock,
             changes,
             accounts: Mutex::new(BTreeMap::new()),
@@ -333,6 +450,7 @@ impl Engine {
         &self,
         account: AccountId,
         backend: Arc<dyn MailBackend>,
+        submitter: Option<Arc<dyn MailSubmitter>>,
     ) -> Result<Arc<AccountSlot>, EngineError> {
         let mut slots = self.shared.slots();
         if slots.contains_key(&account) {
@@ -341,6 +459,10 @@ impl Engine {
         let slot = Arc::new(AccountSlot {
             account,
             backend,
+            submitter,
+            sending: AtomicBool::new(false),
+            send_hold_ms: AtomicI64::new(i64::MIN),
+            file_hold_ms: AtomicI64::new(i64::MIN),
             wake: Notify::new(),
             turn: self.shared.turn(account),
             full_sync_wanted: AtomicBool::new(true),
@@ -348,7 +470,34 @@ impl Engine {
             stopping: AtomicBool::new(false),
         });
         slots.insert(account, slot.clone());
+        drop(slots);
+        self.announce_recovered(account);
         Ok(slot)
+    }
+
+    /// Announces, once, the messages of this account that were found Sending at open.
+    fn announce_recovered(&self, account: AccountId) {
+        let ids: Vec<OutboxId> = {
+            let mut pending = self
+                .shared
+                .recovered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let mine = pending
+                .iter()
+                .filter(|(a, _)| *a == account)
+                .map(|(_, id)| *id)
+                .collect();
+            pending.retain(|(a, _)| *a != account);
+            mine
+        };
+        if ids.is_empty() {
+            return;
+        }
+        self.shared.emit(Change::Outbox { account });
+        for id in ids {
+            self.shared.emit(Change::SendFailed { account, id });
+        }
     }
 
     /// Adds an account's backend and starts its task on the current tokio runtime. The task
@@ -361,8 +510,30 @@ impl Engine {
         account: AccountId,
         backend: Arc<dyn MailBackend>,
     ) -> Result<(), EngineError> {
+        self.add_account_inner(account, backend, None)
+    }
+
+    /// Like [`Engine::add_account`], for an account that can also send mail. `submitter` hands
+    /// messages to the server and files the copy in Sent; the account's task runs the Outbox with
+    /// it. Like the backend it is built by the caller, so credentials never pass through the
+    /// engine.
+    pub fn add_account_with_submitter(
+        &self,
+        account: AccountId,
+        backend: Arc<dyn MailBackend>,
+        submitter: Arc<dyn MailSubmitter>,
+    ) -> Result<(), EngineError> {
+        self.add_account_inner(account, backend, Some(submitter))
+    }
+
+    fn add_account_inner(
+        &self,
+        account: AccountId,
+        backend: Arc<dyn MailBackend>,
+        submitter: Option<Arc<dyn MailSubmitter>>,
+    ) -> Result<(), EngineError> {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| EngineError::NoRuntime)?;
-        let slot = self.insert_slot(account, backend)?;
+        let slot = self.insert_slot(account, backend, submitter)?;
         let worker = Worker::new(self.shared.clone(), slot);
         let task = runtime.spawn(worker.run_loop());
         self.tasks_lock().insert(account, task);
@@ -377,7 +548,19 @@ impl Engine {
         account: AccountId,
         backend: Arc<dyn MailBackend>,
     ) -> Result<(), EngineError> {
-        self.insert_slot(account, backend).map(|_| ())
+        self.insert_slot(account, backend, None).map(|_| ())
+    }
+
+    /// Like [`Engine::attach_account`], for an account that can also send mail (see
+    /// [`Engine::add_account_with_submitter`]).
+    pub fn attach_account_with_submitter(
+        &self,
+        account: AccountId,
+        backend: Arc<dyn MailBackend>,
+        submitter: Arc<dyn MailSubmitter>,
+    ) -> Result<(), EngineError> {
+        self.insert_slot(account, backend, Some(submitter))
+            .map(|_| ())
     }
 
     fn tasks_lock(&self) -> MutexGuard<'_, BTreeMap<AccountId, JoinHandle<()>>> {
@@ -398,7 +581,7 @@ impl Engine {
             stop(slot);
         }
         if let Some(task) = task {
-            self.join(task).await;
+            self.join(task, slot.as_deref()).await;
         }
         if let Some(slot) = slot {
             self.recover_in_flight(&slot);
@@ -422,11 +605,12 @@ impl Engine {
         for slot in &slots {
             stop(slot);
         }
-        let tasks: Vec<JoinHandle<()>> = std::mem::take(&mut *self.tasks_lock())
-            .into_values()
+        let tasks: Vec<(AccountId, JoinHandle<()>)> = std::mem::take(&mut *self.tasks_lock())
+            .into_iter()
             .collect();
-        for task in tasks {
-            self.join(task).await;
+        for (account, task) in tasks {
+            let slot = slots.iter().find(|s| s.account == account);
+            self.join(task, slot.map(|s| &**s)).await;
         }
         for slot in &slots {
             self.recover_in_flight(slot);
@@ -434,13 +618,24 @@ impl Engine {
         self.shared.slots().clear();
     }
 
-    async fn join(&self, mut task: JoinHandle<()>) {
+    /// Waits for an account task. After the grace period a task in the middle of a network call
+    /// is stopped, **except** one that is handing a message to the server: cancelling that could
+    /// leave a message the server took marked as not sent, so the wait goes on (the submitter's
+    /// own deadline ends it).
+    async fn join(&self, mut task: JoinHandle<()>, slot: Option<&AccountSlot>) {
         let grace = Duration::from_millis(self.shared.config.shutdown_grace_ms);
-        if tokio::time::timeout(grace, &mut task).await.is_err() {
-            log::warn!("an account task did not stop in time and was aborted");
-            task.abort();
-            let _ = task.await;
+        loop {
+            if tokio::time::timeout(grace, &mut task).await.is_ok() {
+                return;
+            }
+            if !slot.is_some_and(AccountSlot::sending) {
+                break;
+            }
+            log::warn!("waiting for a message that is being sent");
         }
+        log::warn!("an account task did not stop in time and was aborted");
+        task.abort();
+        let _ = task.await;
     }
 }
 

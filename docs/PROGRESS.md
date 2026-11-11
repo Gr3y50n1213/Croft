@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T06: SMTP send and Outbox, part A (11 November 2026)
+
+**Status:** part A done; part B (wiring the outbox into the engine so "send with no network queues and sends later exactly once" runs end to end) is not done yet. Its plan is at the end of `docs/tasks/T06-smtp-outbox.md`.
+
+**What was built:** `croft_protocols::smtp`: an SMTP submission client written directly on tokio and rustls (TLS on 465, STARTTLS on 587, AUTH PLAIN/LOGIN/XOAUTH2, pinned certificates, same TLS policy as IMAP). `lettre` was not used: it cannot take a custom certificate verifier, so pinning would be impossible. `croft_mail_core::outbox`: the outbox state machine (queued, sending, submitted, filing in Sent, sent, failed; Undo, retry, edit back to draft, discard, abandon). A message whose sending was interrupted after the server may have accepted it is never resent automatically; it fails with "May not have been sent; check Sent before retrying". Migration 0004 rebuilds the `outbox` table (envelope, new states). A fake SMTP server in `core/test-support`.
+
+**Checks run and seen passing (by the orchestrator):** fmt, clippy, `cargo test` 442 passed, 0 failed on the merged branch; `check_schema.py` all ok. The agent ran 6 SMTP-to-GreenMail container tests (send, then read back over IMAP, including Bcc and a body line that is just a dot) on its own copy of the servers; not re-run by the orchestrator.
+
+**Review:** Opus, one round: no high or medium; 5 low fixed (message bytes and addresses in `Debug`, missing STARTTLS now pauses the account, abandon for a stuck sending row, outbox actions check the account, a schema comment).
+
+**Next:** T06 part B after T04 is merged.
+
+---
+
 ## T05: Account discovery (11 November 2026)
 
 **Status:** done. Not checked here: the real DNS resolver and HTTPS client against the live internet (this container's DNS answers nothing; both were tested against local DNS and TLS servers), hickory's system configuration on Android, autoconfig files recorded from real providers (fixtures are written to Mozilla's format).

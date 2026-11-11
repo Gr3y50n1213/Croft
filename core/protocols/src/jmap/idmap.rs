@@ -62,7 +62,8 @@ pub trait JmapIdStore: Send + Sync {
     fn reset_mailbox(&self, mailbox: &str) -> Result<u32, IdStoreError>;
 
     /// Forgets the mailbox completely (it no longer exists on the server). A later
-    /// [`uid_validity`](Self::uid_validity) makes a new one.
+    /// [`uid_validity`](Self::uid_validity) makes a new one. The old UIDVALIDITY is gone, so the
+    /// new random value repeats it with a chance of about 2^-32 (accepted).
     fn forget_mailbox(&self, mailbox: &str) -> Result<(), IdStoreError>;
 
     /// The UID the next new email in the mailbox will get.

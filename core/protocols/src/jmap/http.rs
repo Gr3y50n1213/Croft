@@ -58,9 +58,10 @@ pub(crate) struct HttpResponse {
 pub(crate) struct SendError {
     /// What the caller sees.
     pub error: BackendError,
-    /// True when the whole request had been written before the failure, so the server may have
-    /// processed it (a lost answer). False for a failure to connect, to set up TLS or to write the
-    /// request: then nothing happened on the server and retrying is safe.
+    /// True when the server may have processed the request: the whole request had been written
+    /// before the failure (a lost answer), or the caller found the answer itself ambiguous (a
+    /// proxy's 5xx, an unreadable 2xx body). False for a failure to connect, to set up TLS or to
+    /// write the request: then nothing happened on the server and retrying is safe.
     pub request_may_have_arrived: bool,
 }
 
@@ -214,13 +215,18 @@ impl Http {
 
 /// The request line and headers, in a buffer that is wiped when dropped (it holds the
 /// `Authorization` value).
+///
+/// The buffer is allocated at its final size before anything is written to it. A `String` that
+/// outgrows its capacity moves to a new block and frees the old one without wiping it, and the old
+/// block would hold the credential, so the size is worked out first ([`head_capacity`]).
 fn request_head(req: &HttpRequest<'_>) -> Zeroizing<String> {
-    let mut head = Zeroizing::new(String::with_capacity(256));
+    let host = req.url.host_header();
+    let mut head = Zeroizing::new(String::with_capacity(head_capacity(req, &host)));
     head.push_str(req.method);
     head.push(' ');
     head.push_str(&req.url.path_and_query);
     head.push_str(" HTTP/1.1\r\nHost: ");
-    head.push_str(&req.url.host_header());
+    head.push_str(&host);
     head.push_str("\r\nUser-Agent: Croft\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n");
     if let Some(auth) = req.authorization {
         head.push_str("Authorization: ");
@@ -233,10 +239,28 @@ fn request_head(req: &HttpRequest<'_>) -> Zeroizing<String> {
         head.push_str("\r\n");
     }
     if req.method == "POST" {
-        head.push_str(&format!("Content-Length: {}\r\n", req.body.len()));
+        // Written piecewise: `format!` would build the line in a separate, unwiped string.
+        head.push_str("Content-Length: ");
+        head.push_str(&req.body.len().to_string());
+        head.push_str("\r\n");
     }
     head.push_str("\r\n");
     head
+}
+
+/// An upper bound for the size of [`request_head`], never below the real size.
+fn head_capacity(req: &HttpRequest<'_>, host: &str) -> usize {
+    // Fixed text: request line pieces, header names, separators and the blank line.
+    const FIXED: usize = 256;
+    // "Content-Length: " + at most 20 digits + CRLF.
+    const LENGTH_LINE: usize = 40;
+    FIXED
+        + LENGTH_LINE
+        + req.method.len()
+        + req.url.path_and_query.len()
+        + host.len()
+        + req.authorization.map_or(0, str::len)
+        + req.content_type.map_or(0, str::len)
 }
 
 /// Classifies an I/O error from the handshake: a certificate or protocol problem keeps its own
@@ -334,8 +358,9 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     let mut raw = buf.split_off(head_len);
     let body = if chunked {
         let cap = max_body.saturating_mul(2).saturating_add(MAX_HEAD);
+        let mut decoder = ChunkedBody::new(max_body);
         loop {
-            match decode_chunked(&raw, max_body)? {
+            match decoder.feed(&raw)? {
                 Some(body) => break body,
                 None => {
                     if raw.len() > cap || fill(reader, &mut raw, idle).await? == 0 {
@@ -373,44 +398,67 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     })
 }
 
-/// Decodes a chunked body from the bytes read so far. `Ok(Some(body))` when the final chunk has
-/// arrived, `Ok(None)` when more bytes are needed, an error when the framing is wrong or the
-/// decoded body would pass `max`. Trailers after the last chunk are ignored.
-pub(crate) fn decode_chunked(raw: &[u8], max: usize) -> Result<Option<Vec<u8>>, BackendError> {
-    let mut pos = 0usize;
-    let mut out = Vec::new();
-    loop {
-        let rest = &raw[pos..];
-        let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") else {
-            // A size line is a few hex digits and an optional extension; a long one is abuse.
-            return if rest.len() > 128 {
-                Err(unreadable())
-            } else {
-                Ok(None)
+/// Decodes a chunked body as bytes arrive. It keeps its place and the output between calls, so
+/// each byte is looked at once however many reads the body is split into (decoding again from the
+/// start after every read would take time quadratic in the body size).
+struct ChunkedBody {
+    /// Start of the first chunk not yet fully decoded, in the raw bytes.
+    pos: usize,
+    /// The decoded body so far.
+    out: Vec<u8>,
+    max: usize,
+}
+
+impl ChunkedBody {
+    fn new(max: usize) -> Self {
+        Self {
+            pos: 0,
+            out: Vec::new(),
+            max,
+        }
+    }
+
+    /// Decodes what `raw` (everything read so far, from the first byte of the body) holds beyond
+    /// the last call. `Ok(Some(body))` when the final chunk has arrived, `Ok(None)` when more
+    /// bytes are needed, an error when the framing is wrong or the decoded body would pass the
+    /// maximum. Trailers after the last chunk are ignored.
+    fn feed(&mut self, raw: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
+        loop {
+            let rest = &raw[self.pos.min(raw.len())..];
+            // A size line is a few hex digits and an optional extension; a long one is abuse. Only
+            // the first bytes are searched, so waiting for a big chunk costs nothing.
+            let window = &rest[..rest.len().min(130)];
+            let Some(eol) = window.windows(2).position(|w| w == b"\r\n") else {
+                return if rest.len() > 128 {
+                    Err(unreadable())
+                } else {
+                    Ok(None)
+                };
             };
-        };
-        let line = std::str::from_utf8(&rest[..eol]).map_err(|_| unreadable())?;
-        let digits = line.split(';').next().unwrap_or("").trim();
-        if digits.is_empty() || digits.len() > 8 {
-            return Err(unreadable());
+            let line = std::str::from_utf8(&rest[..eol]).map_err(|_| unreadable())?;
+            let digits = line.split(';').next().unwrap_or("").trim();
+            if digits.is_empty() || digits.len() > 8 {
+                return Err(unreadable());
+            }
+            let size = usize::from_str_radix(digits, 16).map_err(|_| unreadable())?;
+            let start = eol + 2;
+            if size == 0 {
+                return Ok(Some(std::mem::take(&mut self.out)));
+            }
+            if self.out.len().saturating_add(size) > self.max {
+                return Err(too_large());
+            }
+            let end = start + size;
+            if rest.len() < end + 2 {
+                // The chunk is not all here yet; start from its size line on the next call.
+                return Ok(None);
+            }
+            if &rest[end..end + 2] != b"\r\n" {
+                return Err(unreadable());
+            }
+            self.out.extend_from_slice(&rest[start..end]);
+            self.pos += end + 2;
         }
-        let size = usize::from_str_radix(digits, 16).map_err(|_| unreadable())?;
-        pos += eol + 2;
-        if size == 0 {
-            return Ok(Some(out));
-        }
-        if out.len().saturating_add(size) > max {
-            return Err(too_large());
-        }
-        let end = pos + size;
-        if raw.len() < end + 2 {
-            return Ok(None);
-        }
-        if &raw[end..end + 2] != b"\r\n" {
-            return Err(unreadable());
-        }
-        out.extend_from_slice(&raw[pos..end]);
-        pos = end + 2;
     }
 }
 
@@ -487,6 +535,74 @@ mod tests {
         }
     }
 
+    /// A chunked body of `total` bytes in chunks of `chunk` bytes, ending with the last chunk.
+    fn chunked(total: usize, chunk: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(total + total / chunk * 8 + 16);
+        let mut left = total;
+        while left > 0 {
+            let n = left.min(chunk);
+            out.extend_from_slice(format!("{n:x}\r\n").as_bytes());
+            out.extend(std::iter::repeat_n(b'x', n));
+            out.extend_from_slice(b"\r\n");
+            left -= n;
+        }
+        out.extend_from_slice(b"0\r\n\r\n");
+        out
+    }
+
+    #[test]
+    fn a_big_chunked_body_in_small_chunks_decodes_in_linear_time() {
+        const TOTAL: usize = 16 * 1024 * 1024;
+        let wire = chunked(TOTAL, 1024);
+        // Fed in reads the size `fill` uses, the way `read_response` does.
+        let started = std::time::Instant::now();
+        let mut raw: Vec<u8> = Vec::new();
+        let mut decoder = ChunkedBody::new(TOTAL);
+        let mut body = None;
+        for piece in wire.chunks(8192) {
+            raw.extend_from_slice(piece);
+            if let Some(done) = decoder.feed(&raw).unwrap() {
+                body = Some(done);
+                break;
+            }
+        }
+        let body = body.expect("the body ended");
+        assert_eq!(body.len(), TOTAL);
+        assert!(body.iter().all(|b| *b == b'x'));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn chunked_bodies_split_anywhere_still_decode_and_keep_their_limits() {
+        // Every possible split point of a small body gives the same answer.
+        let wire = chunked(40, 7);
+        // (The final `0\r\n` is enough; the empty trailer line after it is not waited for.)
+        for cut in 0..wire.len() - 2 {
+            let mut raw = wire[..cut].to_vec();
+            let mut d = ChunkedBody::new(100);
+            assert_eq!(d.feed(&raw).unwrap(), None, "cut {cut}");
+            raw.extend_from_slice(&wire[cut..]);
+            assert_eq!(d.feed(&raw).unwrap().unwrap(), vec![b'x'; 40], "cut {cut}");
+        }
+        // The limit counts decoded bytes, and a bad frame is refused.
+        let mut d = ChunkedBody::new(30);
+        assert!(matches!(
+            d.feed(&chunked(40, 7)),
+            Err(BackendError::Permanent(_))
+        ));
+        let mut d = ChunkedBody::new(30);
+        assert!(matches!(
+            d.feed(b"3\r\nabcXX"),
+            Err(BackendError::Transient(_))
+        ));
+        let mut d = ChunkedBody::new(30);
+        assert!(d.feed(&[b'a'; 200]).is_err());
+    }
+
     #[test]
     fn the_request_names_only_what_it_needs() {
         let url = Url::parse("https://mail.example.org:8443/jmap/").unwrap();
@@ -503,6 +619,27 @@ mod tests {
         assert!(head.contains("Authorization: Basic c2VjcmV0\r\n"));
         assert!(head.contains("Content-Length: 2\r\n"));
         assert!(head.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn a_long_credential_is_written_without_the_head_buffer_growing() {
+        let url = Url::parse("https://mail.example.org/jmap/").unwrap();
+        let auth = format!("Bearer {}", "t".repeat(2048));
+        let req = HttpRequest {
+            method: "POST",
+            url: &url,
+            authorization: Some(&auth),
+            content_type: Some("application/json"),
+            body: &[0u8; 123_456],
+            max_response: 10,
+        };
+        let head = request_head(&req);
+        assert!(head.contains(&format!("\r\nAuthorization: {auth}\r\n")));
+        assert!(head.contains("Content-Length: 123456\r\n"));
+        assert!(head.ends_with("\r\n\r\n"));
+        // Allocated once, at the bound, and the bound holds: it never had to grow.
+        assert_eq!(head.capacity(), head_capacity(&req, &url.host_header()));
+        assert!(head.len() <= head.capacity());
     }
 
     #[tokio::test]

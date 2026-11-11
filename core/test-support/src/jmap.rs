@@ -37,6 +37,17 @@ pub struct JmapOptions {
     pub tls: bool,
 }
 
+/// How the server ruins its answer to a request after doing the work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Spoiled {
+    /// Answers with this HTTP status and no body, as a reverse proxy would.
+    Status(u16),
+    /// Answers 200 with a body that is not JSON.
+    Unparseable,
+    /// Replaces the method's answer with `["error", {"type": ...}]` of this type.
+    MethodError(String),
+}
+
 /// One request the server saw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestRecord {
@@ -105,6 +116,10 @@ struct State {
     hang: bool,
     drop_answer_for: Option<String>,
     submission_error: Option<String>,
+    spoil: Option<(String, Spoiled)>,
+    fail_updates: BTreeMap<String, String>,
+    echo_extra: Option<String>,
+    bump_after: Option<String>,
     // logs
     requests: Vec<RequestRecord>,
     calls: Vec<String>,
@@ -183,6 +198,10 @@ impl JmapServer {
             hang: false,
             drop_answer_for: None,
             submission_error: None,
+            spoil: None,
+            fail_updates: BTreeMap::new(),
+            echo_extra: None,
+            bump_after: None,
             requests: Vec::new(),
             calls: Vec::new(),
             deliveries: Vec::new(),
@@ -401,6 +420,45 @@ impl JmapServer {
         self.lock().drop_answer_for = method.map(str::to_string);
     }
 
+    /// Does the work for this method and then answers the whole request with this HTTP status and
+    /// no body, as a reverse proxy that gave up would. `None` stops it.
+    pub fn spoil_answer_with_status(&self, method: &str, status: Option<u16>) {
+        self.lock().spoil = status.map(|c| (method.to_string(), Spoiled::Status(c)));
+    }
+
+    /// Does the work for this method and then answers 200 with a body that is not JSON.
+    pub fn spoil_answer_with_garbage(&self, method: &str) {
+        self.lock().spoil = Some((method.to_string(), Spoiled::Unparseable));
+    }
+
+    /// Does the work for this method and then reports it as a method error of this type
+    /// (`serverPartialFail`, ...). `None` stops it.
+    pub fn spoil_answer_with_error(&self, method: &str, kind: Option<&str>) {
+        self.lock().spoil = kind.map(|k| (method.to_string(), Spoiled::MethodError(k.to_string())));
+    }
+
+    /// Makes `Email/set` refuse to update this email (`notUpdated` with this error type), or
+    /// stops doing so.
+    pub fn fail_updates_of(&self, email_id: &str, kind: Option<&str>) {
+        let mut s = self.lock();
+        match kind {
+            Some(k) => s.fail_updates.insert(email_id.to_string(), k.to_string()),
+            None => s.fail_updates.remove(email_id),
+        };
+    }
+
+    /// Makes `Email/get` also return this email when it was not asked for, and `Email/set` also
+    /// list it as updated and destroyed (a server that answers with more than was requested).
+    pub fn echo_extra_email(&self, email_id: Option<&str>) {
+        self.lock().echo_extra = email_id.map(str::to_string);
+    }
+
+    /// After the next call of this method, changes the account's `Email` state once (as another
+    /// client would) without touching any message.
+    pub fn bump_state_after(&self, method: Option<&str>) {
+        self.lock().bump_after = method.map(str::to_string);
+    }
+
     /// Makes `EmailSubmission/set` refuse creation with this error type (`forbiddenFrom`, ...).
     pub fn set_submission_error(&self, kind: Option<&str>) {
         self.lock().submission_error = kind.map(str::to_string);
@@ -428,6 +486,11 @@ impl JmapServer {
     /// Messages accepted by `EmailSubmission/set`.
     pub fn deliveries(&self) -> Vec<Delivery> {
         self.lock().deliveries.clone()
+    }
+
+    /// The JMAP id of a mailbox (name or role).
+    pub fn mailbox_id_of(&self, name_or_role: &str) -> String {
+        mailbox_id(&self.lock(), name_or_role)
     }
 
     /// The JMAP ids of the messages in a mailbox (name or role).
@@ -752,6 +815,16 @@ fn api(s: &mut State, body: &[u8]) -> Reply {
             "EmailSubmission/set" => submission_set(s, &args, &mut created_ids, &id, &mut extra),
             _ => Err(json!({"type": "unknownMethod"})),
         };
+        let result = match &s.spoil {
+            Some((m, Spoiled::MethodError(kind))) if *m == name => {
+                Err(json!({"type": kind.clone()}))
+            }
+            _ => result,
+        };
+        if s.bump_after.as_deref() == Some(name.as_str()) {
+            s.bump_after = None;
+            s.state += 1;
+        }
         match result {
             Ok(v) => responses.push(json!([name, v, id])),
             Err(e) => responses.push(json!(["error", e, id])),
@@ -764,6 +837,17 @@ fn api(s: &mut State, body: &[u8]) -> Reply {
     let mut reply =
         Reply::json(&json!({"methodResponses": responses, "sessionState": "session-1"}));
     reply.drop_connection = drop_connection;
+    if let Some((m, how)) = &s.spoil {
+        if calls.iter().any(|c| c[0].as_str() == Some(m.as_str())) {
+            match how {
+                Spoiled::Status(code) => reply = Reply::status(*code),
+                Spoiled::Unparseable => {
+                    reply.body = b"<html>not json</html>".to_vec();
+                }
+                Spoiled::MethodError(_) => {}
+            }
+        }
+    }
     reply
 }
 
@@ -976,6 +1060,13 @@ fn email_get(s: &State, args: &Value) -> Result<Value, Value> {
             None => not_found.push(id),
         }
     }
+    if let Some(extra) = &s.echo_extra {
+        if let Some(e) = s.emails.get(extra) {
+            if !list.iter().any(|o| o["id"] == json!(extra)) {
+                list.push(email_json(extra, e, &props));
+            }
+        }
+    }
     Ok(
         json!({"accountId": s.account, "state": format!("s{}", s.state), "list": list, "notFound": not_found}),
     )
@@ -1112,10 +1203,19 @@ fn apply_patch(s: &State, email: &mut Email, patch: &Value) -> Result<(), Value>
 }
 
 fn email_set(s: &mut State, args: &Value) -> Result<Value, Value> {
+    if let Some(expected) = args["ifInState"].as_str() {
+        if expected != format!("s{}", s.state) {
+            return Err(json!({"type": "stateMismatch"}));
+        }
+    }
     let mut updated = Map::new();
     let mut not_updated = Map::new();
     if let Some(u) = args["update"].as_object() {
         for (id, patch) in u {
+            if let Some(kind) = s.fail_updates.get(id).cloned() {
+                not_updated.insert(id.clone(), json!({"type": kind}));
+                continue;
+            }
             let Some(current) = s.emails.get(id).cloned() else {
                 not_updated.insert(id.clone(), json!({"type": "notFound"}));
                 continue;
@@ -1150,6 +1250,10 @@ fn email_set(s: &mut State, args: &Value) -> Result<Value, Value> {
         }
     }
     let mut out = json!({"accountId": s.account, "newState": format!("s{}", s.state)});
+    if let Some(extra) = &s.echo_extra {
+        updated.insert(extra.clone(), Value::Null);
+        destroyed.push(extra.clone());
+    }
     if !updated.is_empty() {
         out["updated"] = Value::Object(updated);
     }

@@ -117,8 +117,49 @@ impl Responses {
     }
 }
 
+/// The HTTP statuses that mean the server rejected the request without acting on it: bad request,
+/// sign-in refused, forbidden, body too large. Anything else (above all 5xx and 408, which a
+/// reverse proxy sends after the server may have finished the work) is ambiguous.
+fn refused_unprocessed(status: u16) -> bool {
+    matches!(status, 400 | 401 | 403 | 413)
+}
+
 fn call_id(index: usize) -> String {
     format!("c{index}")
+}
+
+/// The `Authorization` value for HTTP Basic: `Basic ` and the base64 of `user:password`.
+///
+/// Every buffer that holds the secret is allocated at its final size before the secret is written
+/// and is wiped on drop: the `user:password` pair, and the header, which the base64 is encoded into
+/// directly with `encode_slice` (not `encode`, which returns a fresh unwiped `String`, and not into
+/// a buffer that may need to grow). Nothing here reallocates with the secret inside, so no old
+/// copy is freed without being wiped.
+fn basic_header(user: &str, password: &str) -> Result<Zeroizing<String>, BackendError> {
+    let unusable = || BackendError::Permanent("the password cannot be used".into());
+    let mut pair = Zeroizing::new(String::with_capacity(user.len() + 1 + password.len()));
+    pair.push_str(user);
+    pair.push(':');
+    pair.push_str(password);
+    const PREFIX: &[u8] = b"Basic ";
+    let encoded_len = base64::encoded_len(pair.len(), true).ok_or_else(unusable)?;
+    let mut header: Zeroizing<Vec<u8>> =
+        Zeroizing::new(Vec::with_capacity(PREFIX.len() + encoded_len));
+    header.extend_from_slice(PREFIX);
+    header.resize(PREFIX.len() + encoded_len, 0);
+    base64::engine::general_purpose::STANDARD
+        .encode_slice(pair.as_bytes(), &mut header[PREFIX.len()..])
+        .map_err(|_| unusable())?;
+    // The bytes are ASCII; move them into a `String` without copying them.
+    let bytes = std::mem::take(&mut *header);
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Zeroizing::new(text)),
+        Err(e) => {
+            let mut bytes = e.into_bytes();
+            zeroize::Zeroize::zeroize(&mut bytes);
+            Err(unusable())
+        }
+    }
 }
 
 /// The HTTP side of one account, with its credential.
@@ -138,23 +179,17 @@ impl Client {
         session_url: Url,
     ) -> Result<Self, BackendError> {
         let authorization = match credential {
-            Credential::Password(pw) => {
-                let mut pair = Zeroizing::new(String::new());
-                pair.push_str(&config.username);
-                pair.push(':');
-                pair.push_str(pw);
-                let encoded = base64::engine::general_purpose::STANDARD.encode(pair.as_bytes());
-                let mut header = Zeroizing::new(String::from("Basic "));
-                header.push_str(&encoded);
-                header
-            }
+            Credential::Password(pw) => basic_header(&config.username, pw)?,
             Credential::OAuth2 { access_token, .. } => {
                 if access_token.contains(['\r', '\n']) {
                     return Err(BackendError::Permanent(
                         "the access token cannot be used".into(),
                     ));
                 }
-                let mut header = Zeroizing::new(String::from("Bearer "));
+                // Sized exactly before the token is written, so the buffer never grows (a
+                // `String` that grows moves its contents and frees the old block unwiped).
+                let mut header = Zeroizing::new(String::with_capacity(7 + access_token.len()));
+                header.push_str("Bearer ");
                 header.push_str(access_token);
                 header
             }
@@ -245,7 +280,9 @@ impl Client {
 
     /// Like [`call`](Self::call), and the error says whether the server may have acted on the
     /// request anyway (see [`SendError::request_may_have_arrived`]). Sending mail needs that: a
-    /// lost answer must not be retried.
+    /// lost, garbled or proxy-generated answer (5xx, 408, a 2xx body that is not JMAP) must not be
+    /// retried. Only a connection that never completed the request, or a 400, 401, 403 or 413
+    /// answer, says nothing was done.
     pub async fn call_tracked(
         &self,
         session: &Session,
@@ -272,11 +309,19 @@ impl Client {
                 self.max_response,
             )
             .await?;
-        // The server answered, so it did (or refused to) act: nothing below is ambiguous.
+        // Whatever came back, a request that was written in full may have been processed. Only a
+        // few 4xx answers say it was refused unread; a 5xx or 408 is typically a proxy giving up
+        // after the server did the work, and a body that does not parse tells nothing either.
         if !(200..300).contains(&resp.status) {
-            return Err(from_status(resp.status).into());
+            return Err(SendError {
+                error: from_status(resp.status),
+                request_may_have_arrived: !refused_unprocessed(resp.status),
+            });
         }
-        Ok(Responses::parse(&resp.body, n)?)
+        Responses::parse(&resp.body, n).map_err(|error| SendError {
+            error,
+            request_may_have_arrived: true,
+        })
     }
 
     /// Uploads a blob and returns its id (RFC 8620 section 6.1).
@@ -367,5 +412,44 @@ mod tests {
         assert_eq!(c.authorization.as_str(), "Bearer tok");
         let bad = Client::new(&cfg, &Credential::oauth2("alice", "tok\r\nX: y"), url);
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn long_credentials_make_the_right_header_in_exactly_sized_buffers() {
+        let cfg = JmapConfig::new("http://127.0.0.1:1/s", "alice");
+        let url = cfg.validate().unwrap();
+        // A 2 KB token.
+        let token = "t".repeat(2048);
+        let c = Client::new(
+            &cfg,
+            &Credential::oauth2("alice", token.clone()),
+            url.clone(),
+        )
+        .unwrap();
+        assert_eq!(c.authorization.as_str(), format!("Bearer {token}"));
+        assert_eq!(
+            c.authorization.capacity(),
+            c.authorization.len(),
+            "sized up front, never grown"
+        );
+        // A 2 KB password, in Basic form.
+        let password = "p".repeat(2048);
+        let c = Client::new(&cfg, &Credential::password(password.clone()), url).unwrap();
+        let expected = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("alice:{password}"))
+        );
+        assert_eq!(c.authorization.as_str(), expected);
+        assert_eq!(c.authorization.capacity(), c.authorization.len());
+    }
+
+    #[test]
+    fn only_a_few_4xx_answers_prove_the_request_was_not_acted_on() {
+        for status in [400, 401, 403, 413] {
+            assert!(refused_unprocessed(status), "{status}");
+        }
+        for status in [404, 408, 429, 500, 502, 503, 504] {
+            assert!(!refused_unprocessed(status), "{status}");
+        }
     }
 }

@@ -11,12 +11,14 @@
 //! server has accepted the submission. The server files Sent; nothing is appended.
 //!
 //! **Never sent twice.** Everything up to the last request is safe to repeat and fails as usual
-//! (`Transient`, `Auth`, `Permanent`). Once the last request has been written in full, a lost
-//! answer (a timeout, a dropped connection) leaves it unknown whether the server delivered the
-//! message, so that failure is `Permanent` with [`MAYBE_SENT_REASON`] and is never retried by the
-//! queue; the person checks Sent. An answer that says the submission failed is a plain failure: the
-//! copy imported into Drafts is deleted again (best effort) so a retry does not leave a pile of
-//! drafts behind.
+//! (`Transient`, `Auth`, `Permanent`). Once the last request has been written in full, only two
+//! answers mean "not sent": a parsed `notCreated` for the submission (or for the import it needs),
+//! and an HTTP 400, 401, 403 or 413. Anything else (a lost answer, a 5xx or 408 from the server or
+//! a proxy in front of it, a 2xx body that is not JMAP, `serverFail`, `serverPartialFail`) leaves
+//! it unknown whether the server delivered the message, so that failure is `Permanent` with
+//! [`MAYBE_SENT_REASON`] and is never retried by the queue; the person checks Sent, and the staged
+//! copy is left alone. After a clear "not sent" the copy imported into Drafts is deleted again
+//! (best effort) so a retry does not leave a pile of drafts behind.
 
 use super::api::{ApiError, Client};
 use super::config::JmapConfig;
@@ -182,43 +184,63 @@ impl JmapSubmitter {
             }
             Err(e) => return Err(e.error),
         };
-        let imported = r.take(0, "Email/import").map_err(ApiError::into_backend)?;
-        let Some(email_id) = imported
-            .get("created")
-            .and_then(|c| c.get("m"))
-            .and_then(|m| m.get("id"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        else {
-            return Err(set_failure(&imported, "notCreated", "m"));
-        };
-        let outcome = match r.take(1, "EmailSubmission/set") {
-            Ok(args) => {
-                if args.get("created").and_then(|c| c.get("s")).is_some() {
-                    Ok(())
-                } else {
-                    Err(set_failure(&args, "notCreated", "s"))
+        let imported = r.take(0, "Email/import");
+        let submitted = r.take(1, "EmailSubmission/set");
+        // The one answer that says the mail was not sent is a parsed `notCreated` for the
+        // submission (or for the import it depends on). Everything else that is not a plain
+        // success (a method error such as `serverFail` or `serverPartialFail`, an answer with
+        // neither `created` nor `notCreated`) leaves it unknown, so the staged copy stays too.
+        let not_sent = match &submitted {
+            Ok(args) if args.get("created").and_then(|c| c.get("s")).is_some() => {
+                return Ok(SendReceipt {
+                    recipients: recipients.len(),
+                    bytes: mime.len(),
+                });
+            }
+            _ => match (&imported, &submitted) {
+                // No staged message, so nothing was submitted.
+                (Ok(args), _) if has_not_created(args, "m") => {
+                    Some(set_failure(args, "notCreated", "m"))
                 }
-            }
-            Err(e) => Err(e.into_backend()),
+                (_, Ok(args)) if has_not_created(args, "s") => {
+                    Some(set_failure(args, "notCreated", "s"))
+                }
+                _ => None,
+            },
         };
-        match outcome {
-            Ok(()) => Ok(SendReceipt {
-                recipients: recipients.len(),
-                bytes: mime.len(),
-            }),
-            Err(e) => {
-                // Not sent: take the staged copy away again (best effort; the failure above is
-                // what the caller needs to hear about).
-                let cleanup = vec![(
-                    "Email/set",
-                    json!({"accountId": account, "destroy": [email_id]}),
-                )];
-                let _ = self.client.call(&session, USING, cleanup).await;
-                Err(e)
-            }
+        let Some(error) = not_sent else {
+            return Err(BackendError::Permanent(MAYBE_SENT_REASON.into()));
+        };
+        // Not sent: take the staged copy away again (best effort; the failure above is what the
+        // caller needs to hear about).
+        if let Some(email_id) = imported.ok().as_ref().and_then(created_email_id) {
+            let cleanup = vec![(
+                "Email/set",
+                json!({"accountId": account, "destroy": [email_id]}),
+            )];
+            let _ = self.client.call(&session, USING, cleanup).await;
         }
+        Err(error)
     }
+}
+
+/// The id of the message that `Email/import` created under the creation id `m`.
+fn created_email_id(imported: &Value) -> Option<String> {
+    imported
+        .get("created")
+        .and_then(|c| c.get("m"))
+        .and_then(|m| m.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Whether `args.notCreated` has an entry with a readable `type` for this creation id.
+fn has_not_created(args: &Value, creation_id: &str) -> bool {
+    args.get("notCreated")
+        .and_then(|n| n.get(creation_id))
+        .and_then(|e| e.get("type"))
+        .and_then(Value::as_str)
+        .is_some()
 }
 
 /// The error for a failed create: the per-object error type from `notCreated`, classified.

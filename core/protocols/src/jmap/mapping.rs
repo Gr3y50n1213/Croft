@@ -61,7 +61,8 @@ struct RawMailbox {
 pub(crate) struct MailboxInfo {
     /// The JMAP id.
     pub id: String,
-    /// Names from the top, joined with `/`.
+    /// Names from the top, joined with `/`; a `/` or `\` inside a name is escaped with a
+    /// backslash (see [`escape_name`]). Unique within the account.
     pub path: String,
     /// The role mapped to the shared vocabulary.
     pub special_use: SpecialUse,
@@ -79,8 +80,8 @@ pub(crate) struct Mailboxes {
 }
 
 impl Mailboxes {
-    /// Looks a mailbox up by the path [`RemoteFolder::path`] gave. When two mailboxes have the
-    /// same path (a name containing `/`), the first one wins.
+    /// Looks a mailbox up by the path [`RemoteFolder::path`] gave. Paths are unique (see
+    /// [`parse_mailboxes`]).
     pub fn by_path(&self, path: &str) -> Option<&MailboxInfo> {
         self.items.iter().find(|m| m.path == path)
     }
@@ -108,7 +109,26 @@ pub(crate) fn special_use(role: Option<&str>, name: &str) -> SpecialUse {
     }
 }
 
-/// Reads a `Mailbox/get` answer.
+/// A mailbox name as one path segment: `\` becomes `\\` and `/` becomes `\/`, so a mailbox
+/// called `a/b` cannot be mistaken for `b` inside `a`. The result never contains a bare `/`, and
+/// splitting a path on bare `/` and undoing the escapes gives the names back.
+pub(crate) fn escape_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    for c in name.chars() {
+        if matches!(c, '/' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Reads a `Mailbox/get` answer. Every mailbox gets a path that no other has: names are escaped
+/// (see [`escape_name`]), and if two mailboxes still end up with the same path (siblings of the
+/// same name, which JMAP forbids but servers allow, or a broken parent chain) the one with the
+/// smallest id keeps it and each other gets `\#` and its own (escaped) id appended. No escaped
+/// path contains `\#`, so the suffix cannot collide with a real name, and the result does not
+/// depend on the order the server listed the mailboxes in.
 pub(crate) fn parse_mailboxes(args: &Value) -> Result<(Mailboxes, Option<String>), BackendError> {
     let list = args.get("list").ok_or_else(malformed)?;
     let raw: Vec<RawMailbox> = serde_json::from_value(list.clone()).map_err(|_| malformed())?;
@@ -117,7 +137,8 @@ pub(crate) fn parse_mailboxes(args: &Value) -> Result<(Mailboxes, Option<String>
     for m in &raw {
         // The path: parent names first. A parent that is missing (not shared with this person)
         // or a cycle ends the climb.
-        let mut names = vec![m.name.as_str()];
+        let own = escape_name(&m.name);
+        let mut names = vec![own];
         let mut seen: HashSet<&str> = HashSet::from([m.id.as_str()]);
         let mut parent = m.parent_id.as_deref();
         while let Some(pid) = parent {
@@ -125,7 +146,7 @@ pub(crate) fn parse_mailboxes(args: &Value) -> Result<(Mailboxes, Option<String>
             if !seen.insert(p.id.as_str()) || names.len() > 32 {
                 break;
             }
-            names.push(p.name.as_str());
+            names.push(escape_name(&p.name));
             parent = p.parent_id.as_deref();
         }
         names.reverse();
@@ -136,6 +157,18 @@ pub(crate) fn parse_mailboxes(args: &Value) -> Result<(Mailboxes, Option<String>
             selectable: m.my_rights.as_ref().is_none_or(|r| r.may_read_items),
             total: u32::try_from(m.total_emails.unwrap_or(0)).unwrap_or(u32::MAX),
         });
+    }
+    // Break any remaining tie by id, so the same mailbox keeps the same path in any server order.
+    let mut by_path: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, item) in items.iter().enumerate() {
+        by_path.entry(item.path.clone()).or_default().push(i);
+    }
+    for mut group in by_path.into_values().filter(|g| g.len() > 1) {
+        group.sort_by(|a, b| items[*a].id.cmp(&items[*b].id));
+        for i in group.into_iter().skip(1) {
+            let suffix = format!("\\#{}", escape_name(&items[i].id));
+            items[i].path.push_str(&suffix);
+        }
     }
     let state = args
         .get("state")
@@ -490,6 +523,58 @@ mod tests {
         // No role: the name decides, like an IMAP server that labels nothing.
         assert_eq!(special_use(None, "Spam"), SpecialUse::Junk);
         assert_eq!(special_use(None, "Projects"), SpecialUse::Other);
+    }
+
+    #[test]
+    fn a_slash_in_a_name_cannot_collide_with_a_nested_path() {
+        let top = r#"{"id":"m1","name":"a/b"}"#;
+        let parent = r#"{"id":"m2","name":"a"}"#;
+        let child = r#"{"id":"m3","name":"b","parentId":"m2"}"#;
+        let mut seen: Vec<Vec<(String, String)>> = Vec::new();
+        for order in [[top, parent, child], [child, parent, top]] {
+            let args: Value =
+                serde_json::from_str(&format!(r#"{{"list":[{}]}}"#, order.join(","))).unwrap();
+            let (boxes, _) = parse_mailboxes(&args).unwrap();
+            let path = |id: &str| boxes.by_id(id).unwrap().path.clone();
+            assert_eq!(path("m1"), "a\\/b");
+            assert_eq!(path("m3"), "a/b");
+            assert_eq!(boxes.by_path("a\\/b").unwrap().id, "m1");
+            assert_eq!(boxes.by_path("a/b").unwrap().id, "m3");
+            let mut all: Vec<(String, String)> = boxes
+                .items
+                .iter()
+                .map(|m| (m.id.clone(), m.path.clone()))
+                .collect();
+            all.sort();
+            seen.push(all);
+        }
+        assert_eq!(seen[0], seen[1], "the same paths in either server order");
+        // The escape character is escaped too, so `a\` + `/b` and `a` + `\/b` stay apart.
+        assert_eq!(escape_name("x\\y/z"), "x\\\\y\\/z");
+    }
+
+    #[test]
+    fn a_remaining_tie_is_broken_by_id_in_any_server_order() {
+        let twin = |id: &str| format!(r#"{{"id":"{id}","name":"Twin"}}"#);
+        let mut results = Vec::new();
+        for order in [["z9", "b1", "m5"], ["m5", "z9", "b1"], ["b1", "m5", "z9"]] {
+            let list: Vec<String> = order.iter().map(|id| twin(id)).collect();
+            let args: Value =
+                serde_json::from_str(&format!(r#"{{"list":[{}]}}"#, list.join(","))).unwrap();
+            let (boxes, _) = parse_mailboxes(&args).unwrap();
+            let paths: HashSet<&str> = boxes.items.iter().map(|m| m.path.as_str()).collect();
+            assert_eq!(paths.len(), 3, "all distinct");
+            assert_eq!(boxes.by_id("b1").unwrap().path, "Twin", "smallest id wins");
+            let mut all: Vec<(String, String)> = boxes
+                .items
+                .iter()
+                .map(|m| (m.id.clone(), m.path.clone()))
+                .collect();
+            all.sort();
+            results.push(all);
+        }
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
     }
 
     #[test]

@@ -16,7 +16,7 @@
 //! | other HTTP 4xx | `Permanent` |
 //! | no connection, timeout, a connection that drops | `Transient` |
 //! | certificate or pin problem | `Auth` (same as IMAP: a captive portal must not fail the queue) |
-//! | method errors `serverFail`, `serverUnavailable`, `serverPartialFail`, `rateLimit` | `Transient` |
+//! | method errors `serverFail`, `serverUnavailable`, `serverPartialFail`, `rateLimit`, `stateMismatch` (an `ifInState` that no longer holds: look again and retry) | `Transient` |
 //! | any other method error (`forbidden`, `invalidArguments`, `accountNotFound`, ...) | `Permanent` |
 //! | per-object `notFound` | not an error (the object is gone, which is what was wanted) |
 //! | per-object `rateLimit`, `serverFail`, `serverUnavailable` | `Transient` |
@@ -42,7 +42,8 @@ pub(crate) fn from_status(status: u16) -> BackendError {
 /// The class for a method-level error type (the `type` of an `["error", {...}, id]` response).
 pub(crate) fn from_method_error(kind: &str) -> BackendError {
     match kind {
-        "serverFail" | "serverUnavailable" | "serverPartialFail" | "rateLimit" => {
+        "serverFail" | "serverUnavailable" | "serverPartialFail" | "rateLimit"
+        | "stateMismatch" => {
             BackendError::Transient("the server could not finish the request right now".into())
         }
         _ => BackendError::Permanent("the server refused the request".into()),
@@ -97,6 +98,7 @@ mod tests {
             "serverUnavailable",
             "rateLimit",
             "serverPartialFail",
+            "stateMismatch",
         ] {
             assert!(from_method_error(kind).is_retryable(), "{kind}");
         }

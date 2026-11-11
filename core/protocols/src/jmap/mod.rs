@@ -22,18 +22,33 @@
 //! mailbox gets a new UIDVALIDITY and the engine starts the folder over. The engine only ever sees
 //! UIDs.
 //!
+//! The adapter's in-memory folder cache remembers the UIDVALIDITY it was built under and is
+//! dropped when the map's value differs (a reset or lost map while the adapter runs), or when the
+//! map's next UID is not above the largest UID the cache holds.
+//!
+//! **Accepted limit.** [`forget_mailbox`](JmapIdStore::forget_mailbox) (a mailbox deleted on the
+//! server) throws the old UIDVALIDITY away, and a mailbox that comes back under the same id gets a
+//! fresh random one. That value could equal the old one, with a chance of about 2^-32; it is
+//! accepted. (`reset_mailbox` keeps the old value and never repeats it.)
+//!
+//! A `move_to` whose answer was lost is safe to repeat: JMAP ids do not change, so a message that
+//! is already in the destination and gone from the source gets its destination UID reported by the
+//! retry. If part of a move fails, the messages that did move are recorded in the destination's
+//! map at once and are reported by the retry with the same UIDs; their entries in the source map
+//! stay until that retry (or the next sync of the source) removes them.
+//!
 //! # Mapping
 //!
 //! | Trait | JMAP |
 //! | --- | --- |
-//! | `list_folders` | `Mailbox/get`; the path is the names from the top joined with `/`; roles become `SpecialUse` (a mailbox with no role is guessed from its name, like IMAP); a mailbox the person may not read is not selectable |
+//! | `list_folders` | `Mailbox/get`; the path is the names from the top joined with `/`, with a `/` or `\\` inside a name escaped by a backslash so that a mailbox called `a/b` cannot collide with `b` inside `a` (a remaining tie, siblings with the same name, is broken by mailbox id: the smallest id keeps the path, the others get `\\#` and their id appended); roles become `SpecialUse` (a mailbox with no role is guessed from its name, like IMAP); a mailbox the person may not read is not selectable |
 //! | `folder_status` | UIDVALIDITY and next UID from the map, `exists` = `totalEmails`, `highest_modseq` = a stable number derived from the account's `Email` state, so the engine's "has anything changed" check works |
 //! | `snapshot` | `Email/query` (oldest first, so new UIDs follow arrival order) and `Email/get` keywords; later calls in the same process use `Email/changes` and fetch only what changed, and fall back to the full read on `cannotCalculateChanges` (or a state the server no longer knows) |
 //! | `fetch_headers` | `Email/get` with the header properties, newest first |
-//! | `find_by_message_id` | `Email/query` with the `header` filter, checked against the real Message-ID; if the server does not index that header, a scan of the newest 2000 messages |
+//! | `find_by_message_id` | `Email/query` with the `header` filter, checked against the real Message-ID; if the server does not index that header, a scan of the newest 2000 messages. **If more than one different message in the folder has that Message-ID the answer is `None`** (the IMAP adapter returns the newest): the engine then stops a destructive action instead of guessing which copy was meant |
 //! | `set_flag` | `Email/set` keyword patch (`$seen`, `$flagged`) |
 //! | `move_to` | `Email/set` patch of `mailboxIds`, only for messages still in the source mailbox |
-//! | `delete_forever` | `Email/set` destroy; a message that is in other mailboxes too is only taken out of this one; `notFound` counts as done |
+//! | `delete_forever` | `Email/set` destroy with `ifInState` set to the state the messages were read in (a concurrent change gives `stateMismatch`, which is `Transient`, and the retry looks again); a message that is in other mailboxes too is only taken out of this one; `notFound` counts as done; only the requested ids are ever acted on or forgotten, whatever the server's answers list |
 //! | `capabilities` | move and UIDPLUS-style new UIDs: yes; IDLE: not yet; `condstore`: yes, in the sense of the `highest_modseq` above |
 //!
 //! `Email/changes` is used within a running adapter. The flags it works from are kept in memory, so

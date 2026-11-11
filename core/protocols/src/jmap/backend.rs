@@ -42,11 +42,23 @@ enum DeleteStep {
     Destroy(String),
 }
 
+/// The outcome of [`JmapBackend::update_emails`]: what was done, and what stopped the rest.
+#[derive(Default)]
+struct Updated {
+    /// Ids the server confirmed.
+    done: Vec<String>,
+    /// The first failure, if the run did not finish.
+    error: Option<BackendError>,
+}
+
 /// What the adapter remembers about one mailbox between calls: the `Email` state its flags are
 /// valid for, and every message in it. With this, `snapshot` can ask `Email/changes` and fetch
 /// only what changed. It lives in memory; after a restart the first snapshot of each folder is a
 /// full one.
 struct MailboxCache {
+    /// The mailbox's UIDVALIDITY when the cache was built. A cache is only good for the numbering
+    /// it was built in: if the id map has been reset or lost since, its UIDs are stale.
+    validity: u32,
     state: String,
     /// Email id to (UID, flags).
     messages: HashMap<String, (Uid, Flags)>,
@@ -226,18 +238,36 @@ impl JmapBackend {
         ids: &[String],
         properties: &[&str],
     ) -> Result<(Vec<RawEmail>, Vec<String>), BackendError> {
+        let (found, missing, _) = self.get_emails_at(st, ids, properties).await?;
+        Ok((found, missing))
+    }
+
+    /// Like [`get_emails`](Self::get_emails), and also the `Email` state of the first batch. A
+    /// later `Email/set` with that state as `ifInState` fails if anything changed after the
+    /// first read (the state is that of the earliest batch so that a change between batches is
+    /// caught as well).
+    async fn get_emails_at(
+        &self,
+        st: &mut State,
+        ids: &[String],
+        properties: &[&str],
+    ) -> Result<(Vec<RawEmail>, Vec<String>, Option<String>), BackendError> {
         let session = self.session(st).await?;
         let mut found = Vec::with_capacity(ids.len());
         let mut missing = Vec::new();
+        let mut first_state = None;
         for chunk in ids.chunks(session.max_get) {
             let args = json!({"accountId": session.account_id, "ids": chunk,
                 "properties": properties});
             let mut r = self.call(st, vec![("Email/get", args)]).await?;
             let got = parse_email_get(&r.take(0, "Email/get").map_err(ApiError::into_backend)?)?;
+            if first_state.is_none() {
+                first_state = got.state;
+            }
             found.extend(got.list);
             missing.extend(got.not_found);
         }
-        Ok((found, missing))
+        Ok((found, missing, first_state))
     }
 
     /// The account's current `Email` state.
@@ -250,26 +280,43 @@ impl JmapBackend {
             .ok_or_else(malformed)
     }
 
-    /// `Email/set` with these updates (id to patch), in batches. Returns the ids that were updated
-    /// and the first real failure, if any. An id the server does not know is skipped silently.
-    async fn update_emails(
-        &self,
-        st: &mut State,
-        updates: Vec<(String, Value)>,
-    ) -> Result<Vec<String>, BackendError> {
-        let session = self.session(st).await?;
-        let mut done = Vec::new();
+    /// `Email/set` with these updates (id to patch), in batches. Reports the ids that were updated
+    /// and the first real failure, if any: the ids done before a failure are still reported, so
+    /// the caller can record them. An id the server does not know is skipped silently.
+    async fn update_emails(&self, st: &mut State, updates: Vec<(String, Value)>) -> Updated {
+        let mut out = Updated::default();
+        let session = match self.session(st).await {
+            Ok(s) => s,
+            Err(e) => {
+                out.error = Some(e);
+                return out;
+            }
+        };
         for chunk in updates.chunks(session.max_set) {
             let update: serde_json::Map<String, Value> = chunk.iter().cloned().collect();
             let args = json!({"accountId": session.account_id, "update": update});
-            let mut r = self.call(st, vec![("Email/set", args)]).await?;
-            let set = parse_set(&r.take(0, "Email/set").map_err(ApiError::into_backend)?);
-            done.extend(set.done);
-            if let Some(e) = set.failed.iter().find_map(|(_, kind)| from_set_error(kind)) {
-                return Err(e);
+            let set = match self.call(st, vec![("Email/set", args)]).await {
+                Ok(mut r) => r
+                    .take(0, "Email/set")
+                    .map_err(ApiError::into_backend)
+                    .map(|a| parse_set(&a)),
+                Err(e) => Err(e),
+            };
+            match set {
+                Ok(set) => {
+                    out.done.extend(set.done);
+                    if let Some(e) = set.failed.iter().find_map(|(_, kind)| from_set_error(kind)) {
+                        out.error = Some(e);
+                        return out;
+                    }
+                }
+                Err(e) => {
+                    out.error = Some(e);
+                    return out;
+                }
             }
         }
-        Ok(done)
+        out
     }
 
     // ------------------------------------------------------------------------------------
@@ -348,9 +395,18 @@ impl JmapBackend {
         let mut st = self.state.lock().await;
         let mb = self.mailbox(&mut st, folder).await?;
         let uid_validity = self.store(&mut st, &mb.id, self.ids.uid_validity(&mb.id))?;
+        let next_before = self.store(&mut st, &mb.id, self.ids.next_uid(&mb.id))?;
+        // The cache only counts if the map is the one it was built from: same UIDVALIDITY, and
+        // the map has not fallen behind the UIDs the cache already handed out (a map restored
+        // from an older copy could even repeat a UIDVALIDITY).
         let cache = match st.caches.remove(&mb.id) {
-            Some(cache) => self.apply_changes(&mut st, &mb, cache).await?,
-            None => None,
+            Some(cache)
+                if cache.validity == uid_validity
+                    && cache.messages.values().all(|(uid, _)| *uid < next_before) =>
+            {
+                self.apply_changes(&mut st, &mb, cache).await?
+            }
+            _ => None,
         };
         let cache = match cache {
             Some(c) => c,
@@ -494,6 +550,7 @@ impl JmapBackend {
             .map(|e| (e.id.clone(), e.flags()))
             .collect();
 
+        let validity = self.store(st, &mb.id, self.ids.uid_validity(&mb.id))?;
         let existing = self.store(st, &mb.id, self.ids.entries(&mb.id))?;
         let present: HashSet<&String> = ids.iter().collect();
         let gone: Vec<String> = existing
@@ -511,7 +568,11 @@ impl JmapBackend {
             .zip(all)
             .filter_map(|(id, uid)| flags.get(id).map(|f| (id.clone(), (uid, f.clone()))))
             .collect();
-        Ok(MailboxCache { state, messages })
+        Ok(MailboxCache {
+            validity,
+            state,
+            messages,
+        })
     }
 
     async fn fetch_headers_inner(
@@ -565,50 +626,66 @@ impl JmapBackend {
             }
             Err(e) => return Err(e.into_backend()),
         };
-        let mut hit = self
-            .newest_with_message_id(&mut st, &mb, &ids, &wanted)
-            .await?;
-        // Some servers do not index Message-ID. Then look through the newest messages.
-        let mut position = 0;
-        while hit.is_none() && position < SCAN_LIMIT {
-            let args = json!({"accountId": session.account_id, "filter": {"inMailbox": mb.id},
-                "sort": [{"property": "receivedAt", "isAscending": false}],
-                "position": position, "limit": 500});
-            let mut r = self.call(&mut st, vec![("Email/query", args)]).await?;
-            let page = parse_query(&r.take(0, "Email/query").map_err(ApiError::into_backend)?)?;
-            if page.ids.is_empty() {
-                break;
+        let mut matches = self.with_message_id(&mut st, &mb, &ids, &wanted).await?;
+        // Some servers do not index Message-ID. Then look through the newest messages, all the
+        // way to the limit unless a second match turns up first: one hit is only trusted when the
+        // rest of what was searched holds no other.
+        if matches.is_empty() {
+            let mut position = 0;
+            while matches.len() < 2 && position < SCAN_LIMIT {
+                let args = json!({"accountId": session.account_id, "filter": {"inMailbox": mb.id},
+                    "sort": [{"property": "receivedAt", "isAscending": false}],
+                    "position": position, "limit": 500});
+                let mut r = self.call(&mut st, vec![("Email/query", args)]).await?;
+                let page = parse_query(&r.take(0, "Email/query").map_err(ApiError::into_backend)?)?;
+                if page.ids.is_empty() {
+                    break;
+                }
+                position += page.ids.len();
+                let found = self
+                    .with_message_id(&mut st, &mb, &page.ids, &wanted)
+                    .await?;
+                for id in found {
+                    if !matches.contains(&id) {
+                        matches.push(id);
+                    }
+                }
             }
-            position += page.ids.len();
-            hit = self
-                .newest_with_message_id(&mut st, &mb, &page.ids, &wanted)
-                .await?;
         }
-        let Some(email_id) = hit else { return Ok(None) };
-        let uids = self.store(&mut st, &mb.id, self.ids.assign(&mb.id, &[email_id]))?;
+        // Several different messages with this Message-ID (a duplicate delivered twice, a copy
+        // filed again): guessing the "newest" could point a delete or move at the wrong one, so
+        // the answer is "not found" and the engine stops.
+        let [email_id] = matches.as_slice() else {
+            return Ok(None);
+        };
+        let uids = self.store(
+            &mut st,
+            &mb.id,
+            self.ids.assign(&mb.id, std::slice::from_ref(email_id)),
+        )?;
         Ok(uids.first().copied())
     }
 
-    /// Of these emails, the newest one in the mailbox whose Message-ID is exactly `wanted`.
-    async fn newest_with_message_id(
+    /// Of these emails, those in the mailbox whose Message-ID is exactly `wanted`.
+    async fn with_message_id(
         &self,
         st: &mut State,
         mb: &MailboxInfo,
         ids: &[String],
         wanted: &str,
-    ) -> Result<Option<String>, BackendError> {
+    ) -> Result<Vec<String>, BackendError> {
         if ids.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let (emails, _) = self
-            .get_emails(st, ids, &["id", "messageId", "receivedAt", "mailboxIds"])
+            .get_emails(st, ids, &["id", "messageId", "mailboxIds"])
             .await?;
         Ok(emails
             .into_iter()
             .filter(|e| e.mailboxes().contains(mb.id.as_str()))
             .filter(|e| e.message_id().as_deref().map(unbracket) == Some(wanted))
-            .max_by_key(|e| e.received_ms())
-            .map(|e| e.id))
+            .map(|e| e.id)
+            .collect())
     }
 
     async fn set_flag_inner(
@@ -628,15 +705,15 @@ impl JmapBackend {
             .values()
             .map(|id| (id.clone(), json!({ key: value })))
             .collect();
-        let done = self.update_emails(&mut st, updates).await?;
+        let result = self.update_emails(&mut st, updates).await;
         if let Some(cache) = st.caches.get_mut(&mb.id) {
-            for id in done {
+            for id in result.done {
                 if let Some((_, flags)) = cache.messages.get_mut(&id) {
                     flags.apply(change);
                 }
             }
         }
-        Ok(())
+        result.error.map_or(Ok(()), Err)
     }
 
     async fn move_to_inner(
@@ -657,16 +734,23 @@ impl JmapBackend {
             outcome.dest_uids = by_uid.keys().map(|u| (*u, *u)).collect();
             return Ok(outcome);
         }
-        // Only what is still in the source folder moves: the map can be behind the server.
+        // Where each message is now. JMAP ids do not change on a move, so a message that is
+        // already in the destination and no longer in the source was moved by an earlier attempt
+        // whose answer was lost: it still needs its destination UID reported.
         let email_ids: Vec<String> = by_uid.values().cloned().collect();
         let (emails, _) = self
             .get_emails(&mut st, &email_ids, &["id", "mailboxIds"])
             .await?;
-        let in_source: HashSet<String> = emails
-            .into_iter()
-            .filter(|e| e.mailboxes().contains(src.id.as_str()))
-            .map(|e| e.id)
-            .collect();
+        let mut in_source: HashSet<String> = HashSet::new();
+        let mut completed: HashSet<String> = HashSet::new();
+        for e in emails {
+            let boxes = e.mailboxes();
+            if boxes.contains(src.id.as_str()) {
+                in_source.insert(e.id);
+            } else if boxes.contains(dst.id.as_str()) {
+                completed.insert(e.id);
+            }
+        }
         let patch = json!({
             format!("mailboxIds/{}", pointer_escape(&src.id)): Value::Null,
             format!("mailboxIds/{}", pointer_escape(&dst.id)): true,
@@ -676,31 +760,41 @@ impl JmapBackend {
             .filter(|id| in_source.contains(*id))
             .map(|id| (id.clone(), patch.clone()))
             .collect();
-        if updates.is_empty() {
-            return Ok(outcome);
-        }
-        let moved: HashSet<String> = self
-            .update_emails(&mut st, updates)
-            .await?
-            .into_iter()
-            .collect();
-        // New UIDs in the destination, in the order of the old ones.
+        let result = if updates.is_empty() {
+            Updated::default()
+        } else {
+            self.update_emails(&mut st, updates).await
+        };
+        completed.extend(result.done);
+        // New UIDs in the destination, in the order of the old ones. This is recorded even when
+        // part of the move failed: what was moved stays moved, and a retry reports it again.
         let moved_pairs: Vec<(Uid, String)> = by_uid
             .into_iter()
-            .filter(|(_, id)| moved.contains(id))
+            .filter(|(_, id)| completed.contains(id))
             .collect();
-        let moved_ids: Vec<String> = moved_pairs.iter().map(|(_, id)| id.clone()).collect();
-        let new_uids = self.store(&mut st, &dst.id, self.ids.assign(&dst.id, &moved_ids))?;
-        for ((old, _), new) in moved_pairs.iter().zip(new_uids) {
-            outcome.dest_uids.insert(*old, new);
-        }
-        self.store(&mut st, &src.id, self.ids.remove(&src.id, &moved_ids))?;
-        if let Some(cache) = st.caches.get_mut(&src.id) {
-            for id in &moved_ids {
-                cache.messages.remove(id);
+        if !moved_pairs.is_empty() {
+            let moved_ids: Vec<String> = moved_pairs.iter().map(|(_, id)| id.clone()).collect();
+            let new_uids = self.store(&mut st, &dst.id, self.ids.assign(&dst.id, &moved_ids))?;
+            for ((old, _), new) in moved_pairs.iter().zip(new_uids) {
+                outcome.dest_uids.insert(*old, new);
+            }
+            // After a failure the caller gets an error and no `dest_uids`, and will try the same
+            // UIDs again. Their entries in the source map stay (the next sync of the source drops
+            // them, `fetch_headers` ignores them meanwhile), so the retry can find the messages in
+            // the destination and report their new UIDs.
+            if result.error.is_none() {
+                self.store(&mut st, &src.id, self.ids.remove(&src.id, &moved_ids))?;
+            }
+            if let Some(cache) = st.caches.get_mut(&src.id) {
+                for id in &moved_ids {
+                    cache.messages.remove(id);
+                }
             }
         }
-        Ok(outcome)
+        match result.error {
+            Some(e) => Err(e),
+            None => Ok(outcome),
+        }
     }
 
     async fn delete_forever_inner(&self, folder: &str, uids: &[Uid]) -> Result<(), BackendError> {
@@ -712,15 +806,17 @@ impl JmapBackend {
             return Ok(());
         }
         let email_ids: Vec<String> = by_uid.values().cloned().collect();
-        let (emails, not_found) = self
-            .get_emails(&mut st, &email_ids, &["id", "mailboxIds"])
+        // Only what was asked for counts, whatever the server's answers contain.
+        let requested: HashSet<&String> = email_ids.iter().collect();
+        let (emails, not_found, read_at) = self
+            .get_emails_at(&mut st, &email_ids, &["id", "mailboxIds"])
             .await?;
         // A message that is in other mailboxes too (a label) only leaves this one; the rest is
         // destroyed.
         let mut destroy: Vec<String> = Vec::new();
         let mut update: serde_json::Map<String, Value> = serde_json::Map::new();
         let mut leave: Vec<String> = not_found;
-        for e in &emails {
+        for e in emails.iter().filter(|e| requested.contains(&e.id)) {
             let boxes = e.mailboxes();
             if !boxes.contains(mb.id.as_str()) {
                 leave.push(e.id.clone());
@@ -740,6 +836,11 @@ impl JmapBackend {
         work.extend(destroy.into_iter().map(DeleteStep::Destroy));
         let mut failure: Option<BackendError> = None;
         let mut gone: Vec<String> = leave;
+        // `ifInState`: the decision above was made from the state read first. If anything changed
+        // since (another client filed the message elsewhere, say), the server refuses with
+        // `stateMismatch`, which is retryable, and the retry decides again. After each batch the
+        // state it returned is the one the next batch must still find.
+        let mut expected_state = read_at;
         for chunk in work.chunks(session.max_set) {
             let mut upd = serde_json::Map::new();
             let mut del: Vec<&String> = Vec::new();
@@ -751,9 +852,27 @@ impl JmapBackend {
                     DeleteStep::Destroy(id) => del.push(id),
                 }
             }
-            let args = json!({"accountId": session.account_id, "update": upd, "destroy": del});
-            let mut r = self.call(&mut st, vec![("Email/set", args)]).await?;
-            let set = parse_set(&r.take(0, "Email/set").map_err(ApiError::into_backend)?);
+            let mut args = json!({"accountId": session.account_id, "update": upd, "destroy": del});
+            if let Some(state) = &expected_state {
+                args["ifInState"] = json!(state);
+            }
+            let answer = match self.call(&mut st, vec![("Email/set", args)]).await {
+                Ok(mut r) => r.take(0, "Email/set").map_err(ApiError::into_backend),
+                Err(e) => Err(e),
+            };
+            let answer = match answer {
+                Ok(a) => a,
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            };
+            expected_state = answer
+                .get("newState")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(expected_state);
+            let set = parse_set(&answer);
             gone.extend(set.done);
             for (id, kind) in set.failed {
                 match from_set_error(&kind) {
@@ -762,7 +881,11 @@ impl JmapBackend {
                 }
             }
         }
-        self.store(&mut st, &mb.id, self.ids.remove(&mb.id, &gone))?;
+        // Never act on an id that was not asked for, whatever the server said.
+        gone.retain(|id| requested.contains(id));
+        if !gone.is_empty() {
+            self.store(&mut st, &mb.id, self.ids.remove(&mb.id, &gone))?;
+        }
         if let Some(cache) = st.caches.get_mut(&mb.id) {
             for id in &gone {
                 cache.messages.remove(id);
@@ -800,6 +923,9 @@ impl MailBackend for JmapBackend {
         Box::pin(self.fetch_headers_inner(folder, uids))
     }
 
+    /// Differs from the IMAP adapter in one case: when more than one different message in the
+    /// folder has this Message-ID, the answer is `None` and not the newest of them, so the engine
+    /// stops a destructive action instead of guessing which copy was meant.
     fn find_by_message_id<'a>(
         &'a self,
         folder: &'a str,

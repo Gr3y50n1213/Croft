@@ -165,17 +165,68 @@ async fn uids_follow_arrival_order_and_are_never_reused() {
     let _ = a;
 }
 
+/// Every UID in `snapshot` is in the id map of the Inbox, names the email the server holds under
+/// it, and no two are the same.
+fn assert_uids_are_in_the_map(
+    server: &JmapServer,
+    store: &MemoryIdStore,
+    snapshot: &RemoteSnapshot,
+) {
+    let inbox = server.mailbox_id_of("inbox");
+    let entries = store.entries(&inbox).unwrap();
+    let on_server = server.ids_in("inbox");
+    assert_eq!(snapshot.messages.len(), on_server.len());
+    for uid in snapshot.messages.keys() {
+        let email = entries
+            .get(uid)
+            .unwrap_or_else(|| panic!("UID {uid} is not in the id map"));
+        assert!(on_server.contains(email), "UID {uid} names a missing email");
+    }
+    assert!(snapshot.status.uid_next > *snapshot.messages.keys().max().unwrap());
+}
+
 #[tokio::test]
 async fn a_lost_id_map_gives_the_folder_a_new_validity() {
     let server = JmapServer::start().await;
     server.add_message("inbox", &raw("a@x", "A"), &[]);
+    server.add_message("inbox", &raw("b@x", "B"), &[]);
     let store = Arc::new(MemoryIdStore::new());
     let b = backend_with(&server, store.clone());
     let before = b.snapshot("Inbox").await.unwrap();
+    assert_uids_are_in_the_map(&server, &store, &before);
     store.forget_all();
     let after = b.snapshot("Inbox").await.unwrap();
     assert_ne!(before.status.uid_validity, after.status.uid_validity);
-    assert_eq!(after.messages.len(), 1);
+    assert_eq!(after.messages.len(), 2);
+    // The cache of the first run must not leak old UIDs into the new numbering.
+    assert_uids_are_in_the_map(&server, &store, &after);
+}
+
+#[tokio::test]
+async fn resetting_the_map_between_two_snapshots_never_reports_stale_or_colliding_uids() {
+    let server = JmapServer::start().await;
+    server.add_message("inbox", &raw("a@x", "A"), &[]);
+    server.add_message("inbox", &raw("b@x", "B"), &[]);
+    let store = Arc::new(MemoryIdStore::new());
+    let b = backend_with(&server, store.clone());
+    let first = b.snapshot("Inbox").await.unwrap();
+    assert_uids_are_in_the_map(&server, &store, &first);
+    // The map is reset while the adapter keeps running, and new mail arrives.
+    let inbox = server.mailbox_id_of("inbox");
+    store.reset_mailbox(&inbox).unwrap();
+    server.add_message("inbox", &raw("c@x", "C"), &[]);
+    let second = b.snapshot("Inbox").await.unwrap();
+    assert_ne!(first.status.uid_validity, second.status.uid_validity);
+    assert_eq!(second.messages.len(), 3);
+    assert_uids_are_in_the_map(&server, &store, &second);
+    // And a third one, now incremental again, stays consistent and keeps the numbering.
+    server.add_message("inbox", &raw("d@x", "D"), &[]);
+    let third = b.snapshot("Inbox").await.unwrap();
+    assert_eq!(third.status.uid_validity, second.status.uid_validity);
+    assert_uids_are_in_the_map(&server, &store, &third);
+    for uid in second.messages.keys() {
+        assert!(third.messages.contains_key(uid));
+    }
 }
 
 #[tokio::test]
@@ -372,6 +423,93 @@ async fn move_reports_new_uids_and_ignores_messages_that_are_no_longer_there() {
 }
 
 #[tokio::test]
+async fn a_retried_move_after_a_lost_answer_still_reports_every_destination_uid() {
+    let server = JmapServer::start().await;
+    let a = server.add_message("inbox", &raw("a@x", "A"), &[]);
+    let c = server.add_message("inbox", &raw("c@x", "C"), &[]);
+    server.add_message("inbox", &raw("stays@x", "S"), &[]);
+    let store = Arc::new(MemoryIdStore::new());
+    let b = backend_with(&server, store.clone());
+    b.snapshot("Inbox").await.unwrap();
+    // The server does the move but the answer never arrives.
+    server.drop_answer_for(Some("Email/set"));
+    let err = b
+        .move_to("Inbox", &[1, 2], "Deleted Items")
+        .await
+        .unwrap_err();
+    assert!(err.is_retryable(), "{err:?}");
+    server.drop_answer_for(None);
+    assert_eq!(
+        server.ids_in("trash").len(),
+        2,
+        "the first attempt did move"
+    );
+    // The retry finds both messages gone from the source and in the destination.
+    let out = b.move_to("Inbox", &[1, 2], "Deleted Items").await.unwrap();
+    assert_eq!(out.dest_uids.len(), 2, "{out:?}");
+    // The reported UIDs are the ones the snapshot of the destination shows for those emails.
+    let trash = server.mailbox_id_of("trash");
+    let entries = store.entries(&trash).unwrap();
+    for (old, email) in [(1u32, &a), (2, &c)] {
+        assert_eq!(entries.get(&out.dest_uids[&old]), Some(email));
+    }
+    let snap = b.snapshot("Deleted Items").await.unwrap();
+    for new in out.dest_uids.values() {
+        assert!(snap.messages.contains_key(new));
+    }
+    // The source map forgot them, and a third attempt is a plain no-op.
+    let inbox = server.mailbox_id_of("inbox");
+    assert_eq!(store.entries(&inbox).unwrap().len(), 1);
+    assert!(b
+        .move_to("Inbox", &[1, 2], "Deleted Items")
+        .await
+        .unwrap()
+        .dest_uids
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_partly_failed_move_records_what_was_moved_and_reports_it_on_retry() {
+    let server = JmapServer::start().await;
+    let a = server.add_message("inbox", &raw("a@x", "A"), &[]);
+    let bad = server.add_message("inbox", &raw("bad@x", "B"), &[]);
+    let c = server.add_message("inbox", &raw("c@x", "C"), &[]);
+    let store = Arc::new(MemoryIdStore::new());
+    let b = backend_with(&server, store.clone());
+    b.snapshot("Inbox").await.unwrap();
+    server.fail_updates_of(&bad, Some("forbidden"));
+    let err = b
+        .move_to("Inbox", &[1, 2, 3], "Deleted Items")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, BackendError::Permanent(_)), "{err:?}");
+    // The two that went through are in the destination and recorded in both maps.
+    let mut in_trash = server.ids_in("trash");
+    in_trash.sort();
+    let mut expected = vec![a.clone(), c.clone()];
+    expected.sort();
+    assert_eq!(in_trash, expected);
+    let inbox = server.mailbox_id_of("inbox");
+    let trash = server.mailbox_id_of("trash");
+    assert_eq!(store.entries(&trash).unwrap().len(), 2, "recorded as moved");
+    assert_eq!(
+        store.entries(&inbox).unwrap().len(),
+        3,
+        "the source entries stay until the retry (or the next sync) so the retry can report"
+    );
+    // The retry (the failure is gone) reports the finished ones and moves the rest.
+    server.fail_updates_of(&bad, None);
+    let out = b
+        .move_to("Inbox", &[1, 2, 3], "Deleted Items")
+        .await
+        .unwrap();
+    assert_eq!(out.dest_uids.len(), 3, "{out:?}");
+    let new: std::collections::BTreeSet<Uid> = out.dest_uids.values().copied().collect();
+    assert_eq!(new.len(), 3, "no two share a destination UID");
+    assert!(store.entries(&inbox).unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn delete_forever_destroys_and_a_label_only_leaves_the_folder() {
     let server = JmapServer::start().await;
     let only = server.add_message("inbox", &raw("only@x", "Only"), &[]);
@@ -395,6 +533,49 @@ async fn delete_forever_destroys_and_a_label_only_leaves_the_folder() {
     assert!(b.snapshot("Inbox").await.unwrap().messages.is_empty());
     // Again: nothing left, no error.
     b.delete_forever("Inbox", &uids).await.unwrap();
+}
+
+#[tokio::test]
+async fn delete_forever_fails_retryably_when_the_account_changed_since_it_looked() {
+    let server = JmapServer::start().await;
+    let only = server.add_message("inbox", &raw("only@x", "Only"), &[]);
+    let b = backend(&server);
+    b.snapshot("Inbox").await.unwrap();
+    // Another client changes the account between our `Email/get` and our `Email/set`.
+    server.bump_state_after(Some("Email/get"));
+    let err = b.delete_forever("Inbox", &[1]).await.unwrap_err();
+    assert!(err.is_retryable(), "{err:?}");
+    assert_eq!(
+        server.ids_in("inbox"),
+        vec![only.clone()],
+        "nothing destroyed"
+    );
+    // The retry looks again with the new state and goes through.
+    b.delete_forever("Inbox", &[1]).await.unwrap();
+    assert!(server.ids_in("inbox").is_empty());
+    assert!(b.snapshot("Inbox").await.unwrap().messages.is_empty());
+}
+
+#[tokio::test]
+async fn delete_forever_only_touches_the_ids_it_was_asked_for() {
+    let server = JmapServer::start().await;
+    server.add_message("inbox", &raw("asked@x", "Asked"), &[]);
+    let other = server.add_message("inbox", &raw("other@x", "Other"), &[]);
+    let store = Arc::new(MemoryIdStore::new());
+    let b = backend_with(&server, store.clone());
+    let snap = b.snapshot("Inbox").await.unwrap();
+    assert_eq!(snap.messages.len(), 2);
+    // The server also returns the other message in `Email/get` and lists it as destroyed.
+    server.echo_extra_email(Some(&other));
+    b.delete_forever("Inbox", &[1]).await.unwrap();
+    server.echo_extra_email(None);
+    assert_eq!(server.ids_in("inbox"), vec![other.clone()], "not destroyed");
+    let inbox = server.mailbox_id_of("inbox");
+    assert_eq!(
+        store.entries(&inbox).unwrap().values().collect::<Vec<_>>(),
+        vec![&other],
+        "its number is not dropped from the map either"
+    );
 }
 
 #[tokio::test]
@@ -465,6 +646,36 @@ async fn find_by_message_id_uses_the_header_filter_or_scans_when_the_server_cann
 // ------------------------------------------------------------------------------------------
 // Errors
 // ------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn find_by_message_id_gives_none_when_several_messages_match() {
+    let server = JmapServer::start().await;
+    server.add_message("inbox", &raw("dup@x", "First copy"), &[]);
+    server.add_message("inbox", &raw("dup@x", "Second copy"), &[]);
+    server.add_message("inbox", &raw("solo@x", "Alone"), &[]);
+    let b = backend(&server);
+    // With the server's header search, and with the scan when it cannot search.
+    for header_search in [true, false] {
+        server.set_header_search(header_search);
+        assert_eq!(
+            b.find_by_message_id("Inbox", "<dup@x>").await.unwrap(),
+            None,
+            "header_search={header_search}: two matches are not guessed between"
+        );
+        assert!(b
+            .find_by_message_id("Inbox", "<solo@x>")
+            .await
+            .unwrap()
+            .is_some());
+    }
+    // A copy filed in another folder is not a second match in this one.
+    server.add_message("archive", &raw("solo@x", "Alone, archived"), &[]);
+    assert!(b
+        .find_by_message_id("Inbox", "<solo@x>")
+        .await
+        .unwrap()
+        .is_some());
+}
 
 #[tokio::test]
 async fn http_statuses_map_to_error_classes() {
@@ -828,6 +1039,101 @@ async fn a_lost_answer_after_submission_is_never_retried_automatically() {
         .await
         .unwrap_err()
         .is_retryable());
+}
+
+/// How many messages the account holds in Drafts and Sent together (the staged copy, wherever
+/// the server left it).
+fn staged_copies(server: &JmapServer) -> usize {
+    server.ids_in("drafts").len() + server.ids_in("sent").len()
+}
+
+#[tokio::test]
+async fn an_ambiguous_answer_to_the_final_request_is_maybe_sent_and_keeps_the_staged_copy() {
+    // The server does the work in every case below; only the answer is ruined, the way a reverse
+    // proxy (502, 504, 408) or a broken body would. None of it may be retried or cleaned up.
+    type Spoil = (&'static str, Box<dyn Fn(&JmapServer)>);
+    let cases: Vec<Spoil> = vec![
+        (
+            "502",
+            Box::new(|s| s.spoil_answer_with_status("EmailSubmission/set", Some(502))),
+        ),
+        (
+            "504",
+            Box::new(|s| s.spoil_answer_with_status("EmailSubmission/set", Some(504))),
+        ),
+        (
+            "408",
+            Box::new(|s| s.spoil_answer_with_status("EmailSubmission/set", Some(408))),
+        ),
+        (
+            "unparseable 2xx body",
+            Box::new(|s| s.spoil_answer_with_garbage("EmailSubmission/set")),
+        ),
+        (
+            "serverPartialFail",
+            Box::new(|s| {
+                s.spoil_answer_with_error("EmailSubmission/set", Some("serverPartialFail"))
+            }),
+        ),
+        (
+            "serverFail",
+            Box::new(|s| s.spoil_answer_with_error("EmailSubmission/set", Some("serverFail"))),
+        ),
+    ];
+    for (what, spoil) in cases {
+        let server = JmapServer::start().await;
+        let s = submitter(&server);
+        spoil(&server);
+        let err = s
+            .send("alice@example.org", &["bob@example.org"], MIME.as_bytes())
+            .await
+            .unwrap_err();
+        assert_eq!(err, BackendError::Permanent(MAYBE_SENT.into()), "{what}");
+        assert!(!err.is_retryable(), "{what}");
+        assert_eq!(server.deliveries().len(), 1, "{what}: it was delivered");
+        assert_eq!(staged_copies(&server), 1, "{what}: the staged copy stays");
+        let calls = server.calls();
+        assert_eq!(
+            calls.iter().filter(|c| *c == "Email/import").count(),
+            1,
+            "{what}: sent once"
+        );
+        assert!(
+            !calls.iter().any(|c| c == "Email/set"),
+            "{what}: nothing was destroyed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_definite_refusal_of_the_final_request_is_not_maybe_sent() {
+    // 413 and 403 say the request was refused unread: a plain failure (403 is a sign-in problem).
+    for (status, auth) in [(413u16, false), (403, true), (401, true), (400, false)] {
+        let server = JmapServer::start().await;
+        let s = submitter(&server);
+        server.spoil_answer_with_status("EmailSubmission/set", Some(status));
+        let err = s
+            .send("alice@example.org", &["bob@example.org"], MIME.as_bytes())
+            .await
+            .unwrap_err();
+        assert_ne!(err, BackendError::Permanent(MAYBE_SENT.into()), "{status}");
+        assert_eq!(matches!(err, BackendError::Auth(_)), auth, "{status}");
+    }
+}
+
+#[tokio::test]
+async fn a_parsed_not_created_is_not_sent_and_the_staged_copy_is_cleaned_up() {
+    let server = JmapServer::start().await;
+    let s = submitter(&server);
+    server.set_submission_error(Some("forbiddenFrom"));
+    let err = s
+        .send("alice@example.org", &["bob@example.org"], MIME.as_bytes())
+        .await
+        .unwrap_err();
+    assert_ne!(err, BackendError::Permanent(MAYBE_SENT.into()));
+    assert!(server.deliveries().is_empty());
+    assert_eq!(staged_copies(&server), 0, "the staged copy is destroyed");
+    assert!(server.calls().iter().any(|c| c == "Email/set"));
 }
 
 const MAYBE_SENT: &str = "May not have been sent; check Sent before retrying";

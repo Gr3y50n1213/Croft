@@ -54,3 +54,6 @@ One line per choice made without the owner: the decision, the reason, the date. 
 | 2026-11-11 | Engine checks a folder's UIDVALIDITY before every action on it (one STATUS per folder per action) | An action queued before the server renumbered a folder must not hit whichever message now has the old UID |
 | 2026-11-11 | A destructive action (delete forever, move to Trash or Junk) whose message can only be found by an ambiguous Message-ID is stopped with a reason, not guessed | Never delete the wrong copy |
 | 2026-11-11 | No IDLE yet; 15-minute periodic sync plus nudges on every action | IDLE needs a trait extension; Android background rules come with T20 |
+| 2026-11-11 | JMAP: own small HTTP/1.1 client on tokio-rustls + serde_json, not `jmap-client` 0.4.3 | jmap-client sits on reqwest with only a "danger accept invalid certs" switch: no fingerprint pinning, its own TLS provider, follows redirects |
+| 2026-11-11 | JMAP credential goes only to the session URL's origin; `apiUrl`/`uploadUrl` from the session are used for their path only | A hijacked session document must not redirect the password |
+| 2026-11-11 | Stalwart test image pinned to `stalwartlabs/stalwart:v1.1.0`, set up by `test-servers/stalwart/setup.sh` through its management API | v1.x starts empty in bootstrap mode |

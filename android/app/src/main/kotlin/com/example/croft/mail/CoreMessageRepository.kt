@@ -21,7 +21,7 @@ import uniffi.croft_ffi.MessageScope as CoreMessageScope
 import uniffi.croft_ffi.RowCursor as CoreRowCursor
 
 /**
- * [MessageRepository] over the Rust core (`uniffi.croft_ffi.Core`, FFI API version 5): the T14 interface the screens use, mapped
+ * [MessageRepository] over the Rust core (`uniffi.croft_ffi.Core`, FFI API version 6): the T14 interface the screens use, mapped
  * onto the T10 calls. Nothing here waits for the network: every call is a local database read or a queued change, run on [io]
  * because even those are not for the main thread.
  *

@@ -9,10 +9,11 @@
 //! surface is pre-1.0 additions count too). The apps check the version at start-up and refuse to
 //! run against one they do not know.
 //!
-//! # What it offers (API version 5)
+//! # What it offers (API version 6)
 //!
 //! - [`Core::open`] with the database key and a [`CredentialProvider`] the app implements.
-//! - Accounts: `discover`, `verify`, `add_account`, `list_accounts`, `remove_account`, `signed_in`.
+//! - Accounts: `discover`, `verify`, `add_account`, `add_demo_account` (the sample mailbox),
+//!   `list_accounts`, `remove_account`, `signed_in`.
 //! - Reading: `list_folders`, `list_messages` (keyset paging, one folder or the unified Inbox).
 //! - Observing: `next_change(after)`, a numbered change log the app waits on.
 //! - Actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`.
@@ -65,10 +66,11 @@ uniffi::setup_scaffolding!();
 /// notices, actions and the credential provider. Version 4: `add_account` takes the new account's
 /// credential, so the provider is only asked about accounts the app already stored. Version 5:
 /// `MessageRow.thread_count` and `.recipients`, `AccountInfo.last_synced_ms` and
-/// `MessageScope::Starred`. Bump on any change to what is exported. (The `test-server` feature adds
+/// `MessageScope::Starred`. Version 6: `add_demo_account` (the sample mailbox) and
+/// `AccountInfo.is_demo`. Bump on any change to what is exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 5;
+pub const FFI_API_VERSION: u32 = 6;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

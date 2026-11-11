@@ -30,7 +30,7 @@ class RustBridgeTest {
     @Test
     fun apiVersionIsTheOneTheAppExpects() {
         assertEquals(EXPECTED_FFI_API_VERSION, ffiApiVersion())
-        assertEquals(5u, ffiApiVersion())
+        assertEquals(6u, ffiApiVersion())
         assertEquals(RustInfo(croftVersion(), EXPECTED_FFI_API_VERSION), loadRustInfo())
     }
 

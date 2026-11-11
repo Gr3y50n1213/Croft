@@ -387,6 +387,11 @@ pub struct AccountInfo {
     /// folders), Unix milliseconds. `None` until the first folder has synced. S13 and S19 show it
     /// as "Last synced".
     pub last_synced_ms: Option<i64>,
+    /// True for the sample mailbox (`add_demo_account`): fictional mail served from the app, no
+    /// server. Every change to it stays on this device, so its message rows show "Not saved to
+    /// server" (the read-only mailbox rule in `docs/ux/server-contract.md`), and nothing written
+    /// in it is ever sent.
+    pub is_demo: bool,
 }
 
 impl std::fmt::Debug for AccountInfo {
@@ -397,6 +402,7 @@ impl std::fmt::Debug for AccountInfo {
             .field("email", &"***")
             .field("status", &self.status)
             .field("last_synced_ms", &self.last_synced_ms)
+            .field("is_demo", &self.is_demo)
             .finish()
     }
 }

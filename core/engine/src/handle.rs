@@ -511,6 +511,17 @@ impl EngineHandle {
         self.shared.request_full_sync(account);
     }
 
+    /// Whether the account is paused for a sign-in right now: the flag the account's worker
+    /// checks before it syncs, read from the engine's own state (the slot table's lock, held
+    /// only for the lookup). `false` for an unknown account. [`Change::SignInNeeded`] is only a
+    /// notice and can be delivered after [`EngineHandle::signed_in`] already resumed the
+    /// account, so a listener that must not act on a stale notice asks this.
+    pub fn needs_sign_in(&self, account: AccountId) -> bool {
+        self.shared
+            .slot(account)
+            .is_some_and(|slot| slot.needs_sign_in())
+    }
+
     /// Changes the Undo window for moves and deletes made from now on.
     pub fn set_undo_window_ms(&self, ms: i64) {
         self.shared.set_undo_window_ms(ms);

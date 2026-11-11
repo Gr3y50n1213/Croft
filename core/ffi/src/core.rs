@@ -255,6 +255,12 @@ impl Core {
 
     /// `discover` with a given discoverer (tests use one with a fake network), still run on the
     /// core's runtime like the real call.
+    /// The hub, for tests that inject an engine change.
+    #[cfg(test)]
+    pub(crate) fn hub(&self) -> &Arc<Hub> {
+        &self.inner.hub
+    }
+
     #[cfg(test)]
     pub(crate) async fn discover_using(
         &self,
@@ -326,6 +332,7 @@ impl Core {
         let engine = Engine::open(db, Arc::new(SystemClock), EngineConfig::default())?;
         let handle = engine.handle();
         let hub = Hub::new(credentials.clone());
+        hub.attach_engine(handle.clone());
         // Subscribe before any account starts, so no change is missed.
         rt.spawn(listen(hub.clone(), handle.subscribe()));
         let inner = Arc::new(Inner {
@@ -714,8 +721,9 @@ impl Core {
                     match backend.set_asked(credential) {
                         Readiness::Ready => {
                             inner.hub.set_broken(account_id, false);
-                            inner.hub.clear_sign_in(account_id);
+                            // Engine first: a notice applied from here on sees it resumed.
                             inner.handle.signed_in(account_id);
+                            inner.hub.clear_sign_in(account_id);
                             Ok(())
                         }
                         Readiness::NeedsSignIn => Err(CoreError::NoCredential),
@@ -723,8 +731,8 @@ impl Core {
                         // account leaves the needs-sign-in state and the backend asks again
                         // by itself (Transient meanwhile).
                         Readiness::NotReady => {
-                            inner.hub.clear_sign_in(account_id);
                             inner.handle.signed_in(account_id);
+                            inner.hub.clear_sign_in(account_id);
                             Ok(())
                         }
                         Readiness::Broken => {

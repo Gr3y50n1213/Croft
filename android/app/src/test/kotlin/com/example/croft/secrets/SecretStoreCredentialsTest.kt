@@ -372,24 +372,38 @@ class SecretStoreCredentialsTest {
     }
 
     @Test
-    fun removingAnAccountDeletesItsSecretsBeforeTheCoreIsTold() {
+    fun removingAnAccountStopsItInTheCoreFirstThenDeletesItsSecretsAndQuarantinedCopiesThenTheMark() {
         val core = core(provider())
         val id = add(core)
         signIns.mark(id)
-        runBlocking { accounts().removeAccount(core, id) }
+        // What the removal's last steps see: the core has already let the account go, the removal mark is still there.
+        val seen = mutableListOf<String>()
+        val removal = AccountSecrets(store, signIns, purgeQuarantined = { purged ->
+            seen += "purge:$purged core-has-it=${core.listAccounts().any { it.id == purged }} secret=${store.has(purged, SecretKind.PASSWORD)} mark=${purged in store.removing()}"
+        })
+        runBlocking { removal.removeAccount(core, id) }
+        assertEquals(listOf("purge:$id core-has-it=false secret=false mark=true"), seen)
         assertFalse(store.has(id, SecretKind.PASSWORD))
         assertTrue(core.listAccounts().isEmpty())
         assertTrue(signIns.accounts.value.isEmpty())
+        assertTrue("the removal mark is gone at the end", store.removing().isEmpty())
+    }
 
-        // Order: the core refuses an unknown id, yet the secrets are already gone (a crash between
-        // the two steps would look the same: an account that needs a sign-in, never a stray secret).
+    @Test
+    fun aRemovalThatWasCutShortIsFinishedAndAnUnknownIdIsNotAnError() {
+        val core = core(provider())
+        val id = add(core)
+        // The app was killed after the core let the account go and before its secret was deleted: the mark and the secret are left.
+        store.markRemoving(id)
+        runBlocking { core.removeAccount(id) }
+        assertTrue(store.has(id, SecretKind.PASSWORD))
+        // Removing it again (the core says there is no such account) finishes the job without an error.
+        runBlocking { accounts().removeAccount(core, id) }
+        assertFalse(store.has(id, SecretKind.PASSWORD))
+        assertTrue(store.removing().isEmpty())
+        // An id that never existed: whatever is stored under it goes too.
         store.put(999, SecretKind.PASSWORD, "x".toByteArray())
-        try {
-            runBlocking { accounts().removeAccount(core, 999) }
-            fail("expected NoSuchAccount")
-        } catch (e: CoreException.NoSuchAccount) {
-            // fixed category
-        }
+        runBlocking { accounts().removeAccount(core, 999) }
         assertFalse(store.has(999, SecretKind.PASSWORD))
     }
 

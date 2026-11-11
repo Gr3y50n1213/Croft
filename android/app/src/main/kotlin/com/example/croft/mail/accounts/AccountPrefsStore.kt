@@ -37,6 +37,9 @@ class AccountPrefsStore(private val dataStore: DataStore<AccountPrefs>) {
     /** Replace everything. */
     suspend fun set(value: AccountPrefs) { dataStore.updateData { value } }
 
+    /** Change what is stored, from what is stored (waits until it is written). */
+    suspend fun update(change: (AccountPrefs) -> AccountPrefs) { dataStore.updateData { change(it) } }
+
     companion object {
         @Volatile private var shared: AccountPrefsStore? = null
 

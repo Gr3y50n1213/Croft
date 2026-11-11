@@ -27,6 +27,11 @@ unverified, the next step.
 
 **Unverified:** TalkBack on the new screens, the real Keystore, the privacy address.
 
+**Opus review of `eaa1e90`: 2 high, 3 medium, 5 low; all fixed** (CI on `eaa1e90` itself was green). H1: "Erase all" left the T11 quarantine, which the next start restored; now `AppSecrets.eraseEverything()` deletes the quarantine, the wrapped key, the notices and the Keystore wrapping key, and a single removal deletes the account's quarantined secret files. M3 (decision): erase also closes the core and deletes the database, so the next start is a fresh install. H2: the test hook is `TestHooks` in `src/debug` with a release stub, a source test and a release-mapping check. M2 (decision): the core removes the account first, then the secret, then the app's entries, with a durable removal mark and a start-up sweep that finishes a cut-short removal (it deliberately leaves an earlier database's quarantined secrets alone, see `docs/DECISIONS.md`); the removal dialog says a message being handed over may still go out; a test on the real core and an in-process server shows nothing is sent after a removal with a queued change (no Outbox message: the FFI has no send call yet). M1: folder choices and prefs are removed with the account (waited for, inside the non-cancellable path), S45 marks the account gone before it asks, and the sweep prunes both. L1: a failure after the core removed the account is not "couldn't remove". L2: the list says "saved sign-in" for tokens. L3: the licence list covers both ABIs and the release Rust features and maps BSD only from exact names. L4: a failed account read at start shows a retry screen, not S01. L5: the restart test closes and reopens the core, the erase test checks the swipe store, the no-network claim is commented as resting on the core's `DemoBackend` tests. The source link is now a placeholder (`example.org`), no owner handle is in the tree, and T17d (FFI v7) is merged in.
+
+**Survives an erase:** only the four DataStore files (`croft-theme.json`, `croft-swipe.json`, `croft-mail.json`, `croft-accounts.json` in `filesDir/datastore`) holding default values (DataStore keeps its file open and is reset through its own API); no Croft file is left in the no-backup folder (`AppFiles`, tested) and the Keystore wrapping key is deleted.
+
+
 ---
 
 ## T17d: sign-in hardening (11 November 2026)

@@ -63,6 +63,28 @@ internal class Quarantine(
         if (target.exists()) syncDirectory(target)
     }
 
+    /**
+     * Deletes the whole quarantine, every incident with its `superseded/` folder. Part of "Erase all Croft data": nothing of an earlier
+     * database, its wrapped secrets or its wrapped key may stay behind to be restored at the next start.
+     */
+    fun deleteAll() {
+        root.deleteRecursively()
+        syncDirectory(root.absoluteFile.parentFile ?: return)
+    }
+
+    /**
+     * Deletes the quarantined secret files of account [accountId] (`acct-<id>.<kind>.v1`) in every incident, also in `superseded/`. An
+     * account that a person removed must not come back with its password in a later restore. Other accounts' files are left alone.
+     */
+    fun deleteAccountSecrets(accountId: Long) {
+        val prefix = "${SecretStore.PREFIX}$accountId."
+        for (incident in incidents()) {
+            for (folder in listOf(File(incident, "secrets"), File(incident, "superseded/secrets"))) {
+                folder.listFiles { f -> f.name.startsWith(prefix) }?.forEach { it.delete() }
+            }
+        }
+    }
+
     /** The incident folders now kept, oldest first. */
     fun incidents(): List<File> =
         root.listFiles { f -> f.isDirectory && timestampOf(f) != null }

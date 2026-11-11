@@ -35,8 +35,8 @@ INPUT_FILES = {"cargoLockSha256": ROOT / "core/Cargo.lock", "libsCatalogSha256":
 # Licences of things that are compiled in without a crate of their own that says so, and the two bundled fonts.
 EXTRAS = [
     {"name": "OpenSSL (built from source by openssl-src)", "version": "3.x", "licence": "Apache-2.0", "origin": "Native"},
-    {"name": "SQLCipher (bundled by libsqlite3-sys)", "version": "4.x", "licence": "BSD-3-Clause", "origin": "Native"},
-    {"name": "SQLite (bundled by libsqlite3-sys)", "version": "3.x", "licence": "Public domain", "origin": "Native"},
+    {"name": "SQLCipher (bundled by sqlcipher-src)", "version": "4.x", "licence": "BSD-3-Clause", "origin": "Native"},
+    {"name": "SQLite (bundled by sqlcipher-src)", "version": "3.x", "licence": "Public domain", "origin": "Native"},
     {"name": "Inter (font)", "version": "", "licence": "OFL-1.1", "origin": "Font"},
     {"name": "Atkinson Hyperlegible (font)", "version": "", "licence": "OFL-1.1", "origin": "Font"},
 ]
@@ -50,26 +50,38 @@ def current_inputs() -> dict:
     return {key: sha256(path) for key, path in INPUT_FILES.items()}
 
 
+# What the release library is built with: every ABI of `abis` in app/build.gradle.kts, and `rustFeatures` there (SQLCipher with OpenSSL built
+# from source, so openssl-sys and openssl-src are in the list). `test_gen_licences.py` checks these two against the Gradle file.
+ANDROID_TARGETS = ["aarch64-linux-android", "x86_64-linux-android"]
+RUST_FEATURES = "sqlcipher-vendored-openssl"
+
+
 def rust_entries() -> list:
-    meta = json.loads(subprocess.run(
-        ["cargo", "metadata", "--locked", "--offline", "--format-version", "1", "--filter-platform", "aarch64-linux-android"],
-        cwd=ROOT / "core", check=True, capture_output=True, text=True,
-    ).stdout)
-    packages = {p["id"]: p for p in meta["packages"]}
-    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
-    root = next(p["id"] for p in meta["packages"] if p["name"] == "croft-ffi")
-    seen, todo = set(), [root]
-    while todo:
-        pid = todo.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        for dep in nodes[pid]["deps"]:
-            if any(kind["kind"] is None for kind in dep["dep_kinds"]):
-                todo.append(dep["pkg"])
+    """The normal-dependency closure of croft-ffi for each Android target, with the release features, joined."""
+    seen_all = {}
+    for target in ANDROID_TARGETS:
+        meta = json.loads(subprocess.run(
+            ["cargo", "metadata", "--locked", "--offline", "--format-version", "1", "--filter-platform", target,
+             "--features", f"croft-ffi/{RUST_FEATURES}"],
+            cwd=ROOT / "core", check=True, capture_output=True, text=True,
+        ).stdout)
+        packages = {p["id"]: p for p in meta["packages"]}
+        nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
+        root = next(p["id"] for p in meta["packages"] if p["name"] == "croft-ffi")
+        seen, todo = set(), [root]
+        while todo:
+            pid = todo.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            for dep in nodes[pid]["deps"]:
+                # Normal dependencies and build dependencies: a build dependency (openssl-src) puts its code into the library.
+                if any(kind["kind"] in (None, "build") for kind in dep["dep_kinds"]):
+                    todo.append(dep["pkg"])
+        for pid in seen:
+            seen_all[pid] = packages[pid]
     out = []
-    for pid in seen:
-        p = packages[pid]
+    for p in seen_all.values():
         if p["name"].startswith("croft-"):
             continue  # Croft's own crates (MPL-2.0)
         licence = p.get("license") or "see the crate"
@@ -104,8 +116,11 @@ def spdx(name: str) -> str:
         return "LGPL-2.1-or-later"
     if n.startswith("mit"):
         return "MIT"
-    if "bsd" in n:
-        return "BSD-3-Clause"
+    # BSD: only from an exact SPDX id or an exact, unambiguous name; anything else keeps the name the library gave (never guessed).
+    exact = {"bsd-3-clause": "BSD-3-Clause", "bsd 3-clause": "BSD-3-Clause", "bsd-2-clause": "BSD-2-Clause", "bsd 2-clause": "BSD-2-Clause",
+             "the 3-clause bsd license": "BSD-3-Clause", "the bsd 3-clause license": "BSD-3-Clause", "new bsd license": "BSD-3-Clause"}
+    if n.strip() in exact:
+        return exact[n.strip()]
     return name
 
 

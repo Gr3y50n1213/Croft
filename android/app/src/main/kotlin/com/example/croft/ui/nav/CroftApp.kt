@@ -100,11 +100,18 @@ fun CroftApp(
                     accountOps = accountOps,
                     accountPrefs = prefsNow,
                     onAccountPrefsChange = { next -> accountPrefs = next; scope.launch { accountPrefsStore?.set(next) } },
+                    // The removal path waits for this: the entries of a removed account are gone from the stored prefs when it returns.
+                    removeAccountPrefs = { id ->
+                        accountPrefs = accountPrefs?.without(id)
+                        accountPrefsStore?.update { it.without(id) }
+                    },
                     // "Erase all Croft data": the core and the secrets are already gone; the settings stores go back to their defaults too.
                     onErased = {
                         store.set(ThemeSettings.Default); swipeStore?.set(SwipeSettings.Default); mailStore?.set(MailSettings()); accountPrefsStore?.set(AccountPrefs())
                         settings = ThemeSettings.Default; swipe = SwipeSettings.Default; mail = MailSettings(); accountPrefs = AccountPrefs()
-                        onboarding?.let { active = it.openSession() }
+                        // No core is opened here: an erase leaves no Croft file, and the next one is made when the person adds an account (the
+                        // sign-in flow and "Try with sample mail" open the core when they first need it, then `onAccountReady` builds the session).
+                        active = MailSession.unavailable()
                     },
                 )
             }

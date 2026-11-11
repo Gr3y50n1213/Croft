@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -21,6 +22,7 @@ import com.example.croft.mail.accounts.AccountPrefsStore
 import com.example.croft.theme.ThemeStore
 import com.example.croft.ui.nav.CroftApp
 import com.example.croft.ui.nav.Route
+import com.example.croft.ui.nav.StartProblemScreen
 import com.example.croft.ui.accounts.appAccountOps
 import com.example.croft.ui.onboarding.appOnboardingEnvironment
 
@@ -45,15 +47,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             var session by remember { mutableStateOf<MailSession?>(null) }
             var startAt by remember { mutableStateOf<Route?>(null) }
-            LaunchedEffect(Unit) {
+            var problem by remember { mutableStateOf(false) }
+            var attempt by remember { mutableIntStateOf(0) }
+            LaunchedEffect(attempt) {
+                problem = false
                 val ready = MailRuntime.session(applicationContext, mailStore)
-                // No account at all (a fresh install, or everything was removed) starts at S01; with one (the sample mailbox too) the app starts on the Inbox.
-                startAt = if (!ready.coreUnavailable && MailRuntime.hasAccounts(applicationContext)) Route.HOME else Route.ONBOARDING
+                // No account at all (a fresh install, or everything was removed) starts at S01; with one (the sample mailbox too) the app starts on
+                // the Inbox. A list that could not be read is not "no account": the person sees a retry screen, never S01 by mistake.
+                val count = if (ready.coreUnavailable) 0 else MailRuntime.accountCount(applicationContext)
+                if (count == null) { problem = true; return@LaunchedEffect }
+                startAt = if (count > 0) Route.HOME else Route.ONBOARDING
                 session = ready
             }
             val ready = session
             val start = startAt
-            if (ready != null && start != null) {
+            if (problem) {
+                CroftTheme { StartProblemScreen(onRetry = { attempt++ }) }
+            } else if (ready != null && start != null) {
                 CroftApp(
                     store, info, ready,
                     startAt = start,

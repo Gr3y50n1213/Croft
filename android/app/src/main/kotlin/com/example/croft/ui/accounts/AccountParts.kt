@@ -37,6 +37,7 @@ import com.example.croft.mail.MailSession
 import com.example.croft.mail.accounts.AccountColour
 import com.example.croft.mail.accounts.AccountPrefs
 import com.example.croft.mail.accounts.RemovalPlan
+import com.example.croft.mail.accounts.SavedSignIn
 import com.example.croft.theme.statusColors
 import com.example.croft.ui.components.AccountStatus
 import com.example.croft.ui.components.AccountStatusChip
@@ -145,6 +146,13 @@ internal fun AccountStatusLabel(name: String, state: AccountState, onClick: () -
     }
 }
 
+/** The plan the removal dialog lists for [account]: the counts from its folders and the sign-in the device has saved for it. A read that fails lists what it knows. */
+internal suspend fun removalPlanOf(session: MailSession, account: AccountInfo, savedSignIn: suspend (AccountId) -> SavedSignIn): RemovalPlan {
+    val folders = try { session.repository.listFolders(account.id) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { emptyList() }
+    val saved = try { savedSignIn(account.id) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { if (account.isDemo) SavedSignIn.NONE else SavedSignIn.PASSWORD }
+    return RemovalPlan.of(account, folders, saved)
+}
+
 /** What an account is called on screen: the sample mailbox says so; any other account has the person's name or the core's label. */
 @Composable
 internal fun AccountInfo.shownName(prefs: AccountPrefs): String = if (isDemo) stringResource(R.string.accounts_sample_name) else prefs.nameOf(this)
@@ -172,7 +180,11 @@ internal fun RemoveAccountDialog(name: String, plan: RemovalPlan, onConfirm: () 
                 add(stored)
                 add(stringResource(R.string.accounts_remove_queue))
                 add(stringResource(R.string.accounts_remove_drafts))
-                if (plan.savedPassword) add(stringResource(R.string.accounts_remove_password))
+                when (plan.savedSignIn) {
+                    SavedSignIn.PASSWORD -> add(stringResource(R.string.accounts_remove_password))
+                    SavedSignIn.TOKEN -> add(stringResource(R.string.accounts_remove_token))
+                    SavedSignIn.NONE -> Unit
+                }
             }
             lines.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
         },

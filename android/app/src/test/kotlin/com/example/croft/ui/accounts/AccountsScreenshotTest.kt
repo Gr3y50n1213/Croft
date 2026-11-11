@@ -38,10 +38,10 @@ internal fun AccountScreenFor(id: AccountScreenId) {
     val (session, _) = androidx.compose.runtime.remember { accountsSession() }
     when (id) {
         AccountScreenId.S44 -> AccountsScreen(
-            session, shotPrefs, onPrefsChange = {}, onAdd = {}, onOpenAccount = {}, removeAccount = { null }, onNoAccounts = {}, onBack = {},
+            session, shotPrefs, onPrefsChange = {}, onAdd = {}, onOpenAccount = {}, removeAccount = { null }, savedSignIn = { com.example.croft.mail.accounts.SavedSignIn.PASSWORD }, onNoAccounts = {}, onBack = {},
         )
         AccountScreenId.S45 -> AccountScreen(
-            session, accountId = 2, prefs = shotPrefs, onPrefsChange = {}, removeAccount = { null }, onRemoved = {}, eraseAll = { false }, onBack = {},
+            session, accountId = 2, prefs = shotPrefs, onPrefsChange = {}, removeAccount = { null }, savedSignIn = { com.example.croft.mail.accounts.SavedSignIn.PASSWORD }, onRemoved = {}, eraseAll = { false }, onBack = {},
         )
         AccountScreenId.S60 -> AboutScreen(
             info = RustInfo("0.1.0", 6u), session = session, onOpenLicences = {}, eraseAll = { false }, onBack = {},

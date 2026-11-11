@@ -32,6 +32,8 @@ import com.example.croft.ui.appearance.AppearanceFlow
 import com.example.croft.ui.components.sharedAxisX
 import com.example.croft.mail.accounts.AccountOps
 import com.example.croft.mail.accounts.AccountPrefs
+import com.example.croft.mail.accounts.REMOVED_COUNT_UNKNOWN
+import com.example.croft.mail.accounts.SavedSignIn
 import com.example.croft.mail.onboarding.Step
 import com.example.croft.ui.accounts.AboutLinks
 import com.example.croft.ui.accounts.AboutScreen
@@ -116,6 +118,8 @@ fun CroftNavHost(
     /** The app's own account order, names and colours (S44, S45). */
     accountPrefs: AccountPrefs = AccountPrefs(),
     onAccountPrefsChange: (AccountPrefs) -> Unit = {},
+    /** Drops an account's entries from the stored prefs and waits until that is written (the removal path waits for it). */
+    removeAccountPrefs: suspend (Long) -> Unit = {},
     /** After everything was erased in the core and the secret store: the app clears its settings stores and shows S01. */
     onErased: suspend () -> Unit = {},
 ) {
@@ -126,7 +130,6 @@ fun CroftNavHost(
     var sampleProblem by remember { mutableStateOf(false) }
     var sampleBusy by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val prefsNow by rememberUpdatedState(accountPrefs)
     val sessionNow by rememberUpdatedState(session)
     if (route == Route.ONBOARDING && onboarding == null) route = Route.HOME
     val scope = rememberCoroutineScope()
@@ -135,20 +138,24 @@ fun CroftNavHost(
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
     BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT) { route = route.parent ?: Route.HOME }
 
-    // Removing an account: its saved password and its rows in the core, then its entries in the app's own prefs, then a fresh session.
+    // Removing an account: the account in the core first (its task stops, nothing new is sent), then its saved secret (`AccountOps.remove`),
+    // then the app's own entries for it (folder choices, order, name, colour: the prefs are written and waited for), then a fresh session.
     // It runs to its end even if the screen goes away (a half removal would be worse than a late one). Returns how many accounts are
-    // left, or null when it failed.
+    // left ([REMOVED_COUNT_UNKNOWN] when that could not be read), or null when the removal itself failed. Only `ops.remove` failing means
+    // "couldn't remove": after it succeeded the account is gone, and a failure of the housekeeping below is not reported as one (the
+    // start-up sweep finishes it).
     val removeAccount: suspend (Long) -> Int? = remove@{ id ->
         val ops = accountOps ?: return@remove null
         withContext(NonCancellable) {
             try {
                 ops.remove(id)
-                onAccountPrefsChange(prefsNow.without(id))
-                onAccountReady()
-                sessionNow.repository.listAccounts().size
             } catch (e: Exception) {
-                null
+                return@withContext null
             }
+            try { sessionNow.folderMapping.forgetAccount(id) } catch (e: Exception) { /* swept at the next start */ }
+            try { removeAccountPrefs(id) } catch (e: Exception) { /* swept at the next start */ }
+            try { onAccountReady() } catch (e: Exception) { /* the next screen reads the core again */ }
+            try { sessionNow.repository.listAccounts().size } catch (e: Exception) { REMOVED_COUNT_UNKNOWN }
         }
     }
     val eraseAll: suspend () -> Boolean = erase@{
@@ -164,6 +171,7 @@ fun CroftNavHost(
             }
         }
     }
+    val savedSignIn: suspend (Long) -> SavedSignIn = { id -> accountOps?.savedSignIn(id) ?: SavedSignIn.NONE }
     val trySample: () -> Unit = {
         val ops = accountOps
         if (ops == null) route = Route.HOME
@@ -224,12 +232,12 @@ fun CroftNavHost(
                 session = session, prefs = accountPrefs, onPrefsChange = onAccountPrefsChange,
                 onAdd = { if (onboarding != null) { addReturn = Route.ACCOUNTS; route = Route.ADD_ACCOUNT } },
                 onOpenAccount = { id -> accountId = id; route = Route.ACCOUNT },
-                removeAccount = removeAccount, onNoAccounts = { route = Route.ONBOARDING },
+                removeAccount = removeAccount, savedSignIn = savedSignIn, onNoAccounts = { route = Route.ONBOARDING },
                 onBack = { route = Route.SETTINGS },
             )
             Route.ACCOUNT -> AccountScreen(
                 session = session, accountId = accountId, prefs = accountPrefs, onPrefsChange = onAccountPrefsChange,
-                removeAccount = removeAccount, onRemoved = { left -> route = if (left == 0) Route.ONBOARDING else Route.ACCOUNTS },
+                removeAccount = removeAccount, savedSignIn = savedSignIn, onRemoved = { left -> route = if (left == 0) Route.ONBOARDING else Route.ACCOUNTS },
                 eraseAll = eraseAll, onBack = { route = Route.ACCOUNTS },
             )
             Route.ABOUT -> AboutScreen(

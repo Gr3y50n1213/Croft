@@ -8,8 +8,16 @@ import com.example.croft.mail.AccountId
 import com.example.croft.mail.AccountInfo
 import com.example.croft.mail.FolderInfo
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import uniffi.croft_ffi.Core
 import uniffi.croft_ffi.CoreException
+
+/** What the removal path returns as "accounts left" when the account is gone but the count could not be read afterwards (not 0: the screen stays where it is). */
+const val REMOVED_COUNT_UNKNOWN = -1
+
+/** What sign-in a device keeps for an account: nothing (the sample mailbox), a password, or OAuth tokens (T21). */
+enum class SavedSignIn { NONE, PASSWORD, TOKEN }
 
 /**
  * What S44, S45 and S60 change in the core and the secret store (listing goes through the session's repository). The screens talk
@@ -19,34 +27,50 @@ interface AccountOps {
     /** "Try with sample mail": the core's own sample account (`add_demo_account`: no network, no credential; there is only ever one). Returns its id. */
     suspend fun addSample(): AccountId
 
+    /** What sign-in this device has saved for [id], read from the secret store (the removal list names it). */
+    suspend fun savedSignIn(id: AccountId): SavedSignIn
+
     /**
-     * Removes [id] from this device: its saved password first, then its rows in the core (see [CoreAccountOps]). The server is not
-     * touched. Throws when the core refuses; the secret is gone by then, and the account stays and needs a sign-in (so the removal can be repeated).
+     * Removes [id] from this device: the account in the core first (its task stops, nothing new is sent), then its saved secret and its
+     * quarantined copies (see [CoreAccountOps]). The server is not touched. Throws when the core refuses; nothing is deleted then and the
+     * removal can be repeated.
      */
     suspend fun remove(id: AccountId)
 
-    /** "Erase all Croft data on this device": every account as [remove] does, then every leftover secret and the app's own files of mail state. The app clears its settings stores itself. */
+    /**
+     * "Erase all Croft data on this device": every account as [remove] does, then the core is closed and its database deleted, then every
+     * secret, the quarantine, the Keystore key and Croft's files (see [CoreAccountOps]). The app clears its settings stores itself. The
+     * next start is a fresh install.
+     */
     suspend fun eraseEverything()
 }
 
 /**
  * [AccountOps] over the real [Core].
  *
- * **Removal order: the saved password, then the core's rows.** [removeAccountAndSecrets] is `AccountSecrets.removeAccount` of T11
- * (secrets first, then `Core.removeAccount`). If the app is killed between the two, the account is still there with no password: it
- * shows "Needs sign-in" and can be removed again; no password is ever left behind for an account that is gone. The other order could
- * leave a password for a deleted id. Ids are never reused (the core keeps a high-water mark, tested in the core), so even such a
- * leftover could never be given to another account; and `SecretStore.putForNewAccount` clears anything under a new id first.
+ * **Removal order** (the owner's decision, docs/DECISIONS.md): `Core.removeAccount` first (it stops the account's task and waits for a
+ * message that is being handed to the server, so nothing is sent after it returns), then the saved secret and its quarantined copies,
+ * then the app's own entries for the id. [removeAccountAndSecrets] is `AccountSecrets.removeAccount`, which writes a removal mark first;
+ * a crash anywhere leaves the mark and the start-up sweep ([AccountSweep]) finishes the job. Ids are never reused (the core keeps a
+ * high-water mark, tested), so a leftover could never reach another account.
+ *
+ * **Erase:** every account is removed, the core is closed ([closeCore]), the database, the secrets, the quarantine and the Keystore key
+ * are deleted ([eraseStorage], `AppSecrets.eraseEverything`) and Croft's other files ([clearLocalFiles]). The next start is a fresh install.
  */
 class CoreAccountOps(
     private val core: Core,
     private val removeAccountAndSecrets: suspend (AccountId) -> Unit,
-    /** Deletes every account secret that is left (after the accounts are gone). */
-    private val clearSecrets: () -> Unit,
-    /** Deletes the app's own mail state files (folder choices, list positions). */
+    private val savedSignIn: (AccountId) -> SavedSignIn,
+    /** Closes the core (nothing may use it afterwards). */
+    private val closeCore: () -> Unit,
+    /** Deletes the database file and its side files, every secret, the quarantine and the Keystore key. */
+    private val eraseStorage: () -> Unit,
+    /** Deletes Croft's other files, and forgets the closed core (the next use opens a new one). */
     private val clearLocalFiles: () -> Unit,
 ) : AccountOps {
     override suspend fun addSample(): AccountId = core.addDemoAccount().id
+
+    override suspend fun savedSignIn(id: AccountId): SavedSignIn = savedSignIn.invoke(id)
 
     override suspend fun remove(id: AccountId) = removeAccountAndSecrets(id)
 
@@ -60,8 +84,12 @@ class CoreAccountOps(
                 // Already gone: that is what we wanted.
             }
         }
-        clearSecrets()
-        clearLocalFiles()
+        // Closing the core and deleting files wait on the disk and the Keystore: not on the main thread.
+        withContext(Dispatchers.IO) {
+            closeCore()
+            eraseStorage()
+            clearLocalFiles()
+        }
     }
 
     override fun toString(): String = "[redacted]"
@@ -72,15 +100,15 @@ data class RemovalPlan(
     /** Messages stored on this device (the folders' totals). */
     val messages: Int,
     val folders: Int,
-    /** A saved password exists for this account (the sample mailbox has none). */
-    val savedPassword: Boolean,
+    /** What sign-in this device has saved for the account (the sample mailbox has none). */
+    val savedSignIn: SavedSignIn,
     val sample: Boolean,
 ) {
     companion object {
-        /** The plan for [account] with these [folders] (virtual mailboxes such as Starred are not stored folders and are left out). */
-        fun of(account: AccountInfo, folders: List<FolderInfo>): RemovalPlan {
+        /** The plan for [account] with these [folders] and this [savedSignIn] (virtual mailboxes such as Starred are not stored folders and are left out). */
+        fun of(account: AccountInfo, folders: List<FolderInfo>, savedSignIn: SavedSignIn): RemovalPlan {
             val stored = folders.filter { !it.isVirtual }
-            return RemovalPlan(stored.sumOf { it.totalCount }, stored.size, savedPassword = !account.isDemo, sample = account.isDemo)
+            return RemovalPlan(stored.sumOf { it.totalCount }, stored.size, savedSignIn, sample = account.isDemo)
         }
     }
 }

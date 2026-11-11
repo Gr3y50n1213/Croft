@@ -13,6 +13,7 @@ import com.example.croft.mail.FolderInfo
 import com.example.croft.mail.MailSession
 import com.example.croft.mail.MessageRepository
 import com.example.croft.mail.accounts.AccountOps
+import com.example.croft.mail.accounts.SavedSignIn
 import com.example.croft.secrets.SecretKind
 import com.example.croft.secrets.SecretStore
 import com.example.croft.ui.mail.NOW
@@ -75,6 +76,13 @@ class RecordingOps(private val repo: AccountsRepo, private val secrets: SecretSt
         samples++
         val sample = synchronized(repo) { repo.accounts.firstOrNull { it.isDemo } }
         return sample?.id ?: 3L
+    }
+
+    override suspend fun savedSignIn(id: AccountId): SavedSignIn = when {
+        secrets == null -> SavedSignIn.NONE
+        secrets.has(id, SecretKind.PASSWORD) -> SavedSignIn.PASSWORD
+        secrets.has(id, SecretKind.OAUTH_REFRESH) || secrets.has(id, SecretKind.OAUTH_ACCESS) -> SavedSignIn.TOKEN
+        else -> SavedSignIn.NONE
     }
 
     override suspend fun remove(id: AccountId) {

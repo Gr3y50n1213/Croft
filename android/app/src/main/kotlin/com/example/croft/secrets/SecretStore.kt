@@ -97,9 +97,9 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     }
 
     /**
-     * Deletes every entry of an account. Call it **before** `Core.removeAccount` (a crash in
-     * between leaves an account that only needs a sign-in; the other order could leave a secret
-     * that a later account with the same id would find).
+     * Deletes every entry of an account. Account removal calls it **after** `Core.removeAccount` (which stops the account's task, so
+     * nothing new is sent with this account's secret after it has returned), with a removal mark written first: a crash in between
+     * leaves a secret for an id the core no longer lists, which the sweep at the next start deletes. Ids are never reused.
      */
     @Synchronized
     fun removeAccount(accountId: Long) {
@@ -111,11 +111,38 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     fun hasAny(): Boolean =
         (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets")).isNotEmpty()
 
-    /** Deletes every account secret (key loss). */
+    /** Deletes every account secret (key loss, and "Erase all Croft data"), and every removal mark ([markRemoving]). */
     @Synchronized
     fun clear() {
-        dir.listFiles { f -> f.name.startsWith(PREFIX) }?.forEach { it.delete() }
+        dir.listFiles { f -> f.name.startsWith(PREFIX) || f.name.startsWith(REMOVING_PREFIX) }?.forEach { it.delete() }
     }
+
+    /** The ids that have at least one stored secret. */
+    @Synchronized
+    fun accountIds(): Set<Long> =
+        (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets"))
+            .mapNotNull { it.name.removePrefix(PREFIX).substringBefore('.').toLongOrNull() }.toSet()
+
+    /**
+     * Writes a durable mark that the removal of [accountId] has begun, before the core is asked to remove it. A crash anywhere in the
+     * removal leaves the mark, and the sweep at the next start finishes what the removal had left (the saved secrets, the quarantined
+     * copies, the app's own entries). The mark is empty: it holds an id, nothing else. Throws [IOException] when it cannot be written.
+     */
+    fun markRemoving(accountId: Long) {
+        writeAtomically(File(dir, "$REMOVING_PREFIX$accountId"), ByteArray(0))
+    }
+
+    /** The removal of [accountId] is finished: its mark goes. */
+    @Synchronized
+    fun clearRemoving(accountId: Long) {
+        File(dir, "$REMOVING_PREFIX$accountId").delete()
+    }
+
+    /** The ids whose removal was begun and not finished. */
+    @Synchronized
+    fun removing(): Set<Long> =
+        (dir.listFiles { f -> f.name.startsWith(REMOVING_PREFIX) } ?: throw IOException("cannot list the secrets"))
+            .mapNotNull { it.name.removePrefix(REMOVING_PREFIX).toLongOrNull() }.toSet()
 
     private fun file(accountId: Long, kind: SecretKind) = File(dir, "$PREFIX$accountId.${kind.wireName}.v1")
 
@@ -123,6 +150,9 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
 
     internal companion object {
         const val PREFIX = "acct-"
+
+        /** The name of a removal mark: `removing-<id>`. It does not start with [PREFIX], so it is not a secret. */
+        const val REMOVING_PREFIX = "removing-"
 
         /** Binds a blob to its entry, so a file copied onto another account or kind does not open. */
         fun context(accountId: Long, kind: SecretKind): ByteArray =

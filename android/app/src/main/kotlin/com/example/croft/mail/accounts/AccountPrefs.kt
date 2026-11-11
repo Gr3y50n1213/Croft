@@ -60,6 +60,10 @@ data class AccountPrefs(
     fun withColour(id: AccountId, colour: AccountColour?): AccountPrefs =
         copy(colours = if (colour == null) colours - id else colours + (id to colour))
 
+    /** Keeps only what belongs to accounts in [known] (the start-up sweep: an entry for an account the core no longer lists is dropped). */
+    fun keepOnly(known: Set<AccountId>): AccountPrefs =
+        AccountPrefs(order.filter { it in known }, names.filterKeys { it in known }, colours.filterKeys { it in known })
+
     /** Forget everything about a removed account. */
     fun without(id: AccountId): AccountPrefs = AccountPrefs(order - id, names - id, colours - id)
 

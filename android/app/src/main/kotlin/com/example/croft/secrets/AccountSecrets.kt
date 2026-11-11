@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uniffi.croft_ffi.Core
+import uniffi.croft_ffi.CoreException
 import uniffi.croft_ffi.FfiCredential
 import uniffi.croft_ffi.FfiDiscovered
 
@@ -33,13 +34,19 @@ import uniffi.croft_ffi.FfiDiscovered
  *   settings and its old secret, and [SignInNotSavedException] is thrown for the screen to say so. Each update has a token and the
  *   rollback only undoes that update, never a later sign-in's; if it could not be undone the plain storage failure is thrown instead.
  * Both calls are suspend functions that run on the IO dispatcher (the Keystore can make them wait).
- * - **Remove.** The secrets are deleted **before** `Core.removeAccount`. A crash in between leaves
- *   an account that needs a sign-in, which is safe; the other order could leave a secret behind.
+ * - **Remove.** A removal mark is written first (durably), then `Core.removeAccount` is called (it stops the account's task and waits for
+ *   a message that is being handed to the server, so nothing new is sent after it returns), then the account's secrets and its
+ *   quarantined copies are deleted, then the mark. A crash anywhere leaves the mark; the sweep at the next start (`AccountSweep`) finishes
+ *   the job. The order is the owner's decision of 11 November (docs/DECISIONS.md): the earlier "secret first" order let the account go on
+ *   running, and sending, without its secret being read again only by chance. Ids are never reused, so a leftover could never reach
+ *   another account.
  */
 class AccountSecrets(
     private val store: SecretStore,
     private val signInNeeded: SignInNeeded,
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** Deletes an account's quarantined secret files (`AppSecrets.purgeQuarantinedSecrets`); nothing to do where there is no quarantine. */
+    private val purgeQuarantined: (Long) -> Unit = {},
 ) {
     /**
      * Adds a password account. [password] is the UTF-8 secret the person just verified; it is
@@ -119,11 +126,27 @@ class AccountSecrets(
         id
     }
 
-    /** Removes the account's secrets, then the account from the core (in that order, see the class text). */
+    /**
+     * Removes the account: the removal mark, the account from the core, its secrets and quarantined copies, the mark (in that order, see
+     * the class text). An account the core no longer has (a removal that was cut short) is not an error: what is left of it is deleted.
+     * Any other failure of the core leaves the mark, the account and its secrets in place, so the removal can be repeated.
+     */
     suspend fun removeAccount(core: Core, accountId: Long) = withContext(dispatcher) {
+        store.markRemoving(accountId)
+        try {
+            core.removeAccount(accountId)
+        } catch (e: CoreException.NoSuchAccount) {
+            // Already gone: finish the rest.
+        }
+        finishRemoval(accountId)
+    }
+
+    /** What is left after the core no longer has [accountId]: its secrets, its quarantined copies, the mark. Also what the start-up sweep does. */
+    fun finishRemoval(accountId: Long) {
         store.removeAccount(accountId)
-        core.removeAccount(accountId)
+        purgeQuarantined(accountId)
         signInNeeded.clear(accountId)
+        store.clearRemoving(accountId)
     }
 
     override fun toString(): String = "[redacted]"

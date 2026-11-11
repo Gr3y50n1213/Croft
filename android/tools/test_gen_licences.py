@@ -27,5 +27,28 @@ class LicenceListTest(unittest.TestCase):
                          "dependencies changed: run python3 android/tools/gen_licences.py")
 
 
+class ReleaseBuildMatchTest(unittest.TestCase):
+    """The list is made for what the release build compiles: its ABIs and its Rust features (app/build.gradle.kts)."""
+
+    def setUp(self):
+        self.gradle = (gen_licences.ROOT / "android/app/build.gradle.kts").read_text()
+
+    def test_every_abi_of_the_release_build_is_covered(self):
+        import re
+        abis = re.search(r'val abis = listOf\(([^)]*)\)', self.gradle).group(1)
+        names = re.findall(r'"([^"]+)"', abis)
+        triple = {"arm64-v8a": "aarch64-linux-android", "x86_64": "x86_64-linux-android", "armeabi-v7a": "armv7-linux-androideabi", "x86": "i686-linux-android"}
+        self.assertEqual(sorted(triple[a] for a in names), sorted(gen_licences.ANDROID_TARGETS))
+
+    def test_the_release_rust_features_are_the_ones_the_list_was_made_with(self):
+        import re
+        features = re.search(r'val rustFeatures = "([^"]+)"', self.gradle).group(1)
+        self.assertEqual(features, gen_licences.RUST_FEATURES)
+
+    def test_the_openssl_crates_are_listed(self):
+        names = {e["name"] for e in json.loads(gen_licences.OUT.read_text())["entries"]}
+        self.assertTrue({"openssl-sys", "openssl-src", "sqlcipher-src"} <= names)
+
+
 if __name__ == "__main__":
     unittest.main()

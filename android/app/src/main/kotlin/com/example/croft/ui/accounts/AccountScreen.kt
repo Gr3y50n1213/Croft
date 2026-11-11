@@ -53,6 +53,7 @@ import com.example.croft.mail.MailSession
 import com.example.croft.mail.accounts.AccountColour
 import com.example.croft.mail.accounts.AccountPrefs
 import com.example.croft.mail.accounts.RemovalPlan
+import com.example.croft.mail.accounts.SavedSignIn
 import com.example.croft.ui.appearance.SectionLabel
 import com.example.croft.ui.appearance.SettingsFrame
 import com.example.croft.ui.components.ButtonKind
@@ -88,6 +89,7 @@ fun AccountScreen(
     prefs: AccountPrefs,
     onPrefsChange: (AccountPrefs) -> Unit,
     removeAccount: suspend (AccountId) -> Int?,
+    savedSignIn: suspend (AccountId) -> SavedSignIn,
     onRemoved: (left: Int) -> Unit,
     eraseAll: suspend () -> Boolean,
     onBack: () -> Unit,
@@ -173,9 +175,7 @@ fun AccountScreen(
 
         CroftButton(
             stringResource(R.string.account_remove), onClick = {
-                scope.launch {
-                    removing = try { RemovalPlan.of(account, session.repository.listFolders(accountId)) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { RemovalPlan(0, 0, !account.isDemo, account.isDemo) }
-                }
+                scope.launch { removing = removalPlanOf(session, account, savedSignIn) }
             },
             Modifier.fillMaxWidth().testTag(AccountsTags.REMOVE), kind = ButtonKind.OUTLINED, enabled = !busy,
         )
@@ -191,10 +191,12 @@ fun AccountScreen(
             name = shownName, plan = plan, onDismiss = { removing = null },
             onConfirm = {
                 removing = null; busy = true
+                // `gone` is set before the removal starts: the screen may be left while it runs, and leaving must not write the name back.
+                gone.set(true)
                 scope.launch {
                     val left = removeAccount(accountId)
                     busy = false
-                    if (left == null) snackbar.showSnackbar(removeFailed) else { gone.set(true); onRemoved(left) }
+                    if (left == null) { gone.set(false); snackbar.showSnackbar(removeFailed) } else onRemoved(left)
                 }
             },
         )
@@ -204,7 +206,8 @@ fun AccountScreen(
             onDismiss = { erasing = false },
             onConfirm = {
                 erasing = false; busy = true
-                scope.launch { val ok = eraseAll(); busy = false; if (ok) gone.set(true) else snackbar.showSnackbar(eraseFailed) }
+                gone.set(true)
+                scope.launch { val ok = eraseAll(); busy = false; if (!ok) { gone.set(false); snackbar.showSnackbar(eraseFailed) } }
             },
         )
     }

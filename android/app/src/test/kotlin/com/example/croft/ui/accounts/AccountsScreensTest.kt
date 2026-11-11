@@ -62,6 +62,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -87,6 +88,7 @@ class AccountsScreensTest {
     private val secrets = SecretStore(File(dir, "secrets"), AesGcmSecretBox(MemoryKeySource()))
     private val prefsStore = AccountPrefsStore.onFile(File(dir, "accounts.json"), scope)
     private val mailStore = MailSettingsStore.onFile(File(dir, "mail.json"), scope)
+    private val swipeStore = com.example.croft.ui.swipe.SwipeSettingsStore.onFile(File(dir, "swipe.json"), scope)
     private val accounts = testAccounts()
     private val sessionAndRepo = accountsSession(accounts)
     private val session = sessionAndRepo.first
@@ -104,7 +106,7 @@ class AccountsScreensTest {
         rule.setContent {
             CroftApp(
                 themeStore, RustInfo("9.8.7", 6u), session, startAt = startAt, onboarding = env, accountOps = ops,
-                accountPrefsStore = prefsStore, mailStore = mailStore,
+                accountPrefsStore = prefsStore, mailStore = mailStore, swipeStore = swipeStore,
             )
         }
     }
@@ -161,7 +163,7 @@ class AccountsScreensTest {
         // The list of what is deleted on this device.
         rule.onNodeWithText("Remove Work?").assertIsDisplayed()
         rule.onNodeWithText("Its messages and folders", substring = true).assertExists()
-        rule.onNodeWithText("Changes that are waiting to be sent to the server", substring = true).assertExists()
+        rule.onNodeWithText("Changes and messages that are waiting to be sent", substring = true).assertExists()
         rule.onNodeWithText("Its drafts and its outbox", substring = true).assertExists()
         rule.onNodeWithText("Its saved password", substring = true).assertExists()
         assertTrue("nothing is removed before the person confirms", ops.removed.isEmpty() && secrets.has(2, SecretKind.PASSWORD))
@@ -171,6 +173,39 @@ class AccountsScreensTest {
         assertFalse("the saved password is deleted with the account", secrets.has(2, SecretKind.PASSWORD))
         tag(AccountsTags.row(1)).assertIsDisplayed()
         tag(AccountsTags.row(3)).assertIsDisplayed()
+    }
+
+    @Test
+    fun removingAnAccountAlsoDeletesItsPrefsAndItsFolderChoices() {
+        runBlocking { prefsStore.set(AccountPrefs(order = listOf(2L, 1L, 3L), names = mapOf(1L to "Keep", 2L to "Work two"), colours = mapOf(2L to AccountColour.AMBER, 3L to AccountColour.TERTIARY))) }
+        session.folderMapping.remember(2, FolderRole.ARCHIVE, FakeData.folderId(2, FakeData.RECEIPTS))
+        session.folderMapping.decline(2, FolderRole.TRASH)
+        session.folderMapping.recordRecent(2, FakeData.folderId(2, FakeData.WORK))
+        session.folderMapping.remember(1, FolderRole.ARCHIVE, FakeData.folderId(1, FakeData.RECEIPTS))
+        show()
+        openAccounts()
+        tag(AccountsTags.remove(2)).performClick()
+        waitFor(AccountsTags.REMOVE_DIALOG)
+        rule.onNodeWithText("Remove").performClick()
+        waitGone(AccountsTags.row(2))
+        // The prefs are written and waited for before the removal reports its end: nothing of account 2 is left, the others stay.
+        val prefs = runBlocking { prefsStore.prefs.first() }
+        assertEquals(listOf(1L, 3L), prefs.order)
+        assertEquals(mapOf(1L to "Keep"), prefs.names)
+        assertEquals(mapOf(3L to AccountColour.TERTIARY), prefs.colours)
+        assertEquals(setOf(1L), session.folderMapping.accounts())
+        assertNull(session.folderMapping.mapped(2, FolderRole.ARCHIVE))
+    }
+
+    @Test
+    fun aSavedSignInThatIsATokenIsListedAsOne() {
+        secrets.put(2, SecretKind.OAUTH_REFRESH, "made-up-token".toByteArray())
+        show()
+        openAccounts()
+        tag(AccountsTags.remove(2)).performClick()
+        waitFor(AccountsTags.REMOVE_DIALOG)
+        rule.onNodeWithText("Its saved sign-in", substring = true).assertExists()
+        assertTrue(rule.onAllNodes(hasText("Its saved password", substring = true)).fetchSemanticsNodes().isEmpty())
     }
 
     @Test
@@ -403,7 +438,10 @@ class AccountsScreensTest {
     fun resetErasesTheAccountsTheSecretsAndTheSettingsAfterConfirmationAndReturnsToTheWelcomeScreen() {
         // Settings that are not the defaults, an account name, and a saved password.
         initialTheme = instant.copy(mode = ModePreference.DARK)
-        runBlocking { prefsStore.set(AccountPrefs(names = mapOf(1L to "Home mail"))); mailStore.set(MailSettings(undoSeconds = 10)) }
+        runBlocking {
+            prefsStore.set(AccountPrefs(names = mapOf(1L to "Home mail"))); mailStore.set(MailSettings(undoSeconds = 10))
+            swipeStore.set(com.example.croft.swipe.SwipeSettings.Default.copy(startToEnd = com.example.croft.swipe.SwipeAction.ARCHIVE))
+        }
         secrets.put(1, SecretKind.PASSWORD, "made-up-password".toByteArray())
         show()
         openAbout()
@@ -419,6 +457,7 @@ class AccountsScreensTest {
         assertEquals(ThemeSettings.Default, runBlocking { themeStore.settings.first() })
         assertEquals(AccountPrefs(), runBlocking { prefsStore.prefs.first() })
         assertEquals(MailSettings(), runBlocking { mailStore.settings.first() })
+        assertEquals(com.example.croft.swipe.SwipeSettings.Default, runBlocking { swipeStore.settings.first() })
     }
 
     @Test

@@ -130,6 +130,9 @@ class SampleMailRestartTest {
     fun afterARestartTheAppOpensTheInboxBecauseTheSampleAccountExists() {
         val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
         kotlinx.coroutines.runBlocking { MailRuntime.openedCore(app).core.addDemoAccount() }
+        // The process ends: the core is closed and forgotten. The activity then opens it again from the file, with the same wrapping key,
+        // as a restart does, and finds the account that is stored there.
+        MailRuntime.forgetCore()
         androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use {
             rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
             assertTrue(rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isEmpty())

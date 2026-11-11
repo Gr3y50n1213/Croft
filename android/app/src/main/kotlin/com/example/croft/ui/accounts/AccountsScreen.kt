@@ -42,6 +42,7 @@ import com.example.croft.mail.AccountInfo
 import com.example.croft.mail.MailSession
 import com.example.croft.mail.accounts.AccountPrefs
 import com.example.croft.mail.accounts.RemovalPlan
+import com.example.croft.mail.accounts.SavedSignIn
 import com.example.croft.ui.appearance.SettingsFrame
 import com.example.croft.ui.components.ButtonKind
 import com.example.croft.ui.components.CroftButton
@@ -63,6 +64,7 @@ fun AccountsScreen(
     onAdd: () -> Unit,
     onOpenAccount: (AccountId) -> Unit,
     removeAccount: suspend (AccountId) -> Int?,
+    savedSignIn: suspend (AccountId) -> SavedSignIn,
     onNoAccounts: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -90,13 +92,7 @@ fun AccountsScreen(
                 onDown = { onPrefsChange(prefs.moved(shown.map { it.id }, account.id, 1)) },
                 onRemove = {
                     scope.launch {
-                        plan = try {
-                            RemovalPlan.of(account, session.repository.listFolders(account.id))
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            RemovalPlan(0, 0, savedPassword = !account.isDemo, sample = account.isDemo)
-                        }
+                        plan = removalPlanOf(session, account, savedSignIn)
                         removing = account
                     }
                 },
@@ -122,7 +118,7 @@ fun AccountsScreen(
                     when {
                         left == null -> snackbar.showSnackbar(failed)
                         left == 0 -> onNoAccounts()
-                        else -> reload++
+                        else -> reload++ // (also when the count could not be read: the list reads the core again)
                     }
                 }
             },

@@ -34,9 +34,10 @@
         <item quantity="one">%d folder</item>
         <item quantity="other">%d folders</item>
     </plurals>
-    <string name="accounts_remove_queue">Changes that are waiting to be sent to the server</string>
+    <string name="accounts_remove_queue">Changes and messages that are waiting to be sent (one that is being handed to the server at this moment may still go out)</string>
     <string name="accounts_remove_drafts">Its drafts and its outbox</string>
     <string name="accounts_remove_password">Its saved password</string>
+    <string name="accounts_remove_token">Its saved sign-in</string>
     <string name="accounts_remove_sample_intro">This removes the sample mail from this device. Nothing else is affected.</string>
     <string name="accounts_remove_confirm">Remove</string>
     <string name="accounts_remove_failed">Croft couldn\'t remove the account. Try again.</string>
@@ -68,6 +69,11 @@
     <string name="account_remove">Remove this account</string>
     <string name="account_remove_hint">Deletes it from this device. Your mail on the server stays.</string>
 
+    <!-- Start problem -->
+    <string name="start_problem_title">Croft couldn\'t read your accounts</string>
+    <string name="start_problem_text">Your mail is still on this device. Try again in a moment.</string>
+    <string name="start_problem_retry">Try again</string>
+
     <!-- S60 About and diagnostics -->
     <string name="about_title">About and diagnostics</string>
     <string name="about_version">Version</string>
@@ -87,8 +93,8 @@
     <string name="about_erase_hint">Removes every account, message and setting from this device</string>
     <string name="about_erase_title">Erase all Croft data?</string>
     <string name="about_erase_intro">This deletes the following from this device. Your mail on the servers is not touched.</string>
-    <string name="about_erase_accounts">Every account, with its messages, folders, drafts and queued changes</string>
-    <string name="about_erase_passwords">Every saved password</string>
+    <string name="about_erase_accounts">Every account, with its messages, folders, drafts and queued changes (the whole database)</string>
+    <string name="about_erase_passwords">Every saved password and sign-in</string>
     <string name="about_erase_settings">Your settings, such as the look of the app</string>
     <string name="about_erase_confirm">Erase everything</string>
     <string name="about_erase_failed">Croft couldn\'t erase everything. Try again.</string>

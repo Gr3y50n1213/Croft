@@ -5,6 +5,7 @@
 package com.example.croft.secrets
 
 import com.example.croft.mail.accounts.CoreAccountOps
+import com.example.croft.mail.accounts.SavedSignIn
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.runBlocking
@@ -59,7 +60,9 @@ class AccountRemovalTest {
     private fun ops(core: Core, files: MutableList<String> = mutableListOf()) = CoreAccountOps(
         core,
         removeAccountAndSecrets = { id -> accountSecrets().removeAccount(core, id) },
-        clearSecrets = { store.clear() },
+        savedSignIn = { id -> if (store.has(id, SecretKind.PASSWORD)) SavedSignIn.PASSWORD else SavedSignIn.NONE },
+        closeCore = { core.close() },
+        eraseStorage = { store.clear() },
         clearLocalFiles = { files += "cleared" },
     )
 
@@ -96,11 +99,13 @@ class AccountRemovalTest {
         signIns.mark(a)
         val files = mutableListOf<String>()
         runBlocking { ops(core, files).eraseEverything() }
-        assertTrue(core.listAccounts().isEmpty())
         assertFalse(store.hasAny())
         assertEquals(listOf("cleared"), files)
         assertTrue(signIns.accounts.value.isEmpty())
-        // Starting over works, and ids are not reused.
-        assertTrue(add(core, "carol@example.org") > a)
+        // The core was closed with no account left in it; opened again on the same file it lists none, and ids are not reused.
+        open.remove(core)
+        val again = core()
+        assertTrue(again.listAccounts().isEmpty())
+        assertTrue(add(again, "carol@example.org") > a)
     }
 }

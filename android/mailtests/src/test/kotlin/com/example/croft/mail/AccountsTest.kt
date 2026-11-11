@@ -10,6 +10,7 @@ import com.example.croft.mail.accounts.AccountPrefsJson
 import com.example.croft.mail.accounts.CoreAccountOps
 import com.example.croft.mail.accounts.Diagnostics
 import com.example.croft.mail.accounts.RemovalPlan
+import com.example.croft.mail.accounts.SavedSignIn
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
@@ -41,15 +42,20 @@ class AccountsTest {
     private val core: Core = Core.open(File(dir, "croft.db").path, null, provider)
     private val repo = CoreMessageRepository(core)
 
-    /** What happened, in order: "secret:<id>" when an account's saved password was deleted, "core:<id>" when its rows were. */
+    /** What happened, in order: "core:<id>" when an account's rows were deleted, then "secret:<id>" when its saved password was. */
     private val events = CopyOnWriteArrayList<String>()
     private val secrets = HashSet<Long>()
     private var clearedLocalFiles = false
+    private var storageErased = false
+    private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val ops = CoreAccountOps(
         core,
-        removeAccountAndSecrets = { id -> synchronized(secrets) { secrets.remove(id) }; events += "secret:$id"; core.removeAccount(id); events += "core:$id" },
-        clearSecrets = { synchronized(secrets) { secrets.clear() } },
+        // The owner's order: the core first (it stops the account), then the saved secret.
+        removeAccountAndSecrets = { id -> core.removeAccount(id); events += "core:$id"; synchronized(secrets) { secrets.remove(id) }; events += "secret:$id" },
+        savedSignIn = { id -> if (synchronized(secrets) { id in secrets }) SavedSignIn.PASSWORD else SavedSignIn.NONE },
+        closeCore = { events += "close"; closed.set(true); core.close() },
+        eraseStorage = { events += "erase-storage"; storageErased = true; synchronized(secrets) { secrets.clear() } },
         clearLocalFiles = { clearedLocalFiles = true },
     )
 
@@ -82,7 +88,8 @@ class AccountsTest {
 
     @Test
     fun trySampleMailWorksWithTheNetworkOffAndTheRowsSayTheyAreNotSavedToAServer() {
-        // The airplane-mode flag the app uses: the sample mailbox needs no network at all.
+        // The airplane-mode flag the app uses. That the sample mailbox opens no socket at all is proven in the core, by the `DemoBackend`
+        // tests (a runtime without an I/O driver and a source scan, T17a); this test shows the app's layer works with the flag off.
         core.setNetworkAvailable(false)
         val id = runBlocking { ops.addSample() }
         val account = accounts().single()
@@ -120,14 +127,14 @@ class AccountsTest {
     fun theRemovalConfirmationListsWhatIsDeletedAndRemovingDeletesIt() {
         val sample = runBlocking { ops.addSample() }
         await("the sample Inbox") { inbox(sample).takeIf { it.size >= 10 } }
-        val plan = RemovalPlan.of(accounts().single(), runBlocking { repo.listFolders(sample) })
+        val plan = RemovalPlan.of(accounts().single(), runBlocking { repo.listFolders(sample) }, runBlocking { ops.savedSignIn(sample) })
         assertTrue(plan.sample)
-        assertFalse("the sample mailbox has no saved password", plan.savedPassword)
+        assertEquals("the sample mailbox has no saved sign-in", SavedSignIn.NONE, plan.savedSignIn)
         assertTrue(plan.messages >= 10)
         assertTrue(plan.folders >= 5)
         val real = addReal()
-        val realPlan = RemovalPlan.of(accounts().single { it.id == real }, runBlocking { repo.listFolders(real) })
-        assertTrue("a real account has a saved password to delete", realPlan.savedPassword)
+        val realPlan = RemovalPlan.of(accounts().single { it.id == real }, runBlocking { repo.listFolders(real) }, runBlocking { ops.savedSignIn(real) })
+        assertEquals("a real account has a saved password to delete", SavedSignIn.PASSWORD, realPlan.savedSignIn)
 
         runBlocking { ops.remove(sample) }
         assertEquals(listOf(real), accounts().map { it.id })
@@ -143,10 +150,10 @@ class AccountsTest {
     }
 
     @Test
-    fun theSavedPasswordIsDeletedBeforeTheRowsAndAnIdIsNeverGivenAgain() {
+    fun theCoreLetsTheAccountGoBeforeItsSavedPasswordIsDeletedAndAnIdIsNeverGivenAgain() {
         val first = addReal()
         runBlocking { ops.remove(first) }
-        assertEquals("the secret first, then the core's rows", listOf("secret:$first", "core:$first"), events.toList())
+        assertEquals("the core's rows first (the account stops), then the secret", listOf("core:$first", "secret:$first"), events.toList())
         assertTrue(synchronized(secrets) { first !in secrets })
         assertTrue(accounts().isEmpty())
         val second = addReal("bob@example.org")
@@ -161,12 +168,23 @@ class AccountsTest {
         val sample = runBlocking { ops.addSample() }
         synchronized(secrets) { secrets += 99L } // a stray secret of an account that is gone
         runBlocking { ops.eraseEverything() }
-        assertTrue(accounts().isEmpty())
         assertTrue(synchronized(secrets) { secrets.isEmpty() })
-        assertTrue(clearedLocalFiles)
+        assertTrue(storageErased && clearedLocalFiles)
         assertEquals(listOf(real1, real2, sample).sorted().map { "core:$it" }.toSet(), events.filter { it.startsWith("core:") }.toSet())
-        // The app can start over: a new account gets a new id.
-        assertTrue(addReal("carol@example.org") > maxOf(real1, real2, sample))
+        // Every account first, then the core is closed, then the storage is erased: the order of the steps.
+        val order = events.toList()
+        assertTrue(order.indexOf("close") > order.indexOfLast { it.startsWith("secret:") })
+        assertTrue(order.indexOf("erase-storage") > order.indexOf("close"))
+        // The core was closed with nothing left in it: a core opened on the same database lists no account (and ids go on, they are never reused).
+        assertTrue(closed.get())
+        val again = Core.open(File(dir, "croft.db").path, null, provider)
+        try {
+            assertTrue(again.listAccounts().isEmpty())
+            val next = runBlocking { again.addAccount(deadServer("carol@example.org"), "Carol", null, null, FfiCredential.password("x".toByteArray())).id }
+            assertTrue(next > maxOf(real1, real2, sample))
+        } finally {
+            again.close()
+        }
     }
 
     @Test

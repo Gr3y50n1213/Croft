@@ -5,6 +5,10 @@
 package com.example.croft.mail
 
 import android.content.Context
+import com.example.croft.debug.TestHooks
+import com.example.croft.mail.accounts.AccountPrefsStore
+import com.example.croft.mail.accounts.AccountSweep
+import com.example.croft.mail.accounts.AppFiles
 import com.example.croft.openCore
 import com.example.croft.secrets.AccountSecrets
 import com.example.croft.secrets.AppSecrets
@@ -36,16 +40,15 @@ object MailRuntime {
     @Volatile private var opened: OpenedCore? = null
     @Volatile private var current: MailSession? = null
 
-    /** Tests only: makes the app's secrets in place of the Keystore ones (a simulated device has no usable AndroidKeyStore). Null in the app. */
-    @Volatile internal var secretsFactory: ((Context, File) -> AppSecrets)? = null
-
-    /** Tests only: closes the core and forgets everything, so the next test starts a fresh process-like state. */
-    internal fun resetForTests() {
+    /**
+     * Closes the core and forgets it and the session, so the next call opens a new one (the same database file, a database that was
+     * deleted by "Erase all Croft data", or a restart in a test). Nothing may use the old core afterwards.
+     */
+    fun forgetCore() {
         synchronized(this) {
             try { opened?.core?.close() } catch (e: Exception) { /* already closed */ }
             opened = null
             current = null
-            secretsFactory = null
         }
     }
 
@@ -57,9 +60,29 @@ object MailRuntime {
 
     /** The session of this process: over the core, or the empty stand-in when the core cannot be opened. Call from any thread; it works on the IO dispatcher. */
     suspend fun session(context: Context, settings: MailSettingsStore = MailSettingsStore.shared(context)): MailSession = withContext(Dispatchers.IO) {
-        current ?: synchronized(this@MailRuntime) {
+        val made = current ?: synchronized(this@MailRuntime) {
             current ?: build(context.applicationContext, settings).also { current = it }
         }
+        sweepPrefs(context.applicationContext)
+        made
+    }
+
+    /** Drops the account order, names and colours of accounts the core does not list (see [sweepOrphans]). Only when the core gave its list. */
+    private suspend fun sweepPrefs(context: Context) {
+        try {
+            val known = opened?.core?.listAccounts()?.map { it.id }?.toSet() ?: return
+            AccountPrefsStore.shared(context).update { AccountSweep(known, NoSecrets).prefs(it) }
+        } catch (e: Exception) {
+            // Tried again at the next start.
+        }
+    }
+
+    private object NoSecrets : AccountSweep.Secrets {
+        override fun storedIds() = emptySet<Long>()
+        override fun unfinishedRemovals() = emptySet<Long>()
+        override fun deleteSecrets(id: Long) = Unit
+        override fun finishRemoval(id: Long) = Unit
+        override fun clearMark(id: Long) = Unit
     }
 
     /**
@@ -78,15 +101,19 @@ object MailRuntime {
         return session(context, settings)
     }
 
-    /** Whether the core has any account (the sample mailbox counts). False when the core cannot be opened: the app then starts at S01. */
-    suspend fun hasAccounts(context: Context): Boolean = withContext(Dispatchers.IO) {
-        try { openOnce(context.applicationContext).core.listAccounts().isNotEmpty() } catch (e: Exception) { false } catch (e: UnsatisfiedLinkError) { false }
+    /**
+     * The last step of "Erase all Croft data": the core is forgotten (it was closed and its database deleted), and every file of Croft's in
+     * the no-backup folder goes ([AppFiles.eraseMailFiles]: the database files, the secrets folder, the quarantine, the folder choices, the
+     * list positions). Returns false when a file could not be deleted.
+     */
+    fun afterErase(context: Context): Boolean {
+        forgetCore()
+        return AppFiles.eraseMailFiles(context.applicationContext.noBackupFilesDir).isEmpty()
     }
 
-    /** Deletes the app's own mail state files (folder choices, list positions). Part of "Erase all Croft data". */
-    fun clearLocalFiles(context: Context) {
-        val dir = context.applicationContext.noBackupFilesDir
-        listOf("croft-folders.txt", "croft-list-anchors-core.json", "croft-list-anchors.json").forEach { File(dir, it).delete() }
+    /** How many accounts the core lists (the sample mailbox counts); null when that could not be read (the core is not open, or it failed). */
+    suspend fun accountCount(context: Context): Int? = withContext(Dispatchers.IO) {
+        try { openOnce(context.applicationContext).core.listAccounts().size } catch (e: Exception) { null } catch (e: UnsatisfiedLinkError) { null }
     }
 
     private fun build(context: Context, settings: MailSettingsStore): MailSession {
@@ -108,13 +135,39 @@ object MailRuntime {
         )
     }
 
+    /**
+     * Finishes a removal that a crash cut short ([AccountSweep]): saved secrets and the folder choices of ids the core does not list, and
+     * the removals that were begun and not finished. Only when the core really gave its list. Housekeeping: it never stops the app from
+     * starting. (The prefs are swept by [session], which can wait for the DataStore.)
+     */
+    private fun sweepOrphans(context: Context, open: OpenedCore) {
+        try {
+            val sweep = AccountSweep(open.core.listAccounts().map { it.id }.toSet(), SecretsForSweep(open))
+            sweep.secrets()
+            sweep.folderMapping(FileFolderMapping(File(context.noBackupFilesDir, "croft-folders.txt")))
+        } catch (e: Exception) {
+            // Tried again at the next start.
+        }
+    }
+
+    private class SecretsForSweep(private val open: OpenedCore) : AccountSweep.Secrets {
+        override fun storedIds() = open.secrets.secrets.accountIds()
+        override fun unfinishedRemovals() = open.secrets.secrets.removing()
+        override fun deleteSecrets(id: Long) = open.secrets.secrets.removeAccount(id)
+        override fun finishRemoval(id: Long) = open.accountSecrets.finishRemoval(id)
+        override fun clearMark(id: Long) = open.secrets.secrets.clearRemoving(id)
+    }
+
     @Synchronized
     private fun openOnce(context: Context): OpenedCore {
         opened?.let { return it }
         val dbFile = databaseFile(context)
-        val secrets = secretsFactory?.invoke(context, dbFile) ?: createAppSecrets(context, dbFile)
+        val secrets = TestHooks.secretsFactory?.invoke(context, dbFile) ?: createAppSecrets(context, dbFile)
         val signIn = SignInNeeded()
         val core = openCore(dbFile.path, secrets, SecretStoreCredentials(secrets.secrets, signIn))
-        return OpenedCore(core, secrets, AccountSecrets(secrets.secrets, signIn), signIn).also { opened = it }
+        val accountSecrets = AccountSecrets(secrets.secrets, signIn, purgeQuarantined = secrets::purgeQuarantinedSecrets)
+        val open = OpenedCore(core, secrets, accountSecrets, signIn)
+        sweepOrphans(context, open)
+        return open.also { opened = it }
     }
 }

@@ -211,6 +211,9 @@ class CoreMessageRepository(
         throw e
     } catch (e: MailException) {
         throw e
+    } catch (e: IllegalStateException) {
+        // The core was closed (an erase) while a call was on its way: not a crash.
+        throw MailException(MailError.FAILED)
     } catch (e: CoreException) {
         throw MailException(
             when (e) {

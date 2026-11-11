@@ -500,6 +500,47 @@ class AppSecrets internal constructor(
         }
     }
 
+    /**
+     * "Erase all Croft data on this device", the secrets and the database: deletes the database and its side files (**close the core
+     * first**), every account secret, every removal mark, the wrapped database key, the whole quarantine (every earlier database,
+     * wrapped secrets and wrapped key, `superseded/` too), the key-lost notice and the loss-suspected file, and the wrapping key in the
+     * Keystore. Under the process lock. Afterwards the next [databaseKey] is a first run: nothing is left that a start could restore.
+     * Throws [SecureStorageException] (STORAGE_ERROR) when a file cannot be deleted; what was deleted stays deleted and the call can be repeated.
+     */
+    fun eraseEverything() {
+        assertNotMainThread()
+        withLock {
+            try {
+                // The quarantine first: it holds older copies of everything else, and the next start restores from it when nothing new exists.
+                quarantine.deleteAll()
+                databaseSiblings().forEach { if (it.exists() && !it.delete()) throw IOException("cannot delete the database") }
+                secrets.clear()
+                for (f in listOf(keyFile, File(dir, KEY_LOST_MARKER), File(dir, SUSPICION_FILE))) {
+                    if (f.exists() && !f.delete()) throw IOException("cannot delete a secrets file")
+                }
+            } catch (e: IOException) {
+                throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            }
+            // The wrapping key goes too, so a copy of a wrapped file taken earlier could never be opened again. A Keystore that cannot
+            // delete it now is not a reason to keep the data: the next first run replaces the entry (`WrappingKeySource.create`).
+            try { keys.discard() } catch (e: SecretBoxException) { /* replaced at the next first run */ }
+            keyLoss.acknowledge()
+            quarantineRestore.set(false)
+            offered = null
+            incidentThisStart = null
+            restoreChecked = false
+            startCounted = false
+        }
+    }
+
+    /**
+     * Removes an account's quarantined secret files (its removal asks for it, see `AccountSecrets.removeAccount`), so a later restore of
+     * an earlier database cannot bring its password back. Under the process lock. Never throws for a missing file.
+     */
+    fun purgeQuarantinedSecrets(accountId: Long) {
+        withLock { quarantine.deleteAccountSecrets(accountId) }
+    }
+
     internal fun restoreFromQuarantine() {
         assertNotMainThread()
         withLock {

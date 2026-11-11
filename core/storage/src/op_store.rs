@@ -14,7 +14,13 @@
 //!
 //! `payload_json` is `{"v":1, ...}`. The JSON is written and read here rather than in mail-core, so
 //! mail-core needs no serde. A row with another version, or one that cannot be read, is marked
-//! failed with a plain reason when it is loaded; nothing guesses what it meant.
+//! failed with a plain reason when it is loaded; nothing guesses what it meant. Such a row is kept,
+//! and listed again by every load, until `PersistentQueue::acknowledge_unreadable` deletes it, so a
+//! kill before the person was told cannot lose it.
+//!
+//! Operation ids are never reused: the largest id ever written is kept in the app-wide `setting`
+//! table (key `op_queue.max_id`), updated in the same transaction as the insert, because the table's
+//! own `MAX(id)` shrinks when finished rows are purged or discarded.
 
 use std::borrow::{Borrow, BorrowMut};
 
@@ -25,6 +31,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 
 use crate::error::{Result, StorageError};
+use crate::settings;
 use crate::Db;
 
 /// The payload format version written by this build.
@@ -32,6 +39,10 @@ const PAYLOAD_VERSION: i64 = 1;
 
 /// Shown when a row was written by a newer app.
 const REASON_NEWER: &str = "This change was saved by a newer version of the app and was not sent";
+/// Name of the app-wide setting that holds the largest operation id ever written. It is the one
+/// place this module touches the `setting` table, which has no `account_id`.
+const MAX_ID_KEY: &str = "op_queue.max_id";
+
 /// Shown when a row cannot be understood.
 const REASON_DAMAGED: &str = "This change could not be read and was not sent";
 
@@ -197,11 +208,13 @@ struct Row {
 
 fn load_all(tx: &Transaction<'_>) -> Result<StoredQueue> {
     // Ids are one counter for the whole table, so the largest id is the one global read here.
-    let max_id: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM op_queue", [], |r| {
+    let table_max: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM op_queue", [], |r| {
         r.get(0)
     })?;
+    let table_max =
+        u64::try_from(table_max).map_err(|_| StorageError::OutOfRange("operation id"))?;
     let mut out = StoredQueue {
-        max_id: u64::try_from(max_id).map_err(|_| StorageError::OutOfRange("operation id"))?,
+        max_id: stored_high_water(tx)?.max(table_max),
         ..StoredQueue::default()
     };
 
@@ -210,11 +223,33 @@ fn load_all(tx: &Transaction<'_>) -> Result<StoredQueue> {
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for account in accounts {
-        // Finished rows are history; their effects were applied when they finished.
+        // Finished rows are history; their effects were applied when they finished. Rows that
+        // could not be read stay until the engine has reported them.
         tx.execute(
-            "DELETE FROM op_queue WHERE account_id = ?1 AND state IN ('confirmed', 'failed', 'cancelled')",
-            [account],
+            "DELETE FROM op_queue WHERE account_id = ?1
+                AND state IN ('confirmed', 'failed', 'cancelled')
+                AND COALESCE(last_error, '') NOT IN (?2, ?3)",
+            params![account, REASON_NEWER, REASON_DAMAGED],
         )?;
+        // Rows marked unreadable by an earlier load and not yet acknowledged. Their message rows
+        // were repaired then, so nothing is released again here.
+        let mut stmt = tx.prepare(
+            "SELECT id, last_error FROM op_queue
+              WHERE account_id = ?1 AND state = 'failed' AND last_error IN (?2, ?3) ORDER BY id",
+        )?;
+        let kept = stmt.query_map(params![account, REASON_NEWER, REASON_DAMAGED], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for entry in kept {
+            let (id, reason) = entry?;
+            out.unreadable.push(UnreadableOp {
+                id: u64::try_from(id).map_err(|_| StorageError::OutOfRange("operation id"))?,
+                account,
+                reason,
+            });
+        }
+        drop(stmt);
+
         let rows: Vec<Row> = tx
             .prepare(
                 "SELECT id, kind, payload_json, target_key, state, created_at, not_before, attempts, last_error
@@ -248,7 +283,6 @@ fn load_all(tx: &Transaction<'_>) -> Result<StoredQueue> {
                 }
             }
         }
-
         let mut stmt = tx.prepare(
             "SELECT folder, uid, dest_folder, message_id_hdr, lookups, created_at
                FROM op_awaiting_uid WHERE account_id = ?1 ORDER BY folder, uid",
@@ -296,7 +330,9 @@ fn op_from_row(account: i64, row: &Row) -> std::result::Result<Op, &'static str>
 
 /// Marks a row nobody can read as failed, and cleans up its message row as far as the payload-free
 /// columns allow: the count goes down and a hidden message is shown again. A flag value is not
-/// put back (it is not known); the next sync brings the server's value.
+/// put back (it is not known); the next sync brings the server's value. A row with no usable
+/// `target_key` releases nothing: the message is not known, so it may stay hidden or counted.
+/// This runs once per row: the failed row is kept (see `load_all`) and is not released again.
 fn abandon_unreadable(tx: &Transaction<'_>, account: i64, row: &Row, reason: &str) -> Result<()> {
     tx.execute(
         "UPDATE op_queue SET state = 'failed', last_error = ?3 WHERE account_id = ?1 AND id = ?2",
@@ -328,9 +364,19 @@ fn abandon_unreadable(tx: &Transaction<'_>, account: i64, row: &Row, reason: &st
 
 // ---- commit -----------------------------------------------------------------------------------
 
+/// The largest operation id ever written, from the `setting` table (0 when never written).
+fn stored_high_water(tx: &Transaction<'_>) -> Result<u64> {
+    Ok(settings::get::<u64>(tx, MAX_ID_KEY)?.unwrap_or(0))
+}
+
 fn write_batch(tx: &Transaction<'_>, batch: &Batch) -> Result<()> {
     for op in &batch.ops {
         upsert_op(tx, op)?;
+    }
+    if let Some(newest) = batch.ops.iter().max_by_key(|op| op.id) {
+        if newest.id > stored_high_water(tx)? {
+            settings::set(tx, MAX_ID_KEY, &newest.id, newest.created_ms)?;
+        }
     }
     for (account, id) in &batch.purged {
         tx.execute(
@@ -491,7 +537,8 @@ fn folder_id(conn: &Connection, account: i64, path: &str) -> Result<Option<i64>>
 /// Copies the message at `from` to `to` (a confirmed move). The copy is visible, keeps the flags,
 /// the pending count, the cached body and the attachment list. If the destination already has a
 /// row for that UID (a sync got there first), that row is kept and only takes over the local flag
-/// values and pending count when changes are still waiting.
+/// values and pending count when changes are still waiting; its `local_hidden` is left as it is
+/// (the queue hides the copy with a separate `Hide` when a later move or delete is pending).
 fn copy_message(
     tx: &Transaction<'_>,
     account: i64,
@@ -528,8 +575,7 @@ fn copy_message(
     if let Some(existing) = existing {
         if pending > 0 {
             tx.execute(
-                "UPDATE message SET pending_ops = pending_ops + ?3, is_seen = ?4, is_flagged = ?5,
-                                    local_hidden = 0
+                "UPDATE message SET pending_ops = pending_ops + ?3, is_seen = ?4, is_flagged = ?5
                   WHERE account_id = ?1 AND id = ?2",
                 params![account, existing, pending, seen, flagged],
             )?;

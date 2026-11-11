@@ -769,3 +769,350 @@ fn a_transient_failure_is_stored_with_its_retry_time() {
     assert_eq!(op.attempts, 1);
     assert!(op.last_error.is_some());
 }
+
+// ---- Review findings --------------------------------------------------------------------------
+
+/// Folder counters next to what a count of the visible rows says: (total, unread, visible, visible unread).
+fn counters(q: &Queue, account: i64, path: &str) -> (i64, i64, i64, i64) {
+    db(q)
+        .connection()
+        .query_row(
+            "SELECT f.total_count, f.unread_count,
+                    (SELECT count(*) FROM message m WHERE m.folder_id = f.id AND m.local_hidden = 0),
+                    (SELECT count(*) FROM message m WHERE m.folder_id = f.id AND m.local_hidden = 0 AND m.is_seen = 0)
+               FROM folder f WHERE f.account_id = ?1 AND f.path = ?2",
+            rusqlite::params![account, path],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+}
+
+#[test]
+fn op_ids_are_not_reused_after_two_restarts_that_delete_finished_rows() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let a = add(&mut q, f.a1, seen(1, true), 0);
+    let b = add(&mut q, f.a1, seen(2, true), 0);
+    q.take_due(2_000, 10).unwrap();
+    q.confirm(a).unwrap();
+    q.confirm(b).unwrap();
+    drop(q);
+    drop(open(&f.path)); // first restart deletes the finished rows
+    let mut q = open(&f.path); // second restart finds an empty table
+    assert_eq!(add(&mut q, f.a1, seen(3, true), 5_000), 3);
+}
+
+#[test]
+fn op_ids_are_not_reused_after_a_purge_and_a_restart() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let a = add(&mut q, f.a1, seen(1, true), 0);
+    q.take_due(2_000, 10).unwrap();
+    q.confirm(a).unwrap();
+    q.purge_finished().unwrap();
+    assert_eq!(count(&q, "SELECT count(*) FROM op_queue"), 0);
+    drop(q);
+    let mut q = open(&f.path);
+    let c = add(&mut q, f.a1, seen(3, true), 5_000);
+    assert!(c > a, "id {c} reuses {a}");
+    // The high-water mark is one app-wide setting, written with the batch that inserted the op.
+    let stored: String = db(&q)
+        .connection()
+        .query_row(
+            "SELECT value_json FROM setting WHERE key = 'op_queue.max_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, c.to_string());
+}
+
+#[test]
+fn the_copy_of_a_moved_message_stays_hidden_while_a_later_move_is_pending() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let first = add(&mut q, f.a1, mv(1, "Archive"), 0);
+    q.take_due(WINDOW, 10).unwrap();
+    // While the archive is in flight the person deletes the message.
+    let second = add(&mut q, f.a1, mv(1, "Trash"), WINDOW + 10);
+    q.confirm_moved(first, Some(("Archive".into(), 77)))
+        .unwrap();
+    let copy = row(&q, f.a1, "Archive", 77).unwrap();
+    assert!(copy.local_hidden);
+    assert_eq!(copy.pending_ops, 1);
+    assert!(!listed(&q, f.a1, "Archive").contains(&77));
+    assert_eq!(counters(&q, f.a1, "Archive"), (0, 0, 0, 0));
+    // The second move now runs from Archive/77 and, once confirmed, the copy goes away.
+    assert_eq!(
+        q.queue().get(second).unwrap().kind.target(),
+        ("Archive", 77)
+    );
+    // Cancelling it (Undo) shows the copy.
+    q.cancel(second, WINDOW + 20).unwrap();
+    let copy = row(&q, f.a1, "Archive", 77).unwrap();
+    assert!(!copy.local_hidden);
+    assert_eq!(copy.pending_ops, 0);
+    assert_eq!(listed(&q, f.a1, "Archive"), vec![77]);
+}
+
+#[test]
+fn an_existing_destination_row_stays_hidden_while_a_later_delete_is_pending() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let first = add(&mut q, f.a1, mv(1, "Archive"), 0);
+    q.take_due(WINDOW, 10).unwrap();
+    add(
+        &mut q,
+        f.a1,
+        OpKind::DeleteForever {
+            folder: "INBOX".into(),
+            uid: 1,
+        },
+        WINDOW + 10,
+    );
+    // A sync got to Archive/77 first.
+    let c = db(&q).connection();
+    let archive = folders::upsert(c, f.a1, &folder("Archive")).unwrap();
+    messages::upsert(c, f.a1, archive, &header(77)).unwrap();
+    q.confirm_moved(first, Some(("Archive".into(), 77)))
+        .unwrap();
+    let copy = row(&q, f.a1, "Archive", 77).unwrap();
+    assert!(copy.local_hidden);
+    assert_eq!(copy.pending_ops, 1);
+    assert_eq!(counters(&q, f.a1, "Archive"), (0, 0, 0, 0));
+}
+
+#[test]
+fn a_failed_move_keeps_the_row_hidden_while_a_later_move_is_pending() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let first = add(&mut q, f.a1, mv(1, "Archive"), 0);
+    q.take_due(WINDOW, 10).unwrap();
+    let second = add(&mut q, f.a1, mv(1, "Trash"), WINDOW + 10);
+    q.reject(
+        first,
+        &BackendError::Permanent("refused".into()),
+        WINDOW + 20,
+    )
+    .unwrap();
+    let r = row(&q, f.a1, "INBOX", 1).unwrap();
+    assert!(r.local_hidden);
+    assert_eq!(r.pending_ops, 1);
+    // Once the second one is cancelled nothing else holds the row back.
+    q.cancel(second, WINDOW + 30).unwrap();
+    let r = row(&q, f.a1, "INBOX", 1).unwrap();
+    assert!(!r.local_hidden);
+    assert_eq!(r.pending_ops, 0);
+    assert_eq!(counters(&q, f.a1, "INBOX"), (3, 3, 3, 3));
+}
+
+#[test]
+fn cancelling_one_of_two_moves_keeps_the_row_hidden_for_the_other() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let first = add(&mut q, f.a1, mv(1, "Archive"), 0);
+    let second = add(&mut q, f.a1, mv(1, "Trash"), 10);
+    q.cancel(second, 20).unwrap();
+    let r = row(&q, f.a1, "INBOX", 1).unwrap();
+    assert!(r.local_hidden);
+    assert_eq!(r.pending_ops, 1);
+    q.cancel(first, 30).unwrap();
+    assert!(!row(&q, f.a1, "INBOX", 1).unwrap().local_hidden);
+}
+
+#[test]
+fn repointing_a_message_to_its_own_address_changes_nothing() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    add(&mut q, f.a1, seen(1, true), 0);
+    assert_eq!(
+        q.repoint(f.a1, ("INBOX", 1), ("INBOX".into(), 1)).unwrap(),
+        0
+    );
+    let r = row(&q, f.a1, "INBOX", 1).unwrap();
+    assert!(r.is_seen);
+    assert_eq!(r.pending_ops, 1);
+}
+
+/// A move confirmed without a new UID, then a star behind it; the destination folder's UIDVALIDITY
+/// changed and the engine found the message in it at UID 9.
+fn awaiting_with_a_star() -> (Fixture, Queue, u64, u64) {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let moved = add(&mut q, f.a1, mv(1, "Archive"), 0);
+    let star = add(&mut q, f.a1, starred(1, true), 0);
+    q.take_due(WINDOW, 10).unwrap();
+    q.confirm_moved_with(moved, None, Some("<m1@example.org>".into()), 0)
+        .unwrap();
+    let c = db(&q).connection();
+    let archive = folders::upsert(c, f.a1, &folder("Archive")).unwrap();
+    messages::upsert(c, f.a1, archive, &header(9)).unwrap();
+    (f, q, moved, star)
+}
+
+#[test]
+fn an_awaiting_entry_resolved_after_a_reset_removes_the_old_hidden_row() {
+    let (f, mut q, _, star) = awaiting_with_a_star();
+    assert!(row(&q, f.a1, "INBOX", 1).unwrap().local_hidden);
+    q.repoint_after_reset(f.a1, ("INBOX", 1), ("Archive".into(), 9))
+        .unwrap();
+    assert!(row(&q, f.a1, "INBOX", 1).is_none(), "old row left behind");
+    assert!(q.queue().awaiting_for(f.a1, ("INBOX", 1)).is_none());
+    let new = row(&q, f.a1, "Archive", 9).unwrap();
+    assert!(new.is_flagged);
+    assert_eq!(new.pending_ops, 1);
+    assert!(!new.local_hidden);
+    let due = q.take_due(600_000, 10).unwrap();
+    assert_eq!(due[0].id, star);
+    q.confirm(star).unwrap();
+    assert_eq!(row(&q, f.a1, "Archive", 9).unwrap().pending_ops, 0);
+    assert_eq!(counters(&q, f.a1, "INBOX"), (2, 2, 2, 2));
+}
+
+#[test]
+fn an_awaiting_entry_given_up_after_a_reset_removes_the_old_hidden_row() {
+    let (f, mut q, _, star) = awaiting_with_a_star();
+    let failed = q
+        .abandon_after_reset(
+            f.a1,
+            ("INBOX", 1),
+            "Couldn't find the message after moving it",
+        )
+        .unwrap();
+    assert_eq!(failed, vec![star]);
+    assert!(row(&q, f.a1, "INBOX", 1).is_none(), "old row left behind");
+    assert!(q.queue().awaiting_for(f.a1, ("INBOX", 1)).is_none());
+    // The synced row in Archive was never ours to touch.
+    assert_eq!(row(&q, f.a1, "Archive", 9).unwrap().pending_ops, 0);
+}
+
+#[test]
+fn a_reset_on_a_plain_address_still_leaves_the_old_address_alone() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let star = add(&mut q, f.a1, starred(2, true), 0);
+    let failed = q.abandon_after_reset(f.a1, ("INBOX", 2), "gone").unwrap();
+    assert_eq!(failed, vec![star]);
+    assert!(row(&q, f.a1, "INBOX", 2).is_some());
+}
+
+/// A kind of damage `load` cannot read: a future version on a move, and unparsable text on a star.
+fn damage_two_rows(f: &Fixture) -> (u64, u64) {
+    let mut q = open(&f.path);
+    let future = add(&mut q, f.a1, mv(2, "Archive"), 0);
+    let junk = add(&mut q, f.a1, seen(3, true), 0);
+    let c = db(&q).connection();
+    c.execute(
+        "UPDATE op_queue SET payload_json = ?2 WHERE id = ?1",
+        rusqlite::params![
+            future as i64,
+            json!({"v": 2, "folder": "INBOX", "uid": 2, "dest": "Archive"}).to_string()
+        ],
+    )
+    .unwrap();
+    c.execute(
+        "UPDATE op_queue SET payload_json = 'not json' WHERE id = ?1",
+        [junk as i64],
+    )
+    .unwrap();
+    (future, junk)
+}
+
+#[test]
+fn unreadable_rows_are_listed_on_every_load_until_they_are_acknowledged() {
+    let f = fixture();
+    let (future, junk) = damage_two_rows(&f);
+
+    let q = open(&f.path);
+    assert_eq!(q.unreadable().len(), 2);
+    // The person's view was repaired once, at that first load.
+    assert!(!row(&q, f.a1, "INBOX", 2).unwrap().local_hidden);
+    assert_eq!(row(&q, f.a1, "INBOX", 2).unwrap().pending_ops, 0);
+    assert_eq!(row(&q, f.a1, "INBOX", 3).unwrap().pending_ops, 0);
+    drop(q); // killed before the engine reported them
+
+    for _ in 0..2 {
+        let q = open(&f.path);
+        let mut ids: Vec<u64> = q.unreadable().iter().map(|u| u.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![future, junk]);
+        assert!(q
+            .unreadable()
+            .iter()
+            .all(|u| u.account == f.a1 && !u.reason.is_empty()));
+        assert_eq!(count(&q, "SELECT count(*) FROM op_queue"), 2);
+        // Counts are released once only, not again at each load.
+        assert_eq!(row(&q, f.a1, "INBOX", 3).unwrap().pending_ops, 0);
+        assert!(all_ops(&q).is_empty());
+    }
+
+    let mut q = open(&f.path);
+    q.acknowledge_unreadable(&[future]).unwrap();
+    assert_eq!(q.unreadable().len(), 1);
+    assert_eq!(count(&q, "SELECT count(*) FROM op_queue"), 1);
+    drop(q);
+
+    let mut q = open(&f.path);
+    assert_eq!(
+        q.unreadable().iter().map(|u| u.id).collect::<Vec<_>>(),
+        vec![junk]
+    );
+    q.acknowledge_unreadable(&[junk, junk, 9_999]).unwrap();
+    assert!(q.unreadable().is_empty());
+    assert_eq!(count(&q, "SELECT count(*) FROM op_queue"), 0);
+    drop(q);
+
+    let q = open(&f.path);
+    assert!(q.unreadable().is_empty());
+}
+
+#[test]
+fn an_acknowledged_unreadable_row_still_counts_for_the_id_high_water_mark() {
+    let f = fixture();
+    let (_, junk) = damage_two_rows(&f);
+    let mut q = open(&f.path);
+    q.acknowledge_unreadable(&[junk]).unwrap();
+    drop(q);
+    let mut q = open(&f.path);
+    let id = add(&mut q, f.a1, seen(1, true), 0);
+    assert!(id > junk);
+}
+
+#[test]
+fn a_damaged_row_with_no_target_key_is_kept_and_reported_but_releases_nothing() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let id = add(&mut q, f.a1, mv(1, "Archive"), 0);
+    db(&q)
+        .connection()
+        .execute(
+            "UPDATE op_queue SET payload_json = 'x', target_key = NULL WHERE id = ?1",
+            [id as i64],
+        )
+        .unwrap();
+    drop(q);
+    let q = open(&f.path);
+    assert_eq!(q.unreadable().len(), 1);
+    // We cannot know which message it was about, so its row stays as it was.
+    let r = row(&q, f.a1, "INBOX", 1).unwrap();
+    assert!(r.local_hidden);
+    assert_eq!(r.pending_ops, 1);
+    drop(q);
+    let q = open(&f.path);
+    assert_eq!(q.unreadable().len(), 1);
+}
+
+#[test]
+fn finished_rows_that_were_readable_are_still_deleted_on_load() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let a = add(&mut q, f.a1, seen(1, true), 0);
+    q.take_due(2_000, 10).unwrap();
+    q.reject(a, &BackendError::Permanent("no".into()), 2_000)
+        .unwrap();
+    assert_eq!(count(&q, "SELECT count(*) FROM op_queue"), 1);
+    drop(q);
+    let q = open(&f.path);
+    assert_eq!(count(&q, "SELECT count(*) FROM op_queue"), 0);
+    assert!(q.unreadable().is_empty());
+}

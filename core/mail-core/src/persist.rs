@@ -155,9 +155,12 @@ pub struct StoredQueue {
     pub ops: Vec<Op>,
     /// Messages that are waiting for their new UID.
     pub awaiting: Vec<AwaitingUid>,
-    /// The largest id the store has ever held, including rows that are gone. New ids start above.
+    /// The largest id the store has ever held, including rows that are gone (a store must keep a
+    /// high-water mark, because the largest id still present can shrink). New ids start above.
     pub max_id: OpId,
-    /// Rows that could not be read; the store has already marked them failed.
+    /// Rows that could not be read. The store has marked them failed and repaired the person's
+    /// view once, and keeps the rows, so every load lists them again until
+    /// [`PersistentQueue::acknowledge_unreadable`] deletes them.
     pub unreadable: Vec<UnreadableOp>,
 }
 
@@ -166,7 +169,8 @@ pub trait OpStore {
     /// The store's error. It must not contain message content or full addresses.
     type Error: std::error::Error;
 
-    /// Returns the unfinished work. Finished rows are history and are discarded.
+    /// Returns the unfinished work. Finished rows are history and are discarded, except rows that
+    /// could not be read and have not been acknowledged yet.
     fn load(&mut self) -> Result<StoredQueue, Self::Error>;
 
     /// Writes the batch: queue rows first, then the effects, all or nothing.
@@ -251,10 +255,35 @@ impl<S: OpStore> PersistentQueue<S> {
         self.store
     }
 
-    /// Stored operations that could not be read at start and were marked failed. The engine tells
-    /// the person once.
+    /// Stored operations that could not be read and were marked failed. They are listed at every
+    /// start until the engine has told the person and called
+    /// [`PersistentQueue::acknowledge_unreadable`].
     pub fn unreadable(&self) -> &[UnreadableOp] {
         &self.unreadable
+    }
+
+    /// The engine has reported the unreadable rows with these ids to the person: delete them from
+    /// the store in one batch. Until then every [`PersistentQueue::open`] lists them again. Ids
+    /// that are not in [`PersistentQueue::unreadable`] are ignored. If the store fails, nothing
+    /// changes and the rows are listed again.
+    pub fn acknowledge_unreadable(&mut self, ids: &[OpId]) -> Result<(), S::Error> {
+        let purged: Vec<(AccountId, OpId)> = self
+            .unreadable
+            .iter()
+            .filter(|u| ids.contains(&u.id))
+            .map(|u| (u.account, u.id))
+            .collect();
+        if purged.is_empty() {
+            return Ok(());
+        }
+        let batch = Batch {
+            purged,
+            ..Batch::default()
+        };
+        self.store.commit(&batch)?;
+        self.unreadable
+            .retain(|u| !batch.purged.contains(&(u.account, u.id)));
+        Ok(())
     }
 
     /// Runs `change` on the queue, then commits the rows and effects it caused plus whatever
@@ -376,7 +405,7 @@ impl<S: OpStore> PersistentQueue<S> {
                 match (old, to, confirmed) {
                     (Some(old), Some(to), true) => {
                         let (folder, uid) = old.kind.target();
-                        move_away(old.account, (folder, uid), to)
+                        move_away(after, old.account, (folder, uid), to)
                     }
                     _ => Vec::new(),
                 }
@@ -392,13 +421,18 @@ impl<S: OpStore> PersistentQueue<S> {
         from: (&str, Uid),
         to: (String, Uid),
     ) -> Result<usize, S::Error> {
+        if from.0 == to.0 && from.1 == to.1 {
+            // Nothing moved. Copying a row onto itself and then removing the "old" row would
+            // delete the message.
+            return Ok(0);
+        }
         let target = to.clone();
         self.run(
             Finish::Restore,
             |q| q.repoint(account, from, to),
-            |before, _, changed| {
+            |before, after, changed| {
                 if *changed > 0 || before.awaiting_for(account, from).is_some() {
-                    move_away(account, from, target)
+                    move_away(after, account, from, target)
                 } else {
                     Vec::new()
                 }
@@ -409,6 +443,11 @@ impl<S: OpStore> PersistentQueue<S> {
     /// Like [`PersistentQueue::repoint`], for a folder whose UIDVALIDITY changed: the old rows
     /// are gone and the folder was synced again, so there is nothing to copy. The row at `to` gets
     /// the pending count and the person's local flag values (or hidden state) back instead.
+    ///
+    /// When `from` has an awaiting-UID entry (a confirmed move whose new UID was never learned),
+    /// the old address is in the move's source folder, which was **not** reset: its hidden row is
+    /// still there, so it is removed here (its pending count goes with it, and the new row gets
+    /// its own count). The entry itself is resolved.
     pub fn repoint_after_reset(
         &mut self,
         account: AccountId,
@@ -421,6 +460,8 @@ impl<S: OpStore> PersistentQueue<S> {
             |q| q.repoint(account, from, to),
             |before, after, _| {
                 let mut effects = Vec::new();
+                let same = from.0 == target.0 && from.1 == target.1;
+                let leftover = before.awaiting_for(account, from).is_some() && !same;
                 for op in after.iter() {
                     let was_here = before
                         .get(op.id)
@@ -432,6 +473,9 @@ impl<S: OpStore> PersistentQueue<S> {
                             (&target.0, target.1),
                         ));
                     }
+                }
+                if leftover {
+                    effects.push(remove_row(account, from));
                 }
                 effects
             },
@@ -465,6 +509,10 @@ impl<S: OpStore> PersistentQueue<S> {
 
     /// Like [`PersistentQueue::abandon`], for a folder whose UIDVALIDITY changed. The old address
     /// may now belong to a different message, so the local rows are left alone.
+    ///
+    /// The one exception is an address with an awaiting-UID entry: that is the source folder of a
+    /// confirmed move, which was not reset, so its hidden row is removed (with its pending count)
+    /// as [`PersistentQueue::abandon`] does.
     pub fn abandon_after_reset(
         &mut self,
         account: AccountId,
@@ -474,7 +522,13 @@ impl<S: OpStore> PersistentQueue<S> {
         self.run(
             Finish::Nothing,
             |q| q.abandon(account, from, reason),
-            |_, _, _| Vec::new(),
+            |before, _, _| {
+                if before.awaiting_for(account, from).is_some() {
+                    vec![remove_row(account, from)]
+                } else {
+                    Vec::new()
+                }
+            },
         )
     }
 
@@ -523,20 +577,53 @@ impl<S: OpStore> PersistentQueue<S> {
     }
 }
 
-/// Copy a confirmed move's row to its new address, then remove the old one.
-fn move_away(account: AccountId, from: (&str, Uid), to: (String, Uid)) -> Vec<LocalEffect> {
-    vec![
+/// Remove the row at `at`.
+fn remove_row(account: AccountId, at: (&str, Uid)) -> LocalEffect {
+    LocalEffect::RemoveMessage {
+        account,
+        folder: at.0.to_owned(),
+        uid: at.1,
+    }
+}
+
+/// True when an unfinished move or delete-forever (in `queue`) acts on the message at `at`, so the
+/// row has to stay hidden.
+fn hidden_by_pending(queue: &OpQueue, account: AccountId, at: (&str, Uid)) -> bool {
+    queue.iter().any(|o| {
+        o.account == account
+            && !o.state.is_finished()
+            && matches!(o.kind, OpKind::MoveTo { .. } | OpKind::DeleteForever { .. })
+            && o.kind.target() == at
+    })
+}
+
+/// Copy a confirmed move's row to its new address, then remove the old one. The copy is shown,
+/// unless a later move or delete that was re-pointed at it (see `after`) is still waiting: then it
+/// is hidden straight away.
+fn move_away(
+    after: &OpQueue,
+    account: AccountId,
+    from: (&str, Uid),
+    to: (String, Uid),
+) -> Vec<LocalEffect> {
+    let hide = hidden_by_pending(after, account, (&to.0, to.1));
+    let hidden_at = (to.0.clone(), to.1);
+    let mut effects = vec![
         LocalEffect::CopyMessage {
             account,
             from: (from.0.to_owned(), from.1),
             to,
         },
-        LocalEffect::RemoveMessage {
+        remove_row(account, from),
+    ];
+    if hide {
+        effects.push(LocalEffect::Hide {
             account,
-            folder: from.0.to_owned(),
-            uid: from.1,
-        },
-    ]
+            folder: hidden_at.0,
+            uid: hidden_at.1,
+        });
+    }
+    effects
 }
 
 /// The local change that goes with a new operation at `at`: the new value (or hiding), and +1.
@@ -587,7 +674,7 @@ fn finished_effects(old: &Op, new: &Op, after: &OpQueue, finish: Finish) -> Vec<
     }];
     match new.state {
         OpState::Failed | OpState::Cancelled if finish == Finish::Restore => {
-            effects.push(restore_effect(old, after));
+            effects.extend(restore_effect(old, after));
         }
         OpState::Confirmed => {
             if matches!(old.kind, OpKind::DeleteForever { .. }) {
@@ -605,8 +692,9 @@ fn finished_effects(old: &Op, new: &Op, after: &OpQueue, finish: Finish) -> Vec<
 
 /// What to put back when `old` was cancelled or failed. A flag goes back to the value of the
 /// latest operation on the same flag that is still waiting, or else to the opposite of what `old`
-/// set. A move or delete shows its row again.
-fn restore_effect(old: &Op, after: &OpQueue) -> LocalEffect {
+/// set. A move or delete shows its row again, unless another unfinished move or delete on the same
+/// message is still waiting (then there is nothing to do).
+fn restore_effect(old: &Op, after: &OpQueue) -> Option<LocalEffect> {
     let (folder, uid) = old.kind.target();
     let (folder, account) = (folder.to_owned(), old.account);
     let still_waiting = |want_seen: bool| {
@@ -625,7 +713,7 @@ fn restore_effect(old: &Op, after: &OpQueue) -> LocalEffect {
             })
             .last()
     };
-    match &old.kind {
+    Some(match &old.kind {
         OpKind::SetSeen { value, .. } => LocalEffect::SetSeen {
             account,
             uid,
@@ -638,12 +726,17 @@ fn restore_effect(old: &Op, after: &OpQueue) -> LocalEffect {
             value: still_waiting(false).unwrap_or(!*value),
             folder,
         },
-        OpKind::MoveTo { .. } | OpKind::DeleteForever { .. } => LocalEffect::Unhide {
-            account,
-            folder,
-            uid,
-        },
-    }
+        OpKind::MoveTo { .. } | OpKind::DeleteForever { .. } => {
+            if hidden_by_pending(after, account, (&folder, uid)) {
+                return None;
+            }
+            LocalEffect::Unhide {
+                account,
+                folder,
+                uid,
+            }
+        }
+    })
 }
 
 /// Works out what changed between two states of the queue.

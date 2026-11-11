@@ -4,24 +4,38 @@
 
 //! Phase two: sign in with the settings that were found.
 //!
-//! [`verify`] connects with the IMAP adapter, signs in, reads the server's capabilities and signs
-//! out. The password is sent only inside the TLS connection the adapter sets up (discovery never
-//! produces an unencrypted choice), and only to the host named in the settings.
+//! [`verify`] first checks the server's certificate, then connects with the IMAP adapter, signs in,
+//! reads the server's capabilities and signs out. The password is sent only inside the TLS
+//! connection the adapter sets up (discovery never produces an unencrypted choice), only to the
+//! host named in the settings, and only after the certificate check passed.
 //!
-//! The certificate story, which the sign-in screen (S04) follows:
+//! # The certificate check comes first
 //!
-//! 1. `verify` with no pin. A server with a certificate that does not chain to a trusted root
-//!    (self-signed, expired, wrong name) fails with [`VerifyError::UntrustedCertificate`], which
-//!    carries the certificate's SHA-256 fingerprint. Nothing secret was sent: the connection was
-//!    refused during the TLS handshake.
-//! 2. The screen shows the fingerprint and asks once whether to trust it.
+//! [`check_certificate`] runs a TLS handshake with full validation and no credentials, and
+//! returns a typed reason when the certificate is refused. Discovery never guesses a certificate
+//! problem from the class or the text of a sign-in error: the adapter maps certificate failures to
+//! `Auth` (so a queue pauses instead of failing), which is the same class as a wrong password.
+//!
+//! The story the sign-in screen (S04) follows:
+//!
+//! 1. `verify` with no pin. A server whose certificate does not chain to a trusted root
+//!    (self-signed, or a private authority) fails with [`VerifyError::UntrustedCertificate`],
+//!    which carries the certificate's SHA-256 fingerprint. Nothing secret was sent.
+//! 2. The screen shows the fingerprint and asks once whether to trust it. This is offered **only**
+//!    when the settings do not come from the provider table: a certificate problem on Gmail,
+//!    Outlook, iCloud or Fastmail is [`VerifyError::ConnectionIntercepted`], which cannot be
+//!    trusted.
 //! 3. On yes, call `verify` again with [`VerifyOptions::pinned_cert`] set to that fingerprint,
 //!    and store it with the account (the returned [`Verified::imap`] already carries it). If the
-//!    certificate later changes, the pinned connection fails with
-//!    [`VerifyError::CertificateChanged`].
+//!    certificate later changes, the check fails with [`VerifyError::CertificateChanged`].
+//! 4. An expired certificate, one made for another name, or any other certificate fault is
+//!    [`VerifyError::CertificateInvalid`]: there is nothing for the person to trust, so none is
+//!    offered.
 
 use super::{DiscoveredSettings, Provider};
-use crate::imap::{probe_certificate, CertFingerprint, Credential, ImapBackend, ImapConfig};
+use crate::imap::{
+    check_certificate, CertFingerprint, CertificateProblem, Credential, ImapBackend, ImapConfig,
+};
 use crate::types::{BackendError, Capabilities};
 use std::time::Duration;
 
@@ -62,8 +76,9 @@ pub enum VerifyError {
     /// passwords from apps (Gmail, Outlook, iCloud, Fastmail). The message explains that
     /// provider's way in.
     NeedsAppPasswordOrOAuth(Provider),
-    /// The server's certificate is not trusted (self-signed, expired or for another name). The
-    /// fingerprint is what the screen shows; see the module documentation.
+    /// The server's certificate does not chain to a trusted authority (self-signed, or made by a
+    /// private authority) and the settings are not a well-known provider's. The fingerprint is
+    /// what the screen shows next to the offer to trust it once; see the module documentation.
     UntrustedCertificate {
         /// SHA-256 of the server's certificate.
         fingerprint: CertFingerprint,
@@ -73,6 +88,14 @@ pub enum VerifyError {
         /// SHA-256 of the certificate the server presented now.
         fingerprint: CertFingerprint,
     },
+    /// A well-known provider's server (Gmail, Outlook, iCloud, Fastmail) presented a certificate
+    /// that cannot be verified. Real providers always have valid certificates, so the connection
+    /// is being intercepted (a hostile or captive network) or something is misconfigured. This
+    /// can never be trusted, and the password was not sent.
+    ConnectionIntercepted,
+    /// The certificate is expired, made for another server name, not valid yet or faulty in
+    /// another way. Nothing to trust: the server's owner has to fix it. The password was not sent.
+    CertificateInvalid,
     /// The server could not be reached, or did not answer in time.
     CannotConnect,
     /// The server does not offer encryption Croft accepts (TLS 1.2 or newer, or STARTTLS).
@@ -106,10 +129,16 @@ impl VerifyError {
                 "Fastmail did not accept that sign-in. Fastmail needs an app password, not your account password. Create one in your Fastmail settings and use it here."
             }
             Self::UntrustedCertificate { .. } => {
-                "This server's security certificate cannot be checked automatically. It may be self-signed, which is common on servers people run themselves. Compare the fingerprint with the one your server shows, and trust it only if they match."
+                "This server's security certificate was not issued by an authority Croft knows. It may be self-signed. That is expected only if you, or your organisation, set up this server with its own certificate. If you did not, do not trust it: someone may be intercepting the connection. If you did, compare the fingerprint with the one your server shows, and trust it only if they match. Your password has not been sent."
             }
             Self::CertificateChanged { .. } => {
                 "This server's security certificate is not the one you trusted before. It may have been renewed, or someone may be intercepting the connection. Check with the server's owner before trusting the new one."
+            }
+            Self::ConnectionIntercepted => {
+                "Croft could not confirm that it is talking to your email provider. The connection is being intercepted, or the provider's server is misconfigured. Your password was not sent. Try another network, and do not trust this connection."
+            }
+            Self::CertificateInvalid => {
+                "This server's security certificate is not valid: it may have expired, be made for a different server name, or your device's clock may be wrong. Croft will not connect, and your password was not sent. Check the server address and the date on your device, or ask the server's owner."
             }
             Self::CannotConnect => {
                 "Croft could not connect to the server. Check your internet connection and the server address, then try again."
@@ -138,10 +167,11 @@ impl std::fmt::Display for VerifyError {
 
 impl std::error::Error for VerifyError {}
 
-/// Signs in with the IMAP settings in `settings` and the given credential. See the module
-/// documentation for the certificate flow.
+/// Checks the certificate, then signs in with the IMAP settings in `settings` and the given
+/// credential. See the module documentation for the certificate flow.
 ///
-/// No email address, password or server text appears in the error.
+/// The credential is not used until the certificate check has passed. No email address, password
+/// or server text appears in the error.
 pub async fn verify(
     settings: &DiscoveredSettings,
     credential: Credential,
@@ -156,6 +186,12 @@ pub async fn verify(
     }
     let backend =
         ImapBackend::new(config.clone(), credential).map_err(|_| VerifyError::BadSettings)?;
+
+    if let Err(problem) = check_certificate(&config).await {
+        backend.close().await;
+        return Err(explain_certificate(problem, settings, &config));
+    }
+
     use crate::backend::MailBackend;
     let result = backend.capabilities().await;
     backend.close().await;
@@ -164,27 +200,46 @@ pub async fn verify(
             imap: config,
             capabilities,
         }),
-        Err(BackendError::Auth(_)) => Err(match settings.provider {
-            Some(provider) => VerifyError::NeedsAppPasswordOrOAuth(provider),
-            None => VerifyError::WrongPassword,
-        }),
+        Err(BackendError::Auth(_)) => {
+            // The certificate passed a moment ago, so this is normally a refused sign-in. A
+            // certificate that changed in between is also `Auth` in the adapter, so look again
+            // (no credential is sent) rather than call it a wrong password.
+            if let Err(problem) = check_certificate(&config).await {
+                return Err(explain_certificate(problem, settings, &config));
+            }
+            Err(match settings.provider {
+                Some(provider) => VerifyError::NeedsAppPasswordOrOAuth(provider),
+                None => VerifyError::WrongPassword,
+            })
+        }
         Err(BackendError::Transient(_)) => Err(VerifyError::CannotConnect),
-        Err(BackendError::Permanent(_)) => Err(explain_permanent(&config).await),
+        Err(BackendError::Permanent(_)) => Err(VerifyError::ServerProblem),
     }
 }
 
-/// A permanent failure before sign-in is a problem with the secure connection. Ask what the
-/// server's certificate is (the probe sends no command and no credential): if the handshake
-/// completes when nothing is trusted, the certificate is the problem and its fingerprint is the
-/// answer; if it does not, the server offers no acceptable encryption.
-async fn explain_permanent(config: &ImapConfig) -> VerifyError {
-    match probe_certificate(config).await {
-        Ok(fingerprint) if config.pinned_cert.is_some() => {
+/// Turns a typed certificate problem into what the person is told, and whether trusting is
+/// offered: only for an unknown issuer, and never for a provider-table domain.
+fn explain_certificate(
+    problem: CertificateProblem,
+    settings: &DiscoveredSettings,
+    config: &ImapConfig,
+) -> VerifyError {
+    match problem {
+        CertificateProblem::CannotConnect => VerifyError::CannotConnect,
+        CertificateProblem::NoSecureConnection => VerifyError::NoSecureConnection,
+        _ if settings.provider.is_some() => VerifyError::ConnectionIntercepted,
+        CertificateProblem::UnknownIssuer { fingerprint } => {
+            VerifyError::UntrustedCertificate { fingerprint }
+        }
+        CertificateProblem::PinMismatch { fingerprint }
+            if config.pinned_cert != Some(fingerprint) =>
+        {
             VerifyError::CertificateChanged { fingerprint }
         }
-        Ok(fingerprint) => VerifyError::UntrustedCertificate { fingerprint },
-        Err(BackendError::Transient(_)) => VerifyError::CannotConnect,
-        Err(_) => VerifyError::NoSecureConnection,
+        CertificateProblem::PinMismatch { .. }
+        | CertificateProblem::Expired
+        | CertificateProblem::WrongName
+        | CertificateProblem::Other => VerifyError::CertificateInvalid,
     }
 }
 
@@ -203,6 +258,8 @@ mod tests {
             VerifyError::NeedsAppPasswordOrOAuth(Provider::Fastmail),
             VerifyError::UntrustedCertificate { fingerprint: fp },
             VerifyError::CertificateChanged { fingerprint: fp },
+            VerifyError::ConnectionIntercepted,
+            VerifyError::CertificateInvalid,
             VerifyError::CannotConnect,
             VerifyError::NoSecureConnection,
             VerifyError::ServerProblem,
@@ -216,5 +273,67 @@ mod tests {
             assert!(!m.contains("07:07") && !m.contains('{') && !m.contains('@'));
             assert_eq!(e.to_string(), m);
         }
+    }
+
+    fn found(provider: Option<Provider>) -> DiscoveredSettings {
+        DiscoveredSettings {
+            imap: None,
+            smtp: None,
+            jmap: None,
+            source: super::super::Source::Srv,
+            provider,
+            auth_hint: super::super::AuthHint::Password,
+        }
+    }
+
+    #[test]
+    fn certificate_problems_map_to_one_error_each_and_trust_is_never_offered_to_providers() {
+        use CertificateProblem as P;
+        let fp = CertFingerprint::from_bytes([1; 32]);
+        let pin = CertFingerprint::from_bytes([2; 32]);
+        let plain = ImapConfig::tls("mail.example.org", "u");
+        let pinned = plain.clone().with_pinned_cert(pin);
+        let own = found(None);
+        let table = found(Some(Provider::Fastmail));
+        let ex = |p, s: &DiscoveredSettings, c: &ImapConfig| explain_certificate(p, s, c);
+
+        assert_eq!(
+            ex(P::UnknownIssuer { fingerprint: fp }, &own, &plain),
+            VerifyError::UntrustedCertificate { fingerprint: fp }
+        );
+        assert_eq!(
+            ex(P::PinMismatch { fingerprint: fp }, &own, &pinned),
+            VerifyError::CertificateChanged { fingerprint: fp }
+        );
+        // "Changed" only when the fingerprint really differs from the pin.
+        assert_eq!(
+            ex(P::PinMismatch { fingerprint: pin }, &own, &pinned),
+            VerifyError::CertificateInvalid
+        );
+        for p in [P::Expired, P::WrongName, P::Other] {
+            assert_eq!(ex(p, &own, &plain), VerifyError::CertificateInvalid);
+        }
+        assert_eq!(
+            ex(P::CannotConnect, &own, &plain),
+            VerifyError::CannotConnect
+        );
+        assert_eq!(
+            ex(P::NoSecureConnection, &own, &plain),
+            VerifyError::NoSecureConnection
+        );
+        for p in [
+            P::UnknownIssuer { fingerprint: fp },
+            P::Expired,
+            P::WrongName,
+            P::PinMismatch { fingerprint: fp },
+            P::Other,
+        ] {
+            assert_eq!(ex(p, &table, &pinned), VerifyError::ConnectionIntercepted);
+        }
+        // A provider that cannot be reached is still just unreachable.
+        assert_eq!(
+            ex(P::CannotConnect, &table, &plain),
+            VerifyError::CannotConnect
+        );
     }
 }

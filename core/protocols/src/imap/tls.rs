@@ -12,6 +12,10 @@
 //!
 //! Nothing here can turn verification off for a real connection. [`Trust::Capture`] exists only
 //! for [`probe_certificate`](super::probe_certificate), which never sends any data.
+//! [`Trust::Observe`] judges exactly like `Roots` (or `Pinned` when a pin is given) and in
+//! addition records the leaf fingerprint and the typed reason when the certificate is refused,
+//! for [`check_certificate`](super::check_certificate). Both are decided inside the one
+//! handshake, so the fingerprint reported is the certificate that was actually judged.
 
 use super::config::CertFingerprint;
 use crate::types::BackendError;
@@ -20,6 +24,7 @@ use tokio::sync::OnceCell;
 use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
+use tokio_rustls::rustls::client::WebPkiServerVerifier;
 use tokio_rustls::rustls::crypto::{
     ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider, WebPkiSupportedAlgorithms,
 };
@@ -39,6 +44,104 @@ pub(crate) enum Trust {
     /// Record the leaf fingerprint without trusting it. Only for the certificate probe, which
     /// closes the connection without sending anything.
     Capture(Arc<Mutex<Option<CertFingerprint>>>),
+    /// Judge like `Roots` (or like `Pinned` when `pin` is set) and record what was seen.
+    Observe {
+        /// The pinned fingerprint, if the account has one.
+        pin: Option<CertFingerprint>,
+        /// Where the verdict is recorded.
+        slot: Observation,
+    },
+}
+
+/// What the handshake saw, recorded by [`Trust::Observe`].
+#[derive(Debug, Default)]
+pub(crate) struct Observed {
+    /// SHA-256 of the leaf certificate the server presented.
+    pub fingerprint: Option<CertFingerprint>,
+    /// Why the certificate was refused, when it was.
+    pub error: Option<TlsError>,
+}
+
+/// Shared slot for [`Observed`].
+pub(crate) type Observation = Arc<Mutex<Observed>>;
+
+/// Verifier for [`Trust::Observe`]: the same decision as the normal verifiers, plus a record.
+#[derive(Debug)]
+struct ObservingVerifier {
+    pin: Option<CertFingerprint>,
+    inner: Arc<dyn ServerCertVerifier>,
+    slot: Observation,
+}
+
+impl ObservingVerifier {
+    fn record(&self, fingerprint: CertFingerprint, error: Option<&TlsError>) {
+        if let Ok(mut guard) = self.slot.lock() {
+            guard.fingerprint = Some(fingerprint);
+            guard.error = error.cloned();
+        }
+    }
+}
+
+impl ServerCertVerifier for ObservingVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, TlsError> {
+        let seen = CertFingerprint::of_der(end_entity.as_ref());
+        let verdict = match self.pin {
+            Some(pin) if pin == seen => Ok(ServerCertVerified::assertion()),
+            Some(_) => Err(pin_mismatch()),
+            None => self.inner.verify_server_cert(
+                end_entity,
+                intermediates,
+                server_name,
+                ocsp_response,
+                now,
+            ),
+        };
+        self.record(seen, verdict.as_ref().err());
+        verdict
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
+/// The error a failed pin produces.
+fn pin_mismatch() -> TlsError {
+    TlsError::InvalidCertificate(CertificateError::Other(OtherError(Arc::new(PinMismatch))))
+}
+
+/// Whether `e` is the error a failed pin produces.
+pub(crate) fn is_pin_mismatch(e: &TlsError) -> bool {
+    matches!(
+        e,
+        TlsError::InvalidCertificate(CertificateError::Other(OtherError(inner)))
+            if inner.downcast_ref::<PinMismatch>().is_some()
+    )
 }
 
 /// The pin did not match.
@@ -79,9 +182,7 @@ impl ServerCertVerifier for PinVerifier {
                 }
                 Ok(ServerCertVerified::assertion())
             }
-            _ => Err(TlsError::InvalidCertificate(CertificateError::Other(
-                OtherError(Arc::new(PinMismatch)),
-            ))),
+            _ => Err(pin_mismatch()),
         }
     }
 
@@ -146,6 +247,20 @@ pub(crate) async fn client_config(trust: &Trust) -> Result<Arc<ClientConfig>, Ba
         Trust::Roots => builder
             .with_root_certificates(roots().await)
             .with_no_client_auth(),
+        Trust::Observe { pin, slot } => {
+            let inner =
+                WebPkiServerVerifier::builder_with_provider(roots().await, provider.clone())
+                    .build()
+                    .map_err(|_| BackendError::Permanent("TLS could not be configured".into()))?;
+            builder
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(ObservingVerifier {
+                    pin: *pin,
+                    inner,
+                    slot: slot.clone(),
+                }))
+                .with_no_client_auth()
+        }
         Trust::Pinned(_) | Trust::Capture(_) => builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(PinVerifier {

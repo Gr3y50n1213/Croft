@@ -465,6 +465,7 @@ dependencies = [
  "async-imap",
  "base64",
  "chrono",
+ "croft-protocols",
  "croft-test-support",
  "encoding_rs",
  "futures-util",

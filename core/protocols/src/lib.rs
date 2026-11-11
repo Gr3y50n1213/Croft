@@ -16,5 +16,8 @@ pub mod imap;
 pub mod types;
 
 pub use backend::{BackendFuture, MailBackend};
-pub use imap::{probe_certificate, CertFingerprint, Credential, ImapBackend, ImapConfig, Security};
+pub use imap::{
+    check_certificate, probe_certificate, CertFingerprint, CertificateProblem, Credential,
+    ImapBackend, ImapConfig, Security,
+};
 pub use types::*;

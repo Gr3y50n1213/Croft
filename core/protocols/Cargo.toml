@@ -10,6 +10,10 @@ rust-version.workspace = true
 # Tests that need the container mail servers in test-servers/ (GreenMail and Dovecot).
 # Start them with: docker compose -f test-servers/docker-compose.yml up -d
 integration = []
+# Recording stand-ins for the network (`discovery::testing`), for tests of discovery. Off in
+# release builds: this crate's own tests turn it on through the self-reference in
+# `[dev-dependencies]`, and other crates' tests can enable it explicitly.
+test-fakes = []
 
 [dependencies]
 async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
@@ -34,6 +38,9 @@ webpki-roots = "1.0.12"
 zeroize = "1.9.1"
 
 [dev-dependencies]
+# Turns on `test-fakes` for this crate's own tests (cargo test, clippy --all-targets) without
+# putting the fakes in a normal build.
+croft-protocols = { path = ".", features = ["test-fakes"] }
 croft-test-support = { path = "../test-support" }
 rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
 tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util"] }

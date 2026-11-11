@@ -41,6 +41,7 @@ mod text;
 mod tls;
 
 pub use config::{CertFingerprint, Credential, ImapConfig, Security};
+pub use error::CertificateProblem;
 
 use crate::backend::{BackendFuture, MailBackend};
 use crate::types::*;
@@ -48,7 +49,7 @@ use conn::Conn;
 use error::OpError;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
-use tls::Trust;
+use tls::{Observed, Trust};
 use tokio::sync::Mutex;
 
 struct State {
@@ -364,6 +365,48 @@ pub async fn probe_certificate(config: &ImapConfig) -> Result<CertFingerprint, B
     drop(client);
     let seen = slot.lock().ok().and_then(|g| *g);
     seen.ok_or_else(|| BackendError::Transient("the server sent no certificate".into()))
+}
+
+/// Checks the server's certificate the way a real connection would, **before any credential
+/// exists**: connects, completes the TLS handshake with full validation (the public roots, or
+/// `config.pinned_cert` when one is set), disconnects, and says why the certificate was refused,
+/// if it was. No sign-in command is ever sent (for STARTTLS the only command is `STARTTLS`).
+///
+/// This is the typed way to find out that a certificate is the problem: callers must not guess it
+/// from error text or from the class of a later sign-in error (see [`CertificateProblem`]). The
+/// fingerprint in [`CertificateProblem::UnknownIssuer`] and [`CertificateProblem::PinMismatch`]
+/// belongs to the certificate that was judged in this same handshake. A certificate that fails
+/// here fails the same way in [`ImapBackend`], which maps it to [`BackendError::Auth`].
+pub async fn check_certificate(config: &ImapConfig) -> Result<(), CertificateProblem> {
+    if config.security == Security::PlaintextForTestsOnly {
+        return Err(CertificateProblem::NoSecureConnection);
+    }
+    let slot = Arc::new(StdMutex::new(Observed::default()));
+    let trust = Trust::Observe {
+        pin: config.pinned_cert,
+        slot: slot.clone(),
+    };
+    let connected = conn::connect_client(config, &trust).await;
+    let observed = match slot.lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(_) => Observed::default(),
+    };
+    match connected {
+        Ok(client) => {
+            drop(client);
+            Ok(())
+        }
+        Err(e) => Err(match observed {
+            Observed {
+                error: Some(error),
+                fingerprint,
+            } => CertificateProblem::from_tls(&error, fingerprint),
+            _ => match e.error {
+                BackendError::Transient(_) => CertificateProblem::CannotConnect,
+                _ => CertificateProblem::NoSecureConnection,
+            },
+        }),
+    }
 }
 
 #[cfg(test)]

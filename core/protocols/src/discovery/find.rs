@@ -416,6 +416,14 @@ async fn jmap_probe(ctx: &Context) -> ProbeResult {
         HttpsUrl::new(ctx.address.domain(), "/.well-known/jmap").ok_or(ProbeFailure::Internal)?;
     // No redirect is followed: the redirect target is the answer (RFC 8620 section 2.2), and it
     // may well be on another host, such as a provider's API host. It is recorded, not contacted.
+    //
+    // SECURITY (for the future JMAP adapter): the URL produced here comes from the person's own
+    // domain, but a redirect target (and an SRV `_jmap._tcp` target) can name any host. Discovery
+    // only checks that it is an `https` URL. The JMAP adapter must treat it exactly like a
+    // discovered IMAP host before sending a credential: it is trusted only because the person's
+    // domain published it, so show the host to the person at setup, never follow a later
+    // redirect to another host with the credential, and apply the same certificate rules
+    // (no trust-on-first-use for a provider-table domain).
     let resp = request(ctx, &url).await?;
     let jmap = match resp.status {
         s if is_redirect(s) => resp

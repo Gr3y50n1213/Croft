@@ -527,6 +527,57 @@ async fn each_probe_reports_its_own_reason() {
 }
 
 #[tokio::test]
+async fn an_autoconfig_host_name_with_the_local_part_is_unusable_and_never_looked_up() {
+    let net = Net::new();
+    for host in ["%EMAILLOCALPART%.evil.example", "imap.%EMAILADDRESS%"] {
+        net.http
+            .set_body(SUB, autoconfig_xml(host, 993, "SSL").as_bytes());
+        net.http
+            .set_body(WELL_KNOWN, autoconfig_xml(host, 993, "SSL").as_bytes());
+        let err = net
+            .discoverer()
+            .discover("alice@example.org")
+            .await
+            .unwrap_err();
+        let DiscoveryError::NothingFound { reasons } = err else {
+            panic!()
+        };
+        assert_eq!(
+            reasons[0],
+            (Probe::AutoconfigSubdomain, ProbeFailure::Unusable)
+        );
+        assert_eq!(
+            reasons[1],
+            (Probe::AutoconfigWellKnown, ProbeFailure::Unusable)
+        );
+    }
+    // Nothing with the local part in it was ever asked of DNS or HTTP.
+    let asked: Vec<String> = [
+        net.dns.srv_queries(),
+        net.dns.ip_queries(),
+        net.http.requests(),
+    ]
+    .concat();
+    assert!(
+        asked
+            .iter()
+            .all(|q| !q.to_lowercase().contains("alice") && !q.contains("evil")),
+        "{asked:?}"
+    );
+    // The domain placeholder is still allowed in a host name.
+    net.http.set_body(
+        SUB,
+        autoconfig_xml("imap.%EMAILDOMAIN%", 993, "SSL").as_bytes(),
+    );
+    let found = net
+        .discoverer()
+        .discover("alice@example.org")
+        .await
+        .unwrap();
+    assert_eq!(found.imap.unwrap().host, "imap.example.org");
+}
+
+#[tokio::test]
 async fn an_oversized_file_and_an_unencrypted_only_file_are_named() {
     let net = Net::new();
     net.http.set_body(SUB, &vec![b' '; 64 * 1024 + 1]);
@@ -643,7 +694,7 @@ async fn found_via_srv(service: &str, server: &TestServer) -> DiscoveredSettings
 }
 
 fn password(p: &str) -> Credential {
-    Credential::Password(p.to_string())
+    Credential::password(p)
 }
 
 fn quick() -> VerifyOptions {
@@ -651,6 +702,15 @@ fn quick() -> VerifyOptions {
         timeout: Duration::from_secs(5),
         ..VerifyOptions::default()
     }
+}
+
+/// Whether the server has received a sign-in command (the log shows `LOGIN ***`, never the
+/// password).
+fn signed_in(server: &TestServer) -> bool {
+    server
+        .commands()
+        .iter()
+        .any(|c| c.starts_with("LOGIN") || c.starts_with("AUTHENTICATE"))
 }
 
 /// The whole certificate flow for one server: untrusted, then trusted once, then signed in.
@@ -663,6 +723,7 @@ async fn self_signed_flow(service: &str, mode: TlsMode, expected: Security) {
     let err = verify(&settings, password("correct horse"), quick())
         .await
         .unwrap_err();
+    assert!(!signed_in(&srv), "{:?}", srv.commands());
     let VerifyError::UntrustedCertificate { fingerprint } = err.clone() else {
         panic!("{err:?}")
     };
@@ -685,6 +746,7 @@ async fn self_signed_flow(service: &str, mode: TlsMode, expected: Security) {
     let ok = verify(&settings, password("correct horse"), options)
         .await
         .unwrap();
+    assert!(signed_in(&srv));
     assert_eq!(ok.imap.pinned_cert, Some(fingerprint));
     assert!(ok.capabilities.move_cmd);
 
@@ -734,6 +796,29 @@ async fn wrong_password_and_untrusted_certificate_have_their_own_messages() {
     // Neither message carries the address or the password.
     for m in [wrong.message(), untrusted.message()] {
         assert!(!m.contains("alice") && !m.contains("srv.test") && !m.contains("nope"));
+    }
+}
+
+#[tokio::test]
+async fn a_provider_domain_with_a_self_signed_certificate_is_interception() {
+    // A server standing in for the provider presents a self-signed certificate, as a hostile
+    // network would. Trusting it is never offered, and no credential reaches the server.
+    for (service, mode) in [("_imaps", TlsMode::Implicit), ("_imap", TlsMode::StartTls)] {
+        let srv = server(mode).await;
+        let mut settings = found_via_srv(service, &srv).await;
+        settings.provider = Some(Provider::Gmail);
+        let err = verify(&settings, password("correct horse"), quick())
+            .await
+            .unwrap_err();
+        assert_eq!(err, VerifyError::ConnectionIntercepted);
+        assert!(!signed_in(&srv), "{:?}", srv.commands());
+        assert!(!err.message().contains("alice") && !err.message().contains("srv.test"));
+        // The same settings without the provider are a question for the person.
+        settings.provider = None;
+        let err = verify(&settings, password("correct horse"), quick())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VerifyError::UntrustedCertificate { .. }));
     }
 }
 

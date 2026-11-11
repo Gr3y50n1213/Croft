@@ -64,7 +64,7 @@ fn quick() -> VerifyOptions {
 }
 
 fn password(p: &str) -> Credential {
-    Credential::Password(p.to_string())
+    Credential::password(p)
 }
 
 /// SHA-256 fingerprint of the PEM certificate at `path`.

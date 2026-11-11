@@ -54,7 +54,8 @@
 //!   name, as with a domain hosted by a mail provider. Nothing else is contacted.
 //!
 //! The network is reached through the [`Resolver`] and [`HttpFetch`] traits, so tests substitute
-//! recording fakes ([`testing`]) and check exactly what would have been asked.
+//! recording fakes (the `testing` module, behind the `test-fakes` cargo feature so release builds
+//! do not carry it) and check exactly what would have been asked.
 
 mod address;
 mod autoconfig;
@@ -65,6 +66,7 @@ mod http;
 mod net;
 mod provider;
 mod srv;
+#[cfg(any(test, feature = "test-fakes"))]
 pub mod testing;
 mod verify;
 
@@ -194,6 +196,13 @@ pub struct DiscoveredSettings {
     pub smtp: Option<SmtpServer>,
     /// A JMAP URL: a session resource, or `/.well-known/jmap` on the host. Resolved by the JMAP
     /// adapter (a later task).
+    ///
+    /// **The host in this URL is not checked against the person's domain.** A `/.well-known/jmap`
+    /// redirect (RFC 8620 section 2.2) may point at any `https` host, and discovery only records
+    /// it. The JMAP adapter must validate it the way a discovered IMAP host is treated: it is
+    /// trusted only because the person's own domain published it, so show the host at setup, send
+    /// no credential on a later redirect to another host, and apply the same certificate rules
+    /// (no trust-on-first-use for a provider-table domain).
     pub jmap: Option<String>,
     /// Which probe produced these settings.
     pub source: Source,

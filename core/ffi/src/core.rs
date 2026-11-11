@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use croft_engine::{ActionError, Engine, EngineConfig, EngineHandle, OpId, SystemClock};
 use croft_protocols::discovery::{verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions};
-use croft_protocols::{CertFingerprint, Credential};
+use croft_protocols::CertFingerprint;
 use croft_storage::accounts::{self, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
 use croft_storage::{folders, Db};
@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 
 use crate::changes::{listen, Hub};
 use crate::credentials::{
-    ask, AccountBackend, CredentialProvider, FfiCredential, ProviderError, Readiness,
+    ask, AccountBackend, Asked, CredentialProvider, FfiCredential, ProviderError, Readiness,
 };
 use crate::error::{CoreError, DiscoverError, VerifyFailure};
 use crate::list;
@@ -119,14 +119,17 @@ impl Inner {
         &self,
         id: i64,
         settings: &StoredSettings,
-        credential: Option<Credential>,
+        credential: Asked,
     ) -> Result<(), CoreError> {
         let config = settings.imap_config().map_err(|_| CoreError::BadSettings)?;
         config.validate().map_err(|_| CoreError::BadSettings)?;
-        let backend = Arc::new(AccountBackend::new(config));
-        match backend.set_credential(credential) {
+        let backend = Arc::new(AccountBackend::new(config, self.provider.clone(), id));
+        match backend.set_asked(credential) {
             Readiness::Ready => {}
             Readiness::NeedsSignIn => self.hub.sign_in_needed(id),
+            // The app's secure storage is busy: not a sign-in problem. The backend answers
+            // Transient and asks again later.
+            Readiness::NotReady => {}
             Readiness::Broken => return Err(CoreError::BadSettings),
         }
         self.engine.add_account(id, backend.clone())?;
@@ -479,7 +482,9 @@ impl Core {
                             now_ms(),
                         )?)
                     })?;
-                    if let Err(e) = inner.start_account(id, &settings, Some(credential)) {
+                    if let Err(e) =
+                        inner.start_account(id, &settings, Asked::Credential(credential))
+                    {
                         let _ = inner
                             .handle
                             .read(|db| accounts::delete(db.connection(), id));
@@ -706,7 +711,7 @@ impl Core {
                 // The provider callback may block: not on a runtime worker.
                 tokio::task::spawn_blocking(move || {
                     let credential = ask(&*inner.provider, account_id);
-                    match backend.set_credential(credential) {
+                    match backend.set_asked(credential) {
                         Readiness::Ready => {
                             inner.hub.set_broken(account_id, false);
                             inner.hub.clear_sign_in(account_id);
@@ -714,6 +719,14 @@ impl Core {
                             Ok(())
                         }
                         Readiness::NeedsSignIn => Err(CoreError::NoCredential),
+                        // The app's storage is busy right now: the person did sign in, so the
+                        // account leaves the needs-sign-in state and the backend asks again
+                        // by itself (Transient meanwhile).
+                        Readiness::NotReady => {
+                            inner.hub.clear_sign_in(account_id);
+                            inner.handle.signed_in(account_id);
+                            Ok(())
+                        }
                         Readiness::Broken => {
                             inner.hub.set_broken(account_id, true);
                             Err(CoreError::BadSettings)

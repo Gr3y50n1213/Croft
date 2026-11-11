@@ -357,6 +357,99 @@ fn a_new_account_uses_the_credential_it_was_given_not_the_providers() {
     assert!(core.list_folders(account).unwrap().is_empty());
 }
 
+/// A keystore that is busy when the core asks (`ProviderError::NotReady`) is not a lost
+/// credential: the account is not marked as needing a sign-in, `sign_in_needed` is not called,
+/// and the core asks again later and then syncs.
+#[test]
+fn a_provider_that_is_not_ready_does_not_pause_the_account_and_is_asked_again() {
+    let rig = Rig::new(three_messages);
+    rig.wait_for_inbox(3);
+    let Rig {
+        server,
+        db,
+        core,
+        account,
+        ..
+    } = rig;
+    drop(core);
+
+    // A new run: the keystore answers "not ready" twice (at open, then at the first retry).
+    let provider = MemProvider::new();
+    provider.store(account, password_cred(PASSWORD));
+    provider.not_ready_for(2);
+    let core = db.open(&provider);
+    assert_eq!(provider.asked(), vec![account], "asked once at open");
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::Ok,
+        "not a sign-in problem"
+    );
+
+    // Each poke asks again once the back-off is over; the third answer is the credential.
+    let end = Instant::now() + Duration::from_secs(20);
+    while provider.asked().len() < 3 {
+        assert!(Instant::now() < end, "the provider was not asked again");
+        core.sync_now(account).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    block(wait_for(&core, "a sync after the retry", || {
+        core.sync_now(account).unwrap();
+        core.list_folders(account)
+            .unwrap()
+            .iter()
+            .any(|f| f.path == "INBOX")
+    }));
+    assert!(
+        provider.sign_ins().is_empty(),
+        "sign_in_needed was never called"
+    );
+    assert_eq!(core.list_accounts().unwrap()[0].status, AccountStatus::Ok);
+    drop(server);
+}
+
+/// The same answer from `signed_in` (the person just typed a password and the keystore is busy):
+/// the account leaves the needs-sign-in state and is retried, not reported as having no credential.
+#[test]
+fn signed_in_with_a_provider_that_is_not_ready_is_not_a_missing_credential() {
+    let rig = Rig::new(three_messages);
+    rig.wait_for_inbox(3);
+    let Rig {
+        server,
+        db,
+        core,
+        account,
+        ..
+    } = rig;
+    drop(core);
+
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    block(wait_for(&core, "sign_in_needed", || {
+        !provider.sign_ins().is_empty()
+    }));
+    provider.store(account, password_cred(PASSWORD));
+    provider.not_ready_for(1);
+    block(core.signed_in(account)).unwrap();
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::Ok,
+        "no longer needs a sign-in"
+    );
+    block(wait_for(&core, "folders after the retry", || {
+        core.sync_now(account).unwrap();
+        core.list_folders(account)
+            .unwrap()
+            .iter()
+            .any(|f| f.path == "INBOX")
+    }));
+    assert_eq!(
+        provider.sign_ins(),
+        vec![account],
+        "no second sign_in_needed"
+    );
+    drop(server);
+}
+
 #[test]
 fn an_account_with_no_credential_at_open_starts_paused_and_syncs_after_signed_in() {
     let rig = Rig::new(three_messages);

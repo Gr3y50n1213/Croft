@@ -5,6 +5,18 @@ unverified, the next step.
 
 ---
 
+## T06 part B: the outbox in the engine (11 November 2026)
+
+**Status:** done. T06 is now complete. Not done: refreshing an OAuth token for sending (with T21); creating a missing Sent folder is only unit-tested (the test server always has one); a non-UTF-8 message cannot be saved in Sent (documented limit).
+
+**What was built:** `MailSubmitter` (send, file a copy in Sent) in `core/protocols/src/submit.rs`, with an SMTP + IMAP implementation. The engine runs a send loop per account: Undo window, back-off, offline and sign-in pause shared with the action queue, a copy in Sent filed exactly once (Message-ID lookup first), "may not have been sent" after a crash, never resent automatically. `EngineHandle`: send, undo send, outbox list, retry, edit back to draft, discard, replace the sender after a new password. A message with a `Bcc:` header (also hidden behind bare carriage returns), or without a Message-ID, is refused before it is stored.
+
+**Checks run and seen passing (by the orchestrator):** fmt, clippy, `cargo test` 563 passed in each of 7 full runs; **one run out of 8 had one failing test that could not be reproduced** (the machine was under heavy load with three builds at once; the failing test's name was not captured). `check_schema.py` all ok.
+
+**Review:** Opus, one round: 2 medium (a Bcc header hidden by bare carriage returns would be revealed to all recipients; the account task could spin at full CPU after a sign-in failure and re-adding the account), 4 low (including replacing a "mark other accounts offline" workaround with a proper per-account take). All fixed with tests.
+
+---
+
 ## T04: Sync engine (11 November 2026)
 
 **Status:** done except IDLE (push from the server while the app is open): wake-ups use the next due action, a 15-minute timer and a nudge on every action. The place to add IDLE is marked in `core/engine/src/worker.rs`. Within an account, actions run one at a time (the contract allows four in parallel; a later speed-up).

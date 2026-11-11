@@ -41,6 +41,7 @@ import com.example.croft.theme.DensityLevel
 import com.example.croft.theme.ThemeSettings
 import com.example.croft.ui.components.ROW_PREVIEW_TAG
 import com.example.croft.ui.components.settingsAt
+import com.example.croft.ui.components.ui
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -117,7 +118,8 @@ class ListPartsTest {
         rule.setContent {
             CroftTheme(settingsAt(AnimationLevel.OFF), systemDark = false) {
                 CompositionLocalProvider(LocalHaptics provides haptics) {
-                    LaunchedEffect(kick()) { if (kick() > 0) state.scrollToItem(3) }
+                    // An animated scroll, like a fling: `scrollToItem` is over inside one frame, so nothing could observe "the list is scrolling".
+                    LaunchedEffect(kick()) { if (kick() > 0) state.animateScrollToItem(3) }
                     Box(Modifier.fillMaxSize()) {
                         LazyColumn(Modifier.fillMaxSize(), state = state) {
                             items(items, key = { it.key }) { Box(Modifier.fillMaxWidth().height(48.dp)) { Text(it.key.toString()) } }
@@ -137,12 +139,12 @@ class ListPartsTest {
         val (state, items) = showScroller({ kick }, haptics)
         rule.waitForIdle()
         rule.onNodeWithTag(InboxTags.FAST_SCROLLER).assertDoesNotExistCompat()
-        rule.runOnUiThread { kick = 1 }
+        rule.ui { kick = 1 }
         rule.waitUntil(5_000) { rule.onAllNodes(hasTestTag(InboxTags.FAST_SCROLLER)).fetchSemanticsNodes().isNotEmpty() }
         val before = state.firstVisibleItemIndex
-        // The thumb sits near the top of the track; take hold of it and pull down.
+        // The thumb (64 dp high) sits near the top of the track; take hold of it in its middle and pull down.
         rule.onNodeWithTag(InboxTags.FAST_SCROLLER).performTouchInput {
-            down(Offset(centerX, 20f))
+            down(Offset(centerX, 45f))
             repeat(10) { moveBy(Offset(0f, 40f)) }
             up()
         }

@@ -15,7 +15,9 @@ import androidx.compose.ui.test.moveBy
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.up
 import com.example.croft.CroftTheme
 import com.example.croft.haptics.NoHaptics
 import com.example.croft.haptics.LocalHaptics
@@ -122,11 +124,15 @@ class InboxScreenshotTest(
                 rule.waitForIdle()
             }
             MailScreenId.S17 -> {
-                rule.scrollToRow(f.inboxIds()[6])
+                // Scroll by index: a row that is already fully on screen (a tall window) would not be scrolled to by a node search, and
+                // the new mail would then arrive at the very top, where it slides in without a pill.
+                rule.onNodeWithTag(InboxTags.LIST).performScrollToIndex(7)
+                rule.waitForIdle()
                 f.repo.injectNewMail(3)
                 rule.waitUntil(20_000) { rule.onAllNodes(hasText("3 new")).fetchSemanticsNodes().isNotEmpty() }
             }
             MailScreenId.S17_PULL -> {
+                // The finger stays down for the picture; it is lifted below, before the window is torn down.
                 rule.onNodeWithTag(InboxTags.LIST).performTouchInput {
                     down(Offset(centerX, 40f))
                     repeat(8) { moveBy(Offset(0f, 30f)) }
@@ -137,6 +143,12 @@ class InboxScreenshotTest(
         }
         rule.waitForIdle()
         ScreenshotKit.capture(rule.onRoot(), nameOf(screen, device, dark, fontScale, rtl))
+        // Tearing the window down with a finger still on the list cancels the drag after the pull-to-refresh node has detached,
+        // and Compose then throws ("attach dispatcher to the Modifier.nestedScroll first"). A person lifts the finger first.
+        if (screen == MailScreenId.S17_PULL) {
+            rule.onNodeWithTag(InboxTags.LIST).performTouchInput { up() }
+            rule.waitForIdle()
+        }
     }
 }
 

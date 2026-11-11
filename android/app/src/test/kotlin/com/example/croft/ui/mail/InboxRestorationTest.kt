@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
@@ -180,7 +181,7 @@ class InboxRestorationTest {
         val f = InboxFixture()
         var inInbox by mutableStateOf(true)
         rule.show(AnimationLevel.OFF, f.haptics) {
-            if (inInbox) InboxScreen(f.session, onOpenSettings = {}) else androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.testTag("other"))
+            if (inInbox) InboxScreen(f.session, onOpenSettings = {}) else androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize().testTag("other")) // a node with a size: a zero-size one is never "displayed"
         }
         rule.waitForRow(f.topId)
         val (id, before) = placeAt(f, 18)

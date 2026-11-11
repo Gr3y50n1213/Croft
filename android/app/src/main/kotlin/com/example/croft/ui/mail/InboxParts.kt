@@ -294,10 +294,12 @@ fun NewMailPill(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier) 
         MotionLevel.REDUCED -> scheme.defaultEffectsSpec<Float>()
         MotionLevel.OFF -> snap<Float>()
     }
-    val progress by animateFloatAsState(if (visible) 1f else 0f, spec, label = "new-mail-pill")
+    val animated by animateFloatAsState(if (visible) 1f else 0f, spec, label = "new-mail-pill")
+    // At Off nothing is animated: the pill is fully there in the frame that composes it (a snap would still land one frame later).
+    fun progress(): Float = if (level == MotionLevel.OFF) (if (visible) 1f else 0f) else animated
     var shownCount by remember { mutableIntStateOf(count) }
     if (count > 0) shownCount = count
-    if (progress <= 0f && !visible) return
+    if (progress() <= 0f && !visible) return
     val rise = with(LocalDensity.current) { PILL_RISE.toPx() }
     val description = pluralStringResource(R.plurals.mail_new_pill_description, shownCount, shownCount)
     Surface(
@@ -305,10 +307,10 @@ fun NewMailPill(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier) 
         enabled = visible,
         modifier = modifier
             .testTag(InboxTags.NEW_PILL)
-            .motionProbes("pill" to { progress }, "pill-rise" to { if (level == MotionLevel.FULL) (1f - progress) * rise else 0f })
+            .motionProbes("pill" to { progress() }, "pill-rise" to { if (level == MotionLevel.FULL) (1f - progress()) * rise else 0f })
             .graphicsLayer {
-                alpha = progress.coerceIn(0f, 1f)
-                translationY = if (level == MotionLevel.FULL) (1f - progress) * rise else 0f
+                alpha = progress().coerceIn(0f, 1f)
+                translationY = if (level == MotionLevel.FULL) (1f - progress()) * rise else 0f
             }
             .semantics(mergeDescendants = true) { contentDescription = description; liveRegion = LiveRegionMode.Polite },
         shape = CircleShape,

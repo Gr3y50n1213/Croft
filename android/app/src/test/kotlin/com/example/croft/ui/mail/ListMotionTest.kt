@@ -187,7 +187,8 @@ class ListMotionTest {
         showPill(full, { count })
         rule.onNodeWithTag(InboxTags.NEW_PILL).assertDoesNotExistCompat()
         rule.ui { count = 3 }
-        frames(2)
+        // Frame 1 composes the pill, frame 2 starts its spring (value still 0), frame 3 is the first one that moves.
+        frames(3)
         val p = rule.probe("pill")
         assertTrue("on its way ($p)", p > 0f && p < 1f)
         assertTrue("rising, not appearing in place", rule.probe("pill-rise") > 0f)

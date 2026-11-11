@@ -175,12 +175,14 @@ class InboxScreenTest {
     @Test
     fun s10_aRefreshNeverShowsSkeletonRows_theRowsStayWhileTheQueryIsSlow() {
         val f = open()
+        // The row on screen before the new mail: `f.topId` is read now, because after the injection it is the new, not yet listed, message.
+        val shown = f.topId
         f.repo.holdQueries()
         f.repo.injectNewMail(1)
         rule.waitForIdle()
         rule.onNodeWithTag(InboxTags.SKELETON).assertDoesNotExist()
         rule.onNodeWithTag(InboxTags.LIST).assertExists()
-        rule.onNodeWithTag(InboxTags.row(f.topId)).assertExists()
+        rule.onNodeWithTag(InboxTags.row(shown)).assertExists()
         f.repo.release()
         rule.waitForIdle()
         rule.onNodeWithTag(InboxTags.SKELETON).assertDoesNotExist()
@@ -713,9 +715,11 @@ class InboxScreenTest {
         val read = rule.rowCard(f.topId - 3).fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label }
         assertTrue("Mark as unread on a read row", "Mark as unread" in read && "Mark as read" !in read)
 
-        val archive = rule.rowCard(f.topId).fetchSemanticsNode().config[SemanticsActions.CustomActions].first { it.label == "Archive" }
+        // `f.topId` is the newest message of the Inbox *now*; once the first row is archived it names the next one, so keep the id.
+        val first = f.topId
+        val archive = rule.rowCard(first).fetchSemanticsNode().config[SemanticsActions.CustomActions].first { it.label == "Archive" }
         rule.runOnUiThread { archive.action() }
-        rule.waitUntil(10_000) { f.repo.snapshot(inbox).none { it.id == f.topId } }
+        rule.waitUntil(10_000) { f.repo.snapshot(inbox).none { it.id == first } }
         waitForText("1 conversation archived")
     }
 
@@ -724,14 +728,22 @@ class InboxScreenTest {
         val f = open()
         val nodes = rule.onAllNodes(isInteractive).fetchSemanticsNodes()
         assertTrue(nodes.size >= 8)
-        for (n in nodes) {
+        // Every offender is listed (with its tag and role), not only the first one, so a failure says what to fix.
+        val offenders = nodes.mapNotNull { n ->
             val w = n.touchBoundsInRoot.width
             val h = n.touchBoundsInRoot.height
             val desc = n.config.getOrNull(SemanticsProperties.ContentDescription)?.joinToString()
             val text = n.config.getOrNull(SemanticsProperties.Text)?.joinToString { it.text }
-            assertTrue("touch target ${w}x$h px is under 48 dp ($desc / $text)", w >= 47.5f && h >= 47.5f)
-            assertTrue("an interactive node without a name", !desc.isNullOrBlank() || !text.isNullOrBlank())
+            val tag = n.config.getOrNull(SemanticsProperties.TestTag)
+            val role = n.config.getOrNull(SemanticsProperties.Role)
+            val who = "tag=$tag role=$role desc=$desc text=$text size=${w}x$h px at ${n.touchBoundsInRoot}"
+            when {
+                w < 47.5f || h < 47.5f -> "touch target under 48 dp: $who"
+                desc.isNullOrBlank() && text.isNullOrBlank() -> "interactive node without a name: $who"
+                else -> null
+            }
         }
+        assertTrue("${offenders.size} of ${nodes.size} interactive nodes are wrong:\n" + offenders.joinToString("\n"), offenders.isEmpty())
         // The icon-only buttons carry their label.
         for (label in listOf("Open menu")) rule.onNodeWithContentDescription(label).assertExists()
         rule.onNodeWithTag(InboxTags.ACCOUNT_BUTTON).assertContentDescriptionEquals("Account Sam")

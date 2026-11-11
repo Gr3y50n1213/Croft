@@ -108,6 +108,13 @@ class OnboardingFlow(
      * attempt has its own and only touches the shared fields while it is still [run].
      */
     private class Run(val discovered: FfiDiscovered, val add: Boolean, val password: ByteArray) {
+        /**
+         * The certificate the person confirmed on the **changed-certificate** warning (not on an ordinary first-use question) in this
+         * attempt, or null. Only a pin equal to it is added with `acceptChangedCertificate`: the core never replaces or drops a trusted
+         * certificate otherwise.
+         */
+        @Volatile var confirmedChange: String? = null
+
         fun wipe() = password.fill(0)
     }
 
@@ -287,13 +294,15 @@ class OnboardingFlow(
         val d = r.discovered
         val host = d.imap?.host
         val pin = mutable.value.pinnedFingerprint
+        // The certificate the check was made against: the pin, or the one the core holds for this address and server.
+        var used: String? = pin
         mutable.update { if (run === r) it.copy(attempt = Attempt.Working, test = if (it.step == Step.SERVER_SETTINGS) ConnectionTest.started() else null) else it }
         try {
-            backend.verify(d, r.password, pin)
+            used = backend.verify(d, r.password, pin)
             if (run !== r) { r.wipe(); return }
             if (r.add) {
                 mutable.update { it.copy(adding = true) }
-                val id = addAccountToCompletion(r, pin)
+                val id = addAccountToCompletion(r, used)
                 endRun(r)
                 mutable.update { it.copy(attempt = Attempt.Idle, test = null, addedAccount = id, stack = listOf(Step.FIRST_SYNC), adding = false) }
             } else {
@@ -307,13 +316,29 @@ class OnboardingFlow(
             throw e
         } catch (f: VerifyFailure) {
             onVerifyFailed(r, f, host)
+        } catch (e: CoreException.CertificateChanged) {
+            onAddCertificateChanged(r, e, host, used)
         } catch (e: CoreException) {
             fail(r, OnboardingFailure.Add(e, host))
         } catch (e: StorageUnavailableException) {
             fail(r, OnboardingFailure.Storage())
+        } catch (e: SignInNotSavedException) {
+            fail(r, OnboardingFailure.SignInNotSaved())
         } catch (e: Exception) {
             fail(r, OnboardingFailure.Unexpected())
         }
+    }
+
+    /**
+     * The core refused to replace or drop a trusted certificate without the person's confirmation (it holds a pin for this address and
+     * server that is not [pin]). With the certificate known, the person is asked on the changed-certificate warning, and the password
+     * stays in the run until it is answered; without one there is nothing to show, and the failure says to try again (the check then
+     * compares with the trusted certificate and shows the warning).
+     */
+    private fun onAddCertificateChanged(r: Run, e: CoreException.CertificateChanged, host: String?, pin: String?) {
+        if (run !== r) { r.wipe(); return }
+        if (pin == null) { fail(r, OnboardingFailure.Add(e, host)); return }
+        mutable.update { it.copy(adding = false, attempt = Attempt.Trust(host.orEmpty(), pin, changed = true)) }
     }
 
     /**
@@ -326,8 +351,11 @@ class OnboardingFlow(
      */
     private suspend fun addAccountToCompletion(r: Run, pin: String?): Long = withContext(NonCancellable) {
         val copy = r.password.copyOf()
+        // Only the certificate the person confirmed on the changed-certificate warning may replace a trusted one.
+        val confirmed = r.confirmedChange
+        val acceptChanged = pin != null && confirmed != null && confirmed.equals(pin, ignoreCase = true)
         try {
-            backend.addAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), pin, copy)
+            backend.addAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), pin, acceptChanged, copy)
         } finally {
             copy.fill(0)
         }
@@ -365,6 +393,8 @@ class OnboardingFlow(
     fun trustServer() {
         val trust = mutable.value.attempt as? Attempt.Trust ?: return
         val r = run ?: return
+        // Set, not kept: an ordinary first-use answer clears an earlier confirmation, and only the changed-certificate warning sets it.
+        r.confirmedChange = if (trust.changed) trust.fingerprint else null
         mutable.update { it.copy(pinnedFingerprint = trust.fingerprint) }
         job?.cancel()
         job = scope.launch { execute(r) }

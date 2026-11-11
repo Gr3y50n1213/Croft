@@ -118,7 +118,7 @@ class MailSurfaceTest {
     fun addListAndRemoveAnAccount() {
         val provider = MemoryCredentials()
         val core = openCore(provider)
-        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, typed()) }
+        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, false, typed()).id }
 
         // The credential came with addAccount: the app's provider is not asked about a new account.
         assertTrue(provider.asked.isEmpty())
@@ -149,7 +149,7 @@ class MailSurfaceTest {
     fun anAccountSurvivesAReopenAndTheProviderIsAskedAgain() {
         val provider = MemoryCredentials()
         val first = openCore(provider)
-        val id = runBlocking { first.addAccount(deadServer(), "Alice", null, typed()) }
+        val id = runBlocking { first.addAccount(deadServer(), "Alice", null, false, typed()).id }
         // What the app does right after addAccount returns.
         provider.store(id, typed())
         first.close()
@@ -164,7 +164,7 @@ class MailSurfaceTest {
     fun noCredentialMeansNeedsSignInAndTheProviderIsTold() {
         val provider = MemoryCredentials() // nothing stored
         val first = openCore(provider)
-        val id = runBlocking { first.addAccount(deadServer(), "Alice", null, typed()) }
+        val id = runBlocking { first.addAccount(deadServer(), "Alice", null, false, typed()).id }
         first.close()
         open.remove(first)
 
@@ -193,7 +193,7 @@ class MailSurfaceTest {
     fun nextChangeReturnsWhatChangedAndWaitsForMore() {
         val provider = MemoryCredentials()
         val core = openCore(provider)
-        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, typed()) }
+        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, false, typed()).id }
         val batch = runBlocking { withTimeout(10_000) { core.nextChange(0u) } }
         assertTrue(batch.accounts.contains(id))
         assertFalse(batch.everything)
@@ -269,7 +269,7 @@ class MailSurfaceTest {
     @Test
     fun aKotlinExceptionInACallbackIsNoCredentialNotAPanic() {
         val first = openCore(NoCredentials())
-        val id = runBlocking { first.addAccount(deadServer(), "Alice", null, typed()) }
+        val id = runBlocking { first.addAccount(deadServer(), "Alice", null, false, typed()).id }
         first.close()
         open.remove(first)
 
@@ -298,7 +298,7 @@ class MailSurfaceTest {
         val core = openCore(provider)
         // `addAccount` refuses it with a typed error and adds nothing.
         try {
-            runBlocking { core.addAccount(deadServer(), "Alice", null, bad()) }
+            runBlocking { core.addAccount(deadServer(), "Alice", null, false, bad()) }
             fail("expected NoCredential")
         } catch (e: CoreException.NoCredential) {
             // expected
@@ -306,7 +306,7 @@ class MailSurfaceTest {
         assertTrue(core.listAccounts().isEmpty())
 
         // Stored under an account's id it is "no credential" at sign-in too.
-        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, typed()) }
+        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, false, typed()).id }
         provider.store(id, bad())
         try {
             runBlocking { core.signedIn(id) }
@@ -395,7 +395,7 @@ class MailSurfaceTest {
             note(verifyFailureMessageKey(e))
             note(verifyFailureDefaultMessage(e))
         }
-        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, typed()) }
+        val id = runBlocking { core.addAccount(deadServer(), "Alice", null, false, typed()).id }
         note(core.listAccounts())
         note(core.listFolders(id))
         note(core.listMessages(MessageScope.UnifiedInbox, null, 50u))

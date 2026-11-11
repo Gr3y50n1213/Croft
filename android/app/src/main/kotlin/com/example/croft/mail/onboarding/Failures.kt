@@ -28,6 +28,9 @@ sealed class OnboardingFailure(val key: String, val host: String?) {
     /** Adding the account to the core failed after the sign-in had worked ([CoreException]). */
     class Add(val error: CoreException, host: String?) : OnboardingFailure(addKey(error), host)
 
+    /** Signing in again for an account that exists worked, but the new password could not be kept: the account is as it was ([SignInNotSavedException]). */
+    class SignInNotSaved : OnboardingFailure(KEY_SIGN_IN_NOT_SAVED, null)
+
     /** The secure storage (Keystore) or the core could not be opened, or the password could not be kept. Nothing was added. */
     class Storage : OnboardingFailure(KEY_STORAGE, null)
 
@@ -71,6 +74,7 @@ sealed class OnboardingFailure(val key: String, val host: String?) {
 
         const val KEY_STORAGE = "app.storage_unavailable"
         const val KEY_UNEXPECTED = "app.unexpected"
+        const val KEY_SIGN_IN_NOT_SAVED = "add.sign_in_not_saved"
 
         /** The app's key for a core error from `add_account`. Several errors share copy: the person can do nothing different. */
         fun addKey(e: CoreException): String = when (e) {
@@ -79,13 +83,14 @@ sealed class OnboardingFailure(val key: String, val host: String?) {
             is CoreException.NoCredential -> "add.no_credential"
             is CoreException.SchemaTooNew -> "add.schema_too_new"
             is CoreException.AccountExists -> "add.already_added"
+            is CoreException.CertificateChanged -> "add.certificate_changed"
             else -> "add.internal"
         }
 
         /** Every key the app itself defines (the core's come from its own key functions). */
         val appKeys: List<String> = listOf(
             "add.bad_settings", "add.unsupported_server", "add.no_credential", "add.schema_too_new", "add.already_added",
-            "add.internal", KEY_STORAGE, KEY_UNEXPECTED,
+            "add.certificate_changed", KEY_SIGN_IN_NOT_SAVED, "add.internal", KEY_STORAGE, KEY_UNEXPECTED,
         )
     }
 }

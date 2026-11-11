@@ -247,6 +247,53 @@ fun Modifier.longPressLift(
 }
 
 /**
+ * A long-press that opens a menu on something that has its own tap (a drawer entry): the element lifts 1 dp and the long-press
+ * haptic plays at the system's long-press time, then [onOpen] runs, all before the finger leaves (docs/ux/controls.md, "Menus and
+ * long-press"). Moving past the touch slop first cancels it, so it never fights a scroll. It watches in the Initial pass and
+ * takes the rest of the touch only once it has fired, so a short tap still reaches the element's own click and, after a long
+ * press, the release does not click as well.
+ */
+@Composable
+fun Modifier.longPressMenu(enabled: Boolean = true, onOpen: () -> Unit): Modifier {
+    val haptics = LocalHaptics.current
+    val lift = remember { LiftState() }
+    val openNow = rememberUpdated(onOpen)
+    return this
+        .liftVisual(lift)
+        .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                val slop = viewConfiguration.touchSlop
+                val fired = try {
+                    withTimeout(viewConfiguration.longPressTimeoutMillis) {
+                        var cancelled = false
+                        while (!cancelled) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            cancelled = change == null || !change.pressed || change.isConsumed || (change.position - down.position).getDistance() > slop
+                        }
+                        false
+                    }
+                } catch (e: PointerEventTimeoutCancellationException) {
+                    true
+                }
+                if (fired) {
+                    lift.lifted = true
+                    haptics.perform(HapticEvent.SelectionStart)
+                    openNow.value()
+                    try {
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            event.changes.forEach { it.consume() }
+                        } while (event.changes.any { it.pressed })
+                    } finally { lift.lifted = false }
+                }
+            }
+        }
+}
+
+/**
  * A disabled control still receives the touch so it can say why: a tap or long-press calls [onExplain] with [reason] (the
  * screen shows it once as a snackbar), and the reason is on the node as its state description for screen readers. Put it
  * before the control's own modifiers so the control stays disabled and announced as disabled.

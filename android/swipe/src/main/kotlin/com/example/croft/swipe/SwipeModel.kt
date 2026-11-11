@@ -10,7 +10,8 @@ package com.example.croft.swipe
  * [removesRow]: the row leaves the list, so the commit sequence slides it out and collapses its slot (Archive, Delete, Spam,
  * Move to, Snooze). The others (read, star) spring the card back and change the row in place. [parks]: the action needs
  * more from the person (a sheet), so the card is held while it is open. [selectable]: whether S48 offers it; Snooze is
- * phase 3, so the machine supports it but the picker does not list it until it exists.
+ * phase 3 and Move to waits for its sheet (S30, T16), so the machine supports both but the picker leaves them out until the
+ * sheets exist.
  */
 enum class SwipeAction(val id: String, val removesRow: Boolean, val parks: Boolean, val selectable: Boolean = true) {
     /** The direction does nothing; the row does not move at all. */
@@ -28,8 +29,8 @@ enum class SwipeAction(val id: String, val removesRow: Boolean, val parks: Boole
     /** Opens the snooze sheet (S29). Not offered until Snooze exists. */
     SNOOZE("snooze", removesRow = true, parks = true, selectable = false),
 
-    /** Opens the folder picker (S30). */
-    MOVE_TO("move", removesRow = true, parks = true),
+    /** Opens the folder picker (S30). Not offered until T16 builds the sheet. */
+    MOVE_TO("move", removesRow = true, parks = true, selectable = false),
 
     /** Star or unstar. */
     TOGGLE_STAR("star", removesRow = false, parks = false),

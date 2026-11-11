@@ -127,4 +127,44 @@ object CroftIcons {
             }
         }
     }
+
+    // Glyphs of the swipe pills (T15), plain shapes drawn from straight lines.
+
+    /** A folder: Move to. */
+    val Folder: ImageVector by lazy {
+        materialIcon(name = "Croft.Folder") {
+            materialPath {
+                moveTo(3f, 5f); horizontalLineTo(10f); lineTo(12f, 8f); horizontalLineTo(21f); verticalLineTo(19f); horizontalLineTo(3f); close()
+            }
+        }
+    }
+
+    /** A shield: Mark as spam. */
+    val Shield: ImageVector by lazy {
+        materialIcon(name = "Croft.Shield") {
+            materialPath {
+                moveTo(12f, 2f); lineTo(20f, 5f); verticalLineTo(12f); curveTo(20f, 16.5f, 16.5f, 20.5f, 12f, 22f)
+                curveTo(7.5f, 20.5f, 4f, 16.5f, 4f, 12f); verticalLineTo(5f); close()
+            }
+        }
+    }
+
+    /** A dash: None. */
+    val Dash: ImageVector by lazy {
+        materialIcon(name = "Croft.Dash") {
+            materialPath { moveTo(5f, 11f); horizontalLineTo(19f); verticalLineTo(13f); horizontalLineTo(5f); close() }
+        }
+    }
+
+    /** An outlined star: Star (the message is not starred yet). */
+    val StarOutline: ImageVector by lazy {
+        materialIcon(name = "Croft.StarOutline") {
+            materialPath(pathFillType = androidx.compose.ui.graphics.PathFillType.EvenOdd) {
+                moveTo(12f, 2f); lineTo(14.9f, 8.6f); lineTo(22f, 9.3f); lineTo(16.6f, 14f); lineTo(18.2f, 21f); lineTo(12f, 17.3f)
+                lineTo(5.8f, 21f); lineTo(7.4f, 14f); lineTo(2f, 9.3f); lineTo(9.1f, 8.6f); close()
+                moveTo(12f, 6.8f); lineTo(10.9f, 10f); lineTo(7.5f, 10.3f); lineTo(10.1f, 12.5f); lineTo(9.3f, 15.8f); lineTo(12f, 14.1f)
+                lineTo(14.7f, 15.8f); lineTo(13.9f, 12.5f); lineTo(16.5f, 10.3f); lineTo(13.1f, 10f); close()
+            }
+        }
+    }
 }

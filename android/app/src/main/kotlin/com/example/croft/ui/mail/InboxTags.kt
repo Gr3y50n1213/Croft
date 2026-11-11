@@ -39,6 +39,9 @@ object InboxTags {
     /** The tag of a drawer entry. */
     fun drawerItem(folderId: Long) = "drawer-folder-$folderId"
 
+    /** The tag of the long-press menu of a drawer entry. */
+    fun drawerMenu(folderId: Long) = "drawer-menu-$folderId"
+
     /** The tag of an account row of the switcher; [id] 0 is "All accounts". */
     fun switcherAccount(id: Long) = "switcher-account-$id"
 }

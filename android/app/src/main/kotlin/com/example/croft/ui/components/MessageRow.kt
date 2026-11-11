@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,7 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
@@ -61,7 +59,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.example.croft.R
 import com.example.croft.theme.CroftTimings
@@ -72,7 +69,7 @@ import com.example.croft.theme.MotionLevel
 import com.example.croft.theme.UnreadEmphasis
 import com.example.croft.theme.AvatarStyle
 import com.example.croft.theme.linearFadeSpec
-import com.example.croft.theme.statusColors
+import com.example.croft.theme.rowStarColour
 
 /** The lock beside a message: encrypted, or signed with a signature that does not check out (a warning triangle instead). */
 enum class EncryptionMark { NONE, ENCRYPTED, SIGNED_INVALID }
@@ -97,7 +94,10 @@ data class MessageRowState(
     val threadCount: Int = 1,
 )
 
-/** One extra action of a row for screen readers and switch users (the swipe actions of T15 will fill the list). */
+/** How a row looks while the swipe engine holds it as a card (T15): its shape, and the High contrast outline. */
+class SwipeCardLook(val shape: androidx.compose.ui.graphics.Shape, val outlined: Boolean)
+
+/** One extra action of a row for screen readers and switch users (the configured swipe actions fill the list). */
 class RowAction(val label: String, val onClick: () -> Unit)
 
 /** Whether swiping the row is on. Selection mode turns it off; the swipe engine (T15) reads it. Tests read it too. */
@@ -105,15 +105,13 @@ val SwipeEnabled = androidx.compose.ui.semantics.SemanticsPropertyKey<Boolean>("
 var androidx.compose.ui.semantics.SemanticsPropertyReceiver.swipeEnabled by SwipeEnabled
 
 private val RedEdgeWidth = 4.dp
-private val PillGapToCard = 4.dp
-private val PillInsetFromEdge = 8.dp
 private const val UNREAD_DOT_DP = 8
 
 /**
  * A message row. Read: regular weight. Unread: bold sender and subject, a dot at the leading edge and the time in the strong
  * colour (as far as S52 "Unread emphasis" allows). Selected: primary container tint, and the avatar turns into a check
  * (a flip with the spatial fast spring; a cross-fade at Reduced; at once at Off). Dragging: the row is a rounded card that
- * follows the finger by [dragOffset] and a separate pill fills the space it leaves (the swipe engine, T15, drives it). New: a
+ * follows the finger and a separate pill fills the space it leaves (`SwipeRowHost`, T15, draws both around this row; [card] is the card's look). New: a
  * 1.2 s tint. Starred, encrypted, pending and failed as in the table.
  *
  * Tap opens; long-press selects (haptic SelectionStart); tapping the avatar selects. Screen readers hear the state first,
@@ -131,7 +129,11 @@ fun MessageRow(
     onLongClick: (() -> Unit)? = null,
     onAvatarClick: (() -> Unit)? = null,
     onToggleStar: (() -> Unit)? = null,
-    dragOffset: Dp = 0.dp,
+    /**
+     * Set while the swipe engine lifts the row as a card (T15): the card's shape (its corners ease from the row's own to the
+     * swipe card radius), and whether it gets the 1 dp outline of High contrast. The card colour is the lowest surface container.
+     */
+    card: SwipeCardLook? = null,
     forceLifted: Boolean = false,
     failedEdgeHoldMs: Long? = CroftTimings.FAILED_EDGE_MS,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
@@ -189,20 +191,8 @@ fun MessageRow(
     val failedState = stringResource(R.string.row_failed_state)
 
     Box(modifier.fillMaxWidth().height(IntrinsicSize.Min).heightIn(min = density.rowDp.dp).motionProbe("new-tint") { newTint.value }) {
-        if (dragOffset > 0.dp) {
-            // The pill that fills the space the card leaves: row height, 4 dp from the card, 8 dp from the row edge.
-            Box(
-                Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = PillInsetFromEdge)
-                    .width((dragOffset - PillGapToCard - PillInsetFromEdge).coerceAtLeast(0.dp))
-                    .fillMaxHeight()
-                    .clip(CircleShape)
-                    .background(colors.error),
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Filled.Delete, contentDescription = null, tint = colors.onError, modifier = Modifier.size(24.dp)) }
-        }
         val container = when {
+            card != null -> if (state.selected) colors.primaryContainer else colors.surfaceContainerLowest
             state.selected -> colors.primaryContainer
             settings.listStyle == ListStyle.FLAT -> colors.surface
             else -> colors.surfaceContainerLow
@@ -210,13 +200,13 @@ fun MessageRow(
         Surface(
             color = container,
             contentColor = if (state.selected) colors.onPrimaryContainer else colors.onSurface,
-            shape = if (settings.listStyle == ListStyle.FLAT && dragOffset == 0.dp) androidx.compose.ui.graphics.RectangleShape else shape,
-            shadowElevation = if (pressed || dragOffset > 0.dp) 1.dp else 0.dp,
+            shape = card?.shape ?: if (settings.listStyle == ListStyle.FLAT) androidx.compose.ui.graphics.RectangleShape else shape,
+            shadowElevation = if (pressed || card != null) 1.dp else 0.dp,
+            border = if (card?.outlined == true) androidx.compose.foundation.BorderStroke(1.dp, colors.outline) else null,
             modifier = Modifier
                 .fillMaxWidth()
-                .offset { IntOffset(-dragOffset.roundToPx(), 0) }
                 .croftFocusRing(interactionSource, shape)
-                .clip(shape)
+                .clip(card?.shape ?: shape)
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .croftClickable(
                     interactionSource = interactionSource,
@@ -276,7 +266,7 @@ fun MessageRow(
                     if (state.starred || state.hasAttachment || state.encryption != EncryptionMark.NONE) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             if (state.hasAttachment) Icon(CroftIcons.Attachment, null, Modifier.size(18.dp), tint = colors.onSurfaceVariant)
-                            if (state.starred) Icon(Icons.Filled.Star, null, Modifier.size(20.dp), tint = statusColors().amber)
+                            if (state.starred) Icon(Icons.Filled.Star, null, Modifier.size(20.dp), tint = rowStarColour(state.selected))
                             when (state.encryption) {
                                 EncryptionMark.ENCRYPTED -> Icon(Icons.Filled.Lock, null, Modifier.size(16.dp), tint = colors.onSurfaceVariant)
                                 EncryptionMark.SIGNED_INVALID -> Icon(Icons.Filled.Warning, null, Modifier.size(16.dp), tint = colors.error)

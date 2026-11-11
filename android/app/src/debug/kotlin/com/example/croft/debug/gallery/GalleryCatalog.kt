@@ -58,6 +58,7 @@ import com.example.croft.ui.components.FieldValidation
 import com.example.croft.ui.components.ForcedState
 import com.example.croft.ui.components.MenuItemSpec
 import com.example.croft.ui.components.MessageRow
+import com.example.croft.ui.components.SwipeCardLook
 import com.example.croft.ui.components.MessageRowState
 import com.example.croft.ui.components.RecipientChip
 import com.example.croft.ui.components.RecipientChipState
@@ -322,7 +323,8 @@ object GalleryCatalog {
                 MessageRow(
                     "Sam Rivera", "Lunch on Friday?", "Are you free around noon? I booked the place by the harbour.", "9:12", state, NoOp,
                     onLongClick = NoOp, onAvatarClick = NoOp, onToggleStar = NoOp,
-                    dragOffset = if (drag) 120.dp else 0.dp, failedEdgeHoldMs = hold, forceLifted = lifted,
+                    card = if (drag) SwipeCardLook(androidx.compose.foundation.shape.RoundedCornerShape(MaterialTheme.shapes.large.topStart), false) else null,
+                    failedEdgeHoldMs = hold, forceLifted = lifted,
                     interactionSource = rememberForcedInteractionSource(source),
                 )
             }

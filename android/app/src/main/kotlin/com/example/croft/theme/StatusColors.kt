@@ -33,3 +33,16 @@ fun statusColors(mode: CroftMode = LocalCroftMode.current, contrast: CroftContra
         val roles = CroftStatus.amber(mode, contrast)
         StatusColors(amber = Color(roles.color), onAmberContainer = Color(roles.onContainer), amberContainer = Color(roles.container))
     }
+
+/**
+ * The colour of the star on a message row (docs/ux/controls.md, "Message row"). Amber on the list's own surfaces, where it
+ * holds 3 to 1 in every theme; on a selected row the background is `primaryContainer`, which at Medium and High contrast
+ * is close to amber in tone (1.0 to 2.2 to 1 against it, recorded in docs/DECISIONS.md), so the star takes the row's
+ * content colour, `onPrimaryContainer`, which is at least 4.5 to 1 there. The shape of the star carries the meaning, not the colour.
+ */
+fun starColourFor(selected: Boolean, amber: Color, onPrimaryContainer: Color): Color = if (selected) onPrimaryContainer else amber
+
+/** [starColourFor] with the colours of the theme now showing. */
+@Composable
+fun rowStarColour(selected: Boolean): Color =
+    starColourFor(selected, statusColors().amber, androidx.compose.material3.MaterialTheme.colorScheme.onPrimaryContainer)

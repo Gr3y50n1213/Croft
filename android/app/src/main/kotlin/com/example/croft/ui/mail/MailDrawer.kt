@@ -4,6 +4,7 @@
 
 package com.example.croft.ui.mail
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
@@ -21,9 +23,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -33,6 +40,9 @@ import com.example.croft.mail.FolderInfo
 import com.example.croft.mail.FolderRole
 import com.example.croft.mail.MessageScope
 import com.example.croft.ui.components.CroftIcons
+import com.example.croft.ui.components.CroftMenu
+import com.example.croft.ui.components.MenuItemSpec
+import com.example.croft.ui.components.longPressMenu
 
 /** The mailboxes in the order of the drawer; custom folders and labels follow under their own heading. */
 private val DrawerOrder = listOf(
@@ -83,6 +93,10 @@ fun MailDrawerContent(
     onSelect: (FolderInfo) -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The long-press menu of a mailbox (docs/ux/controls.md): Mark all as read, Sync now, Mailbox settings. */
+    onMarkAllRead: (FolderInfo) -> Unit = {},
+    onSyncNow: (FolderInfo) -> Unit = {},
+    onMailboxSettings: (FolderInfo) -> Unit = {},
 ) {
     Column(modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 12.dp).testTag(InboxTags.DRAWER)) {
         Text(
@@ -95,7 +109,7 @@ fun MailDrawerContent(
         DrawerOrder.forEach { role ->
             val folder = folders.firstOrNull { it.role == role } ?: return@forEach
             val unified = role == FolderRole.INBOX && scope == MessageScope.UnifiedInbox
-            DrawerRow(folder, selected = unified || scope == MessageScope.Folder(folder.account, folder.id), count = if (unified) unifiedUnread else folder.unreadCount, onClick = { onSelect(folder) })
+            DrawerRow(folder, selected = unified || scope == MessageScope.Folder(folder.account, folder.id), count = if (unified) unifiedUnread else folder.unreadCount, onClick = { onSelect(folder) }, onMarkAllRead = { onMarkAllRead(folder) }, onSyncNow = { onSyncNow(folder) }, onMailboxSettings = { onMailboxSettings(folder) })
         }
         val labels = folders.filter { it.role == FolderRole.OTHER }
         if (labels.isNotEmpty()) {
@@ -106,7 +120,7 @@ fun MailDrawerContent(
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            labels.forEach { f -> DrawerRow(f, selected = scope == MessageScope.Folder(f.account, f.id), count = 0, onClick = { onSelect(f) }) }
+            labels.forEach { f -> DrawerRow(f, selected = scope == MessageScope.Folder(f.account, f.id), count = 0, onClick = { onSelect(f) }, onMarkAllRead = { onMarkAllRead(f) }, onSyncNow = { onSyncNow(f) }, onMailboxSettings = { onMailboxSettings(f) }) }
         }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         NavigationDrawerItem(
@@ -119,15 +133,39 @@ fun MailDrawerContent(
     }
 }
 
+/**
+ * One mailbox of the drawer. A tap opens it; a long-press opens its menu (Mark all as read, hidden when nothing is unread, Sync
+ * now, Mailbox settings) with the long-press haptic and the 1 dp lift. The menu header is the mailbox name and its unread count.
+ */
 @Composable
-private fun DrawerRow(folder: FolderInfo, selected: Boolean, count: Int, onClick: () -> Unit) {
+private fun DrawerRow(folder: FolderInfo, selected: Boolean, count: Int, onClick: () -> Unit, onMarkAllRead: () -> Unit, onSyncNow: () -> Unit, onMailboxSettings: () -> Unit) {
     val name = folder.displayName()
-    NavigationDrawerItem(
-        label = { Text(name) },
-        selected = selected,
-        onClick = onClick,
-        icon = { Icon(folder.role.icon(), contentDescription = null) },
-        badge = if (count > 0) ({ Text(count.toString(), style = MaterialTheme.typography.labelLarge) }) else null,
-        modifier = Modifier.testTag(InboxTags.drawerItem(folder.id)).fillMaxWidth(),
+    var menuOpen by remember { mutableStateOf(false) }
+    val items = listOf(
+        MenuItemSpec(stringResource(R.string.mail_menu_mark_all_read), onMarkAllRead, icon = CroftIcons.EnvelopeOpen, visible = folder.unreadCount > 0),
+        MenuItemSpec(stringResource(R.string.mail_menu_sync_now), onSyncNow, icon = Icons.Filled.Refresh),
+        MenuItemSpec(stringResource(R.string.mail_menu_mailbox_settings), onMailboxSettings, icon = Icons.Filled.Settings),
     )
+    Box {
+        NavigationDrawerItem(
+            label = { Text(name) },
+            selected = selected,
+            onClick = onClick,
+            icon = { Icon(folder.role.icon(), contentDescription = null) },
+            badge = if (count > 0) ({ Text(count.toString(), style = MaterialTheme.typography.labelLarge) }) else null,
+            modifier = Modifier.testTag(InboxTags.drawerItem(folder.id)).fillMaxWidth().longPressMenu { menuOpen = true },
+        )
+        CroftMenu(
+            expanded = menuOpen,
+            onDismiss = { menuOpen = false },
+            items = items,
+            modifier = Modifier.testTag(InboxTags.drawerMenu(folder.id)),
+            header = {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Text(name, style = MaterialTheme.typography.titleSmall)
+                    if (folder.unreadCount > 0) Text(pluralStringResource(R.plurals.mail_menu_unread_count, folder.unreadCount, folder.unreadCount), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+        )
+    }
 }

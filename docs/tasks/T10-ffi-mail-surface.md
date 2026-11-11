@@ -1,10 +1,10 @@
-# T10: FFI mail surface (proposal)
+# T10: FFI mail surface
 
 Crate / folder: `core/ffi` (calls `core/engine`, `core/storage`, `core/protocols`)
 
 Depends on: T04 (`EngineHandle`), T05 (discovery), T06 (send), T07 (the first surface). Blocks: T11, T14 to T21 (everything in the app that talks to the core).
 
-**Status: proposal.** The orchestrator owns this surface and reviews every line of it. The implementer builds what the orchestrator finalises from this section. Anything marked "choice" is not decided yet; do not guess, ask.
+**Status: built (API version 3), on branch `task/t10`.** The "Final surface" section at the end is what was built; the "Proposed surface" above it is kept for the reasoning. See "As built" at the very end for where the code differs from the decision.
 
 ## Read first
 `CLAUDE.md` (architecture and security rules), `core/ffi/README.md`, `core/ffi/src/lib.rs`, `docs/tasks/T02-T04-design.md`, `docs/ux/server-contract.md`, `docs/ux/state-machines.md` (account connection, outgoing message), `android/README.md` (how the host library is loaded in JVM tests).
@@ -51,3 +51,24 @@ This replaces the "Proposed surface" above where they differ. Build exactly this
 - **Send.** Not in T10. Added by T06 part B / T18 with its own version bump.
 - **Errors.** Fieldless enums only (as `StorageReason` in API version 2). No `String` that could carry data crosses the boundary in an error.
 - **Version.** This surface is `FFI_API_VERSION = 3`.
+
+## As built (T10 implementation notes)
+
+Code: `core/ffi/src/` (`core.rs` the object, `changes.rs` the change log, `credentials.rs`, `settings.rs`, `list.rs`, `error.rs`, `types.rs`; tests in `src/tests/`). Kotlin: `android/app/src/test/kotlin/com/example/croft/MailSurfaceTest.kt`.
+
+Differences from the final surface above, and why:
+- **`mark_seen` and `set_flagged` return nothing, not `Vec<OpId>`.** `EngineHandle::mark_seen` / `set_flagged` return `()` (the queue may cancel the change against its opposite, so there is not always an operation). The undo for these is the opposite call inside the 1.5 s window. Moves and deletes return the ids. If the screens need ids for flag changes, the engine must return them first.
+- **`signed_in` is `async`** (it asks the app for the credential on a blocking thread, which must not happen on the UI thread). It returns `NoCredential` when the provider still has none.
+- **`ChangeBatch` has an extra field `everything: bool`**: true when the caller fell off the 512-entry ring, the engine channel lagged, or `after` is from another run. Tuples are not UniFFI types, so `folders` is `Vec<FolderRef { account, folder_id }>`.
+- **Failure reasons are a fixed enum** (`FailureReason`), mapped from the engine's reason strings, so no engine text crosses.
+- **Archive, Trash and Move to skip a message that is already in the destination** (no error); a batch may span accounts and is validated (every id exists, every destination exists) before the first change.
+- **`list_accounts` never reports `Syncing`**: the engine has no "syncing" signal yet. Statuses come from the core (`NeedsSignIn`, `Error` for unusable stored settings, `Offline` from `set_network_available`, else `Ok`).
+- **The keyset message query lives in `core/ffi/src/list.rs`**, not in `core/storage`, because T10 may not edit `messages.rs`. It reads `message` and `folder` only, filters on `account_id` in every statement, and should move to `croft_storage::messages` when that file is next open.
+- **`Core.open` is synchronous** (a constructor); it reads and migrates the database and calls the provider, so the app calls it off the main thread.
+- `VerifyFailure::UntrustedCertificate` and `CertificateChanged` carry the certificate fingerprint (a public SHA-256) as a string; every other error value is fieldless or holds an enum.
+
+Known limits: a stale `SignInNeeded` change from before `signed_in` can flip the chip back for one cycle (the engine emits it asynchronously). Credentials are read when an adapter is built, so an OAuth token that expires pauses the account (`sign_in_needed`) until the app calls `signed_in` with a fresh one.
+
+Two things for other tasks:
+- The generated Kotlin `FfiCredential.Password` / `OAuth2` are data classes, so their own `toString()` prints the secret (the Rust `Debug` does not). T11 must never log, print or put one in a crash report.
+- `android/app/build.gradle.kts` `rustSources` lists `ffi/**`, `storage/**` and `protocols/**` only. The ffi crate now also depends on `engine/**` and `mail-core/**`, so a change there does not invalidate `buildRustHost` / `generateUniffiBindings`. Add them when that file is next open (T10 may not edit it).

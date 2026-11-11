@@ -11,7 +11,7 @@ import uniffi.croft_ffi.ffiApiVersion
  * The FFI API version this app was written against. Bump it together with the Rust constant
  * `FFI_API_VERSION` in core/ffi/src/lib.rs, after adapting to the change that made it necessary.
  */
-const val EXPECTED_FFI_API_VERSION: UInt = 2u
+const val EXPECTED_FFI_API_VERSION: UInt = 3u
 
 /** What the Rust core reports about itself. */
 data class RustInfo(val croftVersion: String, val ffiApiVersion: UInt)
@@ -24,8 +24,11 @@ data class RustInfo(val croftVersion: String, val ffiApiVersion: UInt)
  */
 fun loadRustInfo(): RustInfo {
     val api = ffiApiVersion()
-    check(api == EXPECTED_FFI_API_VERSION) {
-        "FFI API version $api, expected $EXPECTED_FFI_API_VERSION"
-    }
+    checkFfiApiVersion(api)
     return RustInfo(croftVersion = croftVersion(), ffiApiVersion = api)
+}
+
+/** Refuses a library whose FFI API version is not [expected]. Separate so a test can try a mismatch. */
+internal fun checkFfiApiVersion(actual: UInt, expected: UInt = EXPECTED_FFI_API_VERSION) {
+    check(actual == expected) { "FFI API version $actual, expected $expected" }
 }

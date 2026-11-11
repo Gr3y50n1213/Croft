@@ -198,8 +198,33 @@ pub fn backoff_ms(attempts: u32) -> i64 {
     STEPS[(attempts.saturating_sub(1) as usize).min(STEPS.len() - 1)]
 }
 
-/// The queue. Lives in memory here; the engine persists it in the `op_queue` table.
-#[derive(Debug, Default)]
+/// A message that was moved on the server but whose new UID is not known yet.
+///
+/// Later operations on the old address wait while this exists. The engine finds the message again
+/// by `message_id` in `dest_folder` and calls [`OpQueue::repoint`], or gives up and calls
+/// [`OpQueue::abandon`]. It is stored with the queue (see [`crate::persist`]), so a restart does
+/// not let a later operation run against the old UID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AwaitingUid {
+    /// Owning account.
+    pub account: AccountId,
+    /// Old folder path (where the message was).
+    pub folder: String,
+    /// Old UID.
+    pub uid: Uid,
+    /// Folder the message was moved to. Empty when the operation was not a move.
+    pub dest_folder: String,
+    /// The message's `Message-ID` header, used to find it again. `None` means it cannot be found.
+    pub message_id: Option<String>,
+    /// How many times the engine has already looked for it.
+    pub lookups: u32,
+    /// When the move was confirmed (Unix milliseconds; 0 if the caller did not say).
+    pub created_ms: i64,
+}
+
+/// The queue. Lives in memory; [`crate::persist::PersistentQueue`] keeps it in the `op_queue`
+/// table so it survives a kill.
+#[derive(Debug, Default, Clone)]
 pub struct OpQueue {
     ops: BTreeMap<OpId, Op>,
     next_id: OpId,
@@ -210,7 +235,7 @@ pub struct OpQueue {
     /// Account-wide backoff after a transient failure: nothing for the account runs before then.
     holds: BTreeMap<AccountId, i64>,
     /// Messages that were moved but whose new UID is not known yet. Later operations on them wait.
-    awaiting_uid: BTreeSet<(AccountId, String, Uid)>,
+    awaiting_uid: BTreeMap<(AccountId, String, Uid), AwaitingUid>,
 }
 
 impl OpQueue {
@@ -220,6 +245,57 @@ impl OpQueue {
             next_id: 1,
             ..Self::default()
         }
+    }
+
+    /// Rebuilds a queue from stored operations and awaiting-UID entries (see
+    /// [`crate::persist::OpStore::load`]). The next id is one above the largest of `max_id` (the
+    /// largest id the store ever held, which may belong to a row that is gone) and the ids given.
+    /// Offline flags, pauses and back-off are not stored: the engine sets them again.
+    ///
+    /// Operations still marked [`OpState::Applying`] are kept as they are; call
+    /// [`OpQueue::recover_after_restart`] to put them back in the queue.
+    pub fn from_parts(ops: Vec<Op>, awaiting: Vec<AwaitingUid>, max_id: OpId) -> Self {
+        let next_id = ops
+            .iter()
+            .map(|op| op.id)
+            .max()
+            .unwrap_or(0)
+            .max(max_id)
+            .saturating_add(1);
+        Self {
+            next_id,
+            ops: ops.into_iter().map(|op| (op.id, op)).collect(),
+            awaiting_uid: awaiting
+                .into_iter()
+                .map(|a| ((a.account, a.folder.clone(), a.uid), a))
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Every operation, in id (creation) order.
+    pub fn iter(&self) -> impl Iterator<Item = &Op> {
+        self.ops.values()
+    }
+
+    /// Every message that is waiting for its new UID, in a stable order.
+    pub fn awaiting(&self) -> impl Iterator<Item = &AwaitingUid> {
+        self.awaiting_uid.values()
+    }
+
+    /// The awaiting-UID entry for the message that used to be at `from`, if any.
+    pub fn awaiting_for(&self, account: AccountId, from: (&str, Uid)) -> Option<&AwaitingUid> {
+        self.awaiting_uid.get(&(account, from.0.to_owned(), from.1))
+    }
+
+    /// Counts one more lookup by Message-ID for the message that used to be at `from`. Returns the
+    /// new count, or `None` if nothing is waiting for that address.
+    pub fn record_lookup(&mut self, account: AccountId, from: (&str, Uid)) -> Option<u32> {
+        let entry = self
+            .awaiting_uid
+            .get_mut(&(account, from.0.to_owned(), from.1))?;
+        entry.lookups = entry.lookups.saturating_add(1);
+        Some(entry.lookups)
     }
 
     /// Records a change. `undo_window_ms` is the person's Undo setting (5 000 by default); it
@@ -342,7 +418,7 @@ impl OpQueue {
         !self.awaiting_uid.is_empty()
             && self
                 .awaiting_uid
-                .contains(&(op.account, folder.to_owned(), uid))
+                .contains_key(&(op.account, folder.to_owned(), uid))
     }
 
     /// The server accepted the operation. Any backoff on the account ends.
@@ -365,13 +441,31 @@ impl OpQueue {
     /// engine has found the message by Message-ID and called [`OpQueue::repoint`], or given up and
     /// called [`OpQueue::abandon`].
     pub fn confirm_moved(&mut self, id: OpId, new_location: Option<(String, Uid)>) {
-        let Some((account, from_folder, from_uid)) = self
+        self.confirm_moved_with(id, new_location, None, 0);
+    }
+
+    /// Like [`OpQueue::confirm_moved`], and when the new UID is not known, also keeps the
+    /// `Message-ID` header (from the local row; `None` if it has none) and the confirmation time,
+    /// so the engine can find the message again even after a restart. The destination folder is
+    /// taken from the move itself.
+    pub fn confirm_moved_with(
+        &mut self,
+        id: OpId,
+        new_location: Option<(String, Uid)>,
+        message_id: Option<String>,
+        now_ms: i64,
+    ) {
+        let Some((account, from_folder, from_uid, dest)) = self
             .ops
             .get(&id)
             .filter(|op| op.state == OpState::Applying)
             .map(|op| {
                 let (folder, uid) = op.kind.target();
-                (op.account, folder.to_owned(), uid)
+                let dest = match &op.kind {
+                    OpKind::MoveTo { dest, .. } => dest.clone(),
+                    _ => String::new(),
+                };
+                (op.account, folder.to_owned(), uid, dest)
             })
         else {
             return;
@@ -382,7 +476,18 @@ impl OpQueue {
                 self.repoint(account, (&from_folder, from_uid), to);
             }
             None => {
-                self.awaiting_uid.insert((account, from_folder, from_uid));
+                self.awaiting_uid.insert(
+                    (account, from_folder.clone(), from_uid),
+                    AwaitingUid {
+                        account,
+                        folder: from_folder,
+                        uid: from_uid,
+                        dest_folder: dest,
+                        message_id,
+                        lookups: 0,
+                        created_ms: now_ms,
+                    },
+                );
             }
         }
     }
@@ -986,5 +1091,48 @@ mod tests {
         assert_eq!(backoff_ms(4), 600_000);
         assert_eq!(backoff_ms(5), 3_600_000);
         assert_eq!(backoff_ms(50), 3_600_000);
+    }
+
+    #[test]
+    fn a_move_without_a_uid_keeps_where_it_went_and_how_to_find_it() {
+        let mut q = OpQueue::new();
+        let moved = queued(&mut q, mv(1, "Archive"), 0);
+        q.take_due(5_000, 10);
+        q.confirm_moved_with(moved, None, Some("<a@example.org>".into()), 5_100);
+        let entry = q.awaiting_for(A, ("INBOX", 1)).cloned();
+        assert_eq!(
+            entry,
+            Some(AwaitingUid {
+                account: A,
+                folder: "INBOX".into(),
+                uid: 1,
+                dest_folder: "Archive".into(),
+                message_id: Some("<a@example.org>".into()),
+                lookups: 0,
+                created_ms: 5_100,
+            })
+        );
+        assert_eq!(q.record_lookup(A, ("INBOX", 1)), Some(1));
+        assert_eq!(q.record_lookup(A, ("INBOX", 2)), None);
+        q.repoint(A, ("INBOX", 1), ("Archive".into(), 3));
+        assert_eq!(q.awaiting().count(), 0);
+    }
+
+    #[test]
+    fn a_rebuilt_queue_has_the_same_operations_and_hands_out_fresh_ids() {
+        let mut q = OpQueue::new();
+        let a = queued(&mut q, seen(1, true), 0);
+        let b = queued(&mut q, mv(2, "Trash"), 0);
+        let ops: Vec<Op> = q.iter().cloned().collect();
+        let mut rebuilt = OpQueue::from_parts(ops.clone(), Vec::new(), 7);
+        assert_eq!(rebuilt.iter().cloned().collect::<Vec<_>>(), ops);
+        assert_eq!((a, b), (1, 2));
+        assert_eq!(queued(&mut rebuilt, seen(3, true), 0), 8, "above max_id");
+        let mut small = OpQueue::from_parts(ops, Vec::new(), 0);
+        assert_eq!(
+            queued(&mut small, seen(3, true), 0),
+            3,
+            "above the ids held"
+        );
     }
 }

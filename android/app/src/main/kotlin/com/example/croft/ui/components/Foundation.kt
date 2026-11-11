@@ -37,6 +37,11 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsPropertyKey
@@ -74,6 +79,9 @@ var SemanticsPropertyReceiver.motionProbes by MotionProbes
 
 /** Expose [read] as the probe [name] of this node. */
 fun Modifier.motionProbe(name: String, read: () -> Float): Modifier = semantics { motionProbes = mapOf(name to read) }
+
+/** Expose several probes of this node at once (two `semantics` modifiers on one node do not merge a map). */
+fun Modifier.motionProbes(vararg probes: Pair<String, () -> Float>): Modifier = semantics { motionProbes = probes.toMap() }
 
 /** The reason a disabled control is disabled, when it has one. Tests read it. */
 val DisabledReason = SemanticsPropertyKey<String>("DisabledReason")
@@ -174,7 +182,7 @@ fun Modifier.croftClickable(
     val lift = remember { LiftState() }
     return this
         .liftVisual(lift, forceLifted)
-        .semantics {
+        .semantics(mergeDescendants = true) {
             if (role != null) this.role = role
             if (!enabled) disabled() else {
                 onClick(label = onClickLabel) { onClickNow.value(); true }
@@ -248,11 +256,22 @@ fun Modifier.explainsWhenDisabled(enabled: Boolean, reason: String?, onExplain: 
     val explain = rememberUpdated(onExplain)
     return this
         .semantics { stateDescription = reason; disabledReason = reason }
+        // Watches on the Initial pass without consuming, so it sees the touch even though the disabled control (and any
+        // scroll container around it) takes no part in it.
         .pointerInput(reason) {
-            detectTapGestures(
-                onTap = { haptics.perform(HapticEvent.Rejected); explain.value(reason) },
-                onLongPress = { explain.value(reason) },
-            )
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                try {
+                    val up = withTimeout(viewConfiguration.longPressTimeoutMillis) { waitForUpOrCancellation(PointerEventPass.Initial) }
+                    if (up != null && (up.position - down.position).getDistance() <= viewConfiguration.touchSlop) {
+                        haptics.perform(HapticEvent.Rejected)
+                        explain.value(reason)
+                    }
+                } catch (e: PointerEventTimeoutCancellationException) {
+                    explain.value(reason)
+                    waitForUpOrCancellation(PointerEventPass.Initial)
+                }
+            }
         }
 }
 

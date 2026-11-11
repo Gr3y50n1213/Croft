@@ -44,9 +44,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.selected
@@ -125,6 +127,9 @@ fun MessageRow(
     val colors = MaterialTheme.colorScheme
     val level = LocalMotionLevel.current
     val density = settings.density
+    // At a large text size rows grow and wrap instead of cutting words (docs/ux/accessibility.md).
+    val bigText = androidx.compose.ui.platform.LocalDensity.current.fontScale > BIG_TEXT_FROM_FONT_SCALE
+    val lineCap = if (bigText) Int.MAX_VALUE else 1
     val shape = RoundedCornerShape(settings.roundness.swipeCardRadiusDp.dp)
     val pressed by interactionSource.collectIsPressedAsState()
     val boldUnread = state.unread && settings.unreadEmphasis != UnreadEmphasis.DOT
@@ -159,7 +164,7 @@ fun MessageRow(
     val starLabel = stringResource(if (state.starred) R.string.row_action_unstar else R.string.row_action_star)
     val failedState = stringResource(R.string.row_failed_state)
 
-    Box(modifier.fillMaxWidth().heightIn(min = density.rowDp.dp)) {
+    Box(modifier.fillMaxWidth().heightIn(min = density.rowDp.dp).motionProbe("new-tint") { newTint.value }) {
         if (dragOffset > 0.dp) {
             // The pill that fills the space the card leaves: row height, 4 dp from the card, 8 dp from the row edge.
             Box(
@@ -221,7 +226,7 @@ fun MessageRow(
                     }
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(sender, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(sender, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = weight, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
                             if (state.pendingOffline) Icon(CroftIcons.Schedule, null, Modifier.size(14.dp), tint = colors.onSurfaceVariant)
                             Text(
                                 time,
@@ -231,9 +236,9 @@ fun MessageRow(
                                 maxLines = 1,
                             )
                         }
-                        Text(subject, style = MaterialTheme.typography.bodyMedium, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(subject, style = MaterialTheme.typography.bodyMedium, fontWeight = weight, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
                         if (density.previewLines > 0) {
-                            Text(preview, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant, maxLines = density.previewLines, overflow = TextOverflow.Ellipsis)
+                            Text(preview, Modifier.testTag(ROW_PREVIEW_TAG), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant, maxLines = density.previewLines, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     if (state.starred || state.encryption != EncryptionMark.NONE) {
@@ -255,6 +260,12 @@ fun MessageRow(
 
 private const val NEW_TINT_ALPHA = 0.16f
 
+/** From this combined font scale a row's sender and subject wrap instead of ending in an ellipsis. */
+private const val BIG_TEXT_FROM_FONT_SCALE = 1.3f
+
+/** The preview is cut to the Show previews setting on purpose; tests that look for clipped text skip it. */
+const val ROW_PREVIEW_TAG = "row-preview"
+
 private fun Modifier.matchParentSizeTint(colour: androidx.compose.ui.graphics.Color): Modifier =
     this.fillMaxWidth().fillMaxHeight().background(colour)
 
@@ -273,7 +284,7 @@ private fun FailedEdge(holdMs: Long?, modifier: Modifier) {
         if (level == MotionLevel.FULL) MaterialTheme.motionScheme.defaultEffectsSpec() else androidx.compose.animation.core.snap(),
         label = "failed-edge",
     )
-    Box(modifier.width(RedEdgeWidth).fillMaxHeight().alpha(alpha).background(MaterialTheme.colorScheme.error))
+    Box(modifier.width(RedEdgeWidth).fillMaxHeight().motionProbe("failed-edge") { alpha }.alpha(alpha).background(MaterialTheme.colorScheme.error))
 }
 
 /** The avatar: the first letter in a circle, or a check when selected, with the flip (Full) or a cross-fade (Reduced, Off). */
@@ -289,7 +300,7 @@ private fun Avatar(sender: String, selected: Boolean, size: Dp, onClick: (() -> 
     Box(
         Modifier
             .size(size)
-            .motionProbe("avatar-flip") { flip }
+            .motionProbes("avatar-flip" to { flip }, "avatar-rotation" to { if (flips) flip * 180f else 0f })
             .graphicsLayer { if (flips) rotationY = flip * 180f }
             .clip(CircleShape)
             .background(
@@ -298,6 +309,8 @@ private fun Avatar(sender: String, selected: Boolean, size: Dp, onClick: (() -> 
                     else -> androidx.compose.ui.graphics.lerp(colors.secondaryContainer, colors.primary, flip.coerceIn(0f, 1f))
                 },
             )
+            // Screen readers reach Select through the row's custom actions, so the avatar is not a second element for them.
+            .clearAndSetSemantics { }
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {

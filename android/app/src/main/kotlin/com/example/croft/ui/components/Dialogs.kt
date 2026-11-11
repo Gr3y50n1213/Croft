@@ -59,7 +59,10 @@ fun DestructiveDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = modifier
-            .motionProbe("enter") { enter.value }
+            .motionProbes(
+                "enter" to { enter.value },
+                "enter-scale" to { if (level == MotionLevel.FULL) DIALOG_START_SCALE + (1f - DIALOG_START_SCALE) * enter.value else 1f },
+            )
             .graphicsLayer {
                 alpha = enter.value
                 if (level == MotionLevel.FULL) {

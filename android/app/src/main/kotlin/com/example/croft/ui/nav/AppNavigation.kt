@@ -17,6 +17,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import com.example.croft.RustInfo
 import com.example.croft.debug.DebugGallery
 import com.example.croft.mail.MailSession
+import com.example.croft.mail.MailSettings
+import com.example.croft.ui.mail.InboxSettingsScreen
 import com.example.croft.swipe.SwipeSettings
 import com.example.croft.ui.swipe.SwipeSettingsFlow
 import com.example.croft.ui.mail.InboxScreen
@@ -38,6 +40,9 @@ enum class Route(val parent: Route?) {
 
     /** S47 Swipe actions and its picker S48. */
     SWIPE_ACTIONS(SETTINGS),
+
+    /** S49 Inbox and categories (the Undo time so far). */
+    INBOX_SETTINGS(SETTINGS),
 
     /** The component gallery (debug builds only). */
     GALLERY(SETTINGS),
@@ -64,6 +69,8 @@ fun CroftNavHost(
     startAt: Route = Route.HOME,
     swipeSettings: SwipeSettings = SwipeSettings.Default,
     onSwipeSettingsChange: (SwipeSettings) -> Unit = {},
+    mailSettings: MailSettings = MailSettings(),
+    onMailSettingsChange: (MailSettings) -> Unit = {},
 ) {
     var route by rememberSaveable { mutableStateOf(startAt) }
     // A debug-only route can never be reached from a release build, even from saved state.
@@ -83,11 +90,13 @@ fun CroftNavHost(
                 info = info,
                 onOpenAppearance = { route = Route.APPEARANCE },
                 onOpenSwipeActions = { route = Route.SWIPE_ACTIONS },
+                onOpenInbox = { route = Route.INBOX_SETTINGS },
                 onOpenGallery = if (DebugGallery.available) ({ route = Route.GALLERY }) else null,
                 onBack = { route = Route.HOME },
             )
             Route.APPEARANCE -> AppearanceFlow(settings = settings, onChange = onSettingsChange, onBack = { route = Route.SETTINGS })
             Route.SWIPE_ACTIONS -> SwipeSettingsFlow(settings = swipeSettings, onChange = onSwipeSettingsChange, onBack = { route = Route.SETTINGS })
+            Route.INBOX_SETTINGS -> InboxSettingsScreen(settings = mailSettings, onChange = onMailSettingsChange, onBack = { route = Route.SETTINGS })
             Route.GALLERY -> DebugGallery.Screen(onBack = { route = Route.SETTINGS })
         }
     }

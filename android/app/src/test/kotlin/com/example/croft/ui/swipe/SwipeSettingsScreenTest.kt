@@ -122,13 +122,12 @@ class SwipeSettingsScreenTest {
     }
 
     @Test
-    fun s48_theRadioListShowsEveryActionWithItsIcon_andLeavesOutSnoozeAndMoveToUntilTheirSheetsExist() {
+    fun s48_theRadioListShowsEveryActionWithItsIcon_includingMoveTo_andLeavesOutSnoozeUntilItsSheetExists() {
         show(startAt = SwipeRoute.S48_START_TO_END)
         rule.onNodeWithTag(SwipeTags.S48).assertExists()
         for (a in SwipeAction.picker) rule.onNodeWithTag(SwipeTags.option(a)).assertExists()
-        for (name in listOf("Mark read or unread", "Archive", "Delete", "Star", "Mark as spam", "None")) rule.onNodeWithText(name).assertExists()
+        for (name in listOf("Mark read or unread", "Archive", "Delete", "Move to", "Star", "Mark as spam", "None")) rule.onNodeWithText(name).assertExists()
         assertFalse(exists("Snooze"))
-        assertFalse(exists("Move to"))
         assertFalse(exists("Coming later"))
         rule.onNodeWithText("The pill and icon use the colour shown here while you swipe.", substring = true).assertExists()
     }

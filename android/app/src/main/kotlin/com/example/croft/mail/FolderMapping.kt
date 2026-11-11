@@ -26,6 +26,12 @@ interface FolderMapping {
     /** Forget the choice (the folder is gone, or the person changed their mind). */
     fun forget(account: AccountId, role: FolderRole)
 
+    /** The person declined to use any folder as [role] for [account]: the action is hidden for that account (S45 can undo this). */
+    fun decline(account: AccountId, role: FolderRole)
+
+    /** Whether [decline] was called for [account] and [role], and no folder was chosen since. */
+    fun isDeclined(account: AccountId, role: FolderRole): Boolean
+
     /** The last folders [account]'s mail was moved to, newest first, at most [MAX_RECENT]. */
     fun recents(account: AccountId): List<FolderId>
 
@@ -42,10 +48,15 @@ interface FolderMapping {
 open class InMemoryFolderMapping : FolderMapping {
     private val roles = HashMap<Pair<AccountId, FolderRole>, FolderId>()
     private val recent = HashMap<AccountId, List<FolderId>>()
+    private val declined = HashSet<Pair<AccountId, FolderRole>>()
+
+    @Synchronized override fun decline(account: AccountId, role: FolderRole) { roles.remove(account to role); declined += account to role; changed() }
+
+    @Synchronized override fun isDeclined(account: AccountId, role: FolderRole): Boolean = (account to role) in declined
 
     @Synchronized override fun mapped(account: AccountId, role: FolderRole): FolderId? = roles[account to role]
 
-    @Synchronized override fun remember(account: AccountId, role: FolderRole, folder: FolderId) { roles[account to role] = folder; changed() }
+    @Synchronized override fun remember(account: AccountId, role: FolderRole, folder: FolderId) { roles[account to role] = folder; declined.remove(account to role); changed() }
 
     @Synchronized override fun forget(account: AccountId, role: FolderRole) { roles.remove(account to role); changed() }
 
@@ -62,6 +73,7 @@ open class InMemoryFolderMapping : FolderMapping {
     /** The contents as lines, for [FileFolderMapping]. */
     @Synchronized protected fun lines(): List<String> =
         roles.entries.sortedBy { it.key.first }.map { (k, v) -> "m ${k.first} ${k.second.name} $v" } +
+            declined.sortedBy { it.first }.map { (a, role) -> "d $a ${role.name}" } +
             recent.entries.sortedBy { it.key }.map { (a, fs) -> "r $a ${fs.joinToString(",")}" }
 
     /** Replaces the contents with [text]'s lines; anything that is not a valid line is ignored. */
@@ -71,6 +83,7 @@ open class InMemoryFolderMapping : FolderMapping {
             try {
                 when {
                     parts.size == 4 && parts[0] == "m" -> roles[parts[1].toLong() to FolderRole.valueOf(parts[2])] = parts[3].toLong()
+                    parts.size == 3 && parts[0] == "d" -> declined += parts[1].toLong() to FolderRole.valueOf(parts[2])
                     parts.size == 3 && parts[0] == "r" -> recent[parts[1].toLong()] = parts[2].split(',').map { it.toLong() }.take(FolderMapping.MAX_RECENT)
                 }
             } catch (e: IllegalArgumentException) {

@@ -29,6 +29,14 @@ class FolderMappingTest {
             assertEquals(listOf(10L, 9L, 8L, 5L, 7L), second.recents(1))
             second.forget(1, FolderRole.ARCHIVE)
             assertNull(FileFolderMapping(file).mapped(1, FolderRole.ARCHIVE))
+
+            // "Don't offer Archive for this account" is kept too, and choosing a folder later undoes it.
+            second.decline(3, FolderRole.ARCHIVE)
+            assertEquals(true, FileFolderMapping(file).isDeclined(3, FolderRole.ARCHIVE))
+            assertEquals(false, FileFolderMapping(file).isDeclined(3, FolderRole.TRASH))
+            second.remember(3, FolderRole.ARCHIVE, 31)
+            assertEquals(false, FileFolderMapping(file).isDeclined(3, FolderRole.ARCHIVE))
+            assertEquals(31L, FileFolderMapping(file).mapped(3, FolderRole.ARCHIVE))
         } finally {
             dir.deleteRecursively()
         }

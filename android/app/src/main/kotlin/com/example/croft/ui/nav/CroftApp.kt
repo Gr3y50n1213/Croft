@@ -15,7 +15,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.example.croft.CroftTheme
 import com.example.croft.RustInfo
+import com.example.croft.mail.Connectivity
+import com.example.croft.mail.LocalMailSettings
 import com.example.croft.mail.MailSession
+import com.example.croft.mail.MailSettings
+import com.example.croft.mail.MailSettingsStore
+import com.example.croft.mail.followConnectivity
 import com.example.croft.swipe.SwipeSettings
 import com.example.croft.theme.ThemeSettings
 import com.example.croft.theme.ThemeStore
@@ -38,17 +43,32 @@ fun CroftApp(
     modifier: Modifier = Modifier,
     startAt: Route = Route.HOME,
     swipeStore: SwipeSettingsStore? = null,
+    /** The mail settings (S49 Undo time); the default time when null. */
+    mailStore: MailSettingsStore? = null,
+    /** The platform's connectivity callback, turned into `set_network_available` for the core; none when null (tests). */
+    connectivity: Connectivity? = null,
 ) {
     var settings by remember { mutableStateOf<ThemeSettings?>(null) }
     LaunchedEffect(store) { settings = store.settings.first() }
     var swipe by remember { mutableStateOf<SwipeSettings?>(null) }
     LaunchedEffect(swipeStore) { swipe = swipeStore?.settings?.first() ?: SwipeSettings.Default }
+    var mail by remember { mutableStateOf<MailSettings?>(null) }
+    LaunchedEffect(mailStore) { mail = mailStore?.settings?.first() ?: MailSettings() }
+    // The Undo time goes to the snackbar and to the core, at the start and at every change.
+    LaunchedEffect(session, mail) {
+        val m = mail ?: return@LaunchedEffect
+        session.undoWindowMs = m.undoWindowMs
+        try { session.repository.setUndoWindowMs(m.undoWindowMs) } catch (e: com.example.croft.mail.MailException) { /* the core is closing */ }
+    }
+    // Whether the device has a network: the core shows Offline and sends nothing while it does not.
+    if (connectivity != null) LaunchedEffect(session, connectivity) { session.followConnectivity(connectivity) }
     val scope = rememberCoroutineScope()
     val swipeNow = swipe
     val themeNow = settings
-    if (themeNow != null && swipeNow != null) {
+    val mailNow = mail
+    if (themeNow != null && swipeNow != null && mailNow != null) {
         CroftTheme(themeNow) {
-            CompositionLocalProvider(LocalSwipeSettings provides swipeNow) {
+            CompositionLocalProvider(LocalSwipeSettings provides swipeNow, LocalMailSettings provides mailNow) {
                 CroftNavHost(
                     info = info,
                     session = session,
@@ -58,6 +78,8 @@ fun CroftApp(
                     onSettingsChange = { next -> settings = next; scope.launch { store.set(next) } },
                     swipeSettings = swipeNow,
                     onSwipeSettingsChange = { next -> swipe = next; scope.launch { swipeStore?.set(next) } },
+                    mailSettings = mailNow,
+                    onMailSettingsChange = { next -> mail = next; scope.launch { mailStore?.set(next) } },
                 )
             }
         }

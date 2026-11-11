@@ -1,6 +1,8 @@
 {
   "_comment": "Approved permissions and exported components of the release merged manifest. Add an entry only with the task or store-checklist row that justifies it (docs/store/READINESS.md). ${applicationId} stands for the application id.",
   "uses-permission": {
+    "android.permission.INTERNET": "Mail sync: the Rust core opens its own TLS connections to the person's IMAP and SMTP servers (docs/store/READINESS.md, permissions table; T16).",
+    "android.permission.ACCESS_NETWORK_STATE": "The connectivity callback (ConnectivityManager.registerDefaultNetworkCallback) that tells the core whether the device has a network, so that the Offline banner is true and nothing is sent while offline (T16). Normal permission, no data leaves the device.",
     "${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "AndroidX core adds this signature-level permission (declared by the app itself, protectionLevel signature) so that dynamically registered receivers are not exported; not grantable to other apps."
   },
   "permission": {

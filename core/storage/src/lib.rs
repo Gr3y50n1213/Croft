@@ -1,9 +1,27 @@
-//! Croft local database: the schema and its migrations.
+//! Croft local database: the schema, its migrations, and the SQLite connection layer.
 //!
-//! This crate owns the SQL. It deliberately has no SQLite dependency yet: the connection layer
-//! (`rusqlite`, SQLCipher, FTS5) is added in the next step, once crates.io is reachable from the
-//! build environment. Until then the migrations are plain data that the rest of the workspace and
-//! `tools/check_schema.py` can already rely on.
+//! [`Db`] opens the file (optionally encrypted with the `sqlcipher` feature), refuses a database
+//! written by a newer app, and runs the forward-only migrations. The repository modules
+//! ([`accounts`], [`folders`], [`messages`], [`settings`]) are plain functions over a
+//! `&rusqlite::Connection`, so they work the same inside [`Db::transaction`].
+//!
+//! Every query on account data is scoped by `account_id`; only `account` itself and the app-wide
+//! `setting` table are not.
+
+pub mod accounts;
+mod db;
+mod error;
+pub mod folders;
+pub mod messages;
+pub mod settings;
+
+#[cfg(test)]
+mod repo_tests;
+#[cfg(test)]
+mod schema_checks;
+
+pub use db::Db;
+pub use error::{Result, StorageError};
 
 /// One forward-only schema change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

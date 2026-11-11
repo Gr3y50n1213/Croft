@@ -61,7 +61,7 @@ enum class Route(val parent: Route?) {
 
 /**
  * The one place "Try with sample mail" (S01) goes through. For now it opens the existing fake-data Inbox: while no account exists the
- * app's session is already the sample mailbox ([com.example.croft.mail.MailSession.isDemo]), so this just goes Home. A follow-up task
+ * app's session is already the sample mailbox ([com.example.croft.mail.MailSession.usesFakeData]), so this just goes Home. A follow-up task
  * points it at the core's own sample account instead; only this function changes then.
  */
 internal fun onTrySampleMail(goHome: () -> Unit) = goHome()

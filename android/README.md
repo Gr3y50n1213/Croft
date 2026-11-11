@@ -83,7 +83,7 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
 - `MainActivity` opens the core **off the main thread** (`mail/MailRuntime`: `createAppSecrets`, `openCore`, `SecretStoreCredentials`, T11)
   and builds the `MailSession` over it. With no account in the core the app still shows the fake sample mailbox (onboarding is T17); the
   open core is kept in `MailRuntime.core` for T17.
-- `mail/CoreMessageRepository` implements `MessageRepository` over `uniffi.croft_ffi.Core` (FFI API version 5); `CoreRowActions` implements
+- `mail/CoreMessageRepository` implements `MessageRepository` over `uniffi.croft_ffi.Core` (FFI API version 6); `CoreRowActions` implements
   `RowActions`; `FolderMapping` remembers, per account, the folder chosen for Archive or Trash when the server has none (asked once) and the
   recent Move to folders. S30 is `ui/mail/MoveToSheet`; S49 (Undo time) is `ui/mail/InboxSettingsScreen` with `mail/MailSettings`
   (`croft-mail.json`); the Undo time is handed to the core (`set_undo_window_ms`) at start and at every change.

@@ -7,18 +7,22 @@
 //!
 //! This crate holds the shared vocabulary ([`types`]), the trait ([`backend`]) and the IMAP
 //! adapter ([`imap`]), the JMAP adapter ([`jmap`]) and the SMTP sender ([`smtp`]). DAV arrives in a later task.
+//! [`demo`] is the built-in sample mailbox, which never touches a network.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod backend;
+pub mod demo;
 pub mod discovery;
 pub mod imap;
 pub mod jmap;
+pub mod lines;
 pub mod smtp;
 pub mod submit;
 pub mod types;
 
 pub use backend::{BackendFuture, MailBackend};
+pub use demo::{DemoBackend, DemoFolderState, DemoSubmitter};
 pub use imap::{
     check_certificate, probe_certificate, CertFingerprint, CertificateProblem, Credential,
     ImapBackend, ImapConfig, Security,

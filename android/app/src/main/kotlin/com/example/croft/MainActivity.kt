@@ -46,7 +46,7 @@ class MainActivity : ComponentActivity() {
                 CroftApp(
                     store, info, ready,
                     // A fresh install (no account yet, so the session is the sample mailbox) starts at S01; with an account the app starts on the Inbox.
-                    startAt = if (ready.isDemo) Route.ONBOARDING else Route.HOME,
+                    startAt = if (ready.usesFakeData) Route.ONBOARDING else Route.HOME,
                     onboarding = onboarding,
                     swipeStore = com.example.croft.ui.swipe.SwipeSettingsStore.shared(applicationContext),
                     mailStore = mailStore,

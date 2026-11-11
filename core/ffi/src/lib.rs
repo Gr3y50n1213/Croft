@@ -67,10 +67,19 @@ uniffi::setup_scaffolding!();
 /// credential, so the provider is only asked about accounts the app already stored. Version 5:
 /// `MessageRow.thread_count` and `.recipients`, `AccountInfo.last_synced_ms` and
 /// `MessageScope::Starred`. Version 6: `add_demo_account` (the sample mailbox) and
-/// `AccountInfo.is_demo`. Bump on any change to what is exported. (The `test-server` feature adds
+/// `AccountInfo.is_demo`. Version 7: `add_account` for an address that is already added, with the
+/// same servers, updates that account and returns `AddedAccount { id, updated, update_token }`; it
+/// takes `confirmed_fingerprint` and fails with `CoreError::CertificateChanged` when it would
+/// replace, add or drop a trusted certificate pin without the person's confirmation of that
+/// fingerprint (a pin is never dropped); the other servers give the new `CoreError::AccountExists`;
+/// `verify` returns the pin it checked against (and checks against the stored pin of the same
+/// account, and reports a self-signed certificate for an account stored without a pin as changed);
+/// `commit_account_update` and `rollback_account_update` finish an update, each with its token.
+/// Bump on any change to what is
+/// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 6;
+pub const FFI_API_VERSION: u32 = 7;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

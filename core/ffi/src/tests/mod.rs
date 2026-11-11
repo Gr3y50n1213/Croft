@@ -10,6 +10,7 @@
 mod demo;
 mod encrypted;
 mod local;
+mod readd;
 mod secrets;
 mod server;
 
@@ -243,9 +244,11 @@ impl Rig {
             discovered_for(&server),
             "Alice".into(),
             Some(fingerprint.clone()),
+            None,
             password_cred(PASSWORD),
         ))
-        .unwrap();
+        .unwrap()
+        .id;
         // What the app does once `add_account` has returned.
         provider.store(account, password_cred(PASSWORD));
         Self {

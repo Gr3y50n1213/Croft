@@ -45,9 +45,9 @@ private class AppOnboardingBackend(private val context: Context) : OnboardingBac
         } catch (e: UnsatisfiedLinkError) {
             throw StorageUnavailableException()
         }
-        return CoreOnboardingBackend(open.core) { discovered, name, pin, password ->
+        return CoreOnboardingBackend(open.core) { discovered, name, pin, confirmed, password ->
             try {
-                open.accountSecrets.addPasswordAccount(open.core, discovered, name, pin, password)
+                open.accountSecrets.addPasswordAccount(open.core, discovered, name, pin, confirmed, password)
             } catch (e: SecretBoxException) {
                 throw StorageUnavailableException()
             } catch (e: IOException) {
@@ -58,11 +58,16 @@ private class AppOnboardingBackend(private val context: Context) : OnboardingBac
 
     override suspend fun discover(email: String, observer: DiscoveryObserver): FfiDiscovered = real().discover(email, observer)
 
-    override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?) =
+    override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?): String? =
         real().verify(discovered, password, pinnedFingerprint)
 
-    override suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long =
-        real().addAccount(discovered, displayName, pinnedFingerprint, password)
+    override suspend fun addAccount(
+        discovered: FfiDiscovered,
+        displayName: String,
+        pinnedFingerprint: String?,
+        confirmedFingerprint: String?,
+        password: ByteArray,
+    ): Long = real().addAccount(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)
 
     override fun toString(): String = "[redacted]"
 }

@@ -58,16 +58,30 @@ class FakeBackend : OnboardingBackend {
         return found
     }
 
-    override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?) {
+    /** The certificate the fake says the check was made against; null means the one the flow passed (what a server with no stored pin does). */
+    @Volatile var verifiedAgainst: String? = null
+
+    override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?): String? {
         val text = String(password)
         verifies += pinnedFingerprint to text
         lastVerified = discovered
         verifyGate?.await()
         onVerify(discovered, text, pinnedFingerprint)
+        return verifiedAgainst ?: pinnedFingerprint
     }
 
-    override suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long {
+    /** The `confirmedFingerprint` each add was given, in order. */
+    val confirmations = CopyOnWriteArrayList<String?>()
+
+    override suspend fun addAccount(
+        discovered: FfiDiscovered,
+        displayName: String,
+        pinnedFingerprint: String?,
+        confirmedFingerprint: String?,
+        password: ByteArray,
+    ): Long {
         val text = String(password)
+        confirmations += confirmedFingerprint
         adds += pinnedFingerprint to text
         return onAdd(discovered, pinnedFingerprint, text)
     }

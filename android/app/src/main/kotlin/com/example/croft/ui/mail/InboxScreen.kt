@@ -145,9 +145,13 @@ fun InboxScreen(
                 openScope(target)
             },
             onSettings = { closeDrawer(); onOpenSettings() },
-            onMarkAllRead = { f -> controller.markMailboxRead(f, unified = f.role == FolderRole.INBOX && controller.messageScope == MessageScope.UnifiedInbox) },
-            onSyncNow = controller::syncMailbox,
-            onMailboxSettings = { controller.snackbar.show(laterMessage) },
+            // The answer (with its Undo) is a snackbar on the list: the drawer closes so that its scrim does not cover the button.
+            onMarkAllRead = { f ->
+                closeDrawer()
+                controller.markMailboxRead(f, unified = f.role == FolderRole.INBOX && controller.messageScope == MessageScope.UnifiedInbox)
+            },
+            onSyncNow = { f -> closeDrawer(); controller.syncMailbox(f) },
+            onMailboxSettings = { closeDrawer(); controller.snackbar.show(laterMessage) },
         )
     }
 

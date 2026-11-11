@@ -331,7 +331,7 @@ object GalleryCatalog {
                         interactionSource = interaction,
                     )
                 }
-                if (drag) SwipeRowFrozen(offsetDp = 120f, action = SwipeAction.DELETE, armed = false) { card -> content(card) } else content(null)
+                if (drag) SwipeRowFrozen(offsetDp = -120f, action = SwipeAction.DELETE, armed = false) { card -> content(card) } else content(null)
             }
         return GallerySection(
             "row", "Message row",
@@ -371,7 +371,7 @@ object GalleryCatalog {
                 s("read_armed", "Mark read, armed (full colour, icon grown)", SwipeAction.TOGGLE_READ, 170f, armed = true),
                 s("delete_dragging", "Delete, below the arm point", SwipeAction.DELETE, -110f, armed = false),
                 s("delete_armed", "Delete, armed", SwipeAction.DELETE, -190f, armed = true),
-                s("delete_committing", "Delete, committing (pill widened)", SwipeAction.DELETE, -330f, armed = true),
+                s("delete_committing", "Delete, committing (pill nearly row wide, card leaving)", SwipeAction.DELETE, -270f, armed = true),
                 s("archive_armed", "Archive, armed", SwipeAction.ARCHIVE, 170f, armed = true),
                 s("spam_armed", "Mark as spam, armed", SwipeAction.SPAM, -190f, armed = true),
                 s("star_armed", "Star, armed", SwipeAction.TOGGLE_STAR, 170f, armed = true),

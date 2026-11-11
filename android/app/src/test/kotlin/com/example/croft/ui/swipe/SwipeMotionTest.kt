@@ -21,7 +21,6 @@ import com.example.croft.ui.mail.InboxTags
 import com.example.croft.ui.mail.rowCard
 import com.example.croft.ui.mail.showInbox
 import com.example.croft.ui.mail.waitForRow
-import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -173,10 +172,14 @@ class SwipeMotionTest {
         frames(2)
         val atTouch = rule.cardOffset(id)
         assertTrue("on its way back, neither at 60 nor at 0 yet: $atTouch", atTouch in 5f..55f)
-        rule.rowCard(id).performTouchInput { down(center); moveBy(Offset(10f, 0f), delayMillis = 16); moveBy(Offset(20f, 0f), delayMillis = 16) }
-        frames(1)
-        val now = rule.cardOffset(id)
-        assertTrue("it carried on from $atTouch, not from 0 or from 60: $now", abs(now - (atTouch + 20f)) < 8f)
+        // The spring keeps running while the finger comes down and passes the slop (the injected events take test time), so the card
+        // is taken from where it is at that moment, which is a little nearer to 0 than where it was seen above.
+        rule.rowCard(id).performTouchInput { down(center); moveBy(Offset(10f, 0f), delayMillis = 16) }
+        val held = rule.swipeProbe(id, "swipe-offset")
+        assertTrue("the finger took the card where the spring had it, not at 0 or at 60: $held (seen at $atTouch)", held in 1f..atTouch + 1f)
+        rule.rowCard(id).performTouchInput { moveBy(Offset(20f, 0f), delayMillis = 16) }
+        val now = rule.swipeProbe(id, "swipe-offset")
+        assertEquals("it follows the finger from where it was taken", held + 20f, now, 1f)
         rule.rowCard(id).performTouchInput { up() }
         rule.mainClock.advanceTimeBy(3_000)
     }

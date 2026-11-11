@@ -4,6 +4,9 @@
 
 package com.example.croft
 
+import com.example.croft.secrets.AppSecrets
+import uniffi.croft_ffi.Core
+import uniffi.croft_ffi.CredentialProvider
 import uniffi.croft_ffi.croftVersion
 import uniffi.croft_ffi.ffiApiVersion
 
@@ -30,6 +33,25 @@ const val EXPECTED_FFI_API_VERSION: UInt = 3u
  *   returned and `close()` a credential once it is handed over. The core wipes the copy it holds,
  *   but not UniFFI's lifting buffer or any copy made on the Kotlin side.
  */
+
+/**
+ * Opens the core on [databasePath] with the database key from [secrets] (made on the first run,
+ * unwrapped from the Keystore later; see `secrets/AppSecrets.kt`). Call it off the main thread.
+ *
+ * The key is always passed: a library built without the `sqlcipher` feature refuses it
+ * (`StorageReason.EncryptionUnavailable`) instead of opening an unencrypted database, so a build
+ * that lost the feature fails here, loudly. Our copy of the key is wiped as soon as `Core.open`
+ * has returned. If the keystore key is gone, [AppSecrets.databaseKey] deletes the database and the
+ * account secrets first and raises `secrets.keyLoss`.
+ */
+fun openCore(databasePath: String, secrets: AppSecrets, provider: CredentialProvider): Core {
+    val key = secrets.databaseKey()
+    try {
+        return key.withBytes { Core.open(databasePath, it, provider) }
+    } finally {
+        key.close()
+    }
+}
 
 /** What the Rust core reports about itself. */
 data class RustInfo(val croftVersion: String, val ffiApiVersion: UInt)

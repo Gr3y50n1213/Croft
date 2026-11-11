@@ -68,8 +68,11 @@ uniffi::setup_scaffolding!();
 /// `MessageRow.thread_count` and `.recipients`, `AccountInfo.last_synced_ms` and
 /// `MessageScope::Starred`. Version 6: `add_demo_account` (the sample mailbox) and
 /// `AccountInfo.is_demo`. Version 7: `add_account` for an address that is already added, with the
-/// same IMAP server, port and user name, updates that account and returns its id, and fails with
-/// the new `CoreError::AccountExists` when the server differs. Bump on any change to what is
+/// same servers, updates that account and returns `AddedAccount { id, updated }`; it takes
+/// `accept_changed_certificate` and fails with `CoreError::CertificateChanged` when it would
+/// replace or drop a trusted certificate pin unconfirmed; the other servers give the new
+/// `CoreError::AccountExists`; `verify` returns the pin it checked against (and checks against the
+/// stored pin of the same account); `rollback_account_update` undoes an update. Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)

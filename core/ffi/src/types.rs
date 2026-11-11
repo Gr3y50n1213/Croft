@@ -181,6 +181,18 @@ impl From<AuthKind> for AuthHint {
     }
 }
 
+/// What `add_account` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct AddedAccount {
+    /// The account's id: a new one, or the existing account's when `updated`.
+    pub id: i64,
+    /// True when the address was already added with the same servers: the account kept its id and
+    /// got the new settings and credential (the app then **replaces** the stored credential under
+    /// that id, and must not remove the account if storing it fails: see
+    /// `Core::rollback_account_update`). False for a new account.
+    pub updated: bool,
+}
+
 /// What `discover` found for an address; passed back to `verify` and `add_account`. It holds no
 /// secret.
 #[derive(Clone, PartialEq, Eq, uniffi::Record)]

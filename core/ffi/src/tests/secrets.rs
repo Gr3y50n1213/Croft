@@ -185,7 +185,9 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
     block(core.verify(found.clone(), password_cred(PASSWORD), pin.clone())).unwrap();
 
     let account =
-        block(core.add_account(found, "Alice".into(), pin, password_cred(PASSWORD))).unwrap();
+        block(core.add_account(found, "Alice".into(), pin, false, password_cred(PASSWORD)))
+            .unwrap()
+            .id;
     provider.store(account, password_cred(PASSWORD));
     let rig_scope = |core: &Core| {
         let folders = core.list_folders(account).unwrap();
@@ -249,9 +251,11 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
         discovered_for(&server),
         "Bob".into(),
         Some(fingerprint_of(&server)),
+        false,
         password_cred(WRONG),
     ))
-    .unwrap();
+    .unwrap()
+    .id;
     provider2.store(bad, password_cred(WRONG));
     block(wait_for(&core2, "sign-in needed", || {
         !provider2.sign_ins().is_empty()

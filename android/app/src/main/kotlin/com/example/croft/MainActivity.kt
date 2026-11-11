@@ -19,12 +19,14 @@ import com.example.croft.mail.MailSession
 import com.example.croft.mail.MailSettingsStore
 import com.example.croft.theme.ThemeStore
 import com.example.croft.ui.nav.CroftApp
+import com.example.croft.ui.nav.Route
+import com.example.croft.ui.onboarding.appOnboardingEnvironment
 
 /**
  * The only activity. It applies the stored theme and hosts the simple navigation ([CroftApp]). No orientation or size
  * locks; Back goes through the system back-callback API in the navigation. It opens the Rust core **off the main thread**
  * ([MailRuntime.session]: the database key from the Keystore, the credential provider over the secret store) and shows the
- * Inbox over it. While no account exists yet it shows the sample mailbox instead (onboarding is T17); nothing is drawn until
+ * Inbox over it. While no account exists yet the session is the sample mailbox and the app starts at the sign-in flow (S01, T17); nothing is drawn until
  * the session is ready, so the app never flashes the sample first and then the real mail.
  */
 class MainActivity : ComponentActivity() {
@@ -36,12 +38,16 @@ class MainActivity : ComponentActivity() {
         val store = ThemeStore.shared(applicationContext)
         val mailStore = MailSettingsStore.shared(applicationContext)
         val connectivity = AndroidConnectivity(applicationContext)
+        val onboarding = appOnboardingEnvironment(applicationContext, mailStore)
         setContent {
             var session by remember { mutableStateOf<MailSession?>(null) }
             LaunchedEffect(Unit) { session = MailRuntime.session(applicationContext, mailStore) }
             session?.let { ready ->
                 CroftApp(
                     store, info, ready,
+                    // A fresh install (no account yet, so the session is the sample mailbox) starts at S01; with an account the app starts on the Inbox.
+                    startAt = if (ready.isDemo) Route.ONBOARDING else Route.HOME,
+                    onboarding = onboarding,
                     swipeStore = com.example.croft.ui.swipe.SwipeSettingsStore.shared(applicationContext),
                     mailStore = mailStore,
                     connectivity = connectivity,

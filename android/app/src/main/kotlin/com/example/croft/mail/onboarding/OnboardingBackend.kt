@@ -4,6 +4,8 @@
 
 package com.example.croft.mail.onboarding
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import uniffi.croft_ffi.AccountStatus
 import uniffi.croft_ffi.Core
 import uniffi.croft_ffi.DiscoveryObserver
@@ -83,10 +85,10 @@ interface FirstSyncSource {
 
 /** [FirstSyncSource] over the core: done when a folder has synced, failed when the account needs a sign-in or cannot run. */
 class CoreFirstSync(private val core: Core) : FirstSyncSource {
-    override suspend fun status(accountId: Long): FirstSyncStatus {
-        val account = core.listAccounts().firstOrNull { it.id == accountId } ?: return FirstSyncStatus(0, done = false, failed = true)
+    override suspend fun status(accountId: Long): FirstSyncStatus = withContext(Dispatchers.IO) {
+        val account = core.listAccounts().firstOrNull { it.id == accountId } ?: return@withContext FirstSyncStatus(0, done = false, failed = true)
         val inbox = core.listFolders(accountId).firstOrNull { it.specialUse == "inbox" }?.totalCount?.toInt() ?: 0
-        return FirstSyncStatus(
+        FirstSyncStatus(
             inboxMessages = inbox,
             done = account.lastSyncedMs != null && account.status != AccountStatus.SYNCING,
             failed = account.status == AccountStatus.NEEDS_SIGN_IN || account.status == AccountStatus.ERROR,

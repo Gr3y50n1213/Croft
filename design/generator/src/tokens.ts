@@ -25,11 +25,13 @@ export interface Tokens {
     /** Optional style for presets without an entry in `styles`. Defaults to tonalSpot. */
     defaultStyle?: string;
   };
+  /** Status colours (amber, ...): HCT hue and chroma plus tones per mode and contrast. */
+  status?: Record<string, unknown>;
   [section: string]: unknown;
 }
 
 /** Sections handled by dedicated code rather than the generic leaf emitters. */
-const SPECIAL_SECTIONS = new Set(['brand', 'palettes']);
+const SPECIAL_SECTIONS = new Set(['brand', 'palettes', 'status']);
 
 export function loadTokens(path: string): Tokens {
   const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));

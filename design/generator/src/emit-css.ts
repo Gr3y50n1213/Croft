@@ -5,7 +5,7 @@
 // CSS output: custom properties for every token, one block per preset, mode and contrast.
 
 import { ROLES, CONTRASTS, MODES, presetsOf } from './schemes.ts';
-import type { SchemeEntry } from './schemes.ts';
+import type { SchemeEntry, StatusEntry } from './schemes.ts';
 import { kebab } from './tokens.ts';
 import type { Leaf, LeafValue, Tokens } from './tokens.ts';
 import { MPL_HEADER_CSS } from './header.ts';
@@ -41,7 +41,7 @@ export function cssModeId(mode: string): string {
   return kebab(mode);
 }
 
-export function emitCss(tokens: Tokens, leaves: Leaf[], schemes: SchemeEntry[]): string {
+export function emitCss(tokens: Tokens, leaves: Leaf[], schemes: SchemeEntry[], status: StatusEntry[]): string {
   const presets = presetsOf(tokens);
   const out: string[] = [];
   const push = (...lines: string[]) => out.push(...lines);
@@ -93,6 +93,11 @@ export function emitCss(tokens: Tokens, leaves: Leaf[], schemes: SchemeEntry[]):
         push(`${selector} {`);
         push(`  color-scheme: ${mode === 'light' ? 'light' : 'dark'};`);
         for (const role of ROLES) push(`  ${cssName(['color', role])}: ${entry.colors[role]};`);
+        for (const st of status.filter((x) => x.mode === mode && x.contrast === contrast.id)) {
+          push(`  ${cssName(['status', st.name])}: ${st.colors.color};`);
+          push(`  ${cssName(['status', st.name, 'container'])}: ${st.colors.container};`);
+          push(`  ${cssName(['status', st.name, 'on-container'])}: ${st.colors.onContainer};`);
+        }
         push('}', '');
       }
     }

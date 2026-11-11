@@ -363,6 +363,20 @@ enum CroftTokens {
         static let minGapMs: Int = 40
         static let defaultLevel: String = "subtle"
     }
+    enum Timing {
+        static let buttonSuccessHoldMs: Int = 600
+        static let loadingOffersCancelMs: Int = 10000
+        static let snackbarMinMs: Int = 4000
+        static let newRowTintMs: Int = 1200
+        static let failedEdgeMs: Int = 2000
+        static let skeletonShimmerMs: Int = 1200
+        static let newRowMarkMs: Int = 1300
+        static let fastScrollerLingerMs: Int = 1500
+    }
+    enum Layout {
+        static let pullToRefreshArmDp: Int = 80
+        static let expandedWidthFromDp: Int = 840
+    }
 }
 
 /// Brand colours from tokens.json. Use the theme roles in UI; these are for brand surfaces only.
@@ -4030,6 +4044,39 @@ enum CroftSchemes {
         _ contrast: CroftContrast = .standard
     ) -> CroftColors {
         CroftColors(roles(preset, mode, contrast))
+    }
+}
+
+struct CroftStatusRoles {
+    let color: UInt32
+    let container: UInt32
+    let onContainer: UInt32
+}
+
+struct CroftStatusKey: Hashable {
+    let mode: CroftMode
+    let contrast: CroftContrast
+}
+
+/// Status colours from tokens.json (a fixed HCT hue and chroma at set tones). Pure black uses the dark tones.
+enum CroftStatus {
+    private static let amberTable: [CroftStatusKey: CroftStatusRoles] = [
+        CroftStatusKey(mode: .light, contrast: .standard): CroftStatusRoles(color: 0x9F6D00, container: 0xFFDEAE, onContainer: 0x281900),
+        CroftStatusKey(mode: .light, contrast: .medium): CroftStatusRoles(color: 0x8F6200, container: 0xFFDEAE, onContainer: 0x281900),
+        CroftStatusKey(mode: .light, contrast: .high): CroftStatusRoles(color: 0x7F5600, container: 0xFFDEAE, onContainer: 0x1A0F00),
+        CroftStatusKey(mode: .dark, contrast: .standard): CroftStatusRoles(color: 0xFFBA3E, container: 0x604100, onContainer: 0xFFDEAE),
+        CroftStatusKey(mode: .dark, contrast: .medium): CroftStatusRoles(color: 0xFFCC7D, container: 0x604100, onContainer: 0xFFEEDA),
+        CroftStatusKey(mode: .dark, contrast: .high): CroftStatusRoles(color: 0xFFDEAE, container: 0x604100, onContainer: 0xFFF8F3),
+        CroftStatusKey(mode: .pureBlack, contrast: .standard): CroftStatusRoles(color: 0xFFBA3E, container: 0x604100, onContainer: 0xFFDEAE),
+        CroftStatusKey(mode: .pureBlack, contrast: .medium): CroftStatusRoles(color: 0xFFCC7D, container: 0x604100, onContainer: 0xFFEEDA),
+        CroftStatusKey(mode: .pureBlack, contrast: .high): CroftStatusRoles(color: 0xFFDEAE, container: 0x604100, onContainer: 0xFFF8F3),
+    ]
+
+    static func amber(_ mode: CroftMode, _ contrast: CroftContrast = .standard) -> CroftStatusRoles {
+        guard let roles = amberTable[CroftStatusKey(mode: mode, contrast: contrast)] else {
+            preconditionFailure("CroftStatus is missing a mode and contrast combination")
+        }
+        return roles
     }
 }
 

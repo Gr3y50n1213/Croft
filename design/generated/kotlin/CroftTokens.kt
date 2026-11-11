@@ -220,6 +220,20 @@ object CroftTokens {
         const val minGapMs = 40
         const val defaultLevel = "subtle"
     }
+    object Timing {
+        const val buttonSuccessHoldMs = 600
+        const val loadingOffersCancelMs = 10000
+        const val snackbarMinMs = 4000
+        const val newRowTintMs = 1200
+        const val failedEdgeMs = 2000
+        const val skeletonShimmerMs = 1200
+        const val newRowMarkMs = 1300
+        const val fastScrollerLingerMs = 1500
+    }
+    object Layout {
+        const val pullToRefreshArmDp = 80
+        const val expandedWidthFromDp = 840
+    }
 }
 
 /** Brand colours from tokens.json. Use the theme roles in UI; these are for brand surfaces only. */
@@ -3863,6 +3877,29 @@ object CroftSchemes {
 
     fun roles(preset: CroftPreset, mode: CroftMode, contrast: CroftContrast = CroftContrast.STANDARD): CroftColorRoles =
         all.getValue(CroftSchemeKey(preset, mode, contrast))
+}
+
+/** One status colour at one mode and contrast: the colour (icons), a container fill and the text on it. */
+data class CroftStatusRoles(val color: Long, val container: Long, val onContainer: Long)
+
+data class CroftStatusKey(val mode: CroftMode, val contrast: CroftContrast)
+
+/** Status colours from tokens.json (a fixed HCT hue and chroma at set tones). Pure black uses the dark tones. */
+object CroftStatus {
+    private val amberTable = mapOf(
+        CroftStatusKey(CroftMode.LIGHT, CroftContrast.STANDARD) to CroftStatusRoles(0xFF9F6D00, 0xFFFFDEAE, 0xFF281900),
+        CroftStatusKey(CroftMode.LIGHT, CroftContrast.MEDIUM) to CroftStatusRoles(0xFF8F6200, 0xFFFFDEAE, 0xFF281900),
+        CroftStatusKey(CroftMode.LIGHT, CroftContrast.HIGH) to CroftStatusRoles(0xFF7F5600, 0xFFFFDEAE, 0xFF1A0F00),
+        CroftStatusKey(CroftMode.DARK, CroftContrast.STANDARD) to CroftStatusRoles(0xFFFFBA3E, 0xFF604100, 0xFFFFDEAE),
+        CroftStatusKey(CroftMode.DARK, CroftContrast.MEDIUM) to CroftStatusRoles(0xFFFFCC7D, 0xFF604100, 0xFFFFEEDA),
+        CroftStatusKey(CroftMode.DARK, CroftContrast.HIGH) to CroftStatusRoles(0xFFFFDEAE, 0xFF604100, 0xFFFFF8F3),
+        CroftStatusKey(CroftMode.PURE_BLACK, CroftContrast.STANDARD) to CroftStatusRoles(0xFFFFBA3E, 0xFF604100, 0xFFFFDEAE),
+        CroftStatusKey(CroftMode.PURE_BLACK, CroftContrast.MEDIUM) to CroftStatusRoles(0xFFFFCC7D, 0xFF604100, 0xFFFFEEDA),
+        CroftStatusKey(CroftMode.PURE_BLACK, CroftContrast.HIGH) to CroftStatusRoles(0xFFFFDEAE, 0xFF604100, 0xFFFFF8F3),
+    )
+
+    fun amber(mode: CroftMode, contrast: CroftContrast = CroftContrast.STANDARD): CroftStatusRoles =
+        amberTable.getValue(CroftStatusKey(mode, contrast))
 }
 
 private fun CroftColorRoles.toLightColorScheme(): ColorScheme =

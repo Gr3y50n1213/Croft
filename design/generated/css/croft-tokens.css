@@ -89,6 +89,16 @@
   --croft-haptics-levels: off, subtle, full;
   --croft-haptics-min-gap-ms: 40ms;
   --croft-haptics-default-level: subtle;
+  --croft-timing-button-success-hold-ms: 600ms;
+  --croft-timing-loading-offers-cancel-ms: 10000ms;
+  --croft-timing-snackbar-min-ms: 4000ms;
+  --croft-timing-new-row-tint-ms: 1200ms;
+  --croft-timing-failed-edge-ms: 2000ms;
+  --croft-timing-skeleton-shimmer-ms: 1200ms;
+  --croft-timing-new-row-mark-ms: 1300ms;
+  --croft-timing-fast-scroller-linger-ms: 1500ms;
+  --croft-layout-pull-to-refresh-arm-dp: 80px;
+  --croft-layout-expanded-width-from-dp: 840px;
   --croft-motion-spatial-fast-easing: linear(0, 0.036, 0.1273, 0.2517, 0.3911, 0.5316, 0.6635, 0.7801, 0.8779, 0.9558, 1.0142, 1.0547, 1.0797, 1.0921, 1.0946, 1.09, 1.0805, 1.0683, 1.055, 1.0418, 1.0295, 1.0188, 1.0099, 1.0029, 0.9978, 0.9942, 0.9921, 0.9912, 0.9911, 0.9916, 0.9926, 0.9938, 1);
   --croft-motion-spatial-fast-easing-duration: 0.322s;
   --croft-motion-spatial-default-easing: linear(0, 0.0226, 0.0801, 0.1594, 0.2505, 0.346, 0.4404, 0.53, 0.6125, 0.6865, 0.7514, 0.8073, 0.8544, 0.8934, 0.9252, 0.9505, 0.9702, 0.9852, 0.9963, 1.0042, 1.0095, 1.0128, 1.0146, 1.0152, 1.0149, 1.0141, 1.013, 1.0116, 1.0102, 1.0087, 1.0073, 1.0061, 1);
@@ -161,6 +171,9 @@
   --croft-color-tertiary-fixed-dim: #A1CED7;
   --croft-color-on-tertiary-fixed: #001F24;
   --croft-color-on-tertiary-fixed-variant: #1F4D55;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* moss, light, medium contrast */
@@ -214,6 +227,9 @@
   --croft-color-tertiary-fixed-dim: #2F5B63;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* moss, light, high contrast */
@@ -267,6 +283,9 @@
   --croft-color-tertiary-fixed-dim: #033840;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* moss, dark, standard contrast */
@@ -320,6 +339,9 @@
   --croft-color-tertiary-fixed-dim: #A1CED7;
   --croft-color-on-tertiary-fixed: #001F24;
   --croft-color-on-tertiary-fixed-variant: #1F4D55;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* moss, dark, medium contrast */
@@ -373,6 +395,9 @@
   --croft-color-tertiary-fixed-dim: #A1CED7;
   --croft-color-on-tertiary-fixed: #001418;
   --croft-color-on-tertiary-fixed-variant: #093C43;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* moss, dark, high contrast */
@@ -426,6 +451,9 @@
   --croft-color-tertiary-fixed-dim: #A1CED7;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #001418;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* moss, pureBlack, standard contrast */
@@ -479,6 +507,9 @@
   --croft-color-tertiary-fixed-dim: #A1CED7;
   --croft-color-on-tertiary-fixed: #001F24;
   --croft-color-on-tertiary-fixed-variant: #1F4D55;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* moss, pureBlack, medium contrast */
@@ -532,6 +563,9 @@
   --croft-color-tertiary-fixed-dim: #A1CED7;
   --croft-color-on-tertiary-fixed: #001418;
   --croft-color-on-tertiary-fixed-variant: #093C43;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* moss, pureBlack, high contrast */
@@ -585,6 +619,9 @@
   --croft-color-tertiary-fixed-dim: #A1CED7;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #001418;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* wax, light, standard contrast */
@@ -638,6 +675,9 @@
   --croft-color-tertiary-fixed-dim: #DBC58C;
   --croft-color-on-tertiary-fixed: #241A00;
   --croft-color-on-tertiary-fixed-variant: #544519;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* wax, light, medium contrast */
@@ -691,6 +731,9 @@
   --croft-color-tertiary-fixed-dim: #635326;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* wax, light, high contrast */
@@ -744,6 +787,9 @@
   --croft-color-tertiary-fixed-dim: #3E3106;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* wax, dark, standard contrast */
@@ -797,6 +843,9 @@
   --croft-color-tertiary-fixed-dim: #DBC58C;
   --croft-color-on-tertiary-fixed: #241A00;
   --croft-color-on-tertiary-fixed-variant: #544519;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* wax, dark, medium contrast */
@@ -850,6 +899,9 @@
   --croft-color-tertiary-fixed-dim: #DBC58C;
   --croft-color-on-tertiary-fixed: #171000;
   --croft-color-on-tertiary-fixed-variant: #423509;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* wax, dark, high contrast */
@@ -903,6 +955,9 @@
   --croft-color-tertiary-fixed-dim: #DBC58C;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #171000;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* wax, pureBlack, standard contrast */
@@ -956,6 +1011,9 @@
   --croft-color-tertiary-fixed-dim: #DBC58C;
   --croft-color-on-tertiary-fixed: #241A00;
   --croft-color-on-tertiary-fixed-variant: #544519;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* wax, pureBlack, medium contrast */
@@ -1009,6 +1067,9 @@
   --croft-color-tertiary-fixed-dim: #DBC58C;
   --croft-color-on-tertiary-fixed: #171000;
   --croft-color-on-tertiary-fixed-variant: #423509;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* wax, pureBlack, high contrast */
@@ -1062,6 +1123,9 @@
   --croft-color-tertiary-fixed-dim: #DBC58C;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #171000;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* slate, light, standard contrast */
@@ -1115,6 +1179,9 @@
   --croft-color-tertiary-fixed-dim: #CFC0E8;
   --croft-color-on-tertiary-fixed: #201634;
   --croft-color-on-tertiary-fixed-variant: #4C4162;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* slate, light, medium contrast */
@@ -1168,6 +1235,9 @@
   --croft-color-tertiary-fixed-dim: #5B4F71;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* slate, light, high contrast */
@@ -1221,6 +1291,9 @@
   --croft-color-tertiary-fixed-dim: #382D4D;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* slate, dark, standard contrast */
@@ -1274,6 +1347,9 @@
   --croft-color-tertiary-fixed-dim: #CFC0E8;
   --croft-color-on-tertiary-fixed: #201634;
   --croft-color-on-tertiary-fixed-variant: #4C4162;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* slate, dark, medium contrast */
@@ -1327,6 +1403,9 @@
   --croft-color-tertiary-fixed-dim: #CFC0E8;
   --croft-color-on-tertiary-fixed: #150B29;
   --croft-color-on-tertiary-fixed-variant: #3B3151;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* slate, dark, high contrast */
@@ -1380,6 +1459,9 @@
   --croft-color-tertiary-fixed-dim: #CFC0E8;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #150B29;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* slate, pureBlack, standard contrast */
@@ -1433,6 +1515,9 @@
   --croft-color-tertiary-fixed-dim: #CFC0E8;
   --croft-color-on-tertiary-fixed: #201634;
   --croft-color-on-tertiary-fixed-variant: #4C4162;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* slate, pureBlack, medium contrast */
@@ -1486,6 +1571,9 @@
   --croft-color-tertiary-fixed-dim: #CFC0E8;
   --croft-color-on-tertiary-fixed: #150B29;
   --croft-color-on-tertiary-fixed-variant: #3B3151;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* slate, pureBlack, high contrast */
@@ -1539,6 +1627,9 @@
   --croft-color-tertiary-fixed-dim: #CFC0E8;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #150B29;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* heather, light, standard contrast */
@@ -1592,6 +1683,9 @@
   --croft-color-tertiary-fixed-dim: #F5B7B5;
   --croft-color-on-tertiary-fixed: #331111;
   --croft-color-on-tertiary-fixed-variant: #663B3A;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* heather, light, medium contrast */
@@ -1645,6 +1739,9 @@
   --croft-color-tertiary-fixed-dim: #764848;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* heather, light, high contrast */
@@ -1698,6 +1795,9 @@
   --croft-color-tertiary-fixed-dim: #4F2727;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* heather, dark, standard contrast */
@@ -1751,6 +1851,9 @@
   --croft-color-tertiary-fixed-dim: #F5B7B5;
   --croft-color-on-tertiary-fixed: #331111;
   --croft-color-on-tertiary-fixed-variant: #663B3A;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* heather, dark, medium contrast */
@@ -1804,6 +1907,9 @@
   --croft-color-tertiary-fixed-dim: #F5B7B5;
   --croft-color-on-tertiary-fixed: #250708;
   --croft-color-on-tertiary-fixed-variant: #532B2A;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* heather, dark, high contrast */
@@ -1857,6 +1963,9 @@
   --croft-color-tertiary-fixed-dim: #F5B7B5;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #250708;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* heather, pureBlack, standard contrast */
@@ -1910,6 +2019,9 @@
   --croft-color-tertiary-fixed-dim: #F5B7B5;
   --croft-color-on-tertiary-fixed: #331111;
   --croft-color-on-tertiary-fixed-variant: #663B3A;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* heather, pureBlack, medium contrast */
@@ -1963,6 +2075,9 @@
   --croft-color-tertiary-fixed-dim: #F5B7B5;
   --croft-color-on-tertiary-fixed: #250708;
   --croft-color-on-tertiary-fixed-variant: #532B2A;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* heather, pureBlack, high contrast */
@@ -2016,6 +2131,9 @@
   --croft-color-tertiary-fixed-dim: #F5B7B5;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #250708;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* ochre, light, standard contrast */
@@ -2069,6 +2187,9 @@
   --croft-color-tertiary-fixed-dim: #B8CEA1;
   --croft-color-on-tertiary-fixed: #102004;
   --croft-color-on-tertiary-fixed-variant: #3A4C2A;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* ochre, light, medium contrast */
@@ -2122,6 +2243,9 @@
   --croft-color-tertiary-fixed-dim: #485A37;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* ochre, light, high contrast */
@@ -2175,6 +2299,9 @@
   --croft-color-tertiary-fixed-dim: #263718;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* ochre, dark, standard contrast */
@@ -2228,6 +2355,9 @@
   --croft-color-tertiary-fixed-dim: #B8CEA1;
   --croft-color-on-tertiary-fixed: #102004;
   --croft-color-on-tertiary-fixed-variant: #3A4C2A;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* ochre, dark, medium contrast */
@@ -2281,6 +2411,9 @@
   --croft-color-tertiary-fixed-dim: #B8CEA1;
   --croft-color-on-tertiary-fixed: #061500;
   --croft-color-on-tertiary-fixed-variant: #2A3B1B;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* ochre, dark, high contrast */
@@ -2334,6 +2467,9 @@
   --croft-color-tertiary-fixed-dim: #B8CEA1;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #061500;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* ochre, pureBlack, standard contrast */
@@ -2387,6 +2523,9 @@
   --croft-color-tertiary-fixed-dim: #B8CEA1;
   --croft-color-on-tertiary-fixed: #102004;
   --croft-color-on-tertiary-fixed-variant: #3A4C2A;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* ochre, pureBlack, medium contrast */
@@ -2440,6 +2579,9 @@
   --croft-color-tertiary-fixed-dim: #B8CEA1;
   --croft-color-on-tertiary-fixed: #061500;
   --croft-color-on-tertiary-fixed-variant: #2A3B1B;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* ochre, pureBlack, high contrast */
@@ -2493,6 +2635,9 @@
   --croft-color-tertiary-fixed-dim: #B8CEA1;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #061500;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* peat, light, standard contrast */
@@ -2546,6 +2691,9 @@
   --croft-color-tertiary-fixed-dim: #BDCD9C;
   --croft-color-on-tertiary-fixed: #141F02;
   --croft-color-on-tertiary-fixed-variant: #3E4B26;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* peat, light, medium contrast */
@@ -2599,6 +2747,9 @@
   --croft-color-tertiary-fixed-dim: #4C5933;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* peat, light, high contrast */
@@ -2652,6 +2803,9 @@
   --croft-color-tertiary-fixed-dim: #2B3714;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* peat, dark, standard contrast */
@@ -2705,6 +2859,9 @@
   --croft-color-tertiary-fixed-dim: #BDCD9C;
   --croft-color-on-tertiary-fixed: #141F02;
   --croft-color-on-tertiary-fixed-variant: #3E4B26;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* peat, dark, medium contrast */
@@ -2758,6 +2915,9 @@
   --croft-color-tertiary-fixed-dim: #BDCD9C;
   --croft-color-on-tertiary-fixed: #0B1400;
   --croft-color-on-tertiary-fixed-variant: #2E3A17;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* peat, dark, high contrast */
@@ -2811,6 +2971,9 @@
   --croft-color-tertiary-fixed-dim: #BDCD9C;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #0B1400;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* peat, pureBlack, standard contrast */
@@ -2864,6 +3027,9 @@
   --croft-color-tertiary-fixed-dim: #BDCD9C;
   --croft-color-on-tertiary-fixed: #141F02;
   --croft-color-on-tertiary-fixed-variant: #3E4B26;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* peat, pureBlack, medium contrast */
@@ -2917,6 +3083,9 @@
   --croft-color-tertiary-fixed-dim: #BDCD9C;
   --croft-color-on-tertiary-fixed: #0B1400;
   --croft-color-on-tertiary-fixed-variant: #2E3A17;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* peat, pureBlack, high contrast */
@@ -2970,6 +3139,9 @@
   --croft-color-tertiary-fixed-dim: #BDCD9C;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #0B1400;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* tide, light, standard contrast */
@@ -3023,6 +3195,9 @@
   --croft-color-tertiary-fixed-dim: #B6C7E9;
   --croft-color-on-tertiary-fixed: #081C36;
   --croft-color-on-tertiary-fixed-variant: #364764;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* tide, light, medium contrast */
@@ -3076,6 +3251,9 @@
   --croft-color-tertiary-fixed-dim: #455573;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* tide, light, high contrast */
@@ -3129,6 +3307,9 @@
   --croft-color-tertiary-fixed-dim: #22334E;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* tide, dark, standard contrast */
@@ -3182,6 +3363,9 @@
   --croft-color-tertiary-fixed-dim: #B6C7E9;
   --croft-color-on-tertiary-fixed: #081C36;
   --croft-color-on-tertiary-fixed-variant: #364764;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* tide, dark, medium contrast */
@@ -3235,6 +3419,9 @@
   --croft-color-tertiary-fixed-dim: #B6C7E9;
   --croft-color-on-tertiary-fixed: #00112A;
   --croft-color-on-tertiary-fixed-variant: #263652;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* tide, dark, high contrast */
@@ -3288,6 +3475,9 @@
   --croft-color-tertiary-fixed-dim: #B6C7E9;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #00112A;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* tide, pureBlack, standard contrast */
@@ -3341,6 +3531,9 @@
   --croft-color-tertiary-fixed-dim: #B6C7E9;
   --croft-color-on-tertiary-fixed: #081C36;
   --croft-color-on-tertiary-fixed-variant: #364764;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* tide, pureBlack, medium contrast */
@@ -3394,6 +3587,9 @@
   --croft-color-tertiary-fixed-dim: #B6C7E9;
   --croft-color-on-tertiary-fixed: #00112A;
   --croft-color-on-tertiary-fixed-variant: #263652;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* tide, pureBlack, high contrast */
@@ -3447,6 +3643,9 @@
   --croft-color-tertiary-fixed-dim: #B6C7E9;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #00112A;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* rowan, light, standard contrast */
@@ -3500,6 +3699,9 @@
   --croft-color-tertiary-fixed-dim: #EABF8F;
   --croft-color-on-tertiary-fixed: #2B1700;
   --croft-color-on-tertiary-fixed-variant: #5E411C;
+  --croft-status-amber: #9F6D00;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* rowan, light, medium contrast */
@@ -3553,6 +3755,9 @@
   --croft-color-tertiary-fixed-dim: #6E4F28;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #8F6200;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #281900;
 }
 
 /* rowan, light, high contrast */
@@ -3606,6 +3811,9 @@
   --croft-color-tertiary-fixed-dim: #482D09;
   --croft-color-on-tertiary-fixed: #FFFFFF;
   --croft-color-on-tertiary-fixed-variant: #FFFFFF;
+  --croft-status-amber: #7F5600;
+  --croft-status-amber-container: #FFDEAE;
+  --croft-status-amber-on-container: #1A0F00;
 }
 
 /* rowan, dark, standard contrast */
@@ -3659,6 +3867,9 @@
   --croft-color-tertiary-fixed-dim: #EABF8F;
   --croft-color-on-tertiary-fixed: #2B1700;
   --croft-color-on-tertiary-fixed-variant: #5E411C;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* rowan, dark, medium contrast */
@@ -3712,6 +3923,9 @@
   --croft-color-tertiary-fixed-dim: #EABF8F;
   --croft-color-on-tertiary-fixed: #1D0E00;
   --croft-color-on-tertiary-fixed-variant: #4C300D;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* rowan, dark, high contrast */
@@ -3765,6 +3979,9 @@
   --croft-color-tertiary-fixed-dim: #EABF8F;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #1D0E00;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }
 
 /* rowan, pureBlack, standard contrast */
@@ -3818,6 +4035,9 @@
   --croft-color-tertiary-fixed-dim: #EABF8F;
   --croft-color-on-tertiary-fixed: #2B1700;
   --croft-color-on-tertiary-fixed-variant: #5E411C;
+  --croft-status-amber: #FFBA3E;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFDEAE;
 }
 
 /* rowan, pureBlack, medium contrast */
@@ -3871,6 +4091,9 @@
   --croft-color-tertiary-fixed-dim: #EABF8F;
   --croft-color-on-tertiary-fixed: #1D0E00;
   --croft-color-on-tertiary-fixed-variant: #4C300D;
+  --croft-status-amber: #FFCC7D;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFEEDA;
 }
 
 /* rowan, pureBlack, high contrast */
@@ -3924,4 +4147,7 @@
   --croft-color-tertiary-fixed-dim: #EABF8F;
   --croft-color-on-tertiary-fixed: #000000;
   --croft-color-on-tertiary-fixed-variant: #1D0E00;
+  --croft-status-amber: #FFDEAE;
+  --croft-status-amber-container: #604100;
+  --croft-status-amber-on-container: #FFF8F3;
 }

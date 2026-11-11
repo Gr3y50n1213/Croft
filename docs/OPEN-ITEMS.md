@@ -14,7 +14,7 @@ Things only the owner can decide or do. Newest first within each section.
   build can only be confirmed on GitHub CI or your own machine. See `docs/ENVIRONMENT.md`.
 
 ## Placeholders to replace
-- Android application ID / package name: `com.example.croft` (defined once, in `android/gradle.properties` as `croft.applicationId` once the Android project exists).
+- Android application ID / package name: `com.example.croft` (Google Play refuses `com.example`, and the ID can never change after the first Play upload: pick it before then, usually a reversed domain you own such as `org.yourdomain.croft`) (defined once, in `android/gradle.properties` as `croft.applicationId` once the Android project exists).
 - iOS bundle ID: `com.example.croft` (not used yet).
 - Publisher name, domain, contact and security-report address: `PUBLISHER_NAME`, `example.org`, `security@example.org`.
 

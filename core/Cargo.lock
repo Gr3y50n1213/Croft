@@ -501,6 +501,7 @@ dependencies = [
  "base64",
  "chrono",
  "croft-protocols",
+ "croft-reader",
  "croft-test-support",
  "encoding_rs",
  "futures-util",

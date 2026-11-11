@@ -497,6 +497,8 @@ dependencies = [
  "quick-xml",
  "rcgen",
  "rustls-native-certs",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tokio",
@@ -511,10 +513,12 @@ version = "0.1.0"
 dependencies = [
  "croft-mail-core",
  "croft-protocols",
+ "croft-test-support",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "zeroize",
 ]
 
@@ -523,6 +527,7 @@ name = "croft-test-support"
 version = "0.1.0"
 dependencies = [
  "rcgen",
+ "serde_json",
  "tokio",
  "tokio-rustls",
 ]

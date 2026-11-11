@@ -1,0 +1,46 @@
+{
+ "methodResponses": [
+  [
+   "Email/get",
+   {
+    "accountId": "c",
+    "state": "sam",
+    "list": [
+     {
+      "id": "eaaaaab",
+      "receivedAt": "2026-11-11T04:36:08Z",
+      "sentAt": "2026-03-02T09:30:00Z",
+      "size": 292,
+      "messageId": [
+       "seed-1@example.org"
+      ],
+      "inReplyTo": [
+       "seed-0@example.org"
+      ],
+      "references": [
+       "root@example.org",
+       "seed-0@example.org"
+      ],
+      "subject": "Gr\u00fc\u00dfe aus Wien",
+      "from": [
+       {
+        "name": "Ann Example",
+        "email": "ann@example.org"
+       }
+      ],
+      "keywords": {
+       "$hasnoattachment": true,
+       "$seen": true
+      },
+      "mailboxIds": {
+       "a": true
+      }
+     }
+    ],
+    "notFound": []
+   },
+   "a"
+  ]
+ ],
+ "sessionState": "e6c54f87"
+}

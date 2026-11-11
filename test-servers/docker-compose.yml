@@ -38,10 +38,30 @@ services:
       - ./dovecot/ssl/tls.crt:/etc/dovecot/ssl/tls.crt:ro
       - ./dovecot/ssl/tls.key:/etc/dovecot/ssl/tls.key:ro
 
+  # Stalwart 1.1.0 (JMAP, IMAP, SMTP in one). It starts in "bootstrap mode" with an empty
+  # configuration, so the container alone has no users: run `stalwart/setup.sh` after it is up. That
+  # script completes the bootstrap and creates two users (alice@example.org and bob@example.org,
+  # throwaway passwords printed in the script). JMAP over plain HTTP on 8080 (tests only: the JMAP
+  # adapter allows plaintext for loopback hosts only) and over HTTPS on 8443 (self-signed
+  # certificate, so tests pin its fingerprint). Host ports come from the variables below, so a second
+  # copy can run next to another one:
+  #   CROFT_STALWART_HTTP_PORT=18080 CROFT_STALWART_HTTPS_PORT=18443 \
+  #     docker compose -p croft-t09 -f test-servers/docker-compose.yml up -d --wait stalwart
+  #   test-servers/stalwart/setup.sh 18080
+  #   (then the tests: CROFT_TEST_STALWART_HTTP_PORT=18080 CROFT_TEST_STALWART_HTTPS_PORT=18443 ...)
   stalwart:
-    image: stalwartlabs/stalwart:latest
-    ports: ["8080:8080", "1143:143", "1993:993", "1587:587"]   # admin/JMAP, IMAP, IMAPS, submission
-    volumes: ["stalwart-data:/opt/stalwart"]
+    image: stalwartlabs/stalwart:v1.1.0
+    environment:
+      # Pins the temporary administrator of bootstrap mode (otherwise a random password is printed once
+      # in the log). Throwaway value, localhost only.
+      STALWART_RECOVERY_ADMIN: "admin:croft-recovery-admin-4d1f9c"
+    ports:
+      - "127.0.0.1:${CROFT_STALWART_HTTP_PORT:-8080}:8080"    # JMAP and admin API over plain HTTP
+      - "127.0.0.1:${CROFT_STALWART_HTTPS_PORT:-8443}:443"    # JMAP over HTTPS (self-signed)
+      - "127.0.0.1:${CROFT_STALWART_IMAPS_PORT:-1993}:993"    # IMAPS (self-signed)
+    volumes:
+      - stalwart-etc:/etc/stalwart
+      - stalwart-data:/var/lib/stalwart
 
   radicale:
     image: tomsquest/docker-radicale:latest
@@ -49,5 +69,6 @@ services:
     volumes: ["radicale-data:/data"]
 
 volumes:
+  stalwart-etc:
   stalwart-data:
   radicale-data:

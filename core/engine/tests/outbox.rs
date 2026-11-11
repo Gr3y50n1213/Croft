@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::create_account;
+use common::{create_account, FakeBackend, Method};
 use croft_engine::{
     AccountId, Change, Clock, Engine, EngineConfig, EngineHandle, ManualClock, NewMessage,
     OutboxActionError, OutboxEntry, OutboxId, OutboxState, SendError, SystemClock,
@@ -152,6 +152,23 @@ impl MailSubmitter for RefusesCopy {
 
     fn file_in_sent<'a>(&'a self, _: Option<&'a str>, _: &'a [u8]) -> BackendFuture<'a, ()> {
         Box::pin(async { Err(BackendError::Permanent("no copies".into())) })
+    }
+}
+
+/// A submitter whose sign-in is always refused (a wrong password).
+struct AuthFails;
+
+impl MailSubmitter for AuthFails {
+    fn send<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a [u8]) -> BackendFuture<'a, ()> {
+        Box::pin(async { Err(BackendError::Auth("refused".into())) })
+    }
+
+    fn files_sent_itself(&self) -> bool {
+        false
+    }
+
+    fn file_in_sent<'a>(&'a self, _: Option<&'a str>, _: &'a [u8]) -> BackendFuture<'a, ()> {
+        Box::pin(async { Err(BackendError::Auth("refused".into())) })
     }
 }
 
@@ -971,4 +988,329 @@ async fn the_account_task_wakes_by_itself_when_the_undo_window_ends() {
     wait_until("the outbox to empty", || ui.outbox(account).is_empty()).await;
     engine.shutdown().await;
     assert_eq!(smtp.accepted().len(), 1);
+}
+
+#[tokio::test]
+async fn a_bcc_header_hidden_by_a_bare_cr_or_named_resent_bcc_is_refused() {
+    let rig = Rig::new().await;
+    // The SMTP adapter turns every lone CR into a line end, so the server (and every recipient)
+    // would see these as Bcc lines.
+    let id = "Message-ID: <cr@example.org>";
+    let cases = [
+        format!("{id}\rSubject: x\rBcc: hidden@example.org\r\rbody"),
+        format!("{id}\r\nSubject: x\rBcc: hidden@example.org\r\nTo: a@example.org\r\n\r\nbody"),
+        format!("{id}\nSubject: x\rbCC:\r hidden@example.org\n\nbody"),
+        format!("{id}\r\nResent-Bcc: hidden@example.org\r\n\r\nbody"),
+        format!("{id}\rresent-bcc: hidden@example.org\r\rbody"),
+    ];
+    for text in cases {
+        assert!(
+            matches!(
+                rig.ui.send(envelope(rig.account), text.into_bytes()),
+                Err(SendError::BccHeader)
+            ),
+            "refused"
+        );
+    }
+    assert!(rig.outbox().is_empty());
+    assert_eq!(rig.outbox_rows_on_disk(), 0);
+    // The same words in the body, after the end of the headers, are only text.
+    let body_only = format!("{id}\rSubject: x\r\rBcc: hidden@example.org\rResent-Bcc: x");
+    rig.ui
+        .send(envelope(rig.account), body_only.into_bytes())
+        .unwrap();
+    rig.advance(WINDOW_MS + 1);
+    rig.run().await;
+    assert_eq!(rig.accepted(), 1);
+    // What the server received has no Bcc line at all in its header section.
+    let data = String::from_utf8_lossy(&rig.smtp.accepted()[0].data).into_owned();
+    let headers = data.split("\r\n\r\n").next().unwrap_or_default();
+    assert!(!headers.to_ascii_lowercase().contains("bcc"));
+}
+
+#[tokio::test]
+async fn a_message_without_a_usable_message_id_is_refused_before_anything_is_stored() {
+    let mut rig = Rig::new().await;
+    let none = b"From: alice@example.org\r\nSubject: x\r\n\r\nbody".to_vec();
+    let empty = b"Message-ID:\r\nSubject: x\r\n\r\nbody".to_vec();
+    let in_body = b"Subject: x\r\n\r\nMessage-ID: <b@example.org>".to_vec();
+    for text in [none, empty, in_body] {
+        assert!(matches!(
+            rig.ui.send(envelope(rig.account), text),
+            Err(SendError::NoMessageId)
+        ));
+    }
+    let not_ascii = "Message-ID: <j\u{f6}rg@example.org>\r\nSubject: x\r\n\r\nbody".to_owned();
+    assert!(matches!(
+        rig.ui.send(envelope(rig.account), not_ascii.into_bytes()),
+        Err(SendError::MessageIdNotAscii)
+    ));
+    assert!(rig.outbox().is_empty());
+    assert_eq!(rig.outbox_rows_on_disk(), 0);
+    assert!(rig.drain().is_empty());
+    // With a Message-ID (in any capitalisation, folded onto the next line) it is accepted.
+    let folded = b"mEsSaGe-Id:\r\n <fold@example.org>\r\nSubject: x\r\n\r\nbody".to_vec();
+    rig.ui.send(envelope(rig.account), folded).unwrap();
+    assert_eq!(rig.outbox().len(), 1);
+}
+
+#[tokio::test]
+async fn a_new_password_needs_no_remove_and_add_and_the_message_goes_out_once() {
+    let mut rig = Rig::new().await;
+    rig.kill_and_restart(Arc::new(AuthFails));
+    rig.send("new-password@example.org");
+    rig.advance(WINDOW_MS + 1);
+    rig.run().await;
+    assert!(rig.drain().contains(&Change::SignInNeeded {
+        account: rig.account
+    }));
+    assert_eq!(rig.accepted(), 0);
+    assert_eq!(rig.outbox()[0].state, OutboxState::Queued);
+
+    // Still the old submitter: signing in alone changes nothing about the password.
+    assert!(matches!(
+        rig.ui.replace_submitter(99, rig.real_submitter()),
+        Err(croft_engine::EngineError::UnknownAccount(99))
+    ));
+    rig.ui
+        .replace_submitter(rig.account, rig.real_submitter())
+        .unwrap();
+    rig.ui.signed_in(rig.account);
+    rig.run().await;
+    assert_eq!(rig.accepted(), 1);
+    assert!(rig.outbox().is_empty());
+    rig.run().await;
+    assert_eq!(rig.accepted(), 1);
+}
+
+/// Starts an engine with an account task (not `attach`), a manual clock and no window changes.
+struct Tasked {
+    smtp: SmtpServer,
+    imap: TestServer,
+    backend: Arc<ImapBackend>,
+    _dir: tempfile::TempDir,
+    clock: ManualClock,
+    engine: Engine,
+    ui: EngineHandle,
+    account: AccountId,
+    changes: broadcast::Receiver<Change>,
+}
+
+impl Tasked {
+    async fn new() -> Self {
+        let smtp = SmtpServer::start_default().await;
+        let imap = TestServer::start_default().await;
+        let backend = imap_for(&imap);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("croft.db");
+        let db = Db::open(&path, None).unwrap();
+        let account = create_account(&db, "alice@example.org");
+        drop(db);
+        let clock = ManualClock::new(START_MS);
+        let engine = Engine::open_with_outbox(
+            Db::open(&path, None).unwrap(),
+            Db::open(&path, None).unwrap(),
+            Arc::new(clock.clone()),
+            EngineConfig::default(),
+        )
+        .unwrap();
+        let ui = engine.handle();
+        let changes = ui.subscribe();
+        let imap_backend: Arc<dyn MailBackend> = backend.clone();
+        engine
+            .add_account_with_submitter(account, imap_backend, submitter(&smtp, &backend, false))
+            .unwrap();
+        let tasked = Self {
+            smtp,
+            imap,
+            backend,
+            _dir: dir,
+            clock,
+            engine,
+            ui,
+            account,
+            changes,
+        };
+        // The first turn (a full sync) finishes, so the task is asleep afterwards.
+        wait_until("the first turn", || {
+            tasked.ui.turns_taken(account).is_some_and(|n| n >= 1)
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        tasked
+    }
+
+    fn drain(&mut self) -> Vec<Change> {
+        let mut out = Vec::new();
+        while let Ok(change) = self.changes.try_recv() {
+            out.push(change);
+        }
+        out
+    }
+}
+
+#[tokio::test]
+async fn after_a_refused_sign_in_remove_and_add_does_not_make_the_task_spin_and_signing_in_sends() {
+    let mut t = Tasked::new().await;
+    t.smtp.set_reply(Stage::Auth, 535, "5.7.8 bad credentials");
+    t.ui.send(envelope(t.account), mime("spin@example.org"))
+        .unwrap();
+    t.clock.advance(WINDOW_MS + 1);
+    t.ui.sync_now(t.account);
+    wait_until("the sign-in prompt", || {
+        t.drain()
+            .contains(&Change::SignInNeeded { account: t.account })
+    })
+    .await;
+    assert_eq!(t.ui.outbox(t.account)[0].state, OutboxState::Queued);
+
+    // The account is removed and added back (the old way to give it a new password).
+    t.engine.remove_account(t.account).await;
+    let imap_backend: Arc<dyn MailBackend> = t.backend.clone();
+    t.engine
+        .add_account_with_submitter(
+            t.account,
+            imap_backend,
+            submitter(&t.smtp, &t.backend, false),
+        )
+        .unwrap();
+    // The new slot starts from what the Outbox knows: it is paused, so the person is asked again.
+    assert!(t
+        .drain()
+        .contains(&Change::SignInNeeded { account: t.account }));
+
+    // The clock does not move. A task that wakes for the message (its time has passed, but the
+    // Outbox hands out nothing while it is paused) would take thousands of turns here.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let turns = t.ui.turns_taken(t.account).unwrap();
+    // One turn, the first: it finds the account waiting for a sign-in and sleeps until poked.
+    assert_eq!(turns, 1, "the task woke again: {turns} turns in 400 ms");
+    assert_eq!(t.smtp.accepted().len(), 0);
+
+    t.smtp.clear_reply(Stage::Auth);
+    t.ui.signed_in(t.account);
+    wait_until("the message to be sent", || t.smtp.accepted().len() == 1).await;
+    wait_until("the outbox to empty", || t.ui.outbox(t.account).is_empty()).await;
+    assert_eq!(t.imap.messages("Sent").len(), 1);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(t.smtp.accepted().len(), 1);
+    t.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_dropped_send_does_not_make_shutdown_wait_for_ever() {
+    let smtp = SmtpServer::start_default().await;
+    let imap = TestServer::start_default().await;
+    let imap_backend = imap_for(&imap);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("croft.db");
+    let db = Db::open(&path, None).unwrap();
+    let account = create_account(&db, "alice@example.org");
+    drop(db);
+    let clock = ManualClock::new(START_MS);
+    let engine = Engine::open_with_outbox(
+        Db::open(&path, None).unwrap(),
+        Db::open(&path, None).unwrap(),
+        Arc::new(clock.clone()),
+        EngineConfig {
+            shutdown_grace_ms: 200,
+            ..EngineConfig::default()
+        },
+    )
+    .unwrap();
+    let ui = engine.handle();
+    let fake = FakeBackend::new(Arc::new(clock.clone()));
+    let fake_backend: Arc<dyn MailBackend> = fake.clone();
+    engine
+        .add_account_with_submitter(
+            account,
+            fake_backend,
+            submitter(&smtp, &imap_backend, false),
+        )
+        .unwrap();
+    wait_until("the first turn", || {
+        ui.turns_taken(account).is_some_and(|n| n >= 1)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // A send that is in flight when its future is dropped (the process lives on).
+    smtp.set_misbehavior(SmtpMisbehavior::HangAfterData);
+    ui.send(envelope(account), mime("dropped@example.org"))
+        .unwrap();
+    // Let the account's task look at the new message (it is inside its window, so the task goes
+    // back to sleep) before the window ends: the send below must be the dropped one's.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    clock.advance(WINDOW_MS + 1);
+    let in_flight = {
+        let ui = ui.clone();
+        tokio::spawn(async move {
+            let _ = ui.run_once(account, false).await;
+        })
+    };
+    wait_until("the message to reach the SMTP server", || {
+        smtp.commands().iter().any(|c| c == "DATA")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(ui.outbox(account)[0].state, OutboxState::Sending);
+    in_flight.abort();
+    let _ = in_flight.await;
+    let rows = ui.outbox(account);
+    assert_eq!(rows[0].state, OutboxState::Failed);
+    assert!(rows[0].may_have_been_sent());
+
+    // Now the account's task gets stuck somewhere else (a server call that never answers).
+    let _gate = fake.gate(Method::ListFolders);
+    fake.clear_calls();
+    ui.sync_now(account);
+    wait_until("the task to be stuck in a server call", || {
+        !fake.calls().is_empty()
+    })
+    .await;
+
+    // Nothing is being sent any more, so shutdown stops the task after the grace period instead
+    // of waiting for a send that is long gone.
+    let stopped = tokio::time::timeout(Duration::from_secs(5), engine.shutdown()).await;
+    assert!(
+        stopped.is_ok(),
+        "shutdown waited for a send that was dropped"
+    );
+}
+
+#[tokio::test]
+async fn coming_back_online_ends_the_outbox_back_off_but_a_repeated_online_does_not() {
+    let rig = Rig::new().await;
+    rig.smtp.set_reply(Stage::MailFrom, 451, "4.3.0 try later");
+    rig.send("hold-1@example.org");
+    rig.advance(WINDOW_MS + 1);
+    rig.run().await;
+    let rows = rig.outbox();
+    assert_eq!((rows[0].state, rows[0].attempts), (OutboxState::Queued, 1));
+    assert!(rows[0].send_at_ms > rig.clock.now_ms());
+    rig.smtp.clear_reply(Stage::MailFrom);
+
+    // "Connected" again while it never was offline: the server may still be failing, the back-off
+    // stays.
+    let connections = rig.smtp.connection_count();
+    rig.ui.set_online(rig.account, true);
+    rig.run().await;
+    assert_eq!(rig.smtp.connection_count(), connections);
+    assert_eq!(rig.accepted(), 0);
+
+    // A message still inside its Undo window keeps it, whatever the connection does.
+    let fresh = rig.send("hold-2@example.org");
+
+    // The connection was lost and came back: tried at once, with no time passing.
+    rig.ui.set_online(rig.account, false);
+    rig.ui.set_online(rig.account, true);
+    let rows = rig.outbox();
+    assert_eq!(rows[0].send_at_ms, rig.clock.now_ms());
+    assert_eq!(rows[0].attempts, 1, "attempts stay used");
+    assert_eq!(rows[1].id, fresh);
+    assert_eq!(rows[1].send_at_ms, rig.clock.now_ms() + WINDOW_MS);
+    rig.run().await;
+    assert_eq!(rig.accepted(), 1);
+    assert_eq!(rig.outbox().len(), 1, "the second one still waits");
+    assert!(rig.ui.undo_send(rig.account, fresh).is_ok());
 }

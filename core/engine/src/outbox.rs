@@ -17,16 +17,31 @@
 //! is aborted, or a `run_once` caller gives up) while the process lives, [`InFlight`] does the same
 //! in memory by calling `abandon`. The engine never cancels a send on its own: shutdown waits for
 //! it (see `Engine::join`).
+//!
+//! # One account's task, one account's mail
+//!
+//! The task asks the Outbox for its own account's messages only (`take_due_for`,
+//! `take_filing_for`) and, as a second guard, refuses a message whose account is not its own. Its
+//! wake time is the Outbox's own (`next_wake_ms_for`), which follows the same pause, offline and
+//! back-off rules as the takes, so the task never wakes at a time where nothing can be handed out.
+
+use std::sync::atomic::Ordering;
 
 use croft_mail_core::{
-    AccountId, DueMessage, FilingRejection, OutboxId, OutboxState, SendRejection,
+    AccountId, DueMessage, FilingRejection, OutboxEntry, OutboxId, OutboxState, SendRejection,
 };
 use croft_protocols::{BackendError, MailSubmitter};
 use croft_storage::StorageError;
 
-use crate::engine::{Change, EngineError, Outbox, Shared};
+use crate::engine::{AccountSlot, Change, EngineError, Outbox, Shared};
 use crate::mime;
 use crate::worker::Worker;
+
+/// Recorded when the Outbox handed an account's task a message of another account. It cannot
+/// happen through the per-account takes; if it ever does, the message is failed with this fixed
+/// text (no address, no content) instead of being sent from the wrong account.
+pub(crate) const REASON_WRONG_ACCOUNT: &str =
+    "This message was not sent: it was handed to the wrong account";
 
 /// What a guard does if it is dropped before the answer is recorded.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,6 +57,7 @@ enum Step {
 /// Failed with "may not have been sent", a copy that was being saved goes back to wait.
 struct InFlight<'a> {
     shared: &'a Shared,
+    slot: &'a AccountSlot,
     account: AccountId,
     id: OutboxId,
     step: Step,
@@ -49,10 +65,16 @@ struct InFlight<'a> {
 }
 
 impl<'a> InFlight<'a> {
-    fn new(shared: &'a Shared, account: AccountId, id: OutboxId, step: Step) -> Self {
+    /// A [`Step::Send`] guard also marks the account as sending (so shutdown waits for the
+    /// answer); the mark is cleared when the guard is dropped, however that happens.
+    fn new(shared: &'a Shared, slot: &'a AccountSlot, id: OutboxId, step: Step) -> Self {
+        if step == Step::Send {
+            slot.sending.store(true, Ordering::SeqCst);
+        }
         Self {
             shared,
-            account,
+            slot,
+            account: slot.account,
             id,
             step,
             armed: true,
@@ -67,6 +89,11 @@ impl<'a> InFlight<'a> {
 
 impl Drop for InFlight<'_> {
     fn drop(&mut self) {
+        // First, whatever happens next: nothing of this account is being sent any more, so a
+        // shutdown must not wait for it.
+        if self.step == Step::Send {
+            self.slot.sending.store(false, Ordering::SeqCst);
+        }
         if !self.armed {
             return;
         }
@@ -107,84 +134,31 @@ impl Drop for InFlight<'_> {
     }
 }
 
-/// Runs `f` on the Outbox with every other account's mail switched off (offline), so that
-/// `take_due` and `take_filing`, which look at all accounts, only hand out this account's
-/// messages. The flags are put back before the lock is let go. Also returns the ids that `f`
-/// turned into Failed (stored messages that could not be read back), which nobody else reports.
-fn only_account<T>(
-    ob: &mut Outbox,
-    account: AccountId,
-    f: impl FnOnce(&mut Outbox) -> T,
-) -> (T, Vec<OutboxId>) {
-    let failed_ids = |ob: &Outbox| -> Vec<OutboxId> {
-        ob.outbox()
-            .iter()
-            .filter(|e| e.account == account && e.state == OutboxState::Failed)
-            .map(|e| e.id)
-            .collect()
-    };
-    let before = failed_ids(ob);
-    let mut others: Vec<AccountId> = ob
-        .outbox()
-        .iter()
-        .map(|e| e.account)
-        .filter(|a| *a != account && !ob.outbox().is_offline(*a))
-        .collect();
-    others.sort_unstable();
-    others.dedup();
-    for other in &others {
-        ob.set_offline(*other, true);
-    }
-    let out = f(ob);
-    for other in &others {
-        ob.set_offline(*other, false);
-    }
-    let new = failed_ids(ob)
-        .into_iter()
-        .filter(|id| !before.contains(id))
-        .collect();
-    (out, new)
-}
-
 impl Worker {
     /// True when this account can send and the engine has an Outbox.
     fn outbox_ready(&self) -> bool {
-        self.slot.submitter.is_some() && self.shared.has_outbox()
+        self.slot.submitter().is_some() && self.shared.has_outbox()
     }
 
     /// When this account's task should next wake to send or save a copy, or `None` when nothing is
-    /// waiting. Uses the entries' own times and the holds the task recorded after transient
-    /// failures, so it is never earlier than what `take_due` would hand out (a task that woke at
-    /// a time where nothing is handed out would spin).
+    /// waiting. It is the Outbox's own answer ([`croft_mail_core::Outbox::next_wake_ms_for`]), so it
+    /// is `None` while the Outbox has the account paused (waiting for a sign-in) or offline, and
+    /// never earlier than what `take_due_for` would hand out: a task that woke at a time where
+    /// nothing is handed out would spin.
     pub(crate) fn outbox_wake_ms(&self) -> Option<i64> {
         if !self.outbox_ready() {
             return None;
         }
-        let account = self.account();
-        let send_hold = self
-            .slot
-            .send_hold_ms
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let file_hold = self
-            .slot
-            .file_hold_ms
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let ob = self.shared.outbox()?;
-        ob.outbox()
-            .iter()
-            .filter(|e| e.account == account)
-            .filter_map(|e| match e.state {
-                OutboxState::Queued => Some(e.send_at_ms.max(send_hold)),
-                OutboxState::Submitted => Some(e.send_at_ms.max(file_hold)),
-                _ => None,
-            })
-            .min()
+        self.shared
+            .outbox()?
+            .outbox()
+            .next_wake_ms_for(self.account())
     }
 
     /// Sends every message of this account that is due, one at a time, then saves the copies in
     /// Sent. Stops early when the engine is stopping or the account needs the person to sign in.
     pub(crate) async fn run_outbox(&self) -> Result<(), EngineError> {
-        let Some(submitter) = self.slot.submitter.clone() else {
+        let Some(submitter) = self.slot.submitter() else {
             return Ok(());
         };
         if !self.shared.has_outbox() {
@@ -195,7 +169,7 @@ impl Worker {
             if self.stop_now() {
                 return Ok(());
             }
-            let Some(due) = self.take(|ob, now| ob.take_due(now, 1))? else {
+            let Some(due) = self.take(|ob, account, now| ob.take_due_for(account, now, 1))? else {
                 break;
             };
             self.deliver(&*submitter, due).await?;
@@ -204,7 +178,8 @@ impl Worker {
             if self.stop_now() {
                 return Ok(());
             }
-            let Some(due) = self.take(|ob, now| ob.take_filing(now, 1))? else {
+            let Some(due) = self.take(|ob, account, now| ob.take_filing_for(account, now, 1))?
+            else {
                 break;
             };
             self.file(&*submitter, due).await?;
@@ -213,18 +188,32 @@ impl Worker {
     }
 
     /// Takes the next message of this account that `pick` hands out (already marked Sending or
-    /// Filing on disk).
+    /// Filing on disk). Messages of this account whose stored bytes could not be read back turn
+    /// into Failed inside the take; nobody else reports them, so they are announced here.
     fn take(
         &self,
-        pick: impl FnOnce(&mut Outbox, i64) -> Result<Vec<DueMessage>, StorageError>,
+        pick: impl FnOnce(&mut Outbox, AccountId, i64) -> Result<Vec<DueMessage>, StorageError>,
     ) -> Result<Option<DueMessage>, EngineError> {
         let account = self.account();
         let now = self.shared.now();
+        let failed_ids = |ob: &Outbox| -> Vec<OutboxId> {
+            ob.outbox()
+                .iter()
+                .filter(|e| e.account == account && e.state == OutboxState::Failed)
+                .map(|e| e.id)
+                .collect()
+        };
         let (taken, unreadable) = {
             let Some(mut ob) = self.shared.outbox() else {
                 return Ok(None);
             };
-            only_account(&mut ob, account, |ob| pick(ob, now))
+            let before = failed_ids(&ob);
+            let taken = pick(&mut ob, account, now);
+            let new: Vec<OutboxId> = failed_ids(&ob)
+                .into_iter()
+                .filter(|id| !before.contains(id))
+                .collect();
+            (taken, new)
         };
         if !unreadable.is_empty() {
             self.shared.emit(Change::Outbox { account });
@@ -265,18 +254,15 @@ impl Worker {
         due: DueMessage,
     ) -> Result<(), EngineError> {
         let DueMessage { entry, mime } = due;
+        if entry.account != self.account() {
+            return self.refuse_foreign(&entry, Step::Send);
+        }
         let (account, id) = (entry.account, entry.id);
         self.shared.emit(Change::Outbox { account });
-        let mut guard = InFlight::new(&self.shared, account, id, Step::Send);
-        self.slot
-            .sending
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut guard = InFlight::new(&self.shared, &self.slot, id, Step::Send);
         let result = submitter
             .send(&entry.envelope_from, &entry.recipients, &mime)
             .await;
-        self.slot
-            .sending
-            .store(false, std::sync::atomic::Ordering::SeqCst);
         let now = self.shared.now();
         // If recording the answer fails, the guard stays armed and fails the message as "may not
         // have been sent" when this function returns: the message may well have gone out.
@@ -295,14 +281,9 @@ impl Worker {
         };
         guard.disarm();
         match rejection {
-            Some(SendRejection::RetryAt(at)) => {
-                self.slot
-                    .send_hold_ms
-                    .fetch_max(at, std::sync::atomic::Ordering::SeqCst);
-            }
+            Some(SendRejection::RetryAt(_)) | None => {}
             Some(SendRejection::Failed) => self.shared.emit(Change::SendFailed { account, id }),
             Some(SendRejection::AccountNeedsAttention) => self.sign_in_needed(),
-            None => {}
         }
         self.shared.emit(Change::Outbox { account });
         Ok(())
@@ -316,8 +297,11 @@ impl Worker {
         due: DueMessage,
     ) -> Result<(), EngineError> {
         let DueMessage { entry, mime } = due;
+        if entry.account != self.account() {
+            return self.refuse_foreign(&entry, Step::File);
+        }
         let (account, id) = (entry.account, entry.id);
-        let mut guard = InFlight::new(&self.shared, account, id, Step::File);
+        let mut guard = InFlight::new(&self.shared, &self.slot, id, Step::File);
         let message_id = mime::message_id(&mime);
         let result = submitter.file_in_sent(message_id.as_deref(), &mime).await;
         let now = self.shared.now();
@@ -334,15 +318,267 @@ impl Worker {
         };
         guard.disarm();
         match rejection {
-            Some(FilingRejection::RetryAt(at)) => {
-                self.slot
-                    .file_hold_ms
-                    .fetch_max(at, std::sync::atomic::Ordering::SeqCst);
-            }
+            Some(FilingRejection::RetryAt(_)) | None => {}
             Some(FilingRejection::GaveUp) => self.shared.emit(Change::NotFiled { account, id }),
             Some(FilingRejection::AccountNeedsAttention) => self.sign_in_needed(),
-            None => {}
         }
         Ok(())
+    }
+
+    /// The Outbox handed this task a message of another account (the per-account takes make that
+    /// impossible; this is the second guard). Nothing is sent or filed from this account. A message
+    /// that was being sent is Failed with a fixed reason (the person decides); a copy that was
+    /// being saved goes back to wait for its own account. Only the class of the problem is logged.
+    fn refuse_foreign(&self, entry: &OutboxEntry, step: Step) -> Result<(), EngineError> {
+        log::error!(
+            "account {}: the outbox handed out a message of another account; refused",
+            self.account()
+        );
+        let now = self.shared.now();
+        let owner = entry.account;
+        {
+            let mut ob = self.shared.outbox().ok_or(EngineError::NoOutbox)?;
+            match step {
+                Step::Send => {
+                    ob.failed(
+                        entry.id,
+                        &BackendError::Permanent(REASON_WRONG_ACCOUNT.to_owned()),
+                        now,
+                    )?;
+                }
+                Step::File => {
+                    ob.filing_failed(
+                        entry.id,
+                        &BackendError::Transient("wrong account".to_owned()),
+                        now,
+                    )?;
+                }
+            }
+        }
+        self.shared.emit(Change::Outbox { account: owner });
+        if step == Step::Send {
+            self.shared.emit(Change::SendFailed {
+                account: owner,
+                id: entry.id,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+
+    use croft_mail_core::NewMessage;
+    use croft_protocols::{
+        BackendFuture, Capabilities, FlagChange, FolderStatus, MailBackend, MoveOutcome,
+        RemoteFolder, RemoteHeader, RemoteSnapshot, Uid,
+    };
+    use croft_storage::accounts::{self, NewAccount, Protocol};
+    use croft_storage::Db;
+
+    use super::*;
+    use crate::{Engine, EngineConfig, ManualClock};
+
+    /// A backend that is never called.
+    struct NoBackend;
+
+    fn never<'a, T: Send + 'a>() -> BackendFuture<'a, T> {
+        Box::pin(async { Err(BackendError::Permanent("not used".into())) })
+    }
+
+    impl MailBackend for NoBackend {
+        fn capabilities(&self) -> BackendFuture<'_, Capabilities> {
+            never()
+        }
+        fn list_folders(&self) -> BackendFuture<'_, Vec<RemoteFolder>> {
+            never()
+        }
+        fn folder_status<'a>(&'a self, _: &'a str) -> BackendFuture<'a, FolderStatus> {
+            never()
+        }
+        fn snapshot<'a>(&'a self, _: &'a str) -> BackendFuture<'a, RemoteSnapshot> {
+            never()
+        }
+        fn fetch_headers<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [Uid],
+        ) -> BackendFuture<'a, Vec<RemoteHeader>> {
+            never()
+        }
+        fn find_by_message_id<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+        ) -> BackendFuture<'a, Option<Uid>> {
+            never()
+        }
+        fn set_flag<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [Uid],
+            _: FlagChange,
+        ) -> BackendFuture<'a, ()> {
+            never()
+        }
+        fn move_to<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [Uid],
+            _: &'a str,
+        ) -> BackendFuture<'a, MoveOutcome> {
+            never()
+        }
+        fn delete_forever<'a>(&'a self, _: &'a str, _: &'a [Uid]) -> BackendFuture<'a, ()> {
+            never()
+        }
+    }
+
+    /// A submitter that counts what it is asked to do.
+    #[derive(Default)]
+    struct Counting {
+        sends: AtomicUsize,
+        copies: AtomicUsize,
+    }
+
+    impl MailSubmitter for Counting {
+        fn send<'a>(&'a self, _: &'a str, _: &'a [String], _: &'a [u8]) -> BackendFuture<'a, ()> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn files_sent_itself(&self) -> bool {
+            false
+        }
+        fn file_in_sent<'a>(&'a self, _: Option<&'a str>, _: &'a [u8]) -> BackendFuture<'a, ()> {
+            self.copies.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn account(db: &Db, email: &str) -> AccountId {
+        accounts::insert(
+            db.connection(),
+            &NewAccount {
+                label: email.into(),
+                email: email.into(),
+                protocol: Protocol::Imap,
+                provider: "generic".into(),
+                config: serde_json::json!({}),
+                color: None,
+                position: 0,
+            },
+            0,
+        )
+        .unwrap()
+    }
+
+    fn message(account: AccountId) -> NewMessage {
+        NewMessage {
+            account,
+            identity: None,
+            envelope_from: "a@example.org".into(),
+            recipients: vec!["b@example.org".into()],
+        }
+    }
+
+    /// Two accounts on one engine, a message of the first queued and handed out to its own task.
+    struct Two {
+        _dir: tempfile::TempDir,
+        engine: Engine,
+        first: AccountId,
+        second_submitter: Arc<Counting>,
+        second: Worker,
+    }
+
+    fn two_accounts() -> Two {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("croft.db");
+        let db = Db::open(&path, None).unwrap();
+        let (first, second) = (
+            account(&db, "one@example.org"),
+            account(&db, "two@example.org"),
+        );
+        drop(db);
+        let engine = Engine::open_with_outbox(
+            Db::open(&path, None).unwrap(),
+            Db::open(&path, None).unwrap(),
+            Arc::new(ManualClock::new(1_000)),
+            EngineConfig::default(),
+        )
+        .unwrap();
+        let second_submitter = Arc::new(Counting::default());
+        engine
+            .attach_account_with_submitter(
+                first,
+                Arc::new(NoBackend),
+                Arc::new(Counting::default()),
+            )
+            .unwrap();
+        engine
+            .attach_account_with_submitter(second, Arc::new(NoBackend), second_submitter.clone())
+            .unwrap();
+        let shared = engine.shared();
+        let slot = shared.slot(second).unwrap();
+        Two {
+            _dir: dir,
+            engine,
+            first,
+            second_submitter,
+            second: Worker::new(shared, slot),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_of_another_account_is_failed_with_a_fixed_reason_and_never_sent() {
+        let t = two_accounts();
+        let shared = t.engine.shared();
+        let (id, due) = {
+            let mut ob = shared.outbox().unwrap();
+            let id = ob
+                .queue(
+                    message(t.first),
+                    b"Message-ID: <a@b>\r\n\r\nx".to_vec(),
+                    0,
+                    0,
+                )
+                .unwrap();
+            // The global take, which a task never uses, hands the message out.
+            let due = ob.take_due(1_000, 1).unwrap().pop().unwrap();
+            (id, due)
+        };
+        t.second.deliver(&*t.second_submitter, due).await.unwrap();
+        assert_eq!(t.second_submitter.sends.load(Ordering::SeqCst), 0);
+        let ob = shared.outbox().unwrap();
+        let entry = ob.outbox().get(id).unwrap();
+        assert_eq!(entry.state, OutboxState::Failed);
+        assert_eq!(entry.last_error.as_deref(), Some(REASON_WRONG_ACCOUNT));
+    }
+
+    #[tokio::test]
+    async fn a_copy_of_another_account_goes_back_to_wait_and_is_not_filed() {
+        let t = two_accounts();
+        let shared = t.engine.shared();
+        let (id, due) = {
+            let mut ob = shared.outbox().unwrap();
+            let id = ob
+                .queue(
+                    message(t.first),
+                    b"Message-ID: <a@b>\r\n\r\nx".to_vec(),
+                    0,
+                    0,
+                )
+                .unwrap();
+            ob.take_due(1_000, 1).unwrap();
+            ob.submitted(id, 1_000).unwrap();
+            let due = ob.take_filing(1_000, 1).unwrap().pop().unwrap();
+            (id, due)
+        };
+        t.second.file(&*t.second_submitter, due).await.unwrap();
+        assert_eq!(t.second_submitter.copies.load(Ordering::SeqCst), 0);
+        let ob = shared.outbox().unwrap();
+        assert_eq!(ob.outbox().get(id).unwrap().state, OutboxState::Submitted);
     }
 }

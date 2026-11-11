@@ -13,7 +13,7 @@ use croft_mail_core::{
     AccountId, CancelError, Enqueued, NewMessage, Op, OpId, OpKind, OutboxEntry, OutboxError,
     OutboxId, QueueError, RemovedMessage, UnreadableOp,
 };
-use croft_protocols::Uid;
+use croft_protocols::{MailSubmitter, Uid};
 use croft_storage::messages::Message;
 use croft_storage::{folders, messages, Db, StorageError};
 use tokio::sync::broadcast;
@@ -69,9 +69,15 @@ pub enum SendError {
     UnknownAccount(AccountId),
     /// The account was added without a submitter, so it cannot send.
     NoSubmitter(AccountId),
-    /// The message has a `Bcc:` header. A Bcc recipient belongs in `NewMessage::recipients` only:
+    /// The message has a `Bcc:` or `Resent-Bcc:` header. A Bcc recipient belongs in `NewMessage::recipients` only:
     /// the bytes are sent as stored, so a header would show the recipient to everyone else.
     BccHeader,
+    /// The message has no `Message-ID:` header. The copy in Sent is recognised by it: without one
+    /// the copy cannot be looked up first, and a retry would file a second copy.
+    NoMessageId,
+    /// The `Message-ID:` has a character that is not ASCII (RFC 5322 allows none), which the
+    /// look-up in Sent may not find again.
+    MessageIdNotAscii,
     /// The envelope has no recipient.
     NoRecipients,
     /// The envelope sender is empty.
@@ -87,6 +93,8 @@ impl fmt::Display for SendError {
             Self::UnknownAccount(a) => write!(f, "no backend for account {a}"),
             Self::NoSubmitter(a) => write!(f, "account {a} cannot send mail"),
             Self::BccHeader => f.write_str("the message has a Bcc header"),
+            Self::NoMessageId => f.write_str("the message has no Message-ID"),
+            Self::MessageIdNotAscii => f.write_str("the Message-ID is not ASCII"),
             Self::NoRecipients => f.write_str("the message has no recipients"),
             Self::NoSender => f.write_str("the message has no sender"),
             Self::Storage(e) => write!(f, "database error: {e}"),
@@ -305,12 +313,21 @@ impl EngineHandle {
     ///
     /// `message` is the envelope: `envelope_from` is the identity's address and `recipients` are
     /// To, Cc and Bcc as bare addresses. `mime` is the whole RFC 5322 message with a Message-ID
-    /// (it is how the copy in Sent is recognised) and **without a `Bcc:` header**: it is refused
-    /// with [`SendError::BccHeader`], because the bytes are sent exactly as stored. It should be
-    /// 7-bit or UTF-8 text, or the copy in Sent cannot be saved ([`croft_protocols::submit`]).
+    /// (it is how the copy in Sent is recognised, so a message with none is refused with
+    /// [`SendError::NoMessageId`], and one with a non-ASCII Message-ID with
+    /// [`SendError::MessageIdNotAscii`]) and **without a `Bcc:` or `Resent-Bcc:` header**: it is
+    /// refused with [`SendError::BccHeader`], because the bytes are sent exactly as stored. Lines
+    /// are read as the SMTP adapter writes them, so a lone CR does not hide a header. The message
+    /// should be 7-bit or UTF-8 text, or the copy in Sent cannot be saved
+    /// ([`croft_protocols::submit`]).
     pub fn send(&self, message: NewMessage, mime: Vec<u8>) -> Result<OutboxId, SendError> {
         if mime::has_bcc_header(&mime) {
             return Err(SendError::BccHeader);
+        }
+        match mime::message_id(&mime) {
+            None => return Err(SendError::NoMessageId),
+            Some(id) if !id.is_ascii() => return Err(SendError::MessageIdNotAscii),
+            Some(_) => {}
         }
         if message.recipients.is_empty() {
             return Err(SendError::NoRecipients);
@@ -323,7 +340,7 @@ impl EngineHandle {
             .shared
             .slot(account)
             .ok_or(SendError::UnknownAccount(account))?;
-        if slot.submitter.is_none() {
+        if slot.submitter().is_none() {
             return Err(SendError::NoSubmitter(account));
         }
         let now = self.shared.now();
@@ -430,14 +447,50 @@ impl EngineHandle {
                 log::warn!("account {account}: could not end the back-off");
             }
         }
-        // The Outbox follows the same connection state. (Its own lock, taken after the queue's
-        // is let go: the two are never held together.)
+        // The Outbox follows the same connection state, and a return from offline ends its
+        // back-off too (it never shortens an Undo window). Its own lock, taken after the queue's
+        // is let go: the two are never held together.
         if let Some(mut ob) = self.shared.outbox() {
+            let was_offline = ob.outbox().is_offline(account);
             ob.set_offline(account, !online);
+            if online && was_offline && ob.clear_hold(account, now).is_err() {
+                log::warn!("account {account}: could not end the outbox back-off");
+            }
         }
         if online {
             self.shared.request_full_sync(account);
         }
+    }
+
+    /// Gives the account a new [`MailSubmitter`], for example one built with a new password or a
+    /// refreshed token, without removing and adding the account. A send that is already in
+    /// flight finishes with the submitter it started with; everything after uses the new one.
+    /// Works for an account that was added without a submitter too (it can send from then on).
+    ///
+    /// After a refused sign-in call this first, then [`EngineHandle::signed_in`]: this call does not
+    /// resume the account by itself. Replace the backend's credential the same way the caller
+    /// built it (the engine has no call for that yet).
+    pub fn replace_submitter(
+        &self,
+        account: AccountId,
+        submitter: Arc<dyn MailSubmitter>,
+    ) -> Result<(), EngineError> {
+        let slot = self
+            .shared
+            .slot(account)
+            .ok_or(EngineError::UnknownAccount(account))?;
+        slot.set_submitter(submitter);
+        self.shared.poke(account);
+        Ok(())
+    }
+
+    /// How many turns the account's task has taken so far (it takes one at every wake-up). For
+    /// diagnostics and tests: a number that keeps growing while nothing happens is a task that
+    /// wakes for nothing. `None` for an unknown account.
+    pub fn turns_taken(&self, account: AccountId) -> Option<u64> {
+        self.shared
+            .slot(account)
+            .map(|slot| slot.turns_taken.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// Syncs every folder of the account now (pull to refresh).

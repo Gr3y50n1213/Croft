@@ -49,6 +49,7 @@ mod tls;
 mod wire;
 
 pub use config::{SmtpConfig, SmtpSecurity};
+pub use wire::data_lines;
 
 use crate::imap::{CertFingerprint, Credential};
 use crate::types::BackendError;

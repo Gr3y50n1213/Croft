@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -167,15 +167,16 @@ pub(crate) struct AccountSlot {
     pub(crate) account: AccountId,
     pub(crate) backend: Arc<dyn MailBackend>,
     /// Sends the account's mail and files the copy in Sent. `None`: the account cannot send.
-    pub(crate) submitter: Option<Arc<dyn MailSubmitter>>,
+    /// Replaced by [`EngineHandle::replace_submitter`]; read with [`AccountSlot::submitter`].
+    submitter: Mutex<Option<Arc<dyn MailSubmitter>>>,
     /// True while a message is being handed to the server. [`Engine::shutdown`] and
-    /// [`Engine::remove_account`] then keep waiting instead of cancelling the send.
+    /// [`Engine::remove_account`] then keep waiting instead of cancelling the send. Set and
+    /// cleared only by the guard in `outbox.rs`, so it is cleared however the send ends,
+    /// including when its future is dropped.
     pub(crate) sending: AtomicBool,
-    /// After a transient failure to send, nothing of this account is sent before this time (the
-    /// Outbox keeps the same hold in memory; the task needs it to know when to wake).
-    pub(crate) send_hold_ms: AtomicI64,
-    /// The same for saving copies in Sent.
-    pub(crate) file_hold_ms: AtomicI64,
+    /// How many turns the account's task has taken (diagnostics: a task that wakes without
+    /// anything to do shows up as a number that keeps growing).
+    pub(crate) turns_taken: AtomicU64,
     /// Poked by every UI action, `sync_now`, `set_online` and shutdown.
     pub(crate) wake: Notify,
     /// Held for a whole cycle, so an account never runs two operations at once even when
@@ -189,6 +190,21 @@ pub(crate) struct AccountSlot {
 }
 
 impl AccountSlot {
+    /// The account's current submitter, if it has one.
+    pub(crate) fn submitter(&self) -> Option<Arc<dyn MailSubmitter>> {
+        self.submitter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_submitter(&self, submitter: Arc<dyn MailSubmitter>) {
+        *self
+            .submitter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(submitter);
+    }
+
     pub(crate) fn stopping(&self) -> bool {
         self.stopping.load(Ordering::SeqCst)
     }
@@ -440,6 +456,12 @@ impl Engine {
         })
     }
 
+    /// The shared state, for unit tests that drive a [`Worker`] directly.
+    #[cfg(test)]
+    pub(crate) fn shared(&self) -> Arc<Shared> {
+        self.shared.clone()
+    }
+
     /// The UI's handle: cheap to clone, `Send + Sync`, and none of its action methods waits for
     /// the network.
     pub fn handle(&self) -> EngineHandle {
@@ -452,6 +474,15 @@ impl Engine {
         backend: Arc<dyn MailBackend>,
         submitter: Option<Arc<dyn MailSubmitter>>,
     ) -> Result<Arc<AccountSlot>, EngineError> {
+        // An account that was removed and added back starts from what the Outbox knows: if a
+        // sign-in failure paused its outgoing mail, the new slot also waits for the person to sign
+        // in (`EngineHandle::signed_in`). Without this the slot would think everything is fine
+        // while the Outbox hands out nothing. (The Outbox lock is taken and let go before the
+        // slots' lock: they are never held together.)
+        let outbox_paused = self
+            .shared
+            .outbox()
+            .is_some_and(|ob| ob.outbox().is_paused(account));
         let mut slots = self.shared.slots();
         if slots.contains_key(&account) {
             return Err(EngineError::AccountExists(account));
@@ -459,19 +490,21 @@ impl Engine {
         let slot = Arc::new(AccountSlot {
             account,
             backend,
-            submitter,
+            submitter: Mutex::new(submitter),
             sending: AtomicBool::new(false),
-            send_hold_ms: AtomicI64::new(i64::MIN),
-            file_hold_ms: AtomicI64::new(i64::MIN),
+            turns_taken: AtomicU64::new(0),
             wake: Notify::new(),
             turn: self.shared.turn(account),
             full_sync_wanted: AtomicBool::new(true),
-            needs_sign_in: AtomicBool::new(false),
+            needs_sign_in: AtomicBool::new(outbox_paused),
             stopping: AtomicBool::new(false),
         });
         slots.insert(account, slot.clone());
         drop(slots);
         self.announce_recovered(account);
+        if outbox_paused {
+            self.shared.emit(Change::SignInNeeded { account });
+        }
         Ok(slot)
     }
 
@@ -500,7 +533,10 @@ impl Engine {
         }
     }
 
-    /// Adds an account's backend and starts its task on the current tokio runtime. The task
+    /// Adds an account's backend and starts its task on the current tokio runtime. An account that
+    /// was removed after a refused sign-in while sending is added back in the same state: it
+    /// announces [`Change::SignInNeeded`] again and does nothing until [`EngineHandle::signed_in`]
+    /// (to give it a new password without removing it, use [`EngineHandle::replace_submitter`]). The task
     /// syncs every folder first, then runs operations as they become due, syncs again every
     /// [`EngineConfig::sync_interval_ms`], and wakes at once on every UI action.
     ///

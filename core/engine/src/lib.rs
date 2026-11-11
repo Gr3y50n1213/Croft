@@ -89,8 +89,13 @@
 //! * **One credential.** A refused sign-in while sending puts the account in the same state as one
 //!   from IMAP: [`Change::SignInNeeded`], and nothing of the account (queue, syncs, Outbox) runs
 //!   until [`EngineHandle::signed_in`].
-//! * **The message has no `Bcc:` header** ([`SendError::BccHeader`]); Bcc recipients are only in
-//!   the envelope.
+//! * **The message has no `Bcc:` or `Resent-Bcc:` header** ([`SendError::BccHeader`], checked with
+//!   the SMTP adapter's own line rule, so a lone CR hides nothing); Bcc recipients are only in the
+//!   envelope. It has an ASCII Message-ID ([`SendError::NoMessageId`],
+//!   [`SendError::MessageIdNotAscii`]).
+//! * **A new password** is given with [`EngineHandle::replace_submitter`] and
+//!   [`EngineHandle::signed_in`]; an account removed and added back after a refused sign-in starts
+//!   waiting for the sign-in again.
 //!
 //! # Message-ID lookups never guess before something is destroyed
 //!

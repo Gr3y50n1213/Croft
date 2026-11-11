@@ -126,6 +126,7 @@ impl Worker {
             if self.slot.stopping() {
                 break;
             }
+            self.slot.turns_taken.fetch_add(1, Ordering::Relaxed);
             let now = self.shared.now();
             let wanted = self.slot.full_sync_wanted.swap(false, Ordering::SeqCst);
             let full = wanted || now >= next_full;

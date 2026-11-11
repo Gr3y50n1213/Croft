@@ -2,16 +2,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Reading just enough of a stored message to apply two rules: a message to be sent has no `Bcc:`
-//! header, and its Message-ID is how a copy in Sent is recognised. Nothing here parses addresses.
+//! Reading just enough of a stored message to apply the rules for a message to be sent: it has no
+//! `Bcc:` (or `Resent-Bcc:`) header, and it has an ASCII Message-ID, which is how a copy in Sent is
+//! recognised. Nothing here parses addresses.
+//!
+//! Lines are split exactly as the SMTP adapter splits them when it writes the message to the
+//! server ([`croft_protocols::smtp::data_lines`]: `CRLF`, a lone `LF` and a lone `CR` all end a
+//! line). A different rule here would let a header that the server sees as its own line hide inside
+//! what this module reads as part of another one.
+
+use croft_protocols::smtp::data_lines;
 
 /// The header fields of a message as (name, unfolded value) pairs, in order. Stops at the first
 /// empty line. A line that starts with a space or tab continues the field before it. Lines with no
 /// colon that are not continuations are skipped.
 fn header_fields(mime: &[u8]) -> Vec<(String, String)> {
     let mut fields: Vec<(String, String)> = Vec::new();
-    for raw in mime.split(|b| *b == b'\n') {
-        let line = raw.strip_suffix(b"\r").unwrap_or(raw);
+    for line in data_lines(mime) {
         if line.is_empty() {
             break;
         }
@@ -30,11 +37,12 @@ fn header_fields(mime: &[u8]) -> Vec<(String, String)> {
     fields
 }
 
-/// True when the header section has a `Bcc` field (any capitalisation, with or without a value).
+/// True when the header section has a `Bcc` or `Resent-Bcc` field (any capitalisation, with or
+/// without a value). Both name recipients that the other recipients must not see.
 pub(crate) fn has_bcc_header(mime: &[u8]) -> bool {
-    header_fields(mime)
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("bcc"))
+    header_fields(mime).iter().any(|(name, _)| {
+        name.eq_ignore_ascii_case("bcc") || name.eq_ignore_ascii_case("resent-bcc")
+    })
 }
 
 /// The value of the first `Message-ID` field, angle brackets included, or `None` when there is
@@ -59,6 +67,37 @@ mod tests {
         assert!(has_bcc_header(
             b"Subject: x\r\nBcc:\r\n b@example.org\r\n\r\n"
         ));
+    }
+
+    #[test]
+    fn a_bare_cr_does_not_hide_a_bcc_header() {
+        // The SMTP adapter turns each lone CR into a line end, so the server sees a Bcc line.
+        assert!(has_bcc_header(b"Subject: x\rBcc: hidden@x\r\rbody"));
+        assert!(has_bcc_header(b"Subject: x\rbcc:\r\rbody"));
+        // A CR inside a line that otherwise ends in CRLF or LF.
+        assert!(has_bcc_header(
+            b"Subject: x\rBcc: h@x\r\nTo: a@x\r\n\r\nbody"
+        ));
+        assert!(has_bcc_header(b"Subject: x\rBcc: h@x\nTo: a@x\n\nbody"));
+        // A lone CR ends the header section like any empty line does.
+        assert!(!has_bcc_header(b"Subject: x\r\rBcc: h@x\r\n"));
+        assert!(!has_bcc_header(b"Subject: x\r\r\nBcc: h@x\r\n"));
+        assert!(!has_bcc_header(
+            b"Subject: x\r\nTo: a@x\n\rBcc: h@x\r\n\r\n"
+        ));
+        // A folded line after a lone CR continues the field before it.
+        assert!(!has_bcc_header(b"Subject: x\r Bcc: h@x\r\rbody"));
+    }
+
+    #[test]
+    fn resent_bcc_is_refused_too() {
+        assert!(has_bcc_header(b"From: a\r\nResent-Bcc: b@x\r\n\r\nbody"));
+        assert!(has_bcc_header(b"From: a\r\nRESENT-bcc:\r\n\r\nbody"));
+        assert!(has_bcc_header(b"From: a\rResent-Bcc : b@x\r\rbody"));
+        assert!(!has_bcc_header(
+            b"From: a\r\nResent-To: b@x\r\n\r\nResent-Bcc: b"
+        ));
+        assert!(!has_bcc_header(b"From: a\r\nX-Resent-Bcc: b\r\n\r\n"));
     }
 
     #[test]

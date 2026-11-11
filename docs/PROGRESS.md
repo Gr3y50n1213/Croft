@@ -23,7 +23,9 @@ unverified, the next step.
 
 **Checks run and seen passing (by the orchestrator):** Rust fmt, clippy on 1.97 and 1.99, `cargo test` 712 passed, `croft-ffi` with SQLCipher 52 passed, `check_schema.py` ok; merged app (T11 + T12) builds and its tests compile. The agent ran 148 Android tests under Gradle with 0 failures (one large Robolectric jar excluded by a local, uncommitted init script because Maven Central refused it). **GitHub CI (pull request #2) is the real test run.**
 
-**Review:** Opus, two rounds. Round 1: 2 high (a temporary keystore error could wipe all data; a new account's password could reach another account's server), 2 medium, 3 low. Round 2: 1 high (on Android 8 to 11 a keystore outage could still look like a lost key, and could replace the real key), 2 medium, 4 low. All fixed with tests. The first CI run found two failing tests; the cause was two copies of the Rust bindings under Robolectric, fixed with a custom test runner.
+**Review:** Opus, two rounds. Round 1: 2 high (a temporary keystore error could wipe all data; a new account's password could reach another account's server), 2 medium, 3 low. Round 2: 1 high (on Android 8 to 11 a keystore outage could still look like a lost key, and could replace the real key), 2 medium, 4 low. All fixed with tests. The first CI run found two failing tests; the cause was two copies of the Rust bindings under Robolectric, fixed with a custom test runner. The next CI run found a real race: a stale "needs sign-in" notice could arrive after the person signed in; the FFI layer now checks the engine's current state (20 of 20 runs pass).
+
+**Known flaky test (open):** an outbox test in `core/engine/tests/outbox.rs` has failed once each in two different sessions' runs, never reproduced and its name not captured. Next time it fails, capture the name and find the cause.
 
 ---
 

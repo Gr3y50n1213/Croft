@@ -5,6 +5,28 @@ unverified, the next step.
 
 ---
 
+## T12: Theme engine and Appearance screens (11 November 2026)
+
+**Status:** done except: the screens are built and tested but not yet reachable from the app (T13 adds navigation); device-only items (feel of the cross-fade, wallpaper colours on a real Android 12+ phone, the system file and photo pickers).
+
+**What was built:** `android/.../theme/` (settings, JSON export and import with a version field, DataStore, runtime colour schemes from Google's Material Color Utilities Java port, pure black, contrast levels, cross-fade with reduced-motion variants) and screens S50, S51, S52, S53 and S08. Optional fonts Inter ("Croft Sans") and Atkinson Hyperlegible (SIL OFL 1.1).
+
+**Checks:** the agent ran 388 Android tests with 0 failures (144 contrast, 120 + 32 screenshots with Roborazzi, behaviour, JSON, golden schemes), but only by putting one Robolectric jar from the old mirror download on the classpath locally (not committed). The orchestrator built the merged app and compiled its tests. **GitHub CI (pull request #2) is the real test run.**
+
+---
+
+## T11: Secrets and the Android Keystore (11 November 2026)
+
+**Status:** done except device-only checks (StrongBox, reboot, screen-lock change, "clear data", real keystore1 behaviour on Android 8 to 11).
+
+**What was built:** the mail database is encrypted on the phone (SQLCipher with OpenSSL 3.6.3 built from source for Android, 16 KB aligned). Its key and all account secrets are wrapped by a non-exportable AES-256-GCM key in the Android Keystore (StrongBox when present), stored in `noBackupFilesDir`. Key loss is declared only on definite evidence (a canary key, repeated checks, and on Android 8 to 11 three starts over an hour); even then data is moved to a quarantine folder, restored automatically if the alarm was false, and deleted only after 7 days and 3 good starts. FFI API version 4: a new account's credential is passed to `add_account` itself; a keystore that is not ready is a temporary failure, not "needs sign-in". Account ids are never reused.
+
+**Checks run and seen passing (by the orchestrator):** Rust fmt, clippy on 1.97 and 1.99, `cargo test` 712 passed, `croft-ffi` with SQLCipher 52 passed, `check_schema.py` ok; merged app (T11 + T12) builds and its tests compile. The agent ran 148 Android tests under Gradle with 0 failures (one large Robolectric jar excluded by a local, uncommitted init script because Maven Central refused it). **GitHub CI (pull request #2) is the real test run.**
+
+**Review:** Opus, two rounds. Round 1: 2 high (a temporary keystore error could wipe all data; a new account's password could reach another account's server), 2 medium, 3 low. Round 2: 1 high (on Android 8 to 11 a keystore outage could still look like a lost key, and could replace the real key), 2 medium, 4 low. All fixed with tests. The first CI run found two failing tests; the cause was two copies of the Rust bindings under Robolectric, fixed with a custom test runner.
+
+---
+
 ## Session 1 summary (11 November 2026) — read this first
 
 **Update, first GitHub CI run (pull request #1):** all six jobs pass on GitHub (core, SQLCipher, schema, design tokens, integration against Stalwart/GreenMail/Dovecot, and Android `assembleDebug` + 27 JVM unit tests with libraries from Maven Central itself). CI found two problems the container could not: a clippy lint new in Rust 1.99, and an Android screen test still expecting FFI API version 1. Both fixed. This settles the "mirror" concern below for the Android tests.

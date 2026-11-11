@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- S01 Welcome -->
+    <string name="onb_welcome_title">Croft</string>
+    <string name="onb_welcome_tagline">Mail that lives on your own server.</string>
+    <string name="onb_add_account">Add an account</string>
+    <string name="onb_try_sample">Try with sample mail</string>
+    <string name="onb_companion">I run a Companion</string>
+    <string name="onb_no_account_needed">No Croft account is needed. Your mail goes straight to your server.</string>
+
+    <!-- Shared by S02 to S05 -->
+    <string name="onb_add_account_title">Add account</string>
+    <string name="onb_host_fallback">your server</string>
+    <string name="onb_details">Details</string>
+    <string name="onb_hide_details">Hide details</string>
+    <string name="onb_try_again">Try again</string>
+
+    <!-- S02 Add account -->
+    <string name="onb_email_heading">Your email address</string>
+    <string name="onb_email_label">Email address</string>
+    <string name="onb_email_hint">We look up your server settings for you.</string>
+    <string name="onb_email_error">Enter your full email address, like name@example.org.</string>
+    <string name="onb_quick_start">Quick start</string>
+    <string name="onb_shortcut_gmail">Gmail</string>
+    <string name="onb_shortcut_outlook">Outlook</string>
+    <string name="onb_shortcut_icloud">iCloud</string>
+    <string name="onb_shortcut_other">Other</string>
+    <string name="onb_continue">Continue</string>
+    <string name="onb_continue_disabled_reason">Enter a full email address to continue.</string>
+
+    <!-- S03 Finding your server -->
+    <string name="onb_finding_heading">Finding your server</string>
+    <string name="onb_finding_in_parallel">Croft checks these places at the same time.</string>
+    <string name="onb_probe_built_in">Known providers</string>
+    <string name="onb_probe_autoconfig">Autoconfig file</string>
+    <string name="onb_probe_srv">DNS service records</string>
+    <string name="onb_probe_jmap">JMAP discovery</string>
+    <string name="onb_probe_waiting">waiting</string>
+    <string name="onb_probe_running">checking</string>
+    <string name="onb_probe_found">found</string>
+    <string name="onb_probe_skipped">skipped</string>
+    <string name="onb_probe_no_match">no match</string>
+    <string name="onb_probe_row_description">%1$s: %2$s</string>
+    <string name="onb_enter_manually">Enter settings manually</string>
+    <string name="onb_details_probe_line">%1$s: %2$s</string>
+    <string name="onb_reason_not_published">the domain does not publish this</string>
+    <string name="onb_reason_timed_out">it took too long to answer</string>
+    <string name="onb_reason_unreachable">the network or name service could not be reached</string>
+    <string name="onb_reason_certificate_problem">the server\'s certificate was not accepted</string>
+    <string name="onb_reason_unusable">the answer was not in a form Croft understands</string>
+    <string name="onb_reason_too_large">the answer was too large</string>
+    <string name="onb_reason_bad_redirect">the server sent Croft somewhere it does not follow</string>
+    <string name="onb_reason_only_unencrypted">the domain offers only an unencrypted connection</string>
+    <string name="onb_reason_internal">something went wrong inside Croft</string>
+
+    <!-- S04 Sign in -->
+    <string name="onb_sign_in_title">Sign in</string>
+    <string name="onb_account_card">%1$s, %2$s</string>
+    <string name="onb_server_summary">%1$s, IMAP</string>
+    <string name="onb_username_label">Username</string>
+    <string name="onb_password_label">Password</string>
+    <string name="onb_sign_in">Sign in</string>
+    <string name="onb_server_settings_link">Server settings</string>
+    <string name="onb_signing_in">Signing in</string>
+    <string name="onb_hint_generic">If your server uses an app password, paste that here instead.</string>
+    <string name="onb_hint_gmail">Gmail needs an app password or your own OAuth client until Croft\'s shared Google sign-in is verified. Create an app password in your Google account and paste it here.</string>
+    <string name="onb_hint_outlook">Outlook and Microsoft 365 need an app password or your own OAuth client until Croft\'s shared Microsoft sign-in is verified. Create an app password in your Microsoft account and paste it here.</string>
+    <string name="onb_hint_icloud">iCloud needs an app-specific password. Create one in your Apple ID account and paste it here.</string>
+    <string name="onb_hint_fastmail">Fastmail needs an app password. Create one in your Fastmail settings and paste it here.</string>
+
+    <!-- Trust on first use -->
+    <string name="onb_trust_title">Trust this server?</string>
+    <string name="onb_trust_changed_title">This server\'s certificate changed</string>
+    <string name="onb_trust_body">Croft does not know who issued the security certificate of %1$s. It may be self-signed. Trust it only if you, or your organisation, set this server up, and the fingerprint below matches the one your server shows. Your password has not been sent.</string>
+    <string name="onb_trust_changed_body">The certificate of %1$s is not the one you trusted before. It may have been renewed, or someone may be intercepting your connection. Do not trust it unless the owner of the server confirms the new fingerprint below. Your password has not been sent.</string>
+    <string name="onb_trust_fingerprint_label">Certificate fingerprint (SHA-256)</string>
+    <string name="onb_trust_host_label">Server</string>
+    <string name="onb_trust_confirm">Trust this server</string>
+
+    <!-- S05 Server settings -->
+    <string name="onb_settings_title">Server settings</string>
+    <string name="onb_settings_guess_notice">Croft could not find your server\'s settings by itself. These are a guess: check them with your email provider.</string>
+    <string name="onb_incoming">Incoming server</string>
+    <string name="onb_protocol_label">Protocol</string>
+    <string name="onb_protocol_imap">IMAP</string>
+    <string name="onb_server_label">Server</string>
+    <string name="onb_port_label">Port</string>
+    <string name="onb_security_label">Security</string>
+    <string name="onb_security_tls">SSL/TLS</string>
+    <string name="onb_security_starttls">STARTTLS</string>
+    <string name="onb_encrypted_only">Croft only connects over an encrypted connection.</string>
+    <string name="onb_advanced">Advanced options</string>
+    <string name="onb_advanced_hide">Hide advanced options</string>
+    <string name="onb_outgoing">Outgoing server (optional)</string>
+    <string name="onb_outgoing_hint">Needed to send mail. You can leave it empty for now.</string>
+    <string name="onb_test_connection">Test connection</string>
+    <string name="onb_testing">Testing</string>
+    <string name="onb_add_this_account">Add account</string>
+    <string name="onb_test_passed">The connection works.</string>
+    <string name="onb_test_step_reach">Reaching the server</string>
+    <string name="onb_test_step_certificate">Checking the certificate</string>
+    <string name="onb_test_step_sign_in">Signing in</string>
+    <string name="onb_step_pending">waiting</string>
+    <string name="onb_step_running">checking</string>
+    <string name="onb_step_done">done</string>
+    <string name="onb_step_failed">failed</string>
+    <string name="onb_problem_host_empty">Enter the server name, like mail.example.org.</string>
+    <string name="onb_problem_host_bad">That is not a server name. Use letters, numbers, dots and hyphens, like mail.example.org.</string>
+    <string name="onb_problem_port">Enter a port number from 1 to 65535.</string>
+    <string name="onb_problem_username">Enter your username.</string>
+
+    <!-- S09 First sync -->
+    <string name="onb_sync_title">Setting up %1$s</string>
+    <string name="onb_sync_heading">Fetching your newest mail</string>
+    <string name="onb_sync_inbox_count">Inbox: %1$d messages so far</string>
+    <string name="onb_sync_background_note">Older mail keeps downloading in the background. You can start reading now.</string>
+    <string name="onb_sync_failed">The server stopped the first sync. You can still continue: Croft will tell you what to do in the inbox.</string>
+    <string name="onb_sync_continue">Continue in background</string>
+    <string name="onb_sync_progress_description">Fetching your newest mail</string>
+
+    <!-- Failure copy. Name: fail_<translation key with dots as underscores>. Every text takes the host as %1$s. -->
+    <string name="fail_discover_invalid_address">That does not look like an email address. Check it and try again.</string>
+    <string name="fail_discover_offline">Couldn\'t reach any server to look up %1$s. Check that you are online, then try again.</string>
+    <string name="fail_discover_nothing_found">Croft couldn\'t find the settings for %1$s. You can enter them yourself.</string>
+    <string name="fail_discover_resolver_unavailable">Croft couldn\'t start looking up %1$s on this device. Try again in a moment.</string>
+    <string name="fail_discover_internal">Something went wrong inside Croft while looking up %1$s. Try again.</string>
+    <string name="fail_verify_wrong_password">The server did not accept that address and password. Check them and try again.</string>
+    <string name="fail_verify_needs_app_password_gmail">Google did not accept that sign-in. Gmail does not allow your normal password in apps like Croft. Create an app password in your Google account and use that here.</string>
+    <string name="fail_verify_needs_app_password_outlook">Microsoft did not accept that sign-in. Outlook and Microsoft 365 do not allow your normal password in apps like Croft. Create an app password in your Microsoft account and use that here.</string>
+    <string name="fail_verify_needs_app_password_icloud">Apple did not accept that sign-in. iCloud needs an app-specific password, not your Apple ID password. Create one in your Apple ID account and use it here.</string>
+    <string name="fail_verify_needs_app_password_fastmail">Fastmail did not accept that sign-in. Fastmail needs an app password, not your account password. Create one in your Fastmail settings and use it here.</string>
+    <string name="fail_verify_untrusted_certificate">The security certificate of %1$s was not issued by an authority Croft knows. Check the fingerprint before you trust it.</string>
+    <string name="fail_verify_certificate_changed">The security certificate of %1$s is not the one you trusted before. Check with the server\'s owner before you trust the new one.</string>
+    <string name="fail_verify_connection_intercepted">Croft couldn\'t confirm that it is talking to your email provider at %1$s. Your password was not sent. Try another network.</string>
+    <string name="fail_verify_certificate_invalid">The security certificate of %1$s is expired, made for another name or faulty. Ask the server\'s owner to fix it.</string>
+    <string name="fail_verify_cannot_connect">Couldn\'t connect to %1$s. Check the address, or try again.</string>
+    <string name="fail_verify_no_secure_connection">%1$s does not offer a secure connection that Croft accepts, so Croft did not connect. Ask the server\'s owner to turn on current encryption (TLS 1.2 or newer).</string>
+    <string name="fail_verify_server_problem">%1$s answered but would not let Croft in. Try again later, or check the server\'s settings.</string>
+    <string name="fail_verify_jmap_only">%1$s offers JMAP only. Croft can\'t sign in over JMAP yet. If the server also offers IMAP, enter its settings by hand.</string>
+    <string name="fail_verify_bad_settings">The server settings can\'t be used. Check the server name, the port and the security setting.</string>
+    <string name="fail_verify_internal">Something went wrong inside Croft. Try again.</string>
+    <string name="fail_add_bad_settings">The server settings can\'t be used. Check the server name, the port and the security setting.</string>
+    <string name="fail_add_unsupported_server">Croft can\'t use this server yet: it needs an IMAP server.</string>
+    <string name="fail_add_no_credential">Croft lost the password before it could add the account. Type it again.</string>
+    <string name="fail_add_schema_too_new">This device\'s Croft data was made by a newer version of Croft. Update Croft to add an account.</string>
+    <string name="fail_add_internal">Something went wrong inside Croft while adding the account. Try again.</string>
+    <string name="fail_app_storage_unavailable">Croft couldn\'t open its secure storage on this device, so nothing was added. Try again.</string>
+    <string name="fail_app_unexpected">Something unexpected went wrong. Nothing was added. Try again.</string>
+    <!-- The technical lines behind "Details" (never raw codes). -->
+    <string name="onb_details_server">Server: %1$s, port %2$d, %3$s</string>
+    <string name="onb_details_none">No more detail is available.</string>
+</resources>

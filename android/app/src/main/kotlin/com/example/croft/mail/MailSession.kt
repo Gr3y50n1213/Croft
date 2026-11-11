@@ -35,8 +35,8 @@ class MailSession(
     val rowActions: RowActions = RepositoryRowActions(repository),
     /** What the person chose once for an account without an Archive, Trash or Spam folder, and the recent Move to folders. */
     val folderMapping: FolderMapping = InMemoryFolderMapping(),
-    /** True for the sample mailbox (no account yet): the rows are made up. */
-    val isDemo: Boolean = false,
+    /** True for the app's fake-data sample mailbox (no account yet): the rows are made up in Kotlin. Not the core's sample account (`AccountInfo.is_demo`), which is a real core account. */
+    val usesFakeData: Boolean = false,
 ) {
     private val cache = HashMap<String, CachedList>()
 
@@ -71,7 +71,7 @@ class MailSession(
             shared ?: run {
                 val now = System.currentTimeMillis()
                 val repo = FakeMessageRepository(FakeData.rows(DEMO_ROWS, now), System::currentTimeMillis, FakeData.accounts(now))
-                MailSession(repo, FileAnchorStore(File(context.applicationContext.noBackupFilesDir, "croft-list-anchors.json")), isDemo = true)
+                MailSession(repo, FileAnchorStore(File(context.applicationContext.noBackupFilesDir, "croft-list-anchors.json")), usesFakeData = true)
             }.also { shared = it }
         }
     }

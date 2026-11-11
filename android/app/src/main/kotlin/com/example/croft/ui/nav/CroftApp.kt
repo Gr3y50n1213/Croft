@@ -24,6 +24,7 @@ import com.example.croft.mail.followConnectivity
 import com.example.croft.swipe.SwipeSettings
 import com.example.croft.theme.ThemeSettings
 import com.example.croft.theme.ThemeStore
+import com.example.croft.ui.onboarding.OnboardingEnvironment
 import com.example.croft.ui.swipe.LocalSwipeSettings
 import com.example.croft.ui.swipe.SwipeSettingsStore
 import kotlinx.coroutines.flow.first
@@ -47,7 +48,11 @@ fun CroftApp(
     mailStore: MailSettingsStore? = null,
     /** The platform's connectivity callback, turned into `set_network_available` for the core; none when null (tests). */
     connectivity: Connectivity? = null,
+    /** The sign-in flow's parts (the real core and secret store); none in tests of the other screens. */
+    onboarding: OnboardingEnvironment? = null,
 ) {
+    // The session the Inbox shows: the one given, until the first account is added; then the one over the core.
+    var active by remember(session) { mutableStateOf(session) }
     var settings by remember { mutableStateOf<ThemeSettings?>(null) }
     LaunchedEffect(store) { settings = store.settings.first() }
     var swipe by remember { mutableStateOf<SwipeSettings?>(null) }
@@ -55,13 +60,13 @@ fun CroftApp(
     var mail by remember { mutableStateOf<MailSettings?>(null) }
     LaunchedEffect(mailStore) { mail = mailStore?.settings?.first() ?: MailSettings() }
     // The Undo time goes to the snackbar and to the core, at the start and at every change.
-    LaunchedEffect(session, mail) {
+    LaunchedEffect(active, mail) {
         val m = mail ?: return@LaunchedEffect
-        session.undoWindowMs = m.undoWindowMs
-        try { session.repository.setUndoWindowMs(m.undoWindowMs) } catch (e: com.example.croft.mail.MailException) { /* the core is closing */ }
+        active.undoWindowMs = m.undoWindowMs
+        try { active.repository.setUndoWindowMs(m.undoWindowMs) } catch (e: com.example.croft.mail.MailException) { /* the core is closing */ }
     }
     // Whether the device has a network: the core shows Offline and sends nothing while it does not.
-    if (connectivity != null) LaunchedEffect(session, connectivity) { session.followConnectivity(connectivity) }
+    if (connectivity != null) LaunchedEffect(active, connectivity) { active.followConnectivity(connectivity) }
     val scope = rememberCoroutineScope()
     val swipeNow = swipe
     val themeNow = settings
@@ -71,7 +76,7 @@ fun CroftApp(
             CompositionLocalProvider(LocalSwipeSettings provides swipeNow, LocalMailSettings provides mailNow) {
                 CroftNavHost(
                     info = info,
-                    session = session,
+                    session = active,
                     settings = themeNow,
                     modifier = modifier,
                     startAt = startAt,
@@ -80,6 +85,8 @@ fun CroftApp(
                     onSwipeSettingsChange = { next -> swipe = next; scope.launch { swipeStore?.set(next) } },
                     mailSettings = mailNow,
                     onMailSettingsChange = { next -> mail = next; scope.launch { mailStore?.set(next) } },
+                    onboarding = onboarding,
+                    onAccountReady = { onboarding?.let { active = it.openSession() } },
                 )
             }
         }

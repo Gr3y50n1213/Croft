@@ -15,6 +15,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.example.croft.ui.mail.InboxTags
 import com.example.croft.ui.nav.SettingsTags
+import com.example.croft.ui.onboarding.OnboardingTags
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,8 +53,16 @@ class MainActivityTest {
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 
-    /** The stored theme is read before anything is drawn, so the first screen (the Inbox) appears a moment after the activity starts. */
-    private fun waitForStart() = rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+    /**
+     * The stored theme is read before anything is drawn, so the first screen appears a moment after the activity starts. With no
+     * account (as in a fresh install) that screen is S01 Welcome (T17b); "Try with sample mail" opens the sample Inbox that
+     * these tests go on from.
+     */
+    private fun waitForStart() {
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(OnboardingTags.SAMPLE_BUTTON).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+    }
 
     /** Settings are the last entry of the Inbox's drawer. */
     private fun openSettings() {

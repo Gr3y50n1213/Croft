@@ -180,11 +180,12 @@ internal fun <T> ChoiceRow(
     label: @Composable (T) -> String,
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     if (LocalDensity.current.fontScale > STACK_FROM_FONT_SCALE) {
         Column(modifier.selectableGroup()) {
             options.forEach { option ->
-                RadioRow(title = label(option), hint = null, selected = option == selected, onClick = { onSelect(option) })
+                RadioRow(title = label(option), hint = null, selected = option == selected, onClick = { onSelect(option) }, enabled = enabled)
             }
         }
     } else {
@@ -193,6 +194,7 @@ internal fun <T> ChoiceRow(
                 SegmentedButton(
                     selected = option == selected,
                     onClick = { onSelect(option) },
+                    enabled = enabled,
                     shape = SegmentedButtonDefaults.itemShape(index, options.size),
                     label = { Text(label(option), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 )
@@ -203,9 +205,9 @@ internal fun <T> ChoiceRow(
 
 /** A radio row with a title and an optional one-line explanation, 48 dp tall at least. */
 @Composable
-internal fun RadioRow(title: String, hint: String?, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun RadioRow(title: String, hint: String?, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     Row(
-        modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(selected = selected, onClick = onClick, role = Role.RadioButton).padding(vertical = 6.dp),
+        modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(selected = selected, enabled = enabled, onClick = onClick, role = Role.RadioButton).padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -213,7 +215,7 @@ internal fun RadioRow(title: String, hint: String?, selected: Boolean, onClick: 
             Text(title, style = MaterialTheme.typography.bodyLarge)
             if (hint != null) Text(hint, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        RadioButton(selected = selected, onClick = null)
+        RadioButton(selected = selected, onClick = null, enabled = enabled)
     }
 }
 

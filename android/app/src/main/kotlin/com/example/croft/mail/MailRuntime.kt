@@ -49,6 +49,22 @@ object MailRuntime {
         }
     }
 
+    /**
+     * The open core and secret store, opened on the IO dispatcher if they are not yet (T17: the sign-in screens need the core to look
+     * up, check and add an account). Throws what opening throws (secure storage not ready, a database from a newer Croft); the
+     * screens turn that into "Croft couldn't open its secure storage".
+     */
+    suspend fun openedCore(context: Context): OpenedCore = withContext(Dispatchers.IO) { openOnce(context.applicationContext) }
+
+    /**
+     * Builds the session again, now that an account may exist (the first one was just added): over the real core instead of the
+     * sample mailbox. The old session (the sample one) is simply dropped.
+     */
+    suspend fun reloadSession(context: Context, settings: MailSettingsStore = MailSettingsStore.shared(context)): MailSession {
+        synchronized(this) { current = null }
+        return session(context, settings)
+    }
+
     private fun build(context: Context, settings: MailSettingsStore): MailSession {
         val demo = MailSession.shared(context)
         val open = try {

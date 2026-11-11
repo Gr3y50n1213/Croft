@@ -23,3 +23,10 @@ in any release's notice file. The two below are C code that Rust crates compile 
 | SQLCipher (Community Edition, an encrypted fork of SQLite) | bundled by `libsqlite3-sys` / `rusqlite` with the `bundled-sqlcipher-vendored-openssl` feature | BSD-style licence (Zetetic LLC; keep its copyright notice and disclaimer with every binary distribution) |
 
 SQLite itself is in the public domain. The versions are the ones in `core/Cargo.lock` (`openssl-src`, `libsqlite3-sys`).
+
+## Fonts bundled in the Android app
+| Font | Use | Licence |
+|---|---|---|
+| Inter 3.x (shown as "Croft Sans"), Copyright 2020 The Inter Project Authors | Optional interface font | SIL Open Font License 1.1 |
+| Atkinson Hyperlegible, Copyright 2020 Braille Institute of America, Inc. | Optional interface and reading font | SIL Open Font License 1.1 |
+Licence texts: `android/app/src/main/assets/licenses/`.

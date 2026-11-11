@@ -91,7 +91,8 @@ cd android && ./gradlew :app:assembleDebug :app:testDebugUnitTest
 ```
 Parallel work in one container: each task gets its own git worktree; container tests then need their own
 compose project name (`-p`) and host ports (the tests read `CROFT_TEST_*_PORT`). Remove a worktree once merged:
-build folders fill the disk.
+build folders fill the disk. Never check out the same branch in two worktrees (for example `claude/croft-build`
+in the main folder and in a task worktree): a push from one leaves the other's files stale.
 
 ## Where things stand
 Progress, task by task, is in `docs/PROGRESS.md` (newest first); choices in `docs/DECISIONS.md`; what waits on the

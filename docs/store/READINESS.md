@@ -82,7 +82,8 @@ These are conservative drafts from the plan as written. The stores hold the deve
 
 | Platform | Permission | When and why |
 | --- | --- | --- |
-| Android | INTERNET | Mail, calendar and contacts sync. |
+| Android | INTERNET | Mail, calendar and contacts sync. Declared since T16 (11 November 2026). |
+| Android | `ACCESS_NETWORK_STATE` | Knowing when the device is offline, so actions wait instead of failing (T16). Normal permission, no prompt. |
 | Android | `POST_NOTIFICATIONS` | Asked after the first account is added and the person opts into notifications. |
 | Android | `USE_BIOMETRIC` | App lock. |
 | Android | `RECEIVE_BOOT_COMPLETED` | Restores snooze alarms after a restart. |

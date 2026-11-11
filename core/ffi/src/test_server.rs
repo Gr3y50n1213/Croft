@@ -228,6 +228,18 @@ impl TestImapServer {
         });
     }
 
+    /// Turns the `UIDPLUS` extension on or off (read at each new connection, so cut the connections after). Without it the
+    /// server gives no `COPYUID`, and the new UID of a moved message is found later, by its Message-ID.
+    pub fn set_uidplus(&self, on: bool) {
+        self.with(|s| s.set_caps(|c| c.uidplus = on));
+    }
+
+    /// Turns the `MOVE` extension on or off (read at each new connection): without it a move is a copy, a delete flag and an
+    /// expunge.
+    pub fn set_move_extension(&self, on: bool) {
+        self.with(|s| s.set_caps(|c| c.move_cmd = on));
+    }
+
     /// Cuts every open connection at once (the server keeps accepting new ones).
     pub fn drop_connections(&self) {
         self.with(TestServer::drop_connections);
@@ -277,6 +289,11 @@ mod tests {
         server.change_flags("INBOX".into(), 1, vec![], vec!["\\Seen".into()]);
         assert!(server.flags("INBOX".into(), 1).is_empty());
         assert!(server.commands().is_empty());
+
+        server.set_uidplus(false);
+        server.set_move_extension(false);
+        server.set_uidplus(true);
+        server.set_move_extension(true);
 
         server.stop();
         assert!(server.uids("INBOX".into()).is_empty());

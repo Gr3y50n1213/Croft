@@ -34,6 +34,24 @@ python3 tools/check-release-manifest.py app/build/intermediates/packaged_manifes
 # 16 KB alignment: the libraries, then the whole APK.
 rm -rf app/build/release-libs && unzip -q "$apk" 'lib/*' -d app/build/release-libs
 tools/check-16kb-alignment.sh app/build/release-libs || fail=1
+# T16: the Rust library of the release must not carry the test-only IMAP server (`test-server` feature of croft-ffi, which is for
+# the host library of the JVM tests). Its UniFFI object exports symbols named after `TestImapServer`, and its crate is
+# `croft-test-support`; neither may appear in any library of the APK, as an exported symbol or as text anywhere in the file.
+nm_tool="$(ls "$sdk"/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-nm 2>/dev/null | sort -V | tail -1 || true)"
+[ -n "$nm_tool" ] || nm_tool="$(command -v llvm-nm || command -v nm || true)"
+libs=$(find app/build/release-libs/lib -name '*.so' | sort)
+[ -n "$libs" ] || bad "no libraries found in the release APK"
+for lib in $libs; do
+  syms=""; [ -z "$nm_tool" ] || syms="$("$nm_tool" -D "$lib" 2>/dev/null || true)"
+  if grep -qi 'testimapserver' <<<"$syms"; then
+    bad "$lib exports test-server symbols (TestImapServer): the release library was built with the test-server feature"
+  elif grep -aqiE 'testimapserver|croft[-_]test[-_]support' "$lib"; then
+    bad "$lib contains the test server (TestImapServer / croft-test-support): the release library was built with the test-server feature"
+  else
+    echo "ok   $lib has no test-server symbols (checked with ${nm_tool:-grep only})"
+  fi
+done
+
 "$bt/zipalign" -c -P 16 4 "$apk" && echo "ok   zipalign -c -P 16 on the APK" || bad "zipalign -P 16"
 
 if [ $# -ge 1 ]; then

@@ -15,6 +15,9 @@ package com.example.croft.mail
  * | [nextChange] | `next_change(after)` (returns when something changed after `after`) |
  * | [markSeen], [setFlagged], [archive], [trash], [moveTo], [deleteForever], [undo] | the same names |
  * | [syncNow], [setNetworkAvailable], [signedIn] | `sync_now`, `set_network_available`, `signed_in` |
+ * | [setUndoWindowMs] | `set_undo_window_ms` |
+ *
+ * Two implementations: [FakeMessageRepository] (the sample mailbox, tests, previews) and [CoreMessageRepository] (the real core).
  *
  * The functions are `suspend` because the core's calls must not run on the main thread; the fake answers at once.
  * Every change a person makes is applied locally first and queued (CLAUDE.md): the list shows it as soon as the next change
@@ -56,6 +59,15 @@ interface MessageRepository {
 
     /** Cancel a queued operation inside its undo window; false when it is too late. */
     suspend fun undo(opId: OpId): Boolean
+
+    /**
+     * Run again what operation [opId] was (a failed archive, delete or move), for the Retry of the failure snackbar. Returns the
+     * new operation ids; [MailError.NOT_FOUND] when the repository no longer knows the operation.
+     */
+    suspend fun retryFailed(opId: OpId): List<OpId>
+
+    /** The Undo window for moves, deletes and spam made from now on, in ms (S49: 3, 5 or 10 s). */
+    suspend fun setUndoWindowMs(ms: Long)
 
     /** Sync [account] now (pull to refresh, Retry). */
     suspend fun syncNow(account: AccountId)

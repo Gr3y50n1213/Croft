@@ -27,3 +27,9 @@ One line per choice made without the owner: the decision, the reason, the date. 
 | 2026-11-11 | Rows of the queue that a newer app wrote, or that are damaged, are marked failed and kept until the engine acknowledges them | Never drop a person's action silently |
 | 2026-11-11 | Migration 0003 replaces the folder counter triggers so hidden rows do not count | The unread badge should drop the moment the person archives, not when the server confirms |
 | 2026-11-11 | Queue payload JSON (`{"v":1,...}`) is read and written in `croft-storage`; `croft-mail-core` has no serde | Keeps mail-core pure and dependency-light |
+| 2026-11-11 | Android: compileSdk 37 (targetSdk stays 36); platform 37 installed | Material 3 1.5, Compose 1.12 and core-ktx 1.19 require compiling against 37; the store rule is about targetSdk |
+| 2026-11-11 | Android versions: AGP 9.5.1, Gradle 9.6.0, Kotlin 2.4.21, Compose BOM 2026.09.00, Material 3 1.5.0-rc01 (release candidate), JNA 5.19.1, Robolectric 4.17, UniFFI 0.32.2, cargo-ndk 4.1.2 | Newest stable on 11 Nov 2026, except Material 3: `MotionScheme` (needed for Expressive motion) is public only from 1.5 |
+| 2026-11-11 | No `unsafe` lint exception in `core/ffi`: UniFFI 0.32.2's macros compile under the workspace's `forbid` | The master prompt allowed an exception; it was not needed. Generated code still contains `unsafe` that the lint does not report |
+| 2026-11-11 | FFI API version 2: `CoreError::Storage` carries a fixed `StorageReason` enum instead of a string | Review: makes "errors never carry data" a compile-time guarantee |
+| 2026-11-11 | The app opts out of cloud backup and device transfer entirely | The mail database is not yet encrypted (keystore task pending); mail is re-synced from the server on a new phone anyway |
+| 2026-11-11 | Generated Kotlin bindings use the default package `uniffi.croft_ffi` | Independent of the placeholder application id |

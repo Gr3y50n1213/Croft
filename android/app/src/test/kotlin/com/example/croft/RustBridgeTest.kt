@@ -30,7 +30,7 @@ class RustBridgeTest {
     @Test
     fun apiVersionIsTheOneTheAppExpects() {
         assertEquals(EXPECTED_FFI_API_VERSION, ffiApiVersion())
-        assertEquals(3u, ffiApiVersion())
+        assertEquals(4u, ffiApiVersion())
         assertEquals(RustInfo(croftVersion(), EXPECTED_FFI_API_VERSION), loadRustInfo())
     }
 
@@ -41,7 +41,7 @@ class RustBridgeTest {
             checkFfiApiVersion(2u)
             fail("expected an IllegalStateException")
         } catch (e: IllegalStateException) {
-            assertTrue(e.message, e.message!!.contains("expected 3"))
+            assertTrue(e.message, e.message!!.contains("expected 4"))
         }
     }
 

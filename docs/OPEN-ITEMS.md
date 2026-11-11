@@ -19,7 +19,9 @@ Things only the owner can decide or do. Newest first within each section.
 - Publisher name, domain, contact and security-report address: `PUBLISHER_NAME`, `example.org`, `security@example.org`.
 
 ## Accounts, money, legal (not for Claude to do)
-- Trademark search for "Croft". Google Play and Apple developer accounts. Signing keys.
+- **Launch plan (owner, 11 Nov 2026):** soft launch on F-Droid first, then the official launch on Google Play and the Apple App Store. No store accounts yet; they are needed before the official launch (see `docs/ROADMAP.md` "Store lead times": the Play closed test needs 12 testers for 14 days, and Google and Apple account checks take days to weeks). F-Droid needs no paid account, but submitting means a merge request to F-Droid's data repository on GitLab (a free GitLab account, the owner's), and a real application ID instead of `com.example.croft`.
+- Trademark: a preliminary web search (not legal advice) found no email product named Croft; the closest is Croft Technology, Inc. with live US marks in class 42 (not email). See `docs/store/TRADEMARK-PRELIM.md`. A lawyer's clearance search is still advised before the official launch.
+- Google Play and Apple developer accounts. Signing keys.
 - Items marked **Confirm** in `docs/store/READINESS.md` (export compliance, Gmail device-only assessment, foreground service, closed-test rules).
 - Legal review of `docs/store/PRIVACY-POLICY.draft.md`.
 

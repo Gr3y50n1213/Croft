@@ -4,7 +4,7 @@ Crate / folder: `core/ffi` (calls `core/engine`, `core/storage`, `core/protocols
 
 Depends on: T04 (`EngineHandle`), T05 (discovery), T06 (send), T07 (the first surface). Blocks: T11, T14 to T21 (everything in the app that talks to the core).
 
-**Status: built (API version 3), on branch `task/t10`.** The "Final surface" section at the end is what was built; the "Proposed surface" above it is kept for the reasoning. See "As built" at the very end for where the code differs from the decision.
+**Status: built (API version 4 after the T11 review; version 3 on branch `task/t10`).** The "Final surface" section at the end is what was built; the "Proposed surface" above it is kept for the reasoning. See "As built" at the very end for where the code differs from the decision.
 
 ## Read first
 `CLAUDE.md` (architecture and security rules), `core/ffi/README.md`, `core/ffi/src/lib.rs`, `docs/tasks/T02-T04-design.md`, `docs/ux/server-contract.md`, `docs/ux/state-machines.md` (account connection, outgoing message), `android/README.md` (how the host library is loaded in JVM tests).
@@ -50,7 +50,7 @@ This replaces the "Proposed surface" above where they differ. Build exactly this
 - **Sync and network.** `sync_now(account)`, `set_network_available(bool)` (applies to every account), `signed_in(account)` after the person fixes a password.
 - **Send.** Not in T10. Added by T06 part B / T18 with its own version bump.
 - **Errors.** Fieldless enums only (as `StorageReason` in API version 2). No `String` that could carry data crosses the boundary in an error.
-- **Version.** This surface is `FFI_API_VERSION = 3`.
+- **Version.** This surface was `FFI_API_VERSION = 3`; `add_account` changed in version 4 (see "As built", "API version 4").
 
 ## As built (T10 implementation notes)
 
@@ -67,7 +67,7 @@ Differences from the final surface above, and why:
 - **`Core.open` is synchronous** (a constructor); it reads and migrates the database and calls the provider, so the app calls it off the main thread.
 - `VerifyFailure::UntrustedCertificate` and `CertificateChanged` carry the certificate fingerprint (a public SHA-256) as a string; every other error value is fieldless or holds an enum.
 
-Known limits: a stale `SignInNeeded` change from before `signed_in` can flip the chip back for one cycle (the engine emits it asynchronously). Credentials are read when an adapter is built, so an OAuth token that expires pauses the account (`sign_in_needed`) until the app calls `signed_in` with a fresh one.
+Known limits: a `SignInNeeded` change is only a notice. The hub marks the account only while `EngineHandle::needs_sign_in` still says so, so a notice from before `signed_in` that is applied after it is ignored (T11). Credentials are read when an adapter is built, so an OAuth token that expires pauses the account (`sign_in_needed`) until the app calls `signed_in` with a fresh one.
 
 Security review follow-up (still API version 3, which is unmerged):
 - **`FfiCredential` is an object, not an enum, and its secrets are `Vec<u8>` (Kotlin `ByteArray`).** The review asked for `ByteArray` fields in the enum. That does not work: Kotlin prints a data class's array property with its elements (`Password(secret=[102, 105, ...])`), which `CredentialPrintingTest` showed on the first run. A UniFFI object has no Kotlin properties, so it prints `FfiCredential@hash`. It is built with `FfiCredential.password(bytes)` / `FfiCredential.oauth2(user, bytes)`; the bytes sit in `Zeroizing` buffers wiped when the object is released; the core copies them once per use into the protocol layer's wiping credential. Bytes that are not UTF-8 count as "no credential" (`verify` answers `WrongPassword`). No `Clone` or `PartialEq`. T11 must still never log or print a credential, and should `fill(0)` its arrays and `close()` the object. Test: `CredentialPrintingTest`.
@@ -76,3 +76,30 @@ Security review follow-up (still API version 3, which is unmerged):
 - **Dropping `Core` can block up to 2 s** (bounded on purpose, so the database is free for a reopen): close it off the main thread (README, `RustBridge.kt`).
 - The README lists the copies of secrets the core cannot wipe (UniFFI's lifting buffer, the Kotlin side's copies, `db_key`).
 - `rustSources` in `android/app/build.gradle.kts` now lists `ffi`, `engine`, `mail-core`, `protocols`, `storage` and `vendor` (the patched async-imap) plus `Cargo.toml` and `Cargo.lock`; `test-support` is a dev-dependency and is not needed for the library builds.
+
+### API version 4 (T11 security review): `add_account` takes the new account's credential
+`Core.add_account(discovered, display_name, pinned_fingerprint, credential: Arc<FfiCredential>) -> Result<i64, CoreError>`.
+`FFI_API_VERSION` and `EXPECTED_FFI_API_VERSION` are both 4.
+- **Why.** Version 3 asked the `CredentialProvider` for the new account's credential before `add_account` returned, so the app had to
+  guess which "unknown id" the question was about. The T11 implementation staged the typed password and handed it to the first account
+  with no stored secret, which could be a different account (a stored account whose secret had just been lost): that account's
+  server would have received the new account's password.
+- **What it does now.** The core builds the new account's first connection(s) from `credential` (the one the person just verified)
+  and keeps it only in the protocol layer's wiping string. It never asks the provider about a new account. The app stores the
+  credential under the returned id right after the call returns, and stores nothing when the call fails. From then on the provider
+  answers for that id (at `open`, at `signed_in`). The provider is consulted only for accounts the app already stored.
+- **Errors.** A credential that is not valid UTF-8 fails with `CoreError::NoCredential` before anything is written.
+- **Ids.** Account ids are never reused (`core/storage/src/accounts.rs`: the largest id ever used is kept in the `setting` table,
+  key `account.max_id`, like `op_queue.max_id`), so an id has no stored secrets of an earlier account. The app deletes an account's
+  secrets *before* `remove_account` and clears any entry under the new id before storing a new account's secret.
+- **Tests.** Rust: `a_new_account_uses_the_credential_it_was_given_not_the_providers`, `a_removed_accounts_id_is_not_given_to_the_next_account`,
+  `add_account_refuses_unusable_input_before_touching_the_database` (now includes a non-UTF-8 credential), the version test
+  `the_version_is_4`; Kotlin: `SecretStoreCredentialsTest`, `MailSurfaceTest`, `RustBridgeTest`.
+
+### `ProviderError::NotReady` (T11, second security review; still API version 4)
+`ProviderError` has a second, fieldless variant, `NotReady`: the app's secure storage cannot answer right now (the Android Keystore is busy or restarting), so the app does not know whether a credential exists. `FFI_API_VERSION` and `EXPECTED_FFI_API_VERSION` stay 4: version 4 (the `add_account` credential) has never been released, so the extra variant belongs to the same version.
+- `credential` returning `NotReady` is a transient failure of that connection attempt. The account is not paused, it is not in the needs-sign-in state, and `sign_in_needed` is not called. The account's backend answers `BackendError::Transient` and asks the provider again on a later call after a back-off (2 s, doubling, at most 5 min); the engine retries on its own schedule and on every poke (`sync_now`). When the provider then has no credential, the account moves to needs-sign-in as before.
+- `ProviderError::Failed` keeps its meaning (no credential). `sign_in_needed` returning `NotReady` is ignored like `Failed`.
+- `signed_in` with a provider that answers `NotReady` returns `Ok`: the person did sign in, the account leaves the needs-sign-in state, and the backend asks again by itself.
+- Code: `core/ffi/src/credentials.rs` (`Asked`, `AccountBackend`), tests `a_provider_that_is_not_ready_does_not_pause_the_account_and_is_asked_again` and `signed_in_with_a_provider_that_is_not_ready_is_not_a_missing_credential` in `core/ffi/src/tests/server.rs`.
+

@@ -18,17 +18,13 @@ class NoCredentials : CredentialProvider {
 }
 
 /**
- * The app's credential store, in memory. [pending] is the secret the person just verified: the
- * first time the core asks about an id nobody has stored yet, it is stored under that id (what the
- * Android keystore implementation does when `addAccount` asks).
+ * The app's credential store, in memory. Like the Android one it answers only for ids the app
+ * stored ([store], which a test calls right after `addAccount` returns, as the app does).
  */
 class MemoryCredentials : CredentialProvider {
     private val stored = ConcurrentHashMap<Long, FfiCredential>()
     val asked = CopyOnWriteArrayList<Long>()
     val signIns = CopyOnWriteArrayList<Long>()
-
-    @Volatile
-    var pending: FfiCredential? = null
 
     fun store(accountId: Long, credential: FfiCredential) {
         stored[accountId] = credential
@@ -36,11 +32,7 @@ class MemoryCredentials : CredentialProvider {
 
     override fun credential(accountId: Long): FfiCredential? {
         asked.add(accountId)
-        stored[accountId]?.let { return it }
-        val p = pending ?: return null
-        pending = null
-        stored[accountId] = p
-        return p
+        return stored[accountId]
     }
 
     override fun signInNeeded(accountId: Long) {

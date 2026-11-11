@@ -70,3 +70,9 @@ S53 offers **Follow system** (default), **Full**, **Reduced** and **Off**. Follo
 ### Performance budget
 
 Animations hold 60 fps on a mid-range phone and use the display's full rate where available. In the list, the 95th-percentile frame time under a swipe is a release check (see the build order). On the web, only compositor properties animate and long lists are virtualised.
+
+### Added in T12
+| Animation | Trigger | What moves | Token | Reduced-motion substitute |
+|---|---|---|---|---|
+| Try it stage (S53) | Press a Try it button | Square pops from 70 percent to 100 percent | Spatial default | Short fade (Effects default); Off: nothing |
+| Appearance drill-down (S50 to S51, S52, S53) | Open or close | Shared axis X | Spatial default (move), Effects default (fade) | Cross-fade; Off: instant |

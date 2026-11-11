@@ -33,6 +33,14 @@ val rustJniLibs = layout.buildDirectory.dir("generated/rust/jniLibs")
 val uniffiKotlin = layout.buildDirectory.dir("generated/uniffi/kotlin")
 val abis = listOf("arm64-v8a", "x86_64")
 
+// The database is encrypted (SQLCipher) in every build the app runs: `Core.open` refuses the key a
+// library without this feature is given, so the app cannot silently store mail unencrypted.
+// "-vendored-openssl" compiles OpenSSL's crypto from source (openssl-src) for the target: the NDK has
+// none to link against, and the host build must not depend on the computer's OpenSSL either. The
+// OpenSSL build needs perl and make on the build computer. The bindings generator uses the same features
+// so that it shares the host build instead of compiling everything twice.
+val rustFeatures = "sqlcipher-vendored-openssl"
+
 // cargo-ndk builds libcroft_ffi.so for each ABI. Release profile: a debug Rust build is tens of MB.
 // NDK r28+ links with 16 KB page alignment by default (Play requirement); see android/README.md.
 tasks.register<Exec>("buildRustAndroid") {
@@ -48,7 +56,7 @@ tasks.register<Exec>("buildRustAndroid") {
             listOf(
                 "--platform", "26",
                 "-o", rustJniLibs.get().asFile.path,
-                "build", "--release", "--locked", "-p", "croft-ffi",
+                "build", "--release", "--locked", "-p", "croft-ffi", "--features", rustFeatures,
             ),
     )
 }
@@ -60,7 +68,7 @@ tasks.register<Exec>("buildRustHost") {
     workingDir = coreDir.asFile
     inputs.files(rustSources)
     outputs.file(hostLib)
-    commandLine("cargo", "build", "--locked", "-p", "croft-ffi")
+    commandLine("cargo", "build", "--locked", "-p", "croft-ffi", "--features", rustFeatures)
 }
 
 // Kotlin bindings, generated from the library's own metadata with the UniFFI version it was built with.
@@ -74,7 +82,7 @@ tasks.register<Exec>("generateUniffiBindings") {
     outputs.dir(uniffiKotlin)
     doFirst { uniffiKotlin.get().asFile.deleteRecursively() }
     commandLine(
-        "cargo", "run", "--locked", "-q", "-p", "croft-ffi", "--features", "cli", "--bin", "uniffi-bindgen", "--",
+        "cargo", "run", "--locked", "-q", "-p", "croft-ffi", "--features", "cli,$rustFeatures", "--bin", "uniffi-bindgen", "--",
         "generate", "--library", hostLib.asFile.path, "--language", "kotlin", "--no-format",
         "--out-dir", uniffiKotlin.get().asFile.path,
     )
@@ -129,6 +137,10 @@ tasks.withType<Test>().configureEach {
     systemProperty("croft.cargoVersion", cargoVersion)
     // Robolectric downloads its Android jars from Maven Central at run time. Behind a proxy or
     // mirror, set ROBOLECTRIC_REPO_URL to the Maven repository to use instead.
+    // Screenshot tests (Roborazzi): verify (default), record-goldens or off. See ScreenshotKit.
+    systemProperty("croft.screenshots", providers.gradleProperty("croft.screenshots").getOrElse("verify"))
+    // Screenshot tests draw many large pictures on native graphics.
+    maxHeapSize = "3g"
     System.getenv("ROBOLECTRIC_REPO_URL")?.let { systemProperty("robolectric.dependency.repo.url", it) }
 }
 
@@ -136,15 +148,24 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.core)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
     // The generated bindings call the Rust library through JNA. Android needs the aar (it carries
     // libjnidispatch.so); the JVM unit tests need the plain jar.
     implementation("${libs.jna.get()}@aar")
+    // T12 theme engine. Material Color Utilities (Apache-2.0): only the com.google.android.material.color.utilities
+    // classes are used. They ship inside this artifact (there is no separate one); its resources need the transitive
+    // AndroidX Views libraries for the build to link, and R8 removes what the app does not call.
+    implementation(libs.material.components)
+    implementation(libs.androidx.datastore)
+    implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.jna)
 
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
     testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

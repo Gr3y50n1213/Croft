@@ -154,7 +154,7 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
         );
     }
     let db = TempDb::new();
-    let provider = MemProvider::with_pending(PASSWORD);
+    let provider = MemProvider::new();
     let core = db.open(&provider);
     let found = discovered_for(&server);
     let pin = Some(fingerprint_of(&server));
@@ -184,7 +184,9 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
     }
     block(core.verify(found.clone(), password_cred(PASSWORD), pin.clone())).unwrap();
 
-    let account = block(core.add_account(found, "Alice".into(), pin)).unwrap();
+    let account =
+        block(core.add_account(found, "Alice".into(), pin, password_cred(PASSWORD))).unwrap();
+    provider.store(account, password_cred(PASSWORD));
     let rig_scope = |core: &Core| {
         let folders = core.list_folders(account).unwrap();
         let inbox = folders.iter().find(|f| f.path == "INBOX").map(|f| f.id);
@@ -240,15 +242,17 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
     );
 
     // A wrong-password account too, and the calls around it.
-    let provider2 = MemProvider::with_pending(WRONG);
+    let provider2 = MemProvider::new();
     let db2 = TempDb::new();
     let core2 = db2.open(&provider2);
     let bad = block(core2.add_account(
         discovered_for(&server),
         "Bob".into(),
         Some(fingerprint_of(&server)),
+        password_cred(WRONG),
     ))
     .unwrap();
+    provider2.store(bad, password_cred(WRONG));
     block(wait_for(&core2, "sign-in needed", || {
         !provider2.sign_ins().is_empty()
     }));

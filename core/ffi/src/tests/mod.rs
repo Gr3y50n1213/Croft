@@ -7,6 +7,7 @@
 //! in-process IMAP server from `croft-test-support` (TLS on 127.0.0.1 with a self-signed
 //! certificate, trusted through the fingerprint exactly as the app does it).
 
+mod encrypted;
 mod local;
 mod secrets;
 mod server;
@@ -50,15 +51,15 @@ pub(crate) fn block_for<F: Future>(limit: Duration, f: F) -> Option<F::Output> {
     rt().block_on(async { tokio::time::timeout(limit, f).await.ok() })
 }
 
-/// The app's credential store, in memory. `pending` is the secret the person just verified: the
-/// first time the core asks about an id nobody has stored yet, it is stored under that id (what
-/// the Android implementation does when `add_account` asks).
+/// The app's credential store, in memory. Like the Android one it answers only for ids the app
+/// stored (`store`, which a test calls right after `add_account` returns, as the app does).
 #[derive(Default)]
 pub(crate) struct MemProvider {
     stored: Mutex<HashMap<i64, Arc<FfiCredential>>>,
-    pending: Mutex<Option<Arc<FfiCredential>>>,
     asked: Mutex<Vec<i64>>,
     sign_ins: Mutex<Vec<i64>>,
+    /// How many of the next `credential` calls answer `NotReady` (the keystore is busy).
+    not_ready: Mutex<usize>,
 }
 
 impl MemProvider {
@@ -66,18 +67,13 @@ impl MemProvider {
         Arc::new(Self::default())
     }
 
-    pub(crate) fn with_pending(password: &str) -> Arc<Self> {
-        let p = Self::new();
-        p.set_pending(Some(password_cred(password)));
-        p
-    }
-
-    pub(crate) fn set_pending(&self, c: Option<Arc<FfiCredential>>) {
-        *self.pending.lock().unwrap() = c;
-    }
-
     pub(crate) fn store(&self, id: i64, c: Arc<FfiCredential>) {
         self.stored.lock().unwrap().insert(id, c);
+    }
+
+    /// The next `n` calls to `credential` fail with `NotReady`.
+    pub(crate) fn not_ready_for(&self, n: usize) {
+        *self.not_ready.lock().unwrap() = n;
     }
 
     pub(crate) fn sign_ins(&self) -> Vec<i64> {
@@ -92,15 +88,14 @@ impl MemProvider {
 impl CredentialProvider for MemProvider {
     fn credential(&self, account_id: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
         self.asked.lock().unwrap().push(account_id);
-        let mut stored = self.stored.lock().unwrap();
-        if let Some(c) = stored.get(&account_id) {
-            return Ok(Some(c.clone()));
+        {
+            let mut n = self.not_ready.lock().unwrap();
+            if *n > 0 {
+                *n -= 1;
+                return Err(ProviderError::NotReady);
+            }
         }
-        let Some(pending) = self.pending.lock().unwrap().take() else {
-            return Ok(None);
-        };
-        stored.insert(account_id, pending.clone());
-        Ok(Some(pending))
+        Ok(self.stored.lock().unwrap().get(&account_id).cloned())
     }
 
     fn sign_in_needed(&self, account_id: i64) -> Result<(), ProviderError> {
@@ -240,15 +235,18 @@ impl Rig {
         let server = start_server();
         setup(&server);
         let db = TempDb::new();
-        let provider = MemProvider::with_pending(PASSWORD);
+        let provider = MemProvider::new();
         let core = db.open(&provider);
         let fingerprint = fingerprint_of(&server);
         let account = block(core.add_account(
             discovered_for(&server),
             "Alice".into(),
             Some(fingerprint.clone()),
+            password_cred(PASSWORD),
         ))
         .unwrap();
+        // What the app does once `add_account` has returned.
+        provider.store(account, password_cred(PASSWORD));
         Self {
             server,
             db,

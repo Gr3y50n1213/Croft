@@ -101,9 +101,8 @@ fn add_list_and_remove_an_account_then_list_its_folders_after_the_first_sync() {
     assert_eq!(accounts[0].id, rig.account);
     assert_eq!(accounts[0].label, "Alice");
     assert_eq!(accounts[0].email, "alice@example.org");
-    // The provider was asked for the new account's credential, with the new id, before
-    // `add_account` returned.
-    assert_eq!(rig.provider.asked(), vec![rig.account]);
+    // The credential came with `add_account`: the provider was not asked about the new account.
+    assert!(rig.provider.asked().is_empty());
 
     // The first sync brings the folders and the messages.
     rig.wait_for_inbox(3);
@@ -165,7 +164,7 @@ fn a_reopened_core_restarts_the_account_with_the_stored_pin_and_credential() {
 
     server.add_message("INBOX", &raw("m4@example.org", "Hello 4"));
     let core = db.open(&provider);
-    assert_eq!(provider.asked(), vec![account, account]);
+    assert_eq!(provider.asked(), vec![account]);
     // The cache is there at once, before any network.
     assert_eq!(core.list_accounts().unwrap().len(), 1);
     let inbox = core
@@ -297,14 +296,17 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
     let server = start_server();
     three_messages(&server);
     let db = TempDb::new();
-    let provider = MemProvider::with_pending("the wrong password");
+    let provider = MemProvider::new();
     let core = db.open(&provider);
     let account = block(core.add_account(
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
+        password_cred("the wrong password"),
     ))
     .unwrap();
+    // The app stores what the person typed under the returned id.
+    provider.store(account, password_cred("the wrong password"));
 
     block(wait_for(&core, "needs sign-in", || {
         core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn
@@ -326,6 +328,167 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
         !core.list_folders(account).unwrap().is_empty()
     }));
     assert_eq!(provider.sign_ins(), vec![account], "no further calls");
+}
+
+/// The provider is never consulted for a new account: a secret that happens to be stored under the
+/// id the new account will get (a leftover of another account) is not used, only the credential
+/// `add_account` was given.
+#[test]
+fn a_new_account_uses_the_credential_it_was_given_not_the_providers() {
+    let server = start_server();
+    three_messages(&server);
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    // The id the first account will get is 1.
+    provider.store(1, password_cred(PASSWORD));
+    let core = db.open(&provider);
+    let account = block(core.add_account(
+        discovered_for(&server),
+        "Alice".into(),
+        Some(fingerprint_of(&server)),
+        password_cred("not the password"),
+    ))
+    .unwrap();
+    assert_eq!(account, 1);
+    block(wait_for(&core, "needs sign-in", || {
+        core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn
+    }));
+    assert!(provider.asked().is_empty(), "the provider was not asked");
+    assert!(core.list_folders(account).unwrap().is_empty());
+}
+
+/// A keystore that is busy when the core asks (`ProviderError::NotReady`) is not a lost
+/// credential: the account is not marked as needing a sign-in, `sign_in_needed` is not called,
+/// and the core asks again later and then syncs.
+#[test]
+fn a_provider_that_is_not_ready_does_not_pause_the_account_and_is_asked_again() {
+    let rig = Rig::new(three_messages);
+    rig.wait_for_inbox(3);
+    let Rig {
+        server,
+        db,
+        core,
+        account,
+        ..
+    } = rig;
+    drop(core);
+
+    // A new run: the keystore answers "not ready" twice (at open, then at the first retry).
+    let provider = MemProvider::new();
+    provider.store(account, password_cred(PASSWORD));
+    provider.not_ready_for(2);
+    let core = db.open(&provider);
+    assert_eq!(provider.asked(), vec![account], "asked once at open");
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::Ok,
+        "not a sign-in problem"
+    );
+
+    // Each poke asks again once the back-off is over; the third answer is the credential.
+    let end = Instant::now() + Duration::from_secs(20);
+    while provider.asked().len() < 3 {
+        assert!(Instant::now() < end, "the provider was not asked again");
+        core.sync_now(account).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    block(wait_for(&core, "a sync after the retry", || {
+        core.sync_now(account).unwrap();
+        core.list_folders(account)
+            .unwrap()
+            .iter()
+            .any(|f| f.path == "INBOX")
+    }));
+    assert!(
+        provider.sign_ins().is_empty(),
+        "sign_in_needed was never called"
+    );
+    assert_eq!(core.list_accounts().unwrap()[0].status, AccountStatus::Ok);
+    drop(server);
+}
+
+/// The same answer from `signed_in` (the person just typed a password and the keystore is busy):
+/// the account leaves the needs-sign-in state and is retried, not reported as having no credential.
+#[test]
+fn signed_in_with_a_provider_that_is_not_ready_is_not_a_missing_credential() {
+    let rig = Rig::new(three_messages);
+    rig.wait_for_inbox(3);
+    let Rig {
+        server,
+        db,
+        core,
+        account,
+        ..
+    } = rig;
+    drop(core);
+
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    block(wait_for(&core, "sign_in_needed", || {
+        !provider.sign_ins().is_empty()
+    }));
+    provider.store(account, password_cred(PASSWORD));
+    provider.not_ready_for(1);
+    block(core.signed_in(account)).unwrap();
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::Ok,
+        "no longer needs a sign-in"
+    );
+    block(wait_for(&core, "folders after the retry", || {
+        core.sync_now(account).unwrap();
+        core.list_folders(account)
+            .unwrap()
+            .iter()
+            .any(|f| f.path == "INBOX")
+    }));
+    assert_eq!(
+        provider.sign_ins(),
+        vec![account],
+        "no second sign_in_needed"
+    );
+    drop(server);
+}
+
+/// A `SignInNeeded` that was emitted before `signed_in` but is applied after it (it waited in the
+/// broadcast) must not flip the account back: the engine has resumed it.
+#[test]
+fn a_stale_sign_in_needed_after_signed_in_is_ignored() {
+    let rig = Rig::new(three_messages);
+    rig.wait_for_inbox(3);
+    let Rig {
+        server,
+        db,
+        core,
+        account,
+        ..
+    } = rig;
+    drop(core);
+
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    block(wait_for(&core, "sign_in_needed", || {
+        !provider.sign_ins().is_empty()
+    }));
+    provider.store(account, password_cred(PASSWORD));
+    block(core.signed_in(account)).unwrap();
+    assert_eq!(core.list_accounts().unwrap()[0].status, AccountStatus::Ok);
+
+    core.hub()
+        .apply(croft_engine::Change::SignInNeeded { account });
+    // The callback runs on a blocking task: give a wrongly sent one time to show up.
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::Ok,
+        "a stale notice does not pause the account"
+    );
+    assert_eq!(
+        provider.sign_ins(),
+        vec![account],
+        "no second sign_in_needed"
+    );
+    drop(server);
 }
 
 #[test]

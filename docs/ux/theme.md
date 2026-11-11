@@ -79,6 +79,7 @@ Row heights are design starting points to adjust on a phone.
 
 ```json
 {
+  "version": 1,
   "mode": "system",
   "pureBlack": false,
   "source": "preset",

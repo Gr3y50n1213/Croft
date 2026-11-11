@@ -95,6 +95,8 @@ enum class ForcedState { NONE, PRESSED, FOCUSED, HOVERED }
 fun rememberForcedInteractionSource(state: ForcedState): MutableInteractionSource {
     val source = remember { MutableInteractionSource() }
     LaunchedEffect(state) {
+        // One frame later, so the controls below have started listening: an interaction source does not replay what it missed.
+        if (state != ForcedState.NONE) androidx.compose.runtime.withFrameNanos { }
         when (state) {
             ForcedState.NONE -> Unit
             ForcedState.PRESSED -> source.emit(PressInteraction.Press(Offset.Zero))
@@ -184,10 +186,10 @@ fun Modifier.croftClickable(
         .liftVisual(lift, forceLifted)
         .semantics(mergeDescendants = true) {
             if (role != null) this.role = role
-            if (!enabled) disabled() else {
-                onClick(label = onClickLabel) { onClickNow.value(); true }
-                if (onLongClick != null) onLongClick(label = onLongClickLabel) { onLongNow.value?.invoke(); true }
-            }
+            // A disabled control keeps its actions in the tree (like Material's), marked disabled, so it is still announced.
+            if (!enabled) disabled()
+            onClick(label = onClickLabel) { if (enabled) { onClickNow.value(); true } else false }
+            if (onLongClick != null) onLongClick(label = onLongClickLabel) { if (enabled) { onLongNow.value?.invoke(); true } else false }
         }
         .indication(interactionSource, LocalIndication.current)
         .hoverable(interactionSource, enabled)

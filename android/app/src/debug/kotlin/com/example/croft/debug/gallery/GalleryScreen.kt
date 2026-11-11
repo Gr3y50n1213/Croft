@@ -57,6 +57,7 @@ import com.example.croft.ui.components.CroftSnackbarState
 object GalleryTags {
     const val SCREEN = "gallery"
     const val HAPTIC_LOG = "gallery-haptic-log"
+    const val LIST = "gallery-list"
     const val SECTION_PREFIX = "gallery-section-"
 }
 
@@ -123,7 +124,7 @@ fun GalleryScreen(onBack: () -> Unit, modifier: Modifier = Modifier) {
                         }
                     }
                     if (section == null) {
-                        LazyColumn(Modifier.fillMaxSize()) {
+                        LazyColumn(Modifier.fillMaxSize().testTag(GalleryTags.LIST)) {
                             items(GalleryCatalog.sections) { s ->
                                 ListItem(
                                     headlineContent = { Text(s.title) },
@@ -163,6 +164,14 @@ fun GallerySectionView(section: GallerySection, env: GalleryEnv, modifier: Modif
         items(section.entries, key = { it.id }) { entry ->
             GalleryTile(entry, env)
         }
+    }
+}
+
+/** Every entry of [section] in a plain column (no lazy list), so that all of it is composed at once: the screenshot and semantics tests use it. */
+@Composable
+fun GallerySectionColumn(section: GallerySection, env: GalleryEnv, modifier: Modifier = Modifier) {
+    Column(modifier.testTag(GalleryTags.SECTION_PREFIX + section.id + "-column"), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        section.entries.forEach { GalleryTile(it, env) }
     }
 }
 

@@ -7,7 +7,12 @@ package com.example.croft
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import com.example.croft.ui.nav.SettingsTags
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -42,11 +47,25 @@ class MainActivityTest {
     @get:Rule
     val rule = createAndroidComposeRule<MainActivity>()
 
+    /** The stored theme is read before anything is drawn, so the first screen appears a moment after the activity starts. */
+    private fun waitForStart() = rule.waitUntil(10_000) { rule.onAllNodesWithText("Croft").fetchSemanticsNodes().isNotEmpty() }
+
     @Test
     fun showsTheVersionFromRust() {
+        waitForStart()
         val expected = System.getProperty("croft.cargoVersion")
         rule.onNodeWithText("Core version $expected").assertIsDisplayed()
         // The app refuses a library with another version, so the screen shows the one it expects.
         rule.onNodeWithText("FFI API version $EXPECTED_FFI_API_VERSION").assertIsDisplayed()
+    }
+
+    @Test
+    fun theSettingsEntryOpensTheListAndTheScreenSurvivesTheActivityBeingRecreated() {
+        waitForStart()
+        rule.onNodeWithTag("open-settings").performClick()
+        rule.onNodeWithTag(SettingsTags.SCREEN).assertIsDisplayed()
+        rule.activityRule.scenario.recreate()
+        rule.waitUntil(10_000) { rule.onAllNodesWithTag(SettingsTags.SCREEN).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(SettingsTags.SCREEN).assertIsDisplayed()
     }
 }

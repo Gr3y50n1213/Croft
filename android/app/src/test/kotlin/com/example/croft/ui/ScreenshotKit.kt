@@ -45,12 +45,21 @@ object ScreenshotKit {
             "S53-expanded-light-font1.0-ltr",
             "preview-moss-light",
             "preview-wax-dark",
+            // T13: two pictures of the component gallery, one section each, to catch a change that breaks a control's look.
+            "gallery-row-light-font1.0-ltr",
+            "gallery-send-dark-font2.0-rtl",
         )
     }
 
     /** Set the simulated device before `setContent`: size, density, dark flag of the resources, layout direction and font scale. */
     fun configure(device: Device, rtl: Boolean, fontScale: Float) {
         RuntimeEnvironment.setQualifiers("+" + (if (rtl) "ldrtl" else "ldltr") + "-" + device.qualifiers)
+        RuntimeEnvironment.setFontScale(fontScale)
+    }
+
+    /** Like [configure] with a window of any size: a gallery section is one tall picture. */
+    fun configure(widthDp: Int, heightDp: Int, rtl: Boolean, fontScale: Float) {
+        RuntimeEnvironment.setQualifiers("+" + (if (rtl) "ldrtl" else "ldltr") + "-w${widthDp}dp-h${heightDp}dp-mdpi")
         RuntimeEnvironment.setFontScale(fontScale)
     }
 

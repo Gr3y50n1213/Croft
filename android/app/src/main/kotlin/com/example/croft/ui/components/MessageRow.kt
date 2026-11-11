@@ -12,6 +12,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -164,7 +166,7 @@ fun MessageRow(
     val starLabel = stringResource(if (state.starred) R.string.row_action_unstar else R.string.row_action_star)
     val failedState = stringResource(R.string.row_failed_state)
 
-    Box(modifier.fillMaxWidth().heightIn(min = density.rowDp.dp).motionProbe("new-tint") { newTint.value }) {
+    Box(modifier.fillMaxWidth().height(IntrinsicSize.Min).heightIn(min = density.rowDp.dp).motionProbe("new-tint") { newTint.value }) {
         if (dragOffset > 0.dp) {
             // The pill that fills the space the card leaves: row height, 4 dp from the card, 8 dp from the row edge.
             Box(
@@ -316,11 +318,22 @@ private fun Avatar(sender: String, selected: Boolean, size: Dp, onClick: (() -> 
     ) {
         if (flips) {
             Box(Modifier.graphicsLayer { if (showCheck) rotationY = 180f }, contentAlignment = Alignment.Center) {
-                if (showCheck) Icon(Icons.Filled.Check, null, tint = colors.onPrimary) else Text(letter, style = MaterialTheme.typography.titleMedium, color = colors.onSecondaryContainer)
+                if (showCheck) Icon(Icons.Filled.Check, null, tint = colors.onPrimary) else Initial(letter)
             }
         } else {
-            Text(letter, Modifier.alpha(1f - flip), style = MaterialTheme.typography.titleMedium, color = colors.onSecondaryContainer)
+            Box(Modifier.alpha(1f - flip)) { Initial(letter) }
             Icon(Icons.Filled.Check, null, Modifier.alpha(flip), tint = colors.onPrimary)
         }
+    }
+}
+
+/** The letter in the avatar. The circle has a fixed size, so the letter does not grow with the text size setting. */
+@Composable
+private fun Initial(letter: String) {
+    val outer = androidx.compose.ui.platform.LocalDensity.current
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(outer.density, fontScale = minOf(outer.fontScale, 1f)),
+    ) {
+        Text(letter, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)
     }
 }

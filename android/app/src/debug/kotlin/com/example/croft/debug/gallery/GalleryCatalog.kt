@@ -190,7 +190,7 @@ object GalleryCatalog {
         return GallerySection(
             "send", "Send button",
             SendCondition.entries.map { c ->
-                GalleryEntry(id("send", c.name.lowercase()), c.name.lowercase().replace('_', ' '), listOf(rows.getValue(c))) {
+                GalleryEntry(id("send", c.name.lowercase()), c.name.lowercase().replace('_', ' '), listOf(rows.getValue(c)) + (if (c == SendCondition.READY) listOf("Send") else emptyList())) {
                     val haptics = LocalHaptics.current
                     var result by remember { mutableStateOf("Tap or long-press") }
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -14,6 +14,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -39,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalAccessibilityManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -126,19 +128,37 @@ fun CroftBanner(
         BannerKind.UNSUBSCRIBE -> stringResource(R.string.banner_action_unsubscribe)
         BannerKind.OFFLINE -> null
     }
+    // At a large text size the action no longer fits beside the message, so it moves below it instead of squeezing it out.
+    val bigText = LocalDensity.current.fontScale > BANNER_STACK_FROM_FONT_SCALE
+    val buttons: @Composable () -> Unit = {
+        if (action != null) TextButton(onClick = onAction) { Text(action) }
+        IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.banner_dismiss)) }
+    }
     Surface(
         modifier = modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
         color = if (urgent) colors.errorContainer else colors.surfaceContainerHigh,
         contentColor = if (urgent) colors.onErrorContainer else colors.onSurface,
     ) {
-        Row(Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(if (urgent) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, Modifier.size(20.dp))
-            Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-            if (action != null) TextButton(onClick = onAction) { Text(action) }
-            IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.banner_dismiss)) }
+        if (bigText) {
+            Column(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp, end = 4.dp)) {
+                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(if (urgent) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, Modifier.size(20.dp))
+                    Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                }
+                Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) { buttons() }
+            }
+        } else {
+            Row(Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(if (urgent) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, Modifier.size(20.dp))
+                Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                buttons()
+            }
         }
     }
 }
+
+/** From this combined font scale a banner puts its buttons under the message. */
+private const val BANNER_STACK_FROM_FONT_SCALE = 1.3f
 
 /** One snackbar message. */
 @Stable

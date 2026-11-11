@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -76,6 +77,8 @@ fun AttachmentChip(
     val colors = MaterialTheme.colorScheme
     val amber = statusColors()
     val shape = MaterialTheme.shapes.small
+    // At a large text size the name and the size line wrap instead of ending in an ellipsis.
+    val lineCap = if (LocalDensity.current.fontScale > BIG_TEXT_FROM_FONT_SCALE) Int.MAX_VALUE else 1
     val tapLabel = stringResource(
         when (state) {
             AttachmentState.NOT_DOWNLOADED -> R.string.attachment_tap_download
@@ -135,7 +138,7 @@ fun AttachmentChip(
             else -> Icon(CroftIcons.Attachment, null, Modifier.size(20.dp), tint = content)
         }
         Column {
-            Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
             Text(
                 when (state) {
                     AttachmentState.FAILED -> stringResource(R.string.attachment_failed_line, size)
@@ -146,9 +149,11 @@ fun AttachmentChip(
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = content,
-                maxLines = 1,
+                maxLines = lineCap,
                 overflow = TextOverflow.Ellipsis,
             )
         }
     }
 }
+
+private const val BIG_TEXT_FROM_FONT_SCALE = 1.3f

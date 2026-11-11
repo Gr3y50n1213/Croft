@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## Session 1 summary (11 November 2026) — read this first
+
+**Where things stand:** stage 0 and stage 1 are done (T01–T06), plus T07 and T08 (stage 2, "done except" device checks), and from phase 1 the JMAP adapter (T09) and the FFI surface the app will use (T10). Stage 3 (the Android screens, T11–T21) has task files but has not started: every one of those tasks needs new Android libraries from Maven Central, which rate-limits this container (429), so nothing there could be built and tested here.
+
+**Checks on the final branch (`claude/croft-build`, run by the orchestrator):** `cargo fmt --check` and both `cargo clippy -D warnings` clean; `cargo test` 703 passed, 0 failed; storage with SQLCipher 146 passed; `check_schema.py` all ok; design tokens 60 of 60. Container suites against real servers: Stalwart (JMAP) 6/6, GreenMail and Dovecot (IMAP) 9/9, SMTP to GreenMail 6/6, discovery 3/3.
+
+**Not verified:** anything on an Android device or emulator (none here); the Android unit tests through Gradle (Maven Central 429; they ran once with libraries from a mirror, against the rules, see `docs/ENVIRONMENT.md`); GitHub CI has never run; the iOS side.
+
+**Next session, first:** (1) attach a git remote so work can be pushed (`docs/OPEN-ITEMS.md`); (2) check Maven Central: `curl -sI https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2.jar` must answer 200, then run `cd android && ./gradlew --refresh-dependencies :app:assembleDebug :app:testDebugUnitTest`; (3) start T11 (keystore), then T12–T21 in order.
+
+**How the work was done:** the orchestrator wrote the designs it is meant to keep (migrations 0002/0003, following a moved message, the FFI surface, the JMAP id map) and delegated the rest to subagents, one git worktree per task. Every security-sensitive change was reviewed by a separate Opus agent before it was merged: 13 reviews found 2 high, 13 medium and many low problems, all fixed (`docs/REVIEW-QUEUE.md`). The tool could choose a model and an effort level per subagent (Sonnet for building, Opus for reviews and the sync engine; Haiku was not needed). Its built-in "isolated worktree" option did not work because the session started outside the repository, so worktrees were made by hand.
+
+---
+
 ## T09: JMAP adapter (11 November 2026)
 
 **Status:** done. Not done: resuming `Email/changes` from the stored state after a restart (the first snapshot after a restart is a full read); push (EventSource); keep-alive connections; `$junk`/`$notjunk` keywords for spam (the trait has no flag for it yet, same as IMAP).

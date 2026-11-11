@@ -88,6 +88,7 @@ import com.example.croft.haptics.Haptics
 import com.example.croft.mail.AccountInfo
 import com.example.croft.mail.AccountState
 import com.example.croft.mail.FolderRole
+import com.example.croft.theme.CroftTimings
 import com.example.croft.theme.LocalMotionLevel
 import com.example.croft.theme.LocalThemeSettings
 import com.example.croft.theme.MotionLevel
@@ -102,6 +103,7 @@ import com.example.croft.ui.components.ButtonKind
 import com.example.croft.ui.components.MenuItemSpec
 import com.example.croft.ui.components.minTouchTarget
 import com.example.croft.ui.components.motionProbe
+import com.example.croft.ui.components.motionProbes
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -303,7 +305,7 @@ fun NewMailPill(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier) 
         enabled = visible,
         modifier = modifier
             .testTag(InboxTags.NEW_PILL)
-            .motionProbe("pill") { progress }
+            .motionProbes("pill" to { progress }, "pill-rise" to { if (level == MotionLevel.FULL) (1f - progress) * rise else 0f })
             .graphicsLayer {
                 alpha = progress.coerceIn(0f, 1f)
                 translationY = if (level == MotionLevel.FULL) (1f - progress) * rise else 0f
@@ -372,11 +374,12 @@ private const val PULL_MAX_FRACTION = 1.5f
 /** Plays ThresholdArmed when the pull passes the threshold and ThresholdDisarmed when it goes back (not once refreshing). */
 @Composable
 fun PullRefreshHaptics(state: PullToRefreshState, refreshing: Boolean, haptics: Haptics) {
+    val refreshingNow by androidx.compose.runtime.rememberUpdatedState(refreshing)
     LaunchedEffect(state, haptics) {
         var wasArmed = false
         snapshotFlow { state.distanceFraction >= 1f }.collect { armed ->
-            if (armed && !wasArmed && !refreshing) haptics.perform(HapticEvent.ThresholdArmed)
-            if (!armed && wasArmed && !refreshing && state.distanceFraction > 0f) haptics.perform(HapticEvent.ThresholdDisarmed)
+            if (armed && !wasArmed && !refreshingNow) haptics.perform(HapticEvent.ThresholdArmed)
+            if (!armed && wasArmed && !refreshingNow && state.distanceFraction > 0f) haptics.perform(HapticEvent.ThresholdDisarmed)
             wasArmed = armed
         }
     }
@@ -426,8 +429,8 @@ fun SkeletonList(modifier: Modifier = Modifier, rows: Int = 10) {
 
 /** A sticky date header. It is also what the fast scroller shows while it is dragged. */
 @Composable
-fun DateHeader(label: String, modifier: Modifier = Modifier) {
-    Surface(modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+fun DateHeader(label: String, container: androidx.compose.ui.graphics.Color, modifier: Modifier = Modifier) {
+    Surface(modifier.fillMaxWidth(), color = container) {
         Text(
             label,
             Modifier.padding(horizontal = 16.dp, vertical = 6.dp).semantics { heading() },
@@ -503,7 +506,12 @@ fun FastScroller(listState: LazyListState, items: List<ListItem>, labelOf: (Date
     val density = LocalDensity.current
     val thumbPx = with(density) { THUMB_HEIGHT.toPx() }
     val scrolling = listState.isScrollInProgress
-    val visible = (scrolling || dragging) && items.size > MIN_ITEMS_FOR_SCROLLER
+    // The thumb stays a moment after the list stops, so there is time to take hold of it.
+    var lingering by remember { mutableStateOf(false) }
+    LaunchedEffect(scrolling, dragging) {
+        if (scrolling || dragging) lingering = true else { kotlinx.coroutines.delay(CroftTimings.FAST_SCROLLER_LINGER_MS); lingering = false }
+    }
+    val visible = lingering && items.size > MIN_ITEMS_FOR_SCROLLER
     val alpha by animateFloatAsState(if (visible) 1f else 0f, if (level == MotionLevel.FULL || level == MotionLevel.REDUCED) MaterialTheme.motionScheme.defaultEffectsSpec() else snap(), label = "scroller")
     if (alpha <= 0f && !visible) return
     val total = items.size

@@ -280,11 +280,11 @@ private fun InboxBody(
 
     val role = controller.scopeRole
     val outgoing = role == FolderRole.SENT || role == FolderRole.DRAFTS || role == FolderRole.OUTBOX
-    val attention = controller.scopeAccounts.firstOrNull { it.status != AccountState.OK && it.status != AccountState.SYNCING }
     val avatarAccount = (controller.messageScope as? MessageScope.Folder)?.let { s -> controller.accounts.firstOrNull { it.id == s.account } } ?: controller.accounts.firstOrNull()
-    val statusText = attention?.let { stringResource(it.status.toChip().let { chip -> statusWord(chip) }) }
+    // The avatar is read with its own account's status when that account needs attention ("Account Sam, Needs sign-in").
+    val statusText = avatarAccount?.takeIf { it.status != AccountState.OK && it.status != AccountState.SYNCING }?.let { stringResource(statusWord(it.status.toChip())) }
 
-    Column(modifier.windowInsetsPadding(if (showBottomBar) WindowInsets.statusBars else WindowInsets.statusBars)) {
+    Column(modifier.windowInsetsPadding(WindowInsets.statusBars)) {
         Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             if (selecting) {
                 val tb = controller.toolbar
@@ -347,15 +347,17 @@ private fun InboxBody(
                 )
                 else -> {
                     val flat = settings.listStyle == ListStyle.FLAT
-                    Surface(Modifier.fillMaxSize(), shape = if (flat) androidx.compose.ui.graphics.RectangleShape else MaterialTheme.shapes.extraLarge, color = if (flat) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainerLow) {
+                    val listContainer = if (flat) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainerLow
+                    Surface(Modifier.fillMaxSize(), shape = if (flat) androidx.compose.ui.graphics.RectangleShape else MaterialTheme.shapes.extraLarge, color = listContainer) {
                         LazyColumn(
                             state = listState,
                             modifier = Modifier.fillMaxSize().testTag(InboxTags.LIST).semantics { contentDescription = res.getString(R.string.mail_list_description) },
                             contentPadding = PaddingValues(bottom = LIST_BOTTOM_PADDING),
                         ) {
                             for (item in items) when (item) {
+                                // The header takes no item animation: a sticky header and a placement animation fight over its position.
                                 is ListItem.Header -> stickyHeader(key = item.key, contentType = "header") {
-                                    DateHeader(item.bucket.label(res, nowMs, session.zone, locale), listItemMotion().testTag(InboxTags.header(item.bucket.id)))
+                                    DateHeader(item.bucket.label(res, nowMs, session.zone, locale), listContainer, Modifier.testTag(InboxTags.header(item.bucket.id)))
                                 }
                                 is ListItem.Row -> item(key = item.key, contentType = "row") {
                                     RowItem(

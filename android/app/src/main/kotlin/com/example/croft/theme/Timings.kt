@@ -35,6 +35,9 @@ object CroftTimings {
     /** One loop of the skeleton rows' shimmer on a first load (docs/ux/motion.md: slow shimmer, 1.2 s, linear). */
     const val SKELETON_SHIMMER_MS = 1_200L
 
+    /** The fast scroller's thumb stays this long after the list stops moving. */
+    const val FAST_SCROLLER_LINGER_MS = 1_500L
+
     /** A row that arrived keeps its "new" mark this long (the tint fade plus a margin), then the mark is dropped. */
     const val NEW_ROW_MARK_MS = NEW_ROW_TINT_MS + 100L
 }

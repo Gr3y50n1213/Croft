@@ -267,7 +267,8 @@ class InboxController(
 
     /** Loads the folder, then follows the repository's changes until cancelled. Call from a `LaunchedEffect`. */
     suspend fun run() = coroutineScope {
-        launch { refreshAccountsAndFolders() }
+        // The folders first: the empty state and the toolbar need to know what the folder is.
+        refreshAccountsAndFolders()
         launch { loadFirst() }
         launch { observeChanges() }
     }

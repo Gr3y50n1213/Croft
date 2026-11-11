@@ -94,7 +94,7 @@ private val sampleRow = MessageRowState()
 /** The whole catalogue: every control of docs/ux/controls.md in every state it has. */
 object GalleryCatalog {
     val sections: List<GallerySection> by lazy {
-        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress())
+        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), listMarkers(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress())
     }
 
     fun entry(id: String): GalleryEntry? = sections.firstNotNullOfOrNull { s -> s.entries.firstOrNull { it.id == id } }
@@ -342,6 +342,28 @@ object GalleryCatalog {
                 r("pending", "Action pending offline", MessageRowState(pendingOffline = true)),
                 r("failed", "Action failed", MessageRowState(failed = true), hold = null),
                 r("lifted", "Long-pressed", MessageRowState(), lifted = true),
+            ),
+        )
+    }
+
+    // ---- Message row markers used by the message list (T14) ----
+    private fun listMarkers(): GallerySection {
+        fun r(name: String, label: String, state: MessageRowState, sender: String = "Sam Rivera", outgoing: Boolean = false, swipe: Boolean = true) =
+            GalleryEntry(id("listmarkers", name), label, emptyList()) {
+                MessageRow(
+                    sender, "Lunch on Friday?", "Are you free around noon? I booked the place by the harbour.", "9:12", state, NoOp,
+                    onLongClick = NoOp, onAvatarClick = NoOp, onToggleStar = NoOp, outgoing = outgoing, swipeEnabled = swipe,
+                    timeDescription = "2 hours ago",
+                )
+            }
+        return GallerySection(
+            "listmarkers", "Message row markers (message list)",
+            listOf(
+                r("attachment", "Attachment clip", MessageRowState(hasAttachment = true)),
+                r("thread", "Conversation count chip", MessageRowState(threadCount = 4, unread = true)),
+                r("everything", "Unread, star, clip, lock, count and clock together", MessageRowState(unread = true, starred = true, hasAttachment = true, encryption = EncryptionMark.ENCRYPTED, threadCount = 12, pendingOffline = true)),
+                r("outgoing", "Sent: recipients instead of the sender", MessageRowState(), sender = "Mira Okafor", outgoing = true),
+                r("swipe_off", "Selection mode: swipe off", MessageRowState(selected = true), swipe = false),
             ),
         )
     }

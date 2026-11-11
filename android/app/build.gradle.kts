@@ -42,7 +42,7 @@ tasks.register<Exec>("buildRustAndroid") {
             listOf(
                 "--platform", "26",
                 "-o", rustJniLibs.get().asFile.path,
-                "build", "--release", "-p", "croft-ffi",
+                "build", "--release", "--locked", "-p", "croft-ffi",
             ),
     )
 }
@@ -54,7 +54,7 @@ tasks.register<Exec>("buildRustHost") {
     workingDir = coreDir.asFile
     inputs.files(rustSources)
     outputs.file(hostLib)
-    commandLine("cargo", "build", "-p", "croft-ffi")
+    commandLine("cargo", "build", "--locked", "-p", "croft-ffi")
 }
 
 // Kotlin bindings, generated from the library's own metadata with the UniFFI version it was built with.
@@ -68,7 +68,7 @@ tasks.register<Exec>("generateUniffiBindings") {
     outputs.dir(uniffiKotlin)
     doFirst { uniffiKotlin.get().asFile.deleteRecursively() }
     commandLine(
-        "cargo", "run", "-q", "-p", "croft-ffi", "--features", "cli", "--bin", "uniffi-bindgen", "--",
+        "cargo", "run", "--locked", "-q", "-p", "croft-ffi", "--features", "cli", "--bin", "uniffi-bindgen", "--",
         "generate", "--library", hostLib.asFile.path, "--language", "kotlin", "--no-format",
         "--out-dir", uniffiKotlin.get().asFile.path,
     )

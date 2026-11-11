@@ -1,4 +1,9 @@
 name: ci
+
+# Actions are pinned by tag for now; pinning each by commit SHA is a later hardening step.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -12,6 +17,8 @@ jobs:
         working-directory: core
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -19,14 +26,16 @@ jobs:
         with:
           workspaces: core
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo clippy -p croft-ffi --all-targets --features cli -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked -p croft-ffi --all-targets --features cli -- -D warnings
+      - run: cargo test --locked
 
   schema:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - run: python3 core/storage/tools/check_schema.py
 
   # Builds the Rust FFI library for Android (cargo-ndk), generates the Kotlin bindings, builds the
@@ -39,6 +48,8 @@ jobs:
       NDK_VERSION: 29.0.14206865
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -75,5 +86,7 @@ jobs:
   #   needs: core
   #   steps:
   #     - uses: actions/checkout@v4
+  #       with:
+  #         persist-credentials: false
   #     - run: docker compose -f test-servers/docker-compose.yml up -d --wait
-  #     - run: cd core && cargo test --features integration
+  #     - run: cd core && cargo test --locked --features integration

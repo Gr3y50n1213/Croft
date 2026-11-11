@@ -13,6 +13,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 import uniffi.croft_ffi.Core
 import uniffi.croft_ffi.CoreException
+import uniffi.croft_ffi.StorageReason
 import uniffi.croft_ffi.croftVersion
 import uniffi.croft_ffi.ffiApiVersion
 
@@ -54,6 +55,7 @@ class RustBridgeTest {
                 Core.open(file.path)
                 fail("expected a CoreException")
             } catch (e: CoreException.Storage) {
+                assertEquals(StorageReason.NOT_A_DATABASE, e.reason)
                 assertFalse(e.toString(), e.toString().contains("jane-doe"))
             }
         } finally {

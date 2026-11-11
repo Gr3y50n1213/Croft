@@ -18,8 +18,8 @@ use croft_storage::{folders, Db, StorageError};
 
 uniffi::setup_scaffolding!();
 
-/// Version of this FFI surface. Starts at 1; bump on any breaking change to what is exported.
-pub const FFI_API_VERSION: u32 = 1;
+/// Version of this FFI surface. Version 2 replaced the free-text storage reason with `StorageReason`. Bump on any breaking change to what is exported.
+pub const FFI_API_VERSION: u32 = 2;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]
@@ -38,19 +38,61 @@ pub fn ffi_api_version() -> u32 {
 pub enum CoreError {
     /// The database was written by a newer version of Croft and was not modified.
     SchemaTooNew,
-    /// The database could not be opened or read. `reason` is a short fixed category such as
-    /// `database` or `migration`; it never contains row data, SQL parameters or file paths.
+    /// The database could not be opened or read. `reason` is a fixed category; it never contains
+    /// row data, SQL parameters or file paths.
     Storage {
-        /// Short fixed category.
-        reason: String,
+        /// Fixed category.
+        reason: StorageReason,
     },
+}
+
+/// Why a storage call failed. A fixed set of categories, never free text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum StorageReason {
+    /// A SQLite error.
+    Database,
+    /// A migration failed.
+    Migration,
+    /// A stored JSON value could not be read.
+    Json,
+    /// A row was not found.
+    NotFound,
+    /// A value was out of range.
+    OutOfRange,
+    /// The encryption key has the wrong form.
+    InvalidKey,
+    /// The file is not a database, or the key is wrong.
+    NotADatabase,
+    /// This build has no database encryption.
+    EncryptionUnavailable,
+    /// Write-ahead logging is unavailable.
+    WalUnavailable,
+    /// An internal lock was poisoned.
+    LockPoisoned,
+}
+
+impl StorageReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Database => "database",
+            Self::Migration => "migration",
+            Self::Json => "json",
+            Self::NotFound => "not found",
+            Self::OutOfRange => "out of range",
+            Self::InvalidKey => "invalid key",
+            Self::NotADatabase => "not a database",
+            Self::EncryptionUnavailable => "encryption unavailable",
+            Self::WalUnavailable => "wal unavailable",
+            Self::LockPoisoned => "lock poisoned",
+        }
+    }
 }
 
 impl std::fmt::Display for CoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SchemaTooNew => f.write_str("the database was written by a newer version"),
-            Self::Storage { reason } => write!(f, "storage error ({reason})"),
+            Self::Storage { reason } => write!(f, "storage error ({})", reason.as_str()),
         }
     }
 }
@@ -58,10 +100,8 @@ impl std::fmt::Display for CoreError {
 impl std::error::Error for CoreError {}
 
 impl CoreError {
-    fn storage(reason: &str) -> Self {
-        Self::Storage {
-            reason: reason.to_owned(),
-        }
+    fn storage(reason: StorageReason) -> Self {
+        Self::Storage { reason }
     }
 }
 
@@ -69,15 +109,15 @@ impl From<StorageError> for CoreError {
     fn from(e: StorageError) -> Self {
         let reason = match e {
             StorageError::SchemaTooNew(_) => return Self::SchemaTooNew,
-            StorageError::Sqlite(_) => "database",
-            StorageError::Migration { .. } => "migration",
-            StorageError::Json(_) => "json",
-            StorageError::NotFound(_) => "not found",
-            StorageError::OutOfRange(_) => "out of range",
-            StorageError::InvalidKey => "invalid key",
-            StorageError::WrongKeyOrNotADatabase => "not a database",
-            StorageError::EncryptionUnavailable => "encryption unavailable",
-            StorageError::WalUnavailable => "wal unavailable",
+            StorageError::Sqlite(_) => StorageReason::Database,
+            StorageError::Migration { .. } => StorageReason::Migration,
+            StorageError::Json(_) => StorageReason::Json,
+            StorageError::NotFound(_) => StorageReason::NotFound,
+            StorageError::OutOfRange(_) => StorageReason::OutOfRange,
+            StorageError::InvalidKey => StorageReason::InvalidKey,
+            StorageError::WrongKeyOrNotADatabase => StorageReason::NotADatabase,
+            StorageError::EncryptionUnavailable => StorageReason::EncryptionUnavailable,
+            StorageError::WalUnavailable => StorageReason::WalUnavailable,
         };
         Self::storage(reason)
     }
@@ -140,7 +180,7 @@ impl Core {
         let db = self
             .db
             .lock()
-            .map_err(|_| CoreError::storage("lock poisoned"))?;
+            .map_err(|_| CoreError::storage(StorageReason::LockPoisoned))?;
         let folders = folders::list(db.connection(), account_id)?;
         Ok(folders.into_iter().map(FolderInfo::from).collect())
     }
@@ -177,7 +217,7 @@ mod tests {
     #[test]
     fn versions() {
         assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
-        assert_eq!(ffi_api_version(), 1);
+        assert_eq!(ffi_api_version(), 2);
     }
 
     #[test]
@@ -216,7 +256,15 @@ mod tests {
         std::fs::write(&path, vec![b'x'; 4096]).unwrap();
         let err = Core::open(path.display().to_string()).err().unwrap();
         let text = format!("{err} {err:?}");
-        assert!(matches!(err, CoreError::Storage { .. }), "{text}");
+        assert!(
+            matches!(
+                err,
+                CoreError::Storage {
+                    reason: StorageReason::NotADatabase
+                }
+            ),
+            "{text}"
+        );
         assert!(!text.contains("jane-doe"), "{text}");
     }
 

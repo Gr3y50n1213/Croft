@@ -19,6 +19,7 @@ Things only the owner can decide or do. Newest first within each section.
 - Publisher name, domain, contact and security-report address: `PUBLISHER_NAME`, `example.org`, `security@example.org`.
 
 ## Accounts, money, legal (not for Claude to do)
+- **Launch plan (owner, 11 Nov 2026):** soft launch on F-Droid first; no store accounts yet. F-Droid needs no paid account, but submitting means a merge request to F-Droid's data repository on GitLab (a free GitLab account, the owner's), and a real application ID instead of `com.example.croft`.
 - Trademark search for "Croft". Google Play and Apple developer accounts. Signing keys.
 - Items marked **Confirm** in `docs/store/READINESS.md` (export compliance, Gmail device-only assessment, foreground service, closed-test rules).
 - Legal review of `docs/store/PRIVACY-POLICY.draft.md`.

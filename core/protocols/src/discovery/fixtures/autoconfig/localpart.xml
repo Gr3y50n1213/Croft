@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="hosted.example">
+    <domain>hosted.example</domain>
+    <domain>other.example</domain>
+    <incomingServer type="imap">
+      <hostname>imap.%EMAILDOMAIN%</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+      <username>%EMAILLOCALPART%</username>
+      <authentication>password-encrypted</authentication>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>smtp.%EMAILDOMAIN%</hostname>
+      <port>587</port>
+      <socketType>STARTTLS</socketType>
+      <username>%EMAILLOCALPART%</username>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>

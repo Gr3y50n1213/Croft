@@ -31,14 +31,38 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.example.croft.R
 import com.example.croft.design.CroftMotion
+import com.example.croft.haptics.HapticEvent
+import com.example.croft.haptics.LocalHaptics
 import com.example.croft.theme.AnimationLevel
 import com.example.croft.theme.HapticsLevel
 import com.example.croft.theme.LocalMotionLevel
 import com.example.croft.theme.MotionLevel
 import com.example.croft.theme.ThemeSettings
 
-/** The haptic events S53 lets the person try (docs/ux/haptics.md). The `Haptics` interface that plays them arrives in T13. */
-enum class TryItEvent { THRESHOLD, SUCCESS, ERROR, TOGGLE, TICK, DRAG_START }
+/** The haptic events S53 lets the person try (docs/ux/haptics.md). */
+enum class TryItEvent {
+    THRESHOLD, SUCCESS, ERROR, TOGGLE, TICK, DRAG_START;
+
+    /** The `Haptics` event this button plays. */
+    val hapticEvent: HapticEvent get() = when (this) {
+        THRESHOLD -> HapticEvent.ThresholdArmed
+        SUCCESS -> HapticEvent.Success
+        ERROR -> HapticEvent.Failure
+        TOGGLE -> HapticEvent.ToggleOn
+        TICK -> HapticEvent.Tick
+        DRAG_START -> HapticEvent.DragStart
+    }
+}
+
+/**
+ * The Try it handler: plays the button's event through the `Haptics` of the composition, so the person feels what their
+ * level (Off, Subtle or Full) lets through, and nothing more.
+ */
+@Composable
+fun rememberTryItHaptics(): (TryItEvent) -> Unit {
+    val haptics = LocalHaptics.current
+    return remember(haptics) { { event -> haptics.perform(event.hapticEvent) } }
+}
 
 /** Test tags on S53. */
 object MotionTags {
@@ -81,7 +105,7 @@ private const val FADE_FROM = 0.4f
 
 /**
  * S53 Motion and haptics (settings only). Animation level and haptics level, each with a one-line description, and Try it
- * buttons: each calls [onTry] (the haptic, once the `Haptics` interface exists) and plays the matching motion on the stage.
+ * buttons: each calls [onTry] (the haptic, through `Haptics`) and plays the matching motion on the stage.
  */
 @Composable
 fun MotionHapticsScreen(
@@ -89,7 +113,7 @@ fun MotionHapticsScreen(
     onChange: (ThemeSettings) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
-    onTry: (TryItEvent) -> Unit = {},
+    onTry: (TryItEvent) -> Unit = rememberTryItHaptics(),
 ) {
     var tries by remember { mutableIntStateOf(0) }
     SettingsFrame(

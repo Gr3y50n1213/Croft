@@ -271,7 +271,7 @@ class AccountsScreensTest {
         tag(AccountsTags.folder("archive")).performClick()
         waitFor(MoveTags.SHEET)
         val receipts = FakeData.folderId(1, FakeData.RECEIPTS)
-        tag(MoveTags.folder(receipts)).performClick()
+        tag(MoveTags.folder(receipts)).performScrollTo().performClick()
         rule.waitUntil(10_000) { session.folderMapping.mapped(1, FolderRole.ARCHIVE) == receipts }
         rule.waitUntil(10_000) { rule.onAllNodes(hasText("Receipts")).fetchSemanticsNodes().isNotEmpty() }
         // A folder the server itself marks (Trash) is used as it is: shown, nothing to choose.

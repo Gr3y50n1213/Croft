@@ -180,7 +180,7 @@ with a task, `attach_account` without one, `remove_account`, `shutdown`), `Engin
 - **UIDVALIDITY reset is one transaction, not the `_after_reset` calls of section 6.** New
   `PersistentQueue::reset_folder(account, &FolderReset)` writes, in one batch: the folder's rows cleared, the fresh
   headers of the matched messages, every re-pointed operation's pending count and local value on its new row, the
-  folder's new status (UIDVALIDITY), and the failed operations. Three `LocalEffect`s were added for it (`ClearFolder`,
+  folder's new UIDVALIDITY (alone, see the review fixes below), and the failed operations. Three `LocalEffect`s were added for it (`ClearFolder`,
   `PutHeader`, `SetFolderStatus`). Why: an operation's UID means something only with the stored UIDVALIDITY. With
   separate commits, a kill between re-pointing operations and storing the new UIDVALIDITY makes the next start read
   UIDs in the wrong numbering and act on another message. All Message-ID lookups and header fetches happen first, with
@@ -209,9 +209,9 @@ with a task, `attach_account` without one, `remove_account`, `shutdown`), `Engin
 - **Lookups.** The lookup straight after a move without a new UID counts as the first of the three. A `Transient` error
   on a lookup is not counted; a `Permanent` one (folder gone) counts as "not found".
 - **Sync details.** Rows protected from server flags, removal and the section 6 release are the queue's
-  `pending_uids` plus the old addresses of awaiting entries (their rows are kept until the lookup). The plan is worked out
-  again under the lock right before it is applied, so an action taken while a snapshot was on its way is never
-  overwritten. A snapshot is skipped when CONDSTORE says nothing changed (same UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ).
+  `pending_uids` plus the old addresses of awaiting entries (their rows are kept until the lookup). The protected set is read
+  again under the lock of every chunk the plan is applied in (see the review fixes below), so an action taken while a
+  snapshot was on its way, or between two chunks, is never overwritten. A snapshot is skipped when CONDSTORE says nothing changed (same UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ).
   Folders the server no longer lists are not deleted locally yet.
 - **Retries.** The engine cannot tell a dropped connection from a busy server (both are `Transient`): the platform's
   connectivity callback calls `EngineHandle::set_online`; any `Transient` while online goes to `reject`.
@@ -220,3 +220,52 @@ with a task, `attach_account` without one, `remove_account`, `shutdown`), `Engin
 - **IDLE** is not in `MailBackend`; the account loop wakes on the next due operation, a periodic full sync
   (`EngineConfig::sync_interval_ms`, 15 min) and a `Notify` poked by every UI action. The place to add IDLE is marked in
   `worker.rs` (`run_loop`).
+
+### Review fixes to the engine (second pass over T04)
+
+- **An interrupted reset no longer hides a folder (high).** The reset batch used to store the server's whole new status
+  (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ) before the headers were fetched. If the fetch was cut short, a CONDSTORE server
+  with an unchanged HIGHESTMODSEQ made every later sync skip the snapshot, and the folder stayed empty. Now
+  `reset_folder` stores **only the new UIDVALIDITY** (new effect `LocalEffect::SetFolderValidity`, which replaces
+  `SetFolderStatus`; `FolderReset` has `uid_validity` instead of `status` and `synced_at_ms`), and sets `uid_next` and
+  `highest_modseq` to NULL and leaves `last_synced_at` alone. The full status is written only at the end of a completed
+  `apply_snapshot`, as on the normal path. A second guard in `unchanged()`: the number of local rows must equal the
+  server's `exists`, so a folder with missing rows is never taken for up to date, whatever caused it.
+- **Operations in flight when the task stops (medium).** `OpQueue::recover_applying(account)` and
+  `PersistentQueue::recover_applying` put the account's `Applying` operations back to `Queued` in one batch. It is
+  called (a) by `remove_account` and `shutdown` after the task was joined or aborted, unless a `run_once` still holds
+  the account's turn, (b) by `apply` when a step fails after the operation was handed out (the database refused to
+  record the answer, the folder check failed on a storage error, ...), and (c) at the start of every cycle, under the
+  account's turn, when nothing of the account can be in flight; (c) also covers a failure of (a) or (b) to write. The
+  attempt that was already counted stays counted.
+- **Short lock holds (medium).** A folder sync reads the folder's rows once and works out the plan with no lock held.
+  Server flags and removals are then applied in chunks of 500 rows, one lock hold and one transaction each, and the
+  protected set (pending UIDs plus awaiting entries) is read again under each chunk's lock, so an action taken between
+  chunks is respected (the SQL of `set_server_flags` also keeps local `is_seen`/`is_flagged` while `pending_ops > 0`, but
+  `delete_uids` has no such guard). The task yields to the runtime between chunks. A reset deletes the folder's rows in
+  chunks **before** its final batch, sparing rows with an unfinished operation (their Message-IDs are needed); the
+  final batch is then only the UIDVALIDITY change, the re-pointed operations and the few rows they need, and its
+  `ClearFolder` removes what is left. A reset cut short between chunks leaves the old UIDVALIDITY stored, so the next
+  sync starts it again; the rows already deleted were going to be deleted. The lock is a std `Mutex` and is not fair, so
+  the yield between chunks is what gives a waiting UI thread its turn in practice; there is no hard bound on the wait
+  beyond one chunk's transaction.
+- **A failing database does not spin the task (low).** After a `Storage` error the account task waits `sync_retry_ms`,
+  doubled for each further failure in a row (at most 16 times), before its next attempt; a poke from the UI still
+  starts an attempt at once. Other errors are as before (the queue's own back-off covers them).
+- **Coming back online ends the back-off (low).** `set_online(true)` calls `PersistentQueue::clear_hold(account, now)`:
+  the account's hold is removed and so is the retry time of each queued operation that has already been tried (an
+  operation never tried keeps its Undo window or coalescing delay). Attempts stay counted.
+- **Message-ID lookups never guess before something is destroyed (low).** For `DeleteForever` and a `MoveTo` into a
+  Trash or Junk folder waiting on a message found by Message-ID: (1) after a move without a new UID, if the destination
+  has another **local** row with that Message-ID (any row but the found UID), the operations on the message are abandoned
+  with `REASON_AMBIGUOUS_COPY`; (2) in a reset, if the old folder has two rows with that Message-ID, or two old UIDs
+  would map to one new UID, the destructive operation fails with `REASON_LOST_AFTER_RESET` (the reset has one reason
+  for all its failures); an awaiting entry moved out of the reset folder is treated the same way as (1); an entry
+  moved into it that collides is left waiting and meets (1) at the next lookup. Flag changes are re-pointed as before.
+  **Limit:** `MailBackend::find_by_message_id` returns one UID, so a duplicate that exists only on the server and
+  has not been synced is invisible to the check. It is only as good as the last sync of the destination (the lookup that
+  follows a move at once runs before that folder was synced, so it sees the duplicates the device already knew).
+- **Op ids are global.** `EngineHandle::undo(op)` and `operation(op)` take no account: ids come from one counter, and the
+  UI only holds ids it received from the call that queued the operation.
+- **New storage helpers** (`core/storage/src/`, no migration): `folders::set_validity_only`, `messages::count_in_folder`,
+  `messages::uids_in_folder`, `messages::count_other_copies`.

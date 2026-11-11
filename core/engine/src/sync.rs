@@ -19,6 +19,12 @@ use croft_storage::{messages, StorageError};
 use crate::engine::{Change, EngineError, Queue};
 use crate::worker::{Worker, REASON_LOST_AFTER_RESET};
 
+/// How many rows one lock hold may change (server flags, removals, a reset's deletions). Each
+/// row removed fires the counter and full-text triggers, so a folder of thousands of rows in one
+/// hold would keep the UI's own actions waiting. Between chunks the lock is let go and the thread
+/// is given back to the runtime.
+const LOCK_CHUNK: usize = 500;
+
 impl Worker {
     /// Syncs the folder list, then every selectable folder (Inbox first), then resolves awaiting
     /// entries whose destination the server does not list. A folder the server refuses is
@@ -81,7 +87,11 @@ impl Worker {
             .folder_status(path)
             .await
             .map_err(|e| self.backend_error(e))?;
-        if unchanged(&stored, &status) {
+        let local_rows = {
+            let q = self.shared.lock();
+            messages::count_in_folder(q.store().db().connection(), account, stored.id)?
+        };
+        if unchanged(&stored, &status, local_rows) {
             let q = self.shared.lock();
             folders::update_status(
                 q.store().db().connection(),
@@ -140,6 +150,12 @@ impl Worker {
 
     /// Applies a snapshot. Returns false when the folder's UIDVALIDITY changed and the reset was
     /// put off (the local rows are still in the old numbering).
+    ///
+    /// The folder's rows are read **once** (a plain SELECT) and the plan is worked out with no lock
+    /// held. Server flags and removals are then written in chunks of [`LOCK_CHUNK`] rows, one lock
+    /// hold per chunk, and the protected set (rows with an unfinished operation, awaiting
+    /// entries) is read again under each chunk's lock: an action taken between two chunks is
+    /// respected, and the UI is never kept waiting for the whole folder.
     async fn apply_snapshot(
         &self,
         folder_id: i64,
@@ -147,50 +163,88 @@ impl Worker {
         snapshot: &RemoteSnapshot,
     ) -> Result<bool, EngineError> {
         let account = self.account();
-        let reset = {
+        let local = {
             let q = self.shared.lock();
-            plan(&self.local_folder(&q, folder_id, path)?, snapshot).reset
+            self.local_folder(&q, folder_id, path)?
         };
-        if reset && !self.reset_folder(folder_id, path, snapshot).await? {
-            // An action changed what points into the folder while we looked things up: the
-            // folder still has its old UIDVALIDITY, so the next sync starts the reset again.
-            return Ok(false);
-        }
-
-        let (fetch, changed) = {
-            let mut q = self.shared.lock();
-            let local = self.local_folder(&q, folder_id, path)?;
-            let plan = plan(&local, snapshot);
-            if plan.reset {
+        let mut todo = plan(&local, snapshot);
+        if todo.reset {
+            if !self.reset_folder(folder_id, path, snapshot).await? {
+                // An action changed what points into the folder while we looked things up: the
+                // folder still has its old UIDVALIDITY, so the next sync starts the reset again.
                 return Ok(false);
             }
-            let keep = local.pending;
-            let changed = q.store_mut().db_mut().transaction(|tx| {
-                // Design note section 6: a hidden row or a pending count with no unfinished
-                // operation behind it is left over, and nothing else would ever clear it.
-                let mut n = messages::release_local_state(tx, account, folder_id, &keep)?;
-                for (uid, flags) in &plan.update_flags {
-                    if !keep.contains(uid)
-                        && messages::set_server_flags(tx, account, folder_id, *uid, flags)?
-                    {
-                        n += 1;
+            // The folder now holds only the rows the re-pointed operations needed.
+            let local = {
+                let q = self.shared.lock();
+                self.local_folder(&q, folder_id, path)?
+            };
+            todo = plan(&local, snapshot);
+            if todo.reset {
+                return Ok(false);
+            }
+        }
+
+        // Design note section 6: a hidden row or a pending count with no unfinished operation
+        // behind it is left over, and nothing else would ever clear it.
+        let released = {
+            let mut q = self.shared.lock();
+            let keep = self.protected(&q, path);
+            q.store_mut()
+                .db_mut()
+                .transaction(|tx| messages::release_local_state(tx, account, folder_id, &keep))?
+        };
+        if released > 0 {
+            self.emit_folder(folder_id);
+        }
+        for chunk in todo.update_flags.chunks(LOCK_CHUNK) {
+            tokio::task::yield_now().await;
+            if self.stop_now() {
+                return Ok(true);
+            }
+            let changed = {
+                let mut q = self.shared.lock();
+                let keep = self.protected(&q, path);
+                q.store_mut().db_mut().transaction(|tx| {
+                    let mut n = 0;
+                    for (uid, flags) in chunk {
+                        if !keep.contains(uid)
+                            && messages::set_server_flags(tx, account, folder_id, *uid, flags)?
+                        {
+                            n += 1;
+                        }
                     }
-                }
+                    Ok::<_, StorageError>(n)
+                })?
+            };
+            if changed > 0 {
+                self.emit_folder(folder_id);
+            }
+        }
+        for chunk in todo.remove.chunks(LOCK_CHUNK) {
+            tokio::task::yield_now().await;
+            if self.stop_now() {
+                return Ok(true);
+            }
+            let removed = {
+                let mut q = self.shared.lock();
                 // Never a row that still has an unfinished operation: let that operation resolve.
-                let gone: Vec<Uid> = plan
-                    .remove
+                // (Read under this chunk's lock: the person may have acted since the plan.)
+                let keep = self.protected(&q, path);
+                let gone: Vec<Uid> = chunk
                     .iter()
                     .filter(|u| !keep.contains(u))
                     .copied()
                     .collect();
-                n += messages::delete_uids(tx, account, folder_id, &gone)?;
-                Ok::<_, StorageError>(n > 0)
-            })?;
-            (plan.fetch, changed)
-        };
-        if changed {
-            self.emit_folder(folder_id);
+                q.store_mut()
+                    .db_mut()
+                    .transaction(|tx| messages::delete_uids(tx, account, folder_id, &gone))?
+            };
+            if removed > 0 {
+                self.emit_folder(folder_id);
+            }
         }
+        let fetch = todo.fetch;
 
         for chunk in fetch.chunks(self.shared.config.fetch_chunk.max(1)) {
             if self.stop_now() {
@@ -284,7 +338,7 @@ impl Worker {
         snapshot: &RemoteSnapshot,
     ) -> Result<bool, EngineError> {
         let account = self.account();
-        let (targets, moved_out, moved_in) = {
+        let (targets, moved_out, moved_in, danger) = {
             let q = self.shared.lock();
             let targets = self.reset_targets(&q, folder_id, path)?;
             let awaiting: Vec<AwaitingUid> = q
@@ -302,7 +356,8 @@ impl Worker {
                 .into_iter()
                 .filter(|a| a.dest_folder == path && a.folder != path)
                 .collect();
-            (targets, moved_out, moved_in)
+            let danger = self.reset_danger(&q, folder_id, path, &targets, &moved_out, &moved_in)?;
+            (targets, moved_out, moved_in, danger)
         };
 
         // Lookups, with no lock held.
@@ -324,6 +379,17 @@ impl Worker {
                 Some(id) => self.find(&entry.dest_folder, id).await?,
                 None => None,
             };
+            // A destructive operation waits on this message: if the destination holds another
+            // copy of the Message-ID, the UID found may be the other one. Give up, do not guess.
+            let found = match (found, &entry.message_id) {
+                (Some(new), Some(id))
+                    if danger.moved_out.contains(&entry.uid)
+                        && self.other_copies(&entry.dest_folder, id, new)? =>
+                {
+                    None
+                }
+                (found, _) => found,
+            };
             let found = match found {
                 Some(new) => self
                     .fetch_one(&entry.dest_folder, new)
@@ -344,6 +410,22 @@ impl Worker {
                 }
             }
         }
+        // Two old UIDs that map to one new UID cannot be told apart (the server names one UID per
+        // Message-ID). Operations that destroy something are not re-pointed on a guess: they fail.
+        let mut mapped: BTreeMap<Uid, usize> = BTreeMap::new();
+        for new in matched
+            .iter()
+            .map(|(_, new)| *new)
+            .chain(moved_in_found.iter().map(|(_, new)| *new))
+        {
+            *mapped.entry(new).or_default() += 1;
+        }
+        let shared_new = |new: &Uid| mapped.get(new).is_some_and(|n| *n > 1);
+        let (matched, guesses): (Vec<_>, Vec<_>) = matched.into_iter().partition(|(old, new)| {
+            !(danger.targets.contains(old) && (danger.shared_id.contains(old) || shared_new(new)))
+        });
+        unmatched.extend(guesses.into_iter().map(|(old, _)| old));
+        moved_in_found.retain(|(from, new)| !(danger.moved_in.contains(from) && shared_new(new)));
         let wanted: BTreeSet<Uid> = matched
             .iter()
             .map(|(_, new)| *new)
@@ -366,6 +448,13 @@ impl Worker {
         unmatched.extend(lost.into_iter().map(|(old, _)| old));
         moved_in_found.retain(|(_, new)| have.contains(new));
 
+        // The folder's rows are deleted in chunks, before the one batch that renumbers the
+        // operations: that batch then clears only the few rows that are left (those with
+        // operations) and stays short. Safe to be cut short: the UIDVALIDITY is stored only by
+        // that batch, so the next sync sees the old one and starts the reset again.
+        if !self.clear_rows_in_chunks(folder_id, path).await? {
+            return Ok(false);
+        }
         let failed = {
             let mut q = self.shared.lock();
             let still_targets: BTreeSet<Uid> = self
@@ -387,8 +476,7 @@ impl Worker {
             }
             let reset = FolderReset {
                 folder: path.to_owned(),
-                status: snapshot.status,
-                synced_at_ms: self.shared.now(),
+                uid_validity: snapshot.status.uid_validity,
                 headers,
                 matched,
                 unmatched,
@@ -409,6 +497,76 @@ impl Worker {
         Ok(true)
     }
 
+    /// Deletes the folder's rows in chunks of [`LOCK_CHUNK`], one lock hold each, except rows that
+    /// an unfinished operation or awaiting entry points at (re-read under every chunk's lock; the
+    /// reset needs their Message-IDs, and the final batch removes them). Returns false when the
+    /// engine is stopping.
+    async fn clear_rows_in_chunks(&self, folder_id: i64, path: &str) -> Result<bool, EngineError> {
+        let account = self.account();
+        let uids = {
+            let q = self.shared.lock();
+            messages::uids_in_folder(q.store().db().connection(), account, folder_id)?
+        };
+        for chunk in uids.chunks(LOCK_CHUNK) {
+            tokio::task::yield_now().await;
+            if self.stop_now() {
+                return Ok(false);
+            }
+            {
+                let mut q = self.shared.lock();
+                let keep = self.protected(&q, path);
+                let gone: Vec<Uid> = chunk
+                    .iter()
+                    .filter(|u| !keep.contains(u))
+                    .copied()
+                    .collect();
+                q.store_mut()
+                    .db_mut()
+                    .transaction(|tx| messages::delete_uids(tx, account, folder_id, &gone))?;
+            }
+            self.emit_folder(folder_id);
+        }
+        Ok(true)
+    }
+
+    /// Which of the reset's operations must not be re-pointed on a guess (see [`Danger`]).
+    fn reset_danger(
+        &self,
+        q: &Queue,
+        folder_id: i64,
+        path: &str,
+        targets: &BTreeMap<Uid, Option<String>>,
+        moved_out: &[AwaitingUid],
+        moved_in: &[AwaitingUid],
+    ) -> Result<Danger, StorageError> {
+        let account = self.account();
+        let conn = q.store().db().connection();
+        let mut danger = Danger::default();
+        for (uid, id) in targets {
+            if !self.has_destructive_op(q, (path, *uid))? {
+                continue;
+            }
+            danger.targets.insert(*uid);
+            // The same Message-ID on another row of the folder: two old UIDs, one new UID.
+            if let Some(id) = id {
+                if messages::count_other_copies(conn, account, folder_id, id, *uid)? > 0 {
+                    danger.shared_id.insert(*uid);
+                }
+            }
+        }
+        for entry in moved_out {
+            if self.has_destructive_op(q, (path, entry.uid))? {
+                danger.moved_out.insert(entry.uid);
+            }
+        }
+        for entry in moved_in {
+            if self.has_destructive_op(q, (entry.folder.as_str(), entry.uid))? {
+                danger.moved_in.insert((entry.folder.clone(), entry.uid));
+            }
+        }
+        Ok(danger)
+    }
+
     async fn fetch_one(&self, folder: &str, uid: Uid) -> Result<Option<RemoteHeader>, EngineError> {
         match self.backend().fetch_headers(folder, &[uid]).await {
             Ok(headers) => Ok(headers.into_iter().find(|h| h.uid == uid)),
@@ -416,6 +574,21 @@ impl Worker {
             Err(e) => Err(self.backend_error(e)),
         }
     }
+}
+
+/// What a reset must not guess about: operations that destroy something (delete forever, a move
+/// to Trash or Junk) on messages that are matched again by Message-ID.
+#[derive(Debug, Default)]
+struct Danger {
+    /// Old UIDs in the reset folder with such an operation.
+    targets: BTreeSet<Uid>,
+    /// The subset of `targets` whose Message-ID is on another row of the folder, so two old UIDs
+    /// name the same message.
+    shared_id: BTreeSet<Uid>,
+    /// Awaiting entries moved out of the folder (old UID) with such an operation.
+    moved_out: BTreeSet<Uid>,
+    /// Awaiting entries moved into the folder (old address) with such an operation.
+    moved_in: BTreeSet<(String, Uid)>,
 }
 
 /// Old UIDs in `path` that have an awaiting entry (moves out of the folder waiting for their new
@@ -436,12 +609,16 @@ fn shape(list: &[Folder]) -> Vec<(&str, &str)> {
 }
 
 /// True when CONDSTORE says nothing in the folder changed since the stored status: same
-/// UIDVALIDITY, UIDNEXT and HIGHESTMODSEQ. Without CONDSTORE a snapshot is always taken.
-fn unchanged(stored: &Folder, status: &croft_protocols::FolderStatus) -> bool {
+/// UIDVALIDITY, UIDNEXT and HIGHESTMODSEQ, **and** the local row count is the server's message
+/// count. The count is a second guard: a folder whose messages were never (or only partly)
+/// stored, however that happened, is never taken for up to date. Without CONDSTORE a snapshot is
+/// always taken.
+fn unchanged(stored: &Folder, status: &croft_protocols::FolderStatus, local_rows: u64) -> bool {
     let Some(modseq) = status.highest_modseq else {
         return false;
     };
-    stored.uid_validity == Some(i64::from(status.uid_validity))
+    local_rows == u64::from(status.exists)
+        && stored.uid_validity == Some(i64::from(status.uid_validity))
         && stored.uid_next == Some(i64::from(status.uid_next))
         && stored
             .highest_modseq
@@ -474,17 +651,34 @@ mod tests {
             uid_validity: validity,
             uid_next: next,
             highest_modseq: modseq,
-            exists: 0,
+            exists: 3,
         }
     }
 
     #[test]
     fn a_snapshot_is_skipped_only_when_condstore_says_nothing_changed() {
-        assert!(unchanged(&stored(7, 10, Some(5)), &status(7, 10, Some(5))));
-        assert!(!unchanged(&stored(7, 10, Some(5)), &status(7, 10, Some(6))));
-        assert!(!unchanged(&stored(7, 10, Some(5)), &status(7, 11, Some(5))));
-        assert!(!unchanged(&stored(7, 10, Some(5)), &status(8, 10, Some(5))));
-        assert!(!unchanged(&stored(7, 10, None), &status(7, 10, None)));
-        assert!(!unchanged(&stored(7, 10, None), &status(7, 10, Some(5))));
+        let same = |s: &Folder, st: &FolderStatus| unchanged(s, st, 3);
+        assert!(same(&stored(7, 10, Some(5)), &status(7, 10, Some(5))));
+        assert!(!same(&stored(7, 10, Some(5)), &status(7, 10, Some(6))));
+        assert!(!same(&stored(7, 10, Some(5)), &status(7, 11, Some(5))));
+        assert!(!same(&stored(7, 10, Some(5)), &status(8, 10, Some(5))));
+        assert!(!same(&stored(7, 10, None), &status(7, 10, None)));
+        assert!(!same(&stored(7, 10, None), &status(7, 10, Some(5))));
+        // Only some of the folder's messages are stored (a sync was cut short): not up to date.
+        assert!(!unchanged(
+            &stored(7, 10, Some(5)),
+            &status(7, 10, Some(5)),
+            0
+        ));
+        assert!(!unchanged(
+            &stored(7, 10, Some(5)),
+            &status(7, 10, Some(5)),
+            2
+        ));
+        assert!(!unchanged(
+            &stored(7, 10, Some(5)),
+            &status(7, 10, Some(5)),
+            4
+        ));
     }
 }

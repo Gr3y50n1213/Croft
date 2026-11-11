@@ -625,13 +625,7 @@ fn store_mut_lends_the_store_without_touching_the_queue() {
 fn reset(folder: &str) -> FolderReset {
     FolderReset {
         folder: folder.into(),
-        status: FolderStatus {
-            uid_validity: 9,
-            uid_next: 4,
-            highest_modseq: None,
-            exists: 3,
-        },
-        synced_at_ms: 7_000,
+        uid_validity: 9,
         headers: Vec::new(),
         matched: Vec::new(),
         unmatched: Vec::new(),
@@ -699,11 +693,10 @@ fn a_folder_reset_is_one_batch_and_moves_each_operation_once() {
                 value: true
             },
             delta("INBOX", 1, 1),
-            LocalEffect::SetFolderStatus {
+            LocalEffect::SetFolderValidity {
                 account: A,
                 folder: "INBOX".into(),
-                status: r.status,
-                synced_at_ms: 7_000
+                uid_validity: 9
             },
         ]
     );
@@ -785,4 +778,39 @@ fn a_folder_reset_resolves_awaiting_entries_from_and_to_the_folder() {
     }));
     assert!(effects.contains(&delta("Archive", 3, 1)));
     assert!(q.store.awaiting.is_empty());
+}
+
+#[test]
+fn recovering_applying_operations_is_stored_in_one_batch_and_rolled_back_on_error() {
+    let mut q = open();
+    let id = add(&mut q, seen(1, true), 0);
+    assert_eq!(q.take_due(2_000, 10).unwrap().len(), 1);
+    assert_eq!(q.store.ops[&id].state, OpState::Applying);
+    let commits = q.store.commits;
+    q.store.fail = true;
+    assert!(q.recover_applying(A).is_err());
+    assert_eq!(q.queue().get(id).map(|o| o.state), Some(OpState::Applying));
+    q.store.fail = false;
+    assert_eq!(q.recover_applying(A).unwrap(), 1);
+    assert_eq!(q.store.commits, commits + 1);
+    assert_eq!(q.store.ops[&id].state, OpState::Queued);
+    assert_eq!(q.recover_applying(A).unwrap(), 0);
+    assert_eq!(
+        q.store.commits,
+        commits + 1,
+        "nothing to write, nothing written"
+    );
+}
+
+#[test]
+fn ending_a_back_off_stores_the_new_retry_times() {
+    let mut q = open();
+    let id = add(&mut q, seen(1, true), 0);
+    q.take_due(2_000, 10).unwrap();
+    let err = BackendError::Transient("timeout".into());
+    q.reject(id, &err, 2_000).unwrap();
+    assert_eq!(q.store.ops[&id].not_before_ms, 7_000);
+    q.clear_hold(A, 3_000).unwrap();
+    assert_eq!(q.store.ops[&id].not_before_ms, 3_000);
+    assert_eq!(q.take_due(3_000, 10).unwrap().len(), 1);
 }

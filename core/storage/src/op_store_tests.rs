@@ -1138,12 +1138,18 @@ fn a_folder_reset_replaces_rows_status_and_operations_in_one_transaction() {
     let star = add(&mut q, fx.a1, starred(2, true), 0);
     let lost = add(&mut q, fx.a1, seen(3, true), 0);
     add(&mut q, fx.a2, seen(2, true), 0);
-    let status = FolderStatus {
-        uid_validity: 4242,
-        uid_next: 3,
-        highest_modseq: None,
-        exists: 2,
-    };
+    // The folder had been synced before the server changed its UIDVALIDITY.
+    {
+        let c = db(&q).connection();
+        let inbox = folders::find_by_path(c, fx.a1, "INBOX").unwrap().unwrap();
+        let status = FolderStatus {
+            uid_validity: 1,
+            uid_next: 4,
+            highest_modseq: Some(5),
+            exists: 3,
+        };
+        folders::update_status(c, fx.a1, inbox.id, &status, 123).unwrap();
+    }
     // After the change: the starred message is now UID 1, the other one is gone, and a message
     // nobody touched is UID 2.
     let mut moved = header(1);
@@ -1152,8 +1158,7 @@ fn a_folder_reset_replaces_rows_status_and_operations_in_one_transaction() {
     stranger.message_id = Some("<m9@example.org>".into());
     let reset = FolderReset {
         folder: "INBOX".into(),
-        status,
-        synced_at_ms: 9_000,
+        uid_validity: 4242,
         headers: vec![moved, stranger],
         matched: vec![(2, 1)],
         unmatched: vec![3],
@@ -1180,9 +1185,16 @@ fn a_folder_reset_replaces_rows_status_and_operations_in_one_transaction() {
     assert!(row(&q, fx.a1, "INBOX", 3).is_none());
     let c = db(&q).connection();
     let inbox = folders::find_by_path(c, fx.a1, "INBOX").unwrap().unwrap();
+    // Only the UIDVALIDITY is stored: the folder is not synced until a sync has fetched its
+    // messages and stores the full status.
     assert_eq!(
-        (inbox.uid_validity, inbox.last_synced_at),
-        (Some(4242), Some(9_000))
+        (
+            inbox.uid_validity,
+            inbox.uid_next,
+            inbox.highest_modseq,
+            inbox.last_synced_at
+        ),
+        (Some(4242), None, None, Some(123))
     );
     assert_eq!(inbox.total_count, 2);
     let other_account = row(&q, fx.a2, "INBOX", 2).unwrap();
@@ -1215,13 +1227,7 @@ fn a_folder_reset_that_cannot_be_written_changes_nothing() {
         .unwrap();
     let reset = FolderReset {
         folder: "INBOX".into(),
-        status: FolderStatus {
-            uid_validity: 7,
-            uid_next: 2,
-            highest_modseq: None,
-            exists: 1,
-        },
-        synced_at_ms: 1,
+        uid_validity: 7,
         headers: vec![header(1)],
         matched: vec![(2, 1)],
         unmatched: Vec::new(),

@@ -141,6 +141,25 @@ pub fn update_status(
     Ok(n > 0)
 }
 
+/// Stores the folder's UIDVALIDITY alone, and sets UIDNEXT and HIGHESTMODSEQ to NULL (the sync time
+/// is left as it was). For the middle of a UIDVALIDITY reset: the folder is not synced yet, so no
+/// later sync may take it for "unchanged" until [`update_status`] stores the full status at the
+/// end of a completed sync. Returns false when the folder is not in this account.
+pub fn set_validity_only(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    uid_validity: u32,
+) -> Result<bool> {
+    let n = conn.execute(
+        r#"UPDATE folder
+              SET uid_validity = ?3, uid_next = NULL, highest_modseq = NULL
+            WHERE account_id = ?1 AND id = ?2"#,
+        params![account_id, folder_id, uid_validity],
+    )?;
+    Ok(n > 0)
+}
+
 /// Deletes a folder and, by cascade, its messages. Returns false when the folder is not in this
 /// account.
 pub fn delete(conn: &Connection, account_id: i64, folder_id: i64) -> Result<bool> {

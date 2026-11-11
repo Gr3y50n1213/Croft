@@ -635,6 +635,43 @@ impl OpQueue {
         }
     }
 
+    /// Puts every operation of this account that is marked [`OpState::Applying`] back to
+    /// [`OpState::Queued`] and returns how many there were.
+    ///
+    /// For the engine to call when it knows that nothing of this account is being sent any more:
+    /// its task was stopped in the middle of a call, or a step failed after the operation was handed
+    /// out. Otherwise the operation would stay "applying" in memory and never be handed out again
+    /// (until the next start). The server may or may not have applied it; every operation is safe
+    /// to repeat. Attempts already counted stay counted.
+    pub fn recover_applying(&mut self, account: AccountId) -> usize {
+        let mut n = 0;
+        for op in self
+            .ops
+            .values_mut()
+            .filter(|op| op.account == account && op.state == OpState::Applying)
+        {
+            op.state = OpState::Queued;
+            n += 1;
+        }
+        n
+    }
+
+    /// Ends the account's back-off, for when the device has a connection again (which says more
+    /// than the clock does about whether the server can be reached): the account's hold is removed,
+    /// and so is the retry time of each of its queued operations that has already been tried, so
+    /// they are due at `now_ms`. An operation that has not been tried yet keeps its own time (its
+    /// Undo window or coalescing delay), and attempts already used stay used.
+    pub fn clear_hold(&mut self, account: AccountId, now_ms: i64) {
+        self.holds.remove(&account);
+        for op in self
+            .ops
+            .values_mut()
+            .filter(|op| op.account == account && op.state == OpState::Queued && op.attempts > 0)
+        {
+            op.not_before_ms = op.not_before_ms.min(now_ms);
+        }
+    }
+
     /// When the engine should next wake up to drain the queue, or `None` if nothing is waiting.
     ///
     /// An operation held back behind an earlier unfinished one on the same message does not count:
@@ -990,6 +1027,50 @@ mod tests {
         assert_eq!(q.next_wake_ms(), Some(5_000));
         assert_eq!(q.next_wake_ms_for(A), Some(5_000));
         assert!(q.take_due(1_500, 10).is_empty());
+    }
+
+    #[test]
+    fn recover_applying_puts_only_that_accounts_in_flight_operations_back() {
+        let mut q = OpQueue::new();
+        let mine = queued(&mut q, seen(1, true), 0);
+        let other = match q.enqueue(2, seen(1, true), 0, WINDOW) {
+            Enqueued::Queued(id) => id,
+            e => panic!("{e:?}"),
+        };
+        let waiting = queued(&mut q, seen(2, true), 10_000);
+        assert_eq!(q.take_due(1_500, 10).len(), 2);
+        assert_eq!(q.recover_applying(A), 1);
+        assert_eq!(q.get(mine).map(|o| o.state), Some(OpState::Queued));
+        assert_eq!(q.get(other).map(|o| o.state), Some(OpState::Applying));
+        assert_eq!(q.get(waiting).map(|o| o.state), Some(OpState::Queued));
+        assert_eq!(q.recover_applying(A), 0);
+        // Handed out again, with the attempt that was already counted still counted.
+        let again = q.take_due_for(A, 1_500, 10);
+        assert_eq!(
+            again.iter().map(|o| (o.id, o.attempts)).collect::<Vec<_>>(),
+            vec![(mine, 2)]
+        );
+    }
+
+    #[test]
+    fn clear_hold_makes_tried_operations_due_but_keeps_an_untried_ones_own_time() {
+        let mut q = OpQueue::new();
+        let tried = queued(&mut q, seen(1, true), 0);
+        let untried = queued(&mut q, mv(2, "Archive"), 4_000);
+        assert_eq!(q.take_due(1_500, 1).len(), 1);
+        let err = BackendError::Transient("timeout".into());
+        assert_eq!(
+            q.reject(tried, &err, 1_500),
+            Some(Rejection::RetryAt(6_500))
+        );
+        assert!(q.take_due(2_500, 10).is_empty(), "held");
+        // Two seconds in, the account is back online.
+        q.clear_hold(A, 2_000);
+        assert_eq!(q.get(tried).map(|o| o.not_before_ms), Some(2_000));
+        assert_eq!(q.get(untried).map(|o| o.not_before_ms), Some(9_000));
+        assert_eq!(q.next_wake_ms_for(A), Some(2_000));
+        let due: Vec<OpId> = q.take_due(2_000, 10).iter().map(|o| o.id).collect();
+        assert_eq!(due, vec![tried], "the move still waits for its Undo window");
     }
 
     #[test]

@@ -38,8 +38,11 @@
 //!
 //! The queue and the database live together behind **one** `std::sync::Mutex` (the queue owns the
 //! store, which owns the `Db`; rusqlite connections are not `Sync`). It is held only for short
-//! synchronous sections (one queue change, one sync transaction, one chunk of headers) and never
-//! across an `.await`, so it is never held during a network call. Each account has one task that
+//! synchronous sections (one queue change, one chunk of at most 500 rows of a sync, one chunk of
+//! headers) and never across an `.await`, so it is never held during a network call. A folder sync
+//! lets go of the lock and of the thread between its chunks, and reads what is protected (rows
+//! with an unfinished operation) again under each chunk's lock, so a UI action taken in between
+//! is respected and never waits for a whole folder. Each account has one task that
 //! runs its operations **one at a time**, in order, and syncs its folders between them; different
 //! accounts run in parallel. [`EngineHandle::run_once`] takes the same per-account turn, so it
 //! never runs alongside the account's task.
@@ -57,8 +60,21 @@
 //! The platform reports connectivity with [`EngineHandle::set_online`]: while offline nothing is
 //! tried and no attempts are used. A `Transient` answer from the server goes to the queue's
 //! `reject`, which backs the whole account off (5 s, 30 s, 2 min, 10 min, 1 h, then hourly) and
-//! gives up after 8 attempts. `Auth` pauses the account until [`EngineHandle::signed_in`];
-//! `Permanent` fails the operation and puts the row back.
+//! gives up after 8 attempts; [`EngineHandle::set_online`]`(true)` ends that back-off. `Auth`
+//! pauses the account until [`EngineHandle::signed_in`]; `Permanent` fails the operation and puts
+//! the row back. A database error does not make the task spin: it waits `sync_retry_ms`, doubled
+//! each time (at most 16 times), before it tries again.
+//!
+//! # Message-ID lookups never guess before something is destroyed
+//!
+//! A message that moved (no new UID in the answer) or whose folder was renumbered is found again by
+//! its Message-ID, and `MailBackend::find_by_message_id` returns **one** UID. When a destructive
+//! operation (delete forever, or a move into Trash or Junk) waits on such a message, the engine
+//! gives up instead of re-pointing it when the answer may be the wrong copy: the destination
+//! folder has another **local** row with that Message-ID, or two old UIDs of a renumbered folder
+//! share a Message-ID. The operation fails with a plain reason. Limit: a duplicate that exists on
+//! the server only and has not been synced is invisible to this check, because the backend names
+//! one UID. Flag changes are re-pointed as usual.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
@@ -72,4 +88,6 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use croft_mail_core::{AccountId, Op, OpId, OpKind, OpState, UnreadableOp};
 pub use engine::{Change, Engine, EngineConfig, EngineError};
 pub use handle::{ActionError, EngineHandle};
-pub use worker::{MAX_LOOKUPS, REASON_LOST_AFTER_MOVE, REASON_LOST_AFTER_RESET};
+pub use worker::{
+    MAX_LOOKUPS, REASON_AMBIGUOUS_COPY, REASON_LOST_AFTER_MOVE, REASON_LOST_AFTER_RESET,
+};

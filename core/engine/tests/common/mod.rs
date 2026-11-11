@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use croft_engine::{AccountId, Change, Clock, Engine, EngineConfig, EngineHandle, ManualClock};
@@ -102,6 +103,12 @@ pub struct FakeState {
     /// search index lags behind a move).
     pub search_misses: u32,
     pub gates: BTreeMap<Method, Arc<Gate>>,
+    /// Report HIGHESTMODSEQ (a fixed value) in status and snapshot answers, as a CONDSTORE server
+    /// does, so the engine may skip a snapshot when nothing changed.
+    pub condstore: bool,
+    /// When set, every `Fetch` call copies the value of `.0` into `.1` on entry: a test that runs
+    /// on one thread uses it to see what had happened by the time the sync reached its fetch.
+    pub fetch_probe: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
 }
 
 /// An in-memory mail server.
@@ -138,6 +145,8 @@ impl FakeBackend {
                 fail_next: VecDeque::new(),
                 search_misses: 0,
                 gates: BTreeMap::new(),
+                condstore: false,
+                fetch_probe: None,
             }),
             clock,
         })
@@ -247,6 +256,11 @@ impl FakeBackend {
         let mut st = self.st();
         let method = call.method();
         st.calls.push((now, call));
+        if method == Method::Fetch {
+            if let Some((from, to)) = &st.fetch_probe {
+                to.store(from.load(Ordering::SeqCst), Ordering::SeqCst);
+            }
+        }
         if let Some(e) = &st.fail_all {
             return Err(e.clone());
         }
@@ -269,11 +283,11 @@ impl FakeBackend {
         BackendError::Permanent("no such folder".into())
     }
 
-    fn status_of(f: &FakeFolder) -> FolderStatus {
+    fn status_of(f: &FakeFolder, condstore: bool) -> FolderStatus {
         FolderStatus {
             uid_validity: f.uid_validity,
             uid_next: f.uid_next,
-            highest_modseq: None,
+            highest_modseq: condstore.then_some(7),
             exists: u32::try_from(f.messages.len()).unwrap(),
         }
     }
@@ -313,7 +327,7 @@ impl MailBackend for FakeBackend {
             self.begin(Call::Status(folder.into())).await?;
             let st = self.st();
             let f = st.folders.get(folder).ok_or_else(Self::folder_missing)?;
-            Ok(Self::status_of(f))
+            Ok(Self::status_of(f, st.condstore))
         })
     }
 
@@ -323,7 +337,7 @@ impl MailBackend for FakeBackend {
             let st = self.st();
             let f = st.folders.get(folder).ok_or_else(Self::folder_missing)?;
             Ok(RemoteSnapshot {
-                status: Self::status_of(f),
+                status: Self::status_of(f, st.condstore),
                 messages: f
                     .messages
                     .iter()

@@ -407,6 +407,48 @@ pub fn delete_uids(
     Ok(n)
 }
 
+/// How many message rows a folder of this account has, hidden ones included.
+pub fn count_in_folder(conn: &Connection, account_id: i64, folder_id: i64) -> Result<u64> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM message WHERE account_id = ?1 AND folder_id = ?2",
+        params![account_id, folder_id],
+        |r| r.get(0),
+    )?;
+    Ok(u64::try_from(n).unwrap_or(0))
+}
+
+/// The UIDs of every row of a folder of this account (hidden ones included), ascending. Lighter
+/// than [`folder_flags`] for the engine, which only needs to cut the rows into chunks.
+pub fn uids_in_folder(conn: &Connection, account_id: i64, folder_id: i64) -> Result<Vec<Uid>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT uid FROM message WHERE account_id = ?1 AND folder_id = ?2 ORDER BY uid",
+    )?;
+    let rows = stmt.query_map(params![account_id, folder_id], |r| r.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(Uid::try_from(row?).map_err(|_| StorageError::OutOfRange("uid"))?);
+    }
+    Ok(out)
+}
+
+/// How many rows of a folder of this account have this `Message-ID` header, not counting the row
+/// at `except_uid`. The engine uses it to tell whether a Message-ID names more than one copy.
+pub fn count_other_copies(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    message_id_hdr: &str,
+    except_uid: Uid,
+) -> Result<u64> {
+    let n: i64 = conn.query_row(
+        r#"SELECT COUNT(*) FROM message
+            WHERE account_id = ?1 AND folder_id = ?2 AND message_id_hdr = ?3 AND uid <> ?4"#,
+        params![account_id, folder_id, message_id_hdr, except_uid],
+        |r| r.get(0),
+    )?;
+    Ok(u64::try_from(n).unwrap_or(0))
+}
+
 /// Deletes every row of a folder of this account, keeping the folder (its UIDVALIDITY changed, so
 /// the cached UIDs mean nothing). Returns how many rows went.
 pub fn delete_all_in_folder(conn: &Connection, account_id: i64, folder_id: i64) -> Result<usize> {

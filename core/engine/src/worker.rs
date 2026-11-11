@@ -29,6 +29,12 @@ pub const REASON_LOST_AFTER_MOVE: &str = "Couldn't find the message after moving
 pub const REASON_LOST_AFTER_RESET: &str =
     "Couldn't find the message after the folder changed on the server";
 
+/// Shown when a destructive operation (delete forever, or a move to Trash or Junk) on a message
+/// that was moved is given up because the destination folder holds more than one copy and the
+/// engine cannot tell which one is the message.
+pub const REASON_AMBIGUOUS_COPY: &str =
+    "Couldn't tell which copy of the message to use, so nothing was deleted";
+
 /// What a cycle did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cycle {
@@ -111,6 +117,9 @@ impl Worker {
         let interval = self.shared.config.sync_interval_ms;
         let retry = self.shared.config.sync_retry_ms;
         let mut next_full = i64::MIN;
+        // After a database error nothing is tried before this time (see `database_delay_ms`).
+        let mut hold_until = i64::MIN;
+        let mut database_errors: u32 = 0;
         loop {
             if self.slot.stopping() {
                 break;
@@ -119,8 +128,13 @@ impl Worker {
             let wanted = self.slot.full_sync_wanted.swap(false, Ordering::SeqCst);
             let full = wanted || now >= next_full;
             match self.cycle(full).await {
-                Ok(Cycle::Ran) if full => next_full = now.saturating_add(interval),
-                Ok(_) => {}
+                Ok(cycle) => {
+                    database_errors = 0;
+                    hold_until = i64::MIN;
+                    if cycle == Cycle::Ran && full {
+                        next_full = now.saturating_add(interval);
+                    }
+                }
                 Err(e) => {
                     log::warn!(
                         "account {} cycle failed: {}",
@@ -130,12 +144,22 @@ impl Worker {
                     if full {
                         next_full = now.saturating_add(retry);
                     }
+                    // A due operation would make the account wake at once, try, fail and wake
+                    // again: a loop that does nothing but burn the CPU and the log. A database
+                    // that refuses needs time, so wait, and wait longer each time it still does.
+                    if matches!(e, EngineError::Storage(_)) {
+                        database_errors = database_errors.saturating_add(1);
+                        hold_until = self
+                            .shared
+                            .now()
+                            .saturating_add(database_delay_ms(retry, database_errors));
+                    }
                 }
             }
             if self.slot.stopping() {
                 break;
             }
-            match self.wait_ms(next_full) {
+            match self.wait_ms(next_full, hold_until) {
                 Some(ms) => {
                     tokio::select! {
                         () = self.slot.wake.notified() => {}
@@ -147,13 +171,16 @@ impl Worker {
         }
     }
 
-    /// How long to sleep before the next turn, or `None` to wait for a poke only.
-    fn wait_ms(&self, next_full: i64) -> Option<u64> {
+    /// How long to sleep before the next turn, or `None` to wait for a poke only. Never ends
+    /// before `hold_until` (the wait after a database error).
+    fn wait_ms(&self, next_full: i64, hold_until: i64) -> Option<u64> {
         if self.blocked() {
             return None;
         }
         let next_op = self.shared.lock().queue().next_wake_ms_for(self.account());
-        let target = next_op.map_or(next_full, |t| t.min(next_full));
+        let target = next_op
+            .map_or(next_full, |t| t.min(next_full))
+            .max(hold_until);
         Some(u64::try_from(target.saturating_sub(self.shared.now())).unwrap_or(0))
     }
 
@@ -164,6 +191,9 @@ impl Worker {
         if self.blocked() {
             return Ok(Cycle::Skipped);
         }
+        // Holding the turn means nothing of this account is being sent: an operation still marked
+        // applying was left by a step that failed (or by a task that was aborted) and must go back.
+        self.shared.lock().recover_applying(self.account())?;
         if full {
             self.shared.lock().purge_finished()?;
         }
@@ -190,12 +220,19 @@ impl Worker {
         }
     }
 
-    /// Checks the operation's folders, then sends the operation and records the answer.
+    /// Checks the operation's folders, then sends the operation and records the answer. If a step
+    /// fails (the database refused to record an answer, say) the operation goes back in the queue:
+    /// it was handed out as applying, and nothing else would ever hand it out again.
     async fn apply(&self, op: Op) -> Result<(), EngineError> {
-        match self.check_folders(op).await? {
-            Some(op) => self.send(op).await,
-            None => Ok(()),
+        let result = match self.check_folders(op).await {
+            Ok(Some(op)) => self.send(op).await,
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        };
+        if result.is_err() {
+            self.shared.recover_in_flight(self.account());
         }
+        result
     }
 
     /// A UID only means something together with its folder's UIDVALIDITY. Before an operation is
@@ -377,12 +414,20 @@ impl Worker {
             },
         };
         let mut failed = Vec::new();
+        let mut reason = REASON_LOST_AFTER_MOVE;
         {
             let mut q = self.shared.lock();
             if q.queue().awaiting_for(account, from).is_none() {
                 return Ok(());
             }
             match found {
+                // A destructive operation waits for this message and the destination holds
+                // another copy of its Message-ID: the UID found may be the other copy. Never
+                // guess which one to delete (see the crate documentation for the limits).
+                Some(new_uid) if self.is_ambiguous(&q, from, &entry, new_uid)? => {
+                    reason = REASON_AMBIGUOUS_COPY;
+                    failed = q.abandon(account, from, REASON_AMBIGUOUS_COPY)?;
+                }
                 Some(new_uid) => {
                     q.repoint(account, from, (entry.dest_folder.clone(), new_uid))?;
                 }
@@ -397,10 +442,76 @@ impl Worker {
                 }
             }
         }
-        self.emit_failed(&failed, REASON_LOST_AFTER_MOVE);
+        self.emit_failed(&failed, reason);
         self.shared
             .emit_folders(account, &[&entry.folder, &entry.dest_folder]);
         Ok(())
+    }
+
+    /// True when an unfinished operation on the message at `at` destroys something: delete
+    /// forever, or a move into Trash or Junk.
+    pub(crate) fn has_destructive_op(
+        &self,
+        q: &Queue,
+        at: (&str, Uid),
+    ) -> Result<bool, StorageError> {
+        let account = self.account();
+        for op in q
+            .queue()
+            .iter()
+            .filter(|o| o.account == account && !o.state.is_finished() && o.kind.target() == at)
+        {
+            match &op.kind {
+                OpKind::DeleteForever { .. } => return Ok(true),
+                OpKind::MoveTo { dest, .. } => {
+                    let found = folders::find_by_path(q.store().db().connection(), account, dest)?;
+                    if found.is_some_and(|f| matches!(f.special_use.as_str(), "trash" | "junk")) {
+                        return Ok(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(false)
+    }
+
+    /// True when the folder has a local row, other than the one at `except`, with this
+    /// Message-ID: the lookup's one answer may be the wrong one of two copies. The server's own
+    /// duplicates cannot be seen this way (`find_by_message_id` returns one UID), so this is only
+    /// as good as the last sync of the folder.
+    pub(crate) fn other_copies(
+        &self,
+        folder: &str,
+        message_id: &str,
+        except: Uid,
+    ) -> Result<bool, StorageError> {
+        let account = self.account();
+        let q = self.shared.lock();
+        let conn = q.store().db().connection();
+        let Some(f) = folders::find_by_path(conn, account, folder)? else {
+            return Ok(false);
+        };
+        Ok(messages::count_other_copies(conn, account, f.id, message_id, except)? > 0)
+    }
+
+    /// True when the lookup of an awaiting entry must not be trusted: a destructive operation
+    /// waits on the message and the destination has another local copy of its Message-ID.
+    fn is_ambiguous(
+        &self,
+        q: &Queue,
+        from: (&str, Uid),
+        entry: &AwaitingUid,
+        found: Uid,
+    ) -> Result<bool, StorageError> {
+        let (Some(id), true) = (&entry.message_id, self.has_destructive_op(q, from)?) else {
+            return Ok(false);
+        };
+        let account = self.account();
+        let conn = q.store().db().connection();
+        let Some(f) = folders::find_by_path(conn, account, &entry.dest_folder)? else {
+            return Ok(false);
+        };
+        Ok(messages::count_other_copies(conn, account, f.id, id, found)? > 0)
     }
 
     /// Resolves every awaiting entry of this account whose destination is `dest` (`None`: every
@@ -436,6 +547,14 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+/// How long the account task waits after its `n`th database error in a row: the sync retry time,
+/// doubled each time, at most 16 times that.
+fn database_delay_ms(retry_ms: i64, n: u32) -> i64 {
+    retry_ms
+        .max(1)
+        .saturating_mul(1 << n.saturating_sub(1).min(4))
 }
 
 /// The Message-ID of the local row at (folder path, UID), if the row exists and has one.

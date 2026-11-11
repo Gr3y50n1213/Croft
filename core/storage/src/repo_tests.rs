@@ -1093,3 +1093,49 @@ fn release_local_state_clears_stuck_rows_except_the_ones_kept() {
         "another account is untouched"
     );
 }
+
+#[test]
+fn a_reset_stores_the_validity_alone_and_the_row_helpers_count_what_they_say() {
+    let (db, a1, f1, _, _) = two_accounts();
+    let c = db.connection();
+    let status = FolderStatus {
+        uid_validity: 7,
+        uid_next: 10,
+        highest_modseq: Some(5),
+        exists: 3,
+    };
+    assert!(folders::update_status(c, a1, f1, &status, 5).unwrap());
+    assert!(folders::set_validity_only(c, a1, f1, 8).unwrap());
+    let f = folders::get(c, a1, f1).unwrap().unwrap();
+    assert_eq!(
+        (
+            f.uid_validity,
+            f.uid_next,
+            f.highest_modseq,
+            f.last_synced_at
+        ),
+        (Some(8), None, None, Some(5))
+    );
+    assert!(!folders::set_validity_only(c, a1 + 100, f1, 9).unwrap());
+
+    for uid in [3, 1, 2] {
+        let mut h = header(uid, "s", 1_000);
+        h.message_id = Some(if uid == 3 { "<other@x>" } else { "<dup@x>" }.into());
+        messages::upsert(c, a1, f1, &h).unwrap();
+    }
+    assert_eq!(messages::count_in_folder(c, a1, f1).unwrap(), 3);
+    assert_eq!(messages::uids_in_folder(c, a1, f1).unwrap(), vec![1, 2, 3]);
+    assert_eq!(
+        messages::count_other_copies(c, a1, f1, "<dup@x>", 1).unwrap(),
+        1
+    );
+    assert_eq!(
+        messages::count_other_copies(c, a1, f1, "<dup@x>", 3).unwrap(),
+        2
+    );
+    assert_eq!(
+        messages::count_other_copies(c, a1, f1, "<nothing@x>", 3).unwrap(),
+        0
+    );
+    assert_eq!(messages::count_in_folder(c, a1 + 100, f1).unwrap(), 0);
+}

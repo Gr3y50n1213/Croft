@@ -526,14 +526,13 @@ fn apply_effect(tx: &Transaction<'_>, effect: &LocalEffect) -> Result<()> {
             }
             Ok(())
         }
-        LocalEffect::SetFolderStatus {
+        LocalEffect::SetFolderValidity {
             account,
             folder,
-            status,
-            synced_at_ms,
+            uid_validity,
         } => {
             if let Some(id) = folder_id(tx, *account, folder)? {
-                folders::update_status(tx, *account, id, status, *synced_at_ms)?;
+                folders::set_validity_only(tx, *account, id, *uid_validity)?;
             }
             Ok(())
         }

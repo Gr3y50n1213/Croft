@@ -241,6 +241,18 @@ impl Shared {
         Ok(ids)
     }
 
+    /// Puts the account's operations that are marked applying back in the queue. For when nothing
+    /// of the account is being sent any more: its task was aborted in the middle of a call, or a
+    /// step failed after an operation was handed out. A failure to write is logged only: the next
+    /// cycle of the account does the same before it hands anything out.
+    pub(crate) fn recover_in_flight(&self, account: AccountId) {
+        if self.lock().recover_applying(account).is_err() {
+            log::warn!(
+                "account {account}: could not put an interrupted operation back in the queue"
+            );
+        }
+    }
+
     /// Emits a [`Change::Messages`] for these folder paths.
     pub(crate) fn emit_folders(&self, account: AccountId, paths: &[&str]) {
         let ids = Self::folder_ids(&self.lock(), account, paths);
@@ -358,14 +370,30 @@ impl Engine {
 
     /// Stops an account's task (after its current step) and forgets its backend. Its queued
     /// operations stay stored and run again once it is added back.
+    ///
+    /// A task that was stopped in the middle of a network call (see
+    /// [`EngineConfig::shutdown_grace_ms`]) may have left an operation marked "applying". It is put
+    /// back in the queue here, so that it is handed out again when the account is added back in
+    /// this same process (after a restart this happens anyway).
     pub async fn remove_account(&self, account: AccountId) {
         let slot = self.shared.slots().remove(&account);
         let task = self.tasks_lock().remove(&account);
-        if let Some(slot) = slot {
-            stop(&slot);
+        if let Some(slot) = &slot {
+            stop(slot);
         }
         if let Some(task) = task {
             self.join(task).await;
+        }
+        if let Some(slot) = slot {
+            self.recover_in_flight(&slot);
+        }
+    }
+
+    /// Puts the operations of an account that was stopped back in the queue, unless a
+    /// [`EngineHandle::run_once`] still holds the account's turn (it settles its own operation).
+    fn recover_in_flight(&self, slot: &AccountSlot) {
+        if let Ok(_turn) = slot.turn.try_lock() {
+            self.shared.recover_in_flight(slot.account);
         }
     }
 
@@ -383,6 +411,9 @@ impl Engine {
             .collect();
         for task in tasks {
             self.join(task).await;
+        }
+        for slot in &slots {
+            self.recover_in_flight(slot);
         }
         self.shared.slots().clear();
     }

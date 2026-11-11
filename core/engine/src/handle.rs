@@ -185,6 +185,10 @@ impl EngineHandle {
 
     /// Undo: cancels an operation that has not started and whose window is still open, and puts
     /// the row back. It never reverses something the server already did.
+    ///
+    /// Operation ids are global (one counter for all accounts), so this takes no account. The UI
+    /// only ever holds ids it received itself, from the call that queued the operation (for the
+    /// Undo snackbar): it must not guess or enumerate ids.
     pub fn undo(&self, op: OpId) -> Result<(), ActionError> {
         let now = self.shared.now();
         let (account, folder) = {
@@ -214,8 +218,19 @@ impl EngineHandle {
     /// Tells the engine whether the device has a connection for this account (from the
     /// platform's connectivity callbacks). While offline nothing is sent and no attempts are
     /// used up; actions still work locally. Going online sends what waited, in order, and syncs.
+    ///
+    /// Coming back online also ends the account's back-off: a connection that was lost says
+    /// nothing about how long the server needs, so operations that were waiting out a retry delay
+    /// are tried at once (their attempts stay counted).
     pub fn set_online(&self, account: AccountId, online: bool) {
-        self.shared.lock().set_offline(account, !online);
+        let now = self.shared.now();
+        {
+            let mut q = self.shared.lock();
+            q.set_offline(account, !online);
+            if online && q.clear_hold(account, now).is_err() {
+                log::warn!("account {account}: could not end the back-off");
+            }
+        }
         if online {
             self.shared.request_full_sync(account);
         }
@@ -247,6 +262,10 @@ impl EngineHandle {
 
     /// One operation as the queue has it, while it is unfinished or not yet cleaned up (finished
     /// operations are dropped at the start of each full sync).
+    ///
+    /// Operation ids are global (one counter for all accounts), so this takes no account. The UI
+    /// only ever holds ids it received itself, from the call that queued the operation (for the
+    /// Undo snackbar): it must not guess or enumerate ids.
     pub fn operation(&self, op: OpId) -> Option<Op> {
         self.shared.lock().queue().get(op).cloned()
     }

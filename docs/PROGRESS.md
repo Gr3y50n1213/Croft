@@ -5,6 +5,24 @@ unverified, the next step.
 
 ---
 
+## T17b: sign-in screens (11 November 2026)
+
+**Status:** draft pull request `task/t17b` (CI only; not merged). Part of T17: S01 Welcome, S02 Add account, S03 Finding your server, S04 Sign in, S05 Server settings, S09 First sync, the failure copy and the trust prompt. S44, S45, S60 and the demo mailbox (`DemoBackend`) are other parts of T17.
+
+**What was built:** a fresh install starts at S01; once an account is added the app shows the Inbox on the real core. The flow is one state machine (`OnboardingFlow`, plain Kotlin) over an `OnboardingBackend` interface that wraps the core's `discover`, `verify` and `add_account` and the secret store (`AccountSecrets.addPasswordAccount`). S03 shows four rows (known providers, autoconfig, DNS service records, JMAP) from the core's progress callbacks; the first match goes to S04; nothing found goes to S05 filled in with a guess. S04 shows the Gmail and Outlook app-password text of `READINESS.md` row 10 and no OAuth button until T21. A self-signed certificate asks once (host and fingerprint, "Trust this server" or Cancel), then verifies and adds again with `pinned_fingerprint`; a changed certificate asks again with a stronger warning. S05 has protocol, host, port, security, username, a password for the test, and "Advanced options" (outgoing server). "Test connection" shows its steps in order. S09 shows skeleton rows, polls the account until a folder has synced, and has "Continue in background" at all times. Every error of `discover` and `verify`, and of `add_account`, has its own plain-language text in `strings_onboarding.xml`, with technical lines behind a Details link.
+
+**The password:** typed into a field of S04 or S05 only (`remember`, never saved state, never a navigation argument); turned into UTF-8 bytes on Sign in; the flow owns the bytes and wipes them when the attempt ends (success, failure, Back, Cancel, close). They are kept longer only while the trust question waits. Then they go into `FfiCredential` (a copy, wiped) and into `AccountSecrets.addPasswordAccount`, which stores them in `SecretStore` under the new account id. Not logged, not in `OnboardingState`, not in the saved snapshot (a test checks this).
+
+**Hooks:** "Try with sample mail" goes through `onTrySampleMail` in `ui/nav/AppNavigation.kt`, which for now opens the existing fake-data Inbox. "I run a Companion" is hidden in every build (there is no store build flag yet: `OnboardingFlags.COMPANION_ENTRY`).
+
+**Tests:** 10 JVM tests of the flow over the real core and the in-process IMAP server (`:mailtests`, all pass in the build container: trust prompt, pinned fingerprint used by the first sync, wrong password, changed certificate, Test connection steps, no password in the snapshot); a JVM test that walks every key of `core/ffi/src/error.rs` and every variant of the generated bindings and fails if one has no string; Compose/Robolectric tests of the screens (disabled Continue, Back order, Back leaves the app on S01, probe row states, offline, wrong password inline, trust prompt, Test connection steps, S09); 54 screenshot tests (compact and expanded, light and dark, font 1.0 and 2.0, plus one right-to-left picture per screen). The Robolectric and screenshot tests cannot run in the build container (Maven Central refuses the Robolectric download), so they run on CI.
+
+**Not done:** unencrypted connections for private-network addresses (the core has no such mode and refuses it for real hosts; S05 offers TLS and STARTTLS only); the privacy-policy and licences links on S01 (S60 does not exist yet); discovery of three real test servers from Kotlin (needs the container servers; the Rust `integration` job covers discovery); the sample-mail choice is not remembered across restarts; no "add another account" entry point yet (S44).
+
+**Unverified:** TalkBack, password-manager autofill and the real Keystore on a device.
+
+---
+
 ## T15 and T16: swipe engine; Inbox on the real core (11 November 2026)
 
 **Status:** T15 merged (pull request #8). T16 in pull request #9.

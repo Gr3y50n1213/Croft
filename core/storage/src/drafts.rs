@@ -300,6 +300,17 @@ pub fn set_queued(conn: &Connection, account_id: i64, id: i64, outbox_id: i64) -
     )? == 1)
 }
 
+/// Clears the link to the Outbox message of a queued draft **before** the message is taken back
+/// (Undo, Edit, Discard), so that a crash in the middle is read as "taken back" and never as
+/// "sent". [`set_queued`] puts the link back when the Outbox refused. Returns false when the draft
+/// is not queued.
+pub fn unlink_outbox(conn: &Connection, account_id: i64, id: i64) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE draft SET outbox_id = NULL WHERE account_id = ?1 AND id = ?2 AND state = 'queued'",
+        params![account_id, id],
+    )? == 1)
+}
+
 /// Puts a queued draft back to `draft` (the message was taken back from the Outbox). The revision
 /// goes up so the server copy is made again if needed. Returns false when it was not queued.
 pub fn set_editable(conn: &Connection, account_id: i64, id: i64, now_ms: i64) -> Result<bool> {

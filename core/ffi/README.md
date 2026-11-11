@@ -2,7 +2,7 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 7)
+## The surface (API version 8)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
@@ -13,10 +13,11 @@ and `discover_error_message_key` / `discover_error_default_message`.
 - observing: `next_change(after)` (async; a numbered change log, see `src/changes.rs`)
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`
 - sync and network: `sync_now`, `set_network_available`
+- composing and sending (since version 8): drafts, `send`, `undo_send`, the Outbox actions, recipient suggestions, reply and forward fields, identities. Everything is in "Composing and sending" below.
 
 Callback interfaces the app implements: `CredentialProvider` (`credential`, `sign_in_needed`) and `DiscoveryObserver` (`on_probe`).
 Every callback returns `Result<_, ProviderError>`; `ProviderError` has one fieldless variant, `Failed` (see "Callbacks").
-Errors: `CoreError`, `DiscoverError`, `VerifyFailure`: fixed categories, no free text.
+Errors: `CoreError`, `DiscoverError`, `VerifyFailure`, and (since version 8) `ComposeError`: fixed categories, no free text.
 
 ## The sample mailbox (version 6)
 `add_demo_account() -> AccountInfo` adds "Try with sample mail" for store review (T17): about twenty fictional messages
@@ -34,6 +35,112 @@ sample-mailbox submitter files the copy in the sample Sent folder and stores its
 a restart cannot lose it. `add_demo_account` also starts a stored sample mailbox that is not running. `remove_account` removes it
 and all its rows like any other account (it waits for an `add_demo_account` in progress); `signed_in` returns at once for it. Tests: `src/tests/demo.rs` (with a provider that records any call, checked at the end of each test), the backend's own tests,
 and `core/engine/tests/demo.rs` (sync, every action and a send on a runtime with no I/O driver).
+
+## Composing and sending (version 8)
+
+Code: `src/compose.rs` (the calls and records), `src/submit.rs` (the SMTP submitter), `core/mail-core/src/compose.rs` (writing the
+message, reply fields), `core/protocols/src/drafts.rs` (the draft copy on the server), tables in `migrations/0006_compose.sql`.
+Errors are `ComposeError` (fixed categories; the screens map each to their own text). Every call takes the `account_id` **and** the
+id it acts on and refuses an id of another account (`NoSuchDraft`, `NoSuchOutboxItem`, `NoSuchMessage`, `NoSuchIdentity`), so a
+screen holding a stale id from another account can never read or change anything there.
+
+### Compose lifecycle (for the screens)
+
+1. **Open compose.** New: `identities(account)` fills the From picker (the default first; there is always at least the account's own
+   address and name). Reply, reply all, forward: `reply_draft` / `reply_all_draft` / `forward_draft(account, message_id)` return a
+   `ReplyDraft { content, quote_included }`: put `content` in the fields. Nothing is stored yet. `mailto:`: the app fills a
+   `DraftContent` itself. Reopening: `list_drafts(account)` after a restart finds what was open; `load_draft(account, id)` gives the
+   `FfiDraft` (content, attachments, `server_copy`, `outbox_id`).
+2. **Typing.** The recipient chips: `parse_recipient(text)` / `parse_recipients(text)` turn typed or pasted text into `FfiAddress`,
+   `is_valid_address(address)` decides the error chip, `suggest_recipients(account, prefix, limit)` gives the autocomplete (see below).
+3. **Autosave on the device.** About 1 s after typing stops: `save_draft(account, draft_id, content)`. First call with
+   `draft_id = None` returns `SavedDraft { id, message_id, saved_ms }`; pass `id` from then on. It only stores (fast, synchronous).
+   The draft's `message_id` never changes. Addresses are stored as typed, invalid ones included (they show as error chips after a
+   restart too). After each save, `check_draft(account, id)` returns the facts of the Send button table in `docs/ux/controls.md`:
+   `problems` (`NoRecipient`, `InvalidRecipient`, `AttachmentsTooLarge`: any of them means Send is disabled, with the reason),
+   `invalid_recipients` (the chips to mark), `subject_empty` and `body_empty` (both true: Send asks "Send without subject or text?"),
+   `attachments_bytes` and `size_limit_bytes` (25 MB; the server's own limit shows up at send time as `OutboxReason::TooLarge`).
+   Offline and signed-out never disable Send. `compose_limits()` has the numbers (recipients, subject, body, attachments).
+4. **Copy to the server.** 5 s after typing stops, at most every 20 s while typing goes on, and with `force = true` when the app is
+   paused or compose is closed: `sync_draft_to_server(account, id, force)` (async). It appends the new version to the server's
+   Drafts folder (the one in the folder mapping, else the one the server marks `\Drafts`, else it creates `Drafts`) and then
+   deletes the old copy, found by the draft's Message-ID, so the server always has a copy and never two. The core paces it too: less
+   than 20 s after the last copy of this draft the answer is `Deferred` unless `force`. The result is a `DraftSyncOutcome`
+   (`Saved`, `AlreadyCurrent`, `Deferred`, `Offline`, `NotApplicable` for the sample mailbox, `TryLater`, `NeedsSignIn`, `Refused`);
+   none is an error: the draft is safe on the device. **Offline or failing, the core copies it later by itself**: when
+   `set_network_available(true)` is called and at the next start. An empty draft is not copied.
+5. **Attachments.** `add_draft_attachment_file(account, id, path, name, mime_type)` (async) with a path in the app's own cache
+   (the system picker's result, copied there), or `add_draft_attachment_bytes(account, id, name, mime_type, bytes)` (async). They
+   are stored in the draft (encrypted with the database). Limits: `MAX_ATTACHMENT_BYTES` 40 MB each and in total, 50 files; over
+   25 MB is accepted so the chip can warn (Send is disabled by `check_draft`). From a path the core reads **only that file**:
+   absolute, no `..`, a plain file (not a link, folder or device), checked by size before it is read; otherwise
+   `AttachmentUnreadable` / `AttachmentTooLarge`. The name shown and sent is `name`, never the path's. Delete the cache file after the
+   call returns. `remove_draft_attachment(account, id, attachment_id)`.
+6. **Send.** `send(account, id)` returns `SendStarted { outbox_id, send_at_ms }`. The message is written (its Message-ID is the
+   draft's; Bcc recipients get it but are not in it), put in the Outbox with `send_at = now + the undo window`
+   (`set_undo_window_ms`, the same setting as for moves), and sent when the window ends and the network allows, **exactly once**.
+   Show the "Sending... Undo" snackbar until `send_at_ms`. The draft is **locked** (`InOutbox` from `save_draft`, `send`,
+   `discard_draft`, attachment calls) until the message is sent or taken back. Refused with `NoRecipient`, `InvalidAddress`,
+   `CannotSend` (no SMTP server in the account's settings).
+7. **Undo.** `undo_send(account, outbox_id)` inside the window: nothing is sent, the message leaves the Outbox, and the returned
+   draft id is editable again: reopen compose with `load_draft` (restoring the cursor is the app's job). `TooLate` once the window has
+   closed or sending began; `NoSuchOutboxItem` if it is already gone.
+8. **After the send.** Nothing for the app to do. When the server has taken the message the core deletes the draft, deletes its
+   copy in the server's Drafts folder, files the copy in Sent (Gmail does that itself), and remembers the recipients for the
+   suggestions. Each Outbox change (queued, sending, sent, failed, taken back) arrives in `next_change` as the account id in
+   `ChangeBatch.accounts`: re-run `list_outbox` / `list_drafts`.
+9. **Outbox screen (S26).** `list_outbox(account)`: `OutboxItem { id, state (Queued, Sending, Failed), send_at_ms, attempts, reason,
+   may_have_been_sent, draft_id, subject, recipient_count, to_preview }`. `reason` is an `OutboxReason`, a fixed category, never the
+   server's words (they can hold an address): `outbox_reason_key(reason)` is the key to translate, `outbox_reason_default_message`
+   the English text. Actions: `retry_outbox_item(account, id)` (for `may_have_been_sent` ask the person to check Sent first: the
+   server may have the message, and only the person's own Retry sends it again), `edit_outbox_item(account, id) -> draft_id`
+   (back to the draft; not while Sending: `WrongState`), `discard_outbox_item(account, id)` (ask first; drops the message and its
+   draft). For "notify once" on a Failed row, remember the ids you have notified.
+10. **Discard.** `discard_draft(account, id)`: gone from the lists at once; the copy on the server is deleted in the background.
+
+### Suggestions
+`suggest_recipients(account, prefix, limit)` (at most 20): addresses of mail the person **sent from this account** whose address or
+display name (or a word of it) starts with `prefix`, most used first. There is no device-contacts source and no permission. The
+history is written when a message sent through `send` has been accepted by the server (not when it is queued, and not when Undone),
+and also read from the To and Cc of the Sent folder's stored messages. **Known gap:** the sync does not store `to_json` and `cc_json`
+for any message yet (`RemoteHeader` carries no recipients), so an existing Sent folder adds nothing until the sync is extended; the
+history starts with the first message sent through the app.
+
+### Reply, reply all, forward
+`reply_draft` / `reply_all_draft` / `forward_draft(account, message_id)` take a stored message (the row id of this account). To is
+the sender, or `Reply-To` when the stored header block has one; the subject gets `Re:` or `Fwd:` once (`RE:`, `Fw:`, `FWD:` are
+recognised); `In-Reply-To` and `References` are set for a reply (`References` is the original's, when its header block is stored,
+plus its Message-ID). Reply all adds the original's To and Cc, **never the person's own addresses** (the account's and every
+identity's) and never twice. Answering a message the person wrote goes to its recipients. `DraftContent.identity` is set to the identity
+the original was sent to, if it was one of them. The quote and the forwarded text are taken from the stored plain text of the body
+(`message_body.text_plain`) when it is stored; **until the reading calls (T18a) store bodies, the quote is empty** and
+`quote_included` is false (a forward then has only the original's From, Date, Subject and To lines: fetch the body first). The
+original's To and Cc are read from the stored header block (`message_body.headers_raw`) when there is one, else from the message's
+`to_json` and `cc_json`; today that is usually nothing (see the gap above), so reply all is only as complete as that. The attribution
+line ("On ..., X wrote:") and the forward header are English text built by the core; a translated version is a later change.
+Forwarded attachments are not carried over yet.
+
+### Sending for a real account: what the core does
+- The engine is opened with an Outbox (`Engine::open_with_outbox`), and every account with an SMTP server in its stored settings gets
+  a submitter (`AccountSubmitter`): SMTP to the stored server, the copy in Sent over the account's IMAP connection (found by
+  Message-ID first, so never twice). An account without an SMTP server can read but `send` is `CannotSend`.
+- **The credential** is the same one IMAP uses, from the app's `CredentialProvider`, and is asked for **at each send** (not kept):
+  it lives in a wiping string only while the message goes out. No credential means the account is paused as "needs sign-in" and the
+  message waits; a busy keystore (`ProviderError::NotReady`) is a retry.
+- **The certificate pin.** The account has one pin. It applies to SMTP only when the cleaned SMTP host equals the cleaned IMAP
+  host **and** that host is not a provider's (`provider_for_host`). Otherwise SMTP uses normal certificate verification, and a
+  provider's SMTP host (`smtp.gmail.com`) never takes a pin. (`StoredSettings::smtp_config`, `src/settings.rs`, with its tests.)
+  Consequence: an account whose SMTP server is another host with a self-signed certificate cannot send.
+- The sample mailbox sends through its own submitter (a copy in the sample Sent folder, nothing leaves the device); its drafts are
+  never copied to a server (`NotApplicable`).
+- The database now has three connections from the core (engine queue, Outbox, compose), all with the same key.
+
+### Known gaps
+Plain-text body only (no rich text); no scheduled send (S25); no encryption policy (S24 is the app's seam); a draft in the Drafts
+folder list (a synced server copy) is a second row next to the local draft with the same Message-ID, and the app should hide the
+synced one; the Bcc recipients are not in the copy filed in Sent; a crash between the server append and the local record can leave
+one extra old copy of a draft on the server until the draft is sent or discarded; non-ASCII domain names are not converted to
+punycode.
 
 ## The test server (feature `test-server`, test only)
 `--features test-server` adds the object `TestImapServer` (`src/test_server.rs`): the in-process IMAP server of `core/test-support`

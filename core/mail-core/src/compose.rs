@@ -26,7 +26,7 @@
 //!
 //! # Bcc
 //!
-//! [`Outgoing::include_bcc`] is false for a message that is sent: the `Bcc:` header would show the
+//! [`Outgoing::as_draft`] is false for a message that is sent: the `Bcc:` header would show the
 //! recipient to everyone else, and the engine refuses a stored message that has one. It is true
 //! for the copy in the server's Drafts folder, which only the person's own mailbox holds, so that
 //! reopening the draft elsewhere restores the Bcc recipients.
@@ -441,7 +441,7 @@ pub struct Outgoing<'a> {
     pub to: &'a [Address],
     /// Cc.
     pub cc: &'a [Address],
-    /// Bcc. Written only when [`Outgoing::include_bcc`] is set; the caller sends to them either way.
+    /// Bcc. Written only when [`Outgoing::as_draft`] is set; the caller sends to them either way.
     pub bcc: &'a [Address],
     /// The subject, as typed.
     pub subject: &'a str,
@@ -455,8 +455,11 @@ pub struct Outgoing<'a> {
     pub message_id: &'a str,
     /// The `Date`, Unix milliseconds.
     pub date_ms: i64,
-    /// Whether to write the `Bcc:` header (see the module notes): false for a message that is sent.
-    pub include_bcc: bool,
+    /// True for the copy in the server's Drafts folder, false for a message that is sent. A draft
+    /// copy writes the `Bcc:` header (see the module notes), may have no recipient at all, and
+    /// leaves out a recipient whose address is not valid (the person may still be typing it)
+    /// instead of refusing the message. The sender must always be valid.
+    pub as_draft: bool,
     /// The attachments.
     pub attachments: &'a [AttachmentData<'a>],
     /// Random bytes for the part boundary. Must differ from message to message.
@@ -483,17 +486,31 @@ pub fn has_recipient(to: &[Address], cc: &[Address], bcc: &[Address]) -> bool {
 /// contains. Fails when there is no recipient, when an address is invalid or when the Message-ID
 /// is not usable.
 pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
-    if !has_recipient(m.to, m.cc, m.bcc) {
-        return Err(BuildError::NoRecipient);
-    }
-    let all_valid = std::iter::once(m.from)
-        .chain(m.to)
-        .chain(m.cc)
-        .chain(m.bcc)
-        .all(|a| is_valid_address(&a.address));
-    if !all_valid {
+    if !is_valid_address(&m.from.address) {
         return Err(BuildError::InvalidAddress);
     }
+    let valid_only = |list: &[Address]| -> Vec<Address> {
+        list.iter()
+            .filter(|a| is_valid_address(&a.address))
+            .cloned()
+            .collect()
+    };
+    let (to, cc, bcc) = if m.as_draft {
+        (valid_only(m.to), valid_only(m.cc), valid_only(m.bcc))
+    } else {
+        if !has_recipient(m.to, m.cc, m.bcc) {
+            return Err(BuildError::NoRecipient);
+        }
+        let all_valid =
+            m.to.iter()
+                .chain(m.cc)
+                .chain(m.bcc)
+                .all(|a| is_valid_address(&a.address));
+        if !all_valid {
+            return Err(BuildError::InvalidAddress);
+        }
+        (m.to.to_vec(), m.cc.to_vec(), m.bcc.to_vec())
+    };
     let message_id = clean_message_id(m.message_id).ok_or(BuildError::BadMessageId)?;
 
     let mut head = String::new();
@@ -502,14 +519,14 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
         head.push_str("\r\n");
     };
     line("From", &format_address(m.from));
-    if !m.to.is_empty() {
-        line("To", &format_list(m.to));
+    if !to.is_empty() {
+        line("To", &format_list(&to));
     }
-    if !m.cc.is_empty() {
-        line("Cc", &format_list(m.cc));
+    if !cc.is_empty() {
+        line("Cc", &format_list(&cc));
     }
-    if m.include_bcc && !m.bcc.is_empty() {
-        line("Bcc", &format_list(m.bcc));
+    if m.as_draft && !bcc.is_empty() {
+        line("Bcc", &format_list(&bcc));
     }
     let subject = encode_text(m.subject);
     line("Subject", &subject);
@@ -700,6 +717,39 @@ fn clean_mime_type(text: &str) -> String {
     } else {
         "application/octet-stream".to_owned()
     }
+}
+
+// ------------------------------------------------------------------------------------------
+// Reading a stored header block
+// ------------------------------------------------------------------------------------------
+
+/// The value of the first header field called `name` in a raw header block (or a whole message:
+/// reading stops at the first empty line), unfolded. `None` when there is none. Encoded words are
+/// not decoded.
+pub fn header_value(raw: &str, name: &str) -> Option<String> {
+    let mut found: Option<String> = None;
+    for line in raw.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if line.starts_with([' ', '\t']) {
+            if let Some(value) = found.as_mut() {
+                value.push(' ');
+                value.push_str(line.trim());
+            }
+            continue;
+        }
+        if found.is_some() {
+            break;
+        }
+        if let Some((field, value)) = line.split_once(':') {
+            if field.trim().eq_ignore_ascii_case(name) {
+                found = Some(value.trim().to_owned());
+            }
+        }
+    }
+    found
 }
 
 // ------------------------------------------------------------------------------------------

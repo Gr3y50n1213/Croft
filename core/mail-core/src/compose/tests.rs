@@ -24,7 +24,7 @@ fn build<'a>(body: &'a str, f: impl FnOnce(&mut Outgoing<'a>)) -> String {
         references: &[],
         message_id: "<abc@example.org>",
         date_ms: 1_794_393_000_000,
-        include_bcc: false,
+        as_draft: false,
         attachments: &[],
         boundary_seed: [7; 8],
     };
@@ -200,7 +200,7 @@ fn bcc_is_written_only_for_the_draft_copy() {
     assert!(!sent.contains("secret@example.org"));
     let draft = build("x", |m| {
         m.bcc = &bcc;
-        m.include_bcc = true;
+        m.as_draft = true;
     });
     assert_eq!(header(&draft, "Bcc").unwrap(), "secret@example.org");
 }
@@ -220,7 +220,7 @@ fn a_message_with_only_bcc_recipients_is_allowed() {
         references: &[],
         message_id: "<m@x>",
         date_ms: 0,
-        include_bcc: false,
+        as_draft: false,
         attachments: &[],
         boundary_seed: [0; 8],
     };
@@ -243,7 +243,7 @@ fn refusals() {
         references: &[],
         message_id: "<m@x>",
         date_ms: 0,
-        include_bcc: false,
+        as_draft: false,
         attachments: &[],
         boundary_seed: [0; 8],
     };
@@ -620,4 +620,37 @@ fn a_message_id_that_is_not_plain_is_not_used_for_the_thread() {
     let f = reply_fields(ReplyKind::Reply, &s, &own());
     assert_eq!(f.in_reply_to, None);
     assert!(f.references.is_empty());
+}
+
+#[test]
+fn a_draft_copy_may_have_no_recipient_and_leaves_out_an_address_still_being_typed() {
+    let half = [addr(None, "bob@"), addr(None, "ok@example.org")];
+    let draft = build("x", |m| {
+        m.to = &half;
+        m.as_draft = true;
+    });
+    assert_eq!(header(&draft, "To").unwrap(), "ok@example.org");
+    let none = build("x", |m| {
+        m.to = &[];
+        m.as_draft = true;
+    });
+    assert!(header(&none, "To").is_none());
+    // Only the sender must be valid; a header can never be added through a recipient.
+    let evil = [addr(None, "a@example.org\r\nBcc: v@example.org")];
+    let text = build("x", |m| {
+        m.to = &evil;
+        m.as_draft = true;
+    });
+    assert!(headers(&text).iter().all(|(n, _)| n != "Bcc"));
+    assert!(header(&text, "To").is_none());
+}
+
+#[test]
+fn a_header_is_read_unfolded_from_a_block_or_a_message() {
+    let raw =
+        "From: a@x\r\nTo: One <one@x>,\r\n Two <two@x>\r\nCC: c@x\r\n\r\nTo: not a header\r\n";
+    assert_eq!(header_value(raw, "to").unwrap(), "One <one@x>, Two <two@x>");
+    assert_eq!(header_value(raw, "Cc").unwrap(), "c@x");
+    assert!(header_value(raw, "Subject").is_none());
+    assert_eq!(header_value("To: a@x\nCc: b@x\n", "cc").unwrap(), "b@x");
 }

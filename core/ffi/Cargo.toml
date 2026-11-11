@@ -39,6 +39,7 @@ required-features = ["cli"]
 croft-engine = { path = "../engine" }
 croft-protocols = { path = "../protocols" }
 croft-storage = { path = "../storage" }
+getrandom = "0.4.3"
 log = "0.4.29"
 # Only for the keyset message query and its row type; the bundled SQLite comes from croft-storage.
 rusqlite = "0.41.1"

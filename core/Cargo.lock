@@ -462,6 +462,7 @@ dependencies = [
  "croft-protocols",
  "croft-storage",
  "croft-test-support",
+ "getrandom 0.4.3",
  "log",
  "rusqlite",
  "serde",

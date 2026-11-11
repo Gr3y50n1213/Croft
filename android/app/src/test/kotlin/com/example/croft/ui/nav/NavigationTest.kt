@@ -79,7 +79,7 @@ class NavigationTest {
     private fun openSettings() {
         tag(InboxTags.MENU_BUTTON).performClick()
         rule.waitForIdle()
-        tag("drawer-settings").performClick()
+        tag("drawer-settings").performScrollTo().performClick()
         rule.waitUntil(5_000) { rule.onAllNodes(hasTestTag(SettingsTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
     }
 

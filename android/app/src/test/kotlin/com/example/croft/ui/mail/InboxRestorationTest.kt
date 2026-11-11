@@ -167,7 +167,8 @@ class InboxRestorationTest {
         val fresh = InboxFixture(500)
         current = fresh
         tester.emulateSavedInstanceStateRestore()
-        rule.waitUntil(20_000) { fresh.repo.requests.size >= 3 }
+        // Row 100 is past the first 50 and inside the next 100: two requests find it.
+        rule.waitUntil(20_000) { fresh.repo.requests.size >= 2 }
         assertRestored(id, before)
         assertEquals("the fresh repository was paged forward until the anchor was loaded", 50, fresh.repo.requests.first().limit)
     }

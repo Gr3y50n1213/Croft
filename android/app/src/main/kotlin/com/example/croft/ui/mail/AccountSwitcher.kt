@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.selected
@@ -105,7 +106,7 @@ fun AccountSwitcher(
     Box(modifier.fillMaxSize()) {
         AnimatedVisibility(visible, enter = scrimEnter, exit = scrimExit) {
             // The scrim does not take part in semantics: a tap on it closes, and Back and the close button do the same for everyone else.
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = SCRIM_ALPHA)).clickable(interactionSource = null, indication = null, onClick = onClose))
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = SCRIM_ALPHA)).clickable(interactionSource = null, indication = null, onClick = onClose).clearAndSetSemantics { })
         }
         AnimatedVisibility(visible, enter = cardEnter, exit = cardExit, modifier = Modifier.align(Alignment.TopCenter)) {
             val title = stringResource(R.string.mail_switcher_title)
@@ -186,13 +187,13 @@ private fun SwitcherRow(
     trailing: @Composable () -> Unit,
 ) {
     Surface(
-        Modifier.padding(horizontal = 12.dp).fillMaxWidth().testTag(tag),
+        Modifier.padding(horizontal = 12.dp).fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
         contentColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
     ) {
         Row(
-            Modifier.clickable(role = Role.Button, onClick = onClick).heightIn(min = 64.dp).padding(horizontal = 12.dp, vertical = 8.dp).semantics { this.selected = selected },
+            Modifier.testTag(tag).clickable(role = Role.Button, onClick = onClick).heightIn(min = 64.dp).padding(horizontal = 12.dp, vertical = 8.dp).semantics { this.selected = selected },
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {

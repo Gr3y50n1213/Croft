@@ -33,6 +33,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
@@ -484,8 +485,10 @@ class InboxScreenTest {
         rule.showInbox(f, startDrawerOpen = true)
         rule.waitForRow(f.topId)
         rule.waitForIdle()
-        for (name in listOf("Croft Mail", "Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Outbox", "Archive", "Spam", "Trash", "Labels", "Receipts", "Work", "Settings")) {
-            rule.onNodeWithText(name).assertIsDisplayed()
+        rule.onNodeWithText("Croft Mail").assertIsDisplayed()
+        // The drawer scrolls (nine mailboxes, labels and Settings do not all fit in 800 dp): the rest only has to be there.
+        for (name in listOf("Inbox", "Starred", "Snoozed", "Sent", "Drafts", "Outbox", "Archive", "Spam", "Trash", "Labels", "Receipts", "Work", "Settings")) {
+            rule.onNodeWithText(name).assertExists()
         }
         val unread = runBlocking { f.repo.listAccounts().flatMap { f.repo.listFolders(it.id) } }.filter { it.role == com.example.croft.mail.FolderRole.INBOX }.sumOf { it.unreadCount }
         assertTrue("some unread mail", unread > 0)
@@ -505,7 +508,7 @@ class InboxScreenTest {
         rule.onNodeWithTag(InboxTags.MENU_BUTTON).performClick()
         rule.waitForIdle()
         rule.onNodeWithText("Croft Mail").assertIsDisplayed()
-        rule.onNodeWithTag("drawer-settings").performClick()
+        rule.onNodeWithTag("drawer-settings").performScrollTo().performClick()
         rule.waitForIdle()
         assertEquals(1, settings)
     }
@@ -519,7 +522,7 @@ class InboxScreenTest {
         val sentFolder = FakeData.folderId(1, FakeData.SENT)
         val sent = f.repo.snapshot(MessageScope.Folder(1, sentFolder))
         assertTrue(sent.isNotEmpty())
-        rule.onNodeWithTag(InboxTags.drawerItem(sentFolder)).performClick()
+        rule.onNodeWithTag(InboxTags.drawerItem(sentFolder)).performScrollTo().performClick()
         rule.waitForRow(sent.first().id)
         rule.waitForIdle()
         rule.onNodeWithText("Croft Mail").assertIsNotDisplayed()
@@ -677,7 +680,7 @@ class InboxScreenTest {
             rule.runOnUiThread { }
             rule.onNodeWithTag(InboxTags.MENU_BUTTON).performClick()
             rule.waitForIdle()
-            rule.onNodeWithTag(InboxTags.drawerItem(FakeData.folderId(1, position))).performClick()
+            rule.onNodeWithTag(InboxTags.drawerItem(FakeData.folderId(1, position))).performScrollTo().performClick()
             waitForText(copy)
             rule.onNodeWithTag(InboxTags.EMPTY).assertIsDisplayed()
         }

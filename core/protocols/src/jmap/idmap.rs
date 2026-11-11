@@ -223,8 +223,9 @@ impl JmapIdStore for MemoryIdStore {
         self.with(|i| {
             let m = mailbox_mut(i, mailbox);
             let mut fresh: Vec<&String> = Vec::new();
+            let mut queued: std::collections::HashSet<&String> = std::collections::HashSet::new();
             for id in email_ids {
-                if !m.by_email.contains_key(id) && !fresh.contains(&id) {
+                if !m.by_email.contains_key(id) && queued.insert(id) {
                     fresh.push(id);
                 }
             }

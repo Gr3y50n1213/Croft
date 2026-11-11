@@ -467,23 +467,24 @@ impl JmapBackend {
         let state = self.email_state(st).await?;
         let mut ids: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        // `position` counts what the server has returned so far, duplicates included.
+        let mut position = 0usize;
         loop {
             let args = json!({"accountId": session.account_id,
                 "filter": {"inMailbox": mb.id},
                 "sort": [{"property": "receivedAt", "isAscending": true}],
-                "position": ids.len(), "limit": QUERY_PAGE, "calculateTotal": true});
+                "position": position, "limit": QUERY_PAGE, "calculateTotal": true});
             let mut r = self.call(st, vec![("Email/query", args)]).await?;
             let page = parse_query(&r.take(0, "Email/query").map_err(ApiError::into_backend)?)?;
             if page.ids.is_empty() {
                 break;
             }
-            let got = page.ids.len();
+            position += page.ids.len();
             ids.extend(page.ids.into_iter().filter(|id| seen.insert(id.clone())));
             if ids.len() > MAX_MESSAGES {
                 return Err(BackendError::Permanent("the folder is too large".into()));
             }
-            // `position` counts what the server returned, duplicates included.
-            if page.total.is_some_and(|t| (seen.len() as u64) >= t) || got == 0 {
+            if page.total.is_some_and(|t| position as u64 >= t) {
                 break;
             }
         }

@@ -131,7 +131,7 @@ impl Session {
             upload_template,
             max_get: limit("maxObjectsInGet", DEFAULT_OBJECTS).min(MAX_OBJECTS),
             max_set: limit("maxObjectsInSet", DEFAULT_OBJECTS).min(MAX_OBJECTS),
-            max_calls: limit("maxCallsInRequest", 1),
+            max_calls: limit("maxCallsInRequest", 16),
             max_upload: core
                 .and_then(|c| c.get("maxSizeUpload"))
                 .and_then(serde_json::Value::as_u64),

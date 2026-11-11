@@ -262,6 +262,13 @@ impl JmapServer {
         JMAP_PASSWORD
     }
 
+    /// Changes the user name and password the server accepts.
+    pub fn set_credentials(&self, user: &str, password: &str) {
+        let mut s = self.lock();
+        s.user = user.to_string();
+        s.password = password.to_string();
+    }
+
     /// Also accepts `Authorization: Bearer <token>`.
     pub fn set_bearer_token(&self, token: &str) {
         self.lock().bearer = Some(token.to_string());

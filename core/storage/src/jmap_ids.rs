@@ -19,7 +19,7 @@
 //! one the engine uses if the engine can lend it for these short calls.
 
 use std::borrow::{Borrow, BorrowMut};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 
 use croft_protocols::jmap::{fresh_uid_validity, IdStoreError, JmapIdStore};
@@ -194,12 +194,13 @@ impl<D: BorrowMut<Db> + Send> JmapIdStore for SqliteJmapIdStore<D> {
             let (_, next) = ensure_mailbox(tx, account, mailbox)?;
             let mut known: HashMap<&str, Uid> = HashMap::new();
             let mut fresh: Vec<&str> = Vec::new();
+            let mut queued: HashSet<&str> = HashSet::new();
             {
                 let mut find = tx.prepare_cached(
                     "SELECT uid FROM jmap_email_uid WHERE account_id = ?1 AND mailbox_id = ?2 AND email_id = ?3",
                 )?;
                 for id in email_ids {
-                    if known.contains_key(id.as_str()) || fresh.contains(&id.as_str()) {
+                    if known.contains_key(id.as_str()) || queued.contains(id.as_str()) {
                         continue;
                     }
                     match find
@@ -209,7 +210,10 @@ impl<D: BorrowMut<Db> + Send> JmapIdStore for SqliteJmapIdStore<D> {
                         Some(uid) => {
                             known.insert(id, to_uid(uid)?);
                         }
-                        None => fresh.push(id),
+                        None => {
+                            queued.insert(id);
+                            fresh.push(id);
+                        }
                     }
                 }
             }

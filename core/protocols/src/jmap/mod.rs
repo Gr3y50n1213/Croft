@@ -15,7 +15,7 @@
 //!
 //! The trait names a message by (folder, `u32` UID, folder UIDVALIDITY). JMAP ids are strings and
 //! stay the same when a message moves; a message can also be in several mailboxes. The adapter
-//! keeps a map per account (see [`idmap`]): for each (mailbox id, email id) a UID that increases per
+//! keeps a map per account (see [`JmapIdStore`]): for each (mailbox id, email id) a UID that increases per
 //! mailbox and is never reused, and for each mailbox a random UIDVALIDITY. A move gives the message
 //! a new UID in the destination (reported in `MoveOutcome::dest_uids`) and removes its entry in the
 //! source, exactly like IMAP's `COPYUID`. If the map for a mailbox is lost or inconsistent the

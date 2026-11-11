@@ -52,7 +52,7 @@ fun AppearanceFlow(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     startAt: AppearanceRoute = AppearanceRoute.S50,
-    onTry: (TryItEvent) -> Unit = {},
+    onTry: (TryItEvent) -> Unit = rememberTryItHaptics(),
     files: ThemeFiles? = rememberThemeFiles(),
     photoPicker: PhotoSeedPicker? = rememberPhotoSeedPicker(),
 ) {

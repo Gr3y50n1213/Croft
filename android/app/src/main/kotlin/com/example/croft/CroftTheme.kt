@@ -6,6 +6,11 @@ package com.example.croft
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import com.example.croft.haptics.ProvideHaptics
 import com.example.croft.theme.CroftThemeProvider
 import com.example.croft.theme.ThemeSettings
 
@@ -20,5 +25,16 @@ fun CroftTheme(
     systemDark: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    CroftThemeProvider(settings = settings, systemDark = systemDark, content = content)
+    CroftThemeProvider(settings = settings, systemDark = systemDark) {
+        // Every haptic goes through `Haptics` (design/CLAUDE.md). Compose and Material also vibrate by themselves on a
+        // long-press; that path is switched off so the level filter, the 40 ms guard and the recording test see all of them.
+        CompositionLocalProvider(LocalHapticFeedback provides NoPlatformHaptics) {
+            ProvideHaptics(settings.haptics, content)
+        }
+    }
+}
+
+/** Compose's own haptic feedback, silenced: the app plays haptics only through `com.example.croft.haptics.Haptics`. */
+private object NoPlatformHaptics : HapticFeedback {
+    override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) = Unit
 }

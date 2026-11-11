@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.Density
 import com.example.croft.R
 import com.example.croft.design.CroftMode
 import com.example.croft.design.CroftMotion
-import com.example.croft.design.croftMotionScheme
 import com.example.croft.design.toColorScheme
 
 /** The look and feel settings, for every composable under the theme. The one way settings reach the UI. */
@@ -241,7 +240,7 @@ fun CroftThemeProvider(
             colorScheme = scheme,
             shapes = shapes,
             typography = typography,
-            motionScheme = croftMotionScheme(reducedMotion = motionLevel != MotionLevel.FULL),
+            motionScheme = motionSchemeFor(motionLevel),
             content = content,
         )
     }

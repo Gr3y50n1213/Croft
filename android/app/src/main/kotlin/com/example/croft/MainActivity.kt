@@ -8,18 +8,21 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.example.croft.theme.ThemeStore
+import com.example.croft.ui.nav.CroftApp
 
-/** The only activity for now. No orientation or size locks; Back is left to the system. */
+/**
+ * The only activity. It applies the stored theme and hosts the simple navigation ([CroftApp]). No orientation or size
+ * locks; Back goes through the system back-callback API in the navigation. It does not open the Rust core (that must not
+ * happen on the main thread; later tasks open it off the main thread when a screen needs mail).
+ */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // A missing library or a version mismatch shows the error line instead of crashing.
         val info = runCatching { loadRustInfo() }.getOrNull()
-        setContent {
-            CroftTheme {
-                HelloScreen(info)
-            }
-        }
+        val store = ThemeStore.shared(applicationContext)
+        setContent { CroftApp(store, info) }
     }
 }

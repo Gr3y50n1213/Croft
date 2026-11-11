@@ -1,0 +1,76 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package com.example.croft.ui.nav
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.dp
+import com.example.croft.R
+
+/** Test tags of the settings list. */
+object SettingsTags {
+    const val SCREEN = "settings"
+    const val APPEARANCE = "settings-appearance"
+    const val GALLERY = "settings-gallery"
+}
+
+/**
+ * The settings list as far as it exists: Appearance (S50) and, in debug builds only, the component gallery. The real
+ * settings screens (S43 onwards) will fill it in.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsHomeScreen(
+    onOpenAppearance: () -> Unit,
+    onOpenGallery: (() -> Unit)?,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier.testTag(SettingsTags.SCREEN),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.settings_title)) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.nav_back)) }
+                },
+            )
+        },
+    ) { inner ->
+        Column(Modifier.padding(inner).verticalScroll(rememberScrollState())) {
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_appearance)) },
+                supportingContent = { Text(stringResource(R.string.settings_appearance_hint)) },
+                modifier = Modifier.testTag(SettingsTags.APPEARANCE).clickable(role = Role.Button, onClick = onOpenAppearance),
+            )
+            if (onOpenGallery != null) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_component_gallery)) },
+                    supportingContent = { Text(stringResource(R.string.settings_component_gallery_hint)) },
+                    modifier = Modifier.testTag(SettingsTags.GALLERY).clickable(role = Role.Button, onClick = onOpenGallery),
+                )
+            }
+        }
+    }
+}

@@ -76,3 +76,11 @@ Animations hold 60 fps on a mid-range phone and use the display's full rate wher
 |---|---|---|---|---|
 | Try it stage (S53) | Press a Try it button | Square pops from 70 percent to 100 percent | Spatial default | Short fade (Effects default); Off: nothing |
 | Appearance drill-down (S50 to S51, S52, S53) | Open or close | Shared axis X | Spatial default (move), Effects default (fade) | Cross-fade; Off: instant |
+
+### Added in T13
+| Animation | Trigger | What moves | Token | Reduced-motion substitute |
+|---|---|---|---|---|
+| New row tint | A message arrives while visible | Primary tint fades over 1.2 s (linear) | `CroftTimings.NEW_ROW_TINT_MS` | Same at Reduced; not shown at Off |
+| Failed edge | A change the server refused | Red edge on the row, then fades after 2 s | Effects default | Edge removed at 2 s without a fade |
+| Dialog open (as built) | Open | Scale from 90 percent and fade | Effects default | Fade only; Off at once |
+| Button check | Loading ends | Spinner, then a check for 600 ms | none | Same |

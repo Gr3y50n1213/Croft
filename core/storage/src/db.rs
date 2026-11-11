@@ -4,9 +4,10 @@
 
 //! The database connection: open, key, migrate, transactions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use rusqlite::config::DbConfig;
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 #[cfg(feature = "sqlcipher")]
 use zeroize::Zeroizing;
@@ -36,27 +37,45 @@ impl Db {
     /// silently becomes a plain one. Pass `None` for an unencrypted database. The key is checked
     /// before the file is touched, so a refused key never leaves an empty file behind.
     ///
-    /// Order matters. For a file that already has content, the key is applied and `user_version`
-    /// is read on a separate **read-only** connection first. A database newer than this build is
-    /// refused with [`StorageError::SchemaTooNew`], and a wrong key with
+    /// Order matters. For a file that exists, the key is applied and `user_version` is read on a
+    /// separate **read-only** connection first. A database newer than this build is refused with
+    /// [`StorageError::SchemaTooNew`], and a wrong key with
     /// [`StorageError::WrongKeyOrNotADatabase`], before anything is written. A read-only
     /// connection never checkpoints on close, so a leftover `-wal` file from a crashed app is not
-    /// merged into (or deleted from) a database we are about to refuse. (SQLite may still create
-    /// a missing `-shm` index file next to a `-wal` it has to read; that file holds no data and
-    /// is rebuilt from the `-wal` on every open.) Only after that check passes is the file opened
-    /// read-write, with foreign keys and WAL enabled and the pending migrations run, each in its
-    /// own `BEGIN IMMEDIATE` transaction that re-checks `user_version`, so two openers of the
-    /// same new file cannot both run the same migration.
+    /// merged into (or deleted from) a database we are about to refuse. Only after that check
+    /// passes is the file opened read-write, with foreign keys and WAL enabled and the pending
+    /// migrations run, each in its own `BEGIN IMMEDIATE` transaction that re-checks
+    /// `user_version`, so two openers of the same new file cannot both run the same migration.
+    /// The read-write connection also checks the version before anything else (another process
+    /// may have upgraded the file in between) and does not checkpoint on close until that check
+    /// and the migrations are done, so even a refusal there leaves the file and its `-wal` alone.
+    ///
+    /// A `-journal` left by a crash beside a rollback-mode file makes the read-only check fail;
+    /// the file is then opened read-write once, only so SQLite can roll the journal back, and the
+    /// version is checked on that connection before anything else.
+    ///
+    /// Opening a WAL database, even one that is then refused, may create empty `-wal` and `-shm`
+    /// files next to it. They hold no data of their own; the data in the database is never
+    /// changed by a refused open.
+    ///
+    /// The open can block: each wait for another connection's lock lasts up to five seconds, and
+    /// several can follow one another. Call it from a worker thread, never from the UI thread.
+    ///
+    /// A relative `path` is taken as relative to the current directory and is never read as a
+    /// `file:` URI.
     pub fn open(path: &Path, key: Option<&[u8]>) -> Result<Self> {
         validate_key(key)?;
-        if has_content(path) {
-            let ro = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | FLAGS)?;
-            ro.busy_timeout(BUSY_TIMEOUT)?;
-            apply_key(&ro, key)?;
-            let version = read_version(&ro)?;
-            pending(version)?;
-            // Dropped here: a read-only connection leaves the file and its -wal untouched.
-            drop(ro);
+        let path = literal_path(path);
+        let path = path.as_path();
+        if exists(path) {
+            match check_version_read_only(path, key) {
+                Err(StorageError::Sqlite(rusqlite::Error::SqliteFailure(f, _)))
+                    if f.extended_code == SQLITE_READONLY_ROLLBACK =>
+                {
+                    recover_hot_journal(path, key)?;
+                }
+                other => other?,
+            }
         }
         let conn = Connection::open_with_flags(
             path,
@@ -74,6 +93,9 @@ impl Db {
     fn init(conn: Connection, key: Option<&[u8]>, on_disk: bool) -> Result<Self> {
         // Before the first read, so concurrent openers wait for each other instead of failing.
         conn.busy_timeout(BUSY_TIMEOUT)?;
+        // A refusal below drops this connection; closing must not merge the -wal into a database
+        // that turns out to be too new (or has the wrong key). Re-enabled once we are past that.
+        set_checkpoint_on_close(&conn, false)?;
         apply_key(&conn, key)?;
         // The first read: with a wrong key (or a non-database file) it fails here.
         let version = read_version(&conn)?;
@@ -116,6 +138,8 @@ impl Db {
             })?;
             db.migrations_run += 1;
         }
+        // Checked and migrated: from here on a normal close checkpoints as usual.
+        set_checkpoint_on_close(&db.conn, true)?;
         Ok(db)
     }
 
@@ -164,17 +188,65 @@ impl std::fmt::Debug for Db {
     }
 }
 
-/// Flags shared by the read-only and read-write opens. No `SQLITE_OPEN_URI`: a path is a path, so
-/// a file name that happens to start with `file:` cannot smuggle in connection options.
+/// Flags shared by the read-only and read-write opens. `SQLITE_OPEN_URI` is not set, but the
+/// bundled SQLite is compiled with `SQLITE_USE_URI`, so a name starting with `file:` would be read
+/// as a URI anyway. [`literal_path`] makes sure no path we pass on can start that way.
 const FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_NO_MUTEX;
 
-/// True when `path` is a file that may already hold a database: anything but a missing or empty
-/// file. (An empty file is how a brand-new database starts out, so there is nothing to protect.)
-fn has_content(path: &Path) -> bool {
+/// `SQLITE_READONLY_ROLLBACK`: a read-only connection met a hot rollback journal it may not play back.
+const SQLITE_READONLY_ROLLBACK: std::ffi::c_int = 776;
+
+/// Makes a relative path unable to start with `file:` (and so be read as a URI) by prefixing `./`.
+/// An absolute path cannot start with `file:` either.
+fn literal_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        Path::new(".").join(path)
+    }
+}
+
+/// True when something exists at `path`. (A zero-byte file is how a brand-new database starts out;
+/// the read-only check reads it as version 0.)
+fn exists(path: &Path) -> bool {
     match std::fs::metadata(path) {
-        Ok(m) => m.len() > 0,
+        Ok(_) => true,
         Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
+}
+
+/// Turns checkpoint-on-close off (`false`) or back on (`true`) for this connection.
+fn set_checkpoint_on_close(conn: &Connection, on: bool) -> Result<()> {
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, !on)?;
+    Ok(())
+}
+
+/// Applies the key and refuses a too-new database or a wrong key, on a read-only connection.
+fn check_version_read_only(path: &Path, key: Option<&[u8]>) -> Result<()> {
+    let ro = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | FLAGS)?;
+    ro.busy_timeout(BUSY_TIMEOUT)?;
+    apply_key(&ro, key)?;
+    let version = read_version(&ro)?;
+    pending(version)?;
+    // Dropped here: a read-only connection leaves the file and its -wal untouched.
+    Ok(())
+}
+
+/// Lets SQLite roll back a crash's hot `-journal`, then checks the version on that connection.
+///
+/// Rolling back a hot journal is recovery, not a change of meaning: it restores the last committed
+/// state, which is what every reader would see anyway, so it is done even for a database that is
+/// then refused as too new. Nothing else is done on this connection: it is not created, nothing is
+/// written and it does not checkpoint on close.
+fn recover_hot_journal(path: &Path, key: Option<&[u8]>) -> Result<()> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | FLAGS)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    set_checkpoint_on_close(&conn, false)?;
+    apply_key(&conn, key)?;
+    // Any read rolls the hot journal back first.
+    let version = read_version(&conn)?;
+    pending(version)?;
+    Ok(())
 }
 
 /// Switches the file to WAL and returns the journal mode SQLite reports.
@@ -258,5 +330,168 @@ fn apply_key(_conn: &Connection, key: Option<&[u8]>) -> Result<()> {
     match key {
         None => Ok(()),
         Some(_) => Err(StorageError::EncryptionUnavailable),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)] // a panic is the failure report
+mod tests {
+    use super::*;
+    use crate::{latest_version, SchemaTooNew};
+
+    fn bytes(p: &Path) -> Vec<u8> {
+        std::fs::read(p).unwrap()
+    }
+
+    /// A WAL database at `<dir>/live.db` whose latest changes (user_version included) exist only
+    /// in a non-empty `-wal`, copied while the writer is still open (the state a crash leaves).
+    fn live_wal(dir: &Path, version: u32) -> PathBuf {
+        let src = tempfile::tempdir().unwrap();
+        let src_db = src.path().join("live.db");
+        let w = Connection::open(&src_db).unwrap();
+        let mode: String = w
+            .pragma_update_and_check(None, "journal_mode", "WAL", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        w.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        w.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+            .unwrap();
+        w.pragma_update(None, "user_version", version).unwrap();
+        let dst = dir.join("live.db");
+        std::fs::copy(&src_db, &dst).unwrap();
+        std::fs::copy(src.path().join("live.db-wal"), dir.join("live.db-wal")).unwrap();
+        drop(w);
+        assert!(std::fs::metadata(dir.join("live.db-wal")).unwrap().len() > 0);
+        dst
+    }
+
+    /// A rollback-mode database at `<dir>/hot.db` with one row and `user_version = version`, plus
+    /// a hot `-journal` from a write transaction that never finished (a second row).
+    fn hot_journal(dir: &Path, version: u32) -> PathBuf {
+        let src = tempfile::tempdir().unwrap();
+        let src_db = src.path().join("hot.db");
+        let w = Connection::open(&src_db).unwrap();
+        w.pragma_update(None, "synchronous", "OFF").unwrap();
+        let mode: String = w
+            .pragma_update_and_check(None, "journal_mode", "DELETE", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        w.execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+            .unwrap();
+        w.pragma_update(None, "user_version", version).unwrap();
+        w.execute_batch("BEGIN; INSERT INTO t VALUES (2);").unwrap();
+        let dst = dir.join("hot.db");
+        std::fs::copy(&src_db, &dst).unwrap();
+        std::fs::copy(
+            src.path().join("hot.db-journal"),
+            dir.join("hot.db-journal"),
+        )
+        .unwrap();
+        drop(w);
+        assert!(std::fs::metadata(dir.join("hot.db-journal")).unwrap().len() > 0);
+        dst
+    }
+
+    /// Finding 1: the read-write path itself must not checkpoint a too-new database it refuses
+    /// (the race where the file is upgraded between the read-only check and the read-write open).
+    #[test]
+    fn read_write_init_refusing_a_too_new_database_does_not_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = live_wal(dir.path(), latest_version() + 1);
+        let wal = dir.path().join("live.db-wal");
+        let (main_before, wal_before) = (bytes(&path), bytes(&wal));
+
+        let conn = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | FLAGS,
+        )
+        .unwrap();
+        let err = Db::init(conn, None, true).unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::SchemaTooNew(SchemaTooNew { database, .. }) if database == latest_version() + 1
+        ));
+        assert_eq!(bytes(&path), main_before, "main file changed");
+        assert_eq!(bytes(&wal), wal_before, "-wal changed or was removed");
+    }
+
+    /// A normal close still checkpoints (the flag is turned back off after migrating).
+    #[test]
+    fn a_normal_close_still_checkpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.db");
+        let db = Db::open(&path, None).unwrap();
+        assert!(!db
+            .conn
+            .db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE)
+            .unwrap());
+        drop(db);
+        assert!(
+            !dir.path().join("a.db-wal").exists(),
+            "-wal not merged on close"
+        );
+    }
+
+    #[test]
+    fn a_zero_byte_file_is_a_new_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.db");
+        std::fs::File::create(&path).unwrap();
+        let db = Db::open(&path, None).unwrap();
+        assert_eq!(db.schema_version().unwrap(), latest_version());
+    }
+
+    /// Finding 2: a relative path never starts with `file:`.
+    #[test]
+    fn relative_paths_are_prefixed_so_they_are_never_uris() {
+        let p = literal_path(Path::new("file:x.db?mode=memory"));
+        assert_eq!(p, Path::new("./file:x.db?mode=memory"));
+        let abs = std::env::temp_dir().join("x.db");
+        assert_eq!(literal_path(&abs), abs);
+    }
+
+    /// Finding 2, end to end: a relative `file:` name is a literal file name in the current directory.
+    #[test]
+    fn a_relative_file_uri_looking_name_is_a_literal_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let result = Db::open(Path::new("file:x.db?mode=memory"), None).map(drop);
+        let exists = std::fs::metadata("file:x.db?mode=memory").is_ok();
+        std::env::set_current_dir(old).unwrap();
+        result.unwrap();
+        assert!(exists, "a literal file with that name must be created");
+    }
+
+    /// Finding 3: a crash's hot journal beside a rollback-mode file does not stop the open.
+    #[test]
+    fn a_hot_journal_is_rolled_back_and_the_database_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = hot_journal(dir.path(), 0);
+        let db = Db::open(&path, None).unwrap();
+        let rows: Vec<i64> = db
+            .connection()
+            .prepare("SELECT x FROM t ORDER BY x")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![1], "the unfinished transaction is rolled back");
+        assert_eq!(db.schema_version().unwrap(), latest_version());
+    }
+
+    /// Finding 3: recovery does not let a too-new database through.
+    #[test]
+    fn a_too_new_database_with_a_hot_journal_is_still_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = hot_journal(dir.path(), latest_version() + 1);
+        let err = Db::open(&path, None).unwrap_err();
+        assert!(matches!(err, StorageError::SchemaTooNew(_)), "{err}");
+        let conn = Connection::open(&path).unwrap();
+        let v: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, latest_version() + 1);
     }
 }

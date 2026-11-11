@@ -190,51 +190,66 @@ impl Worker {
         }
     }
 
-    /// Checks the operation's folder, then sends the operation and records the answer.
+    /// Checks the operation's folders, then sends the operation and records the answer.
     async fn apply(&self, op: Op) -> Result<(), EngineError> {
-        match self.check_folder(op).await? {
+        match self.check_folders(op).await? {
             Some(op) => self.send(op).await,
             None => Ok(()),
         }
     }
 
     /// A UID only means something together with its folder's UIDVALIDITY. Before an operation is
-    /// sent, the folder's current UIDVALIDITY is read; if it is not the one stored at the last
-    /// sync, the folder is synced first (the reset matches the operation again by Message-ID, or
-    /// fails it) and the operation continues as the queue now has it. Without this, an operation
-    /// queued before the server renumbered the folder would be sent to whatever message has its
-    /// old UID now. Costs one status request per operation. Returns `None` when the operation is
+    /// sent, the current UIDVALIDITY of its folder (and, for a move, of the destination) is read;
+    /// if it is not the one stored at the last sync, that folder is synced first and the
+    /// operation continues as the queue now has it.
+    ///
+    /// * Source folder: the reset matches the operation again by Message-ID, or fails it.
+    ///   Without this, an operation queued before the server renumbered the folder would be sent
+    ///   to whatever message has its old UID now.
+    /// * Destination of a move: the new UID in the server's answer is in the new numbering. With
+    ///   the destination's rows still in the old one, the moved copy would be written over the
+    ///   stale row that has the same UID, and later operations would follow the wrong message.
+    ///
+    /// Costs one status request per folder per operation. Returns `None` when the operation is
     /// no longer to be sent (it failed, or it was handed back for a retry).
-    async fn check_folder(&self, op: Op) -> Result<Option<Op>, EngineError> {
+    async fn check_folders(&self, op: Op) -> Result<Option<Op>, EngineError> {
         let account = self.account();
-        let folder = op.kind.target().0.to_owned();
-        let stored = self.stored_uid_validity(&folder)?;
-        let Some(stored) = stored else {
-            return Ok(Some(op));
-        };
-        let status = match self.backend().folder_status(&folder).await {
-            Ok(status) => status,
-            Err(e) => {
-                self.rejected(&op, e)?;
+        let mut to_check = vec![op.kind.target().0.to_owned()];
+        if let OpKind::MoveTo { dest, .. } = &op.kind {
+            to_check.push(dest.clone());
+        }
+        let mut synced = false;
+        for folder in &to_check {
+            let Some(stored) = self.stored_uid_validity(folder)? else {
+                continue;
+            };
+            let status = match self.backend().folder_status(folder).await {
+                Ok(status) => status,
+                Err(e) => {
+                    self.rejected(&op, e)?;
+                    return Ok(None);
+                }
+            };
+            if i64::from(status.uid_validity) == stored {
+                continue;
+            }
+            match self.sync_folder(folder).await {
+                Ok(()) => synced = true,
+                Err(EngineError::Backend(e)) => {
+                    self.rejected(&op, e)?;
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            }
+            if self.stored_uid_validity(folder)? != Some(i64::from(status.uid_validity)) {
+                // The reset did not happen (an action changed things meanwhile): try again shortly.
+                let again = BackendError::Transient("the folder changed on the server".into());
+                self.rejected(&op, again)?;
                 return Ok(None);
             }
-        };
-        if i64::from(status.uid_validity) == stored {
+        }
+        if !synced {
             return Ok(Some(op));
-        }
-        match self.sync_folder(&folder).await {
-            Ok(()) => {}
-            Err(EngineError::Backend(e)) => {
-                self.rejected(&op, e)?;
-                return Ok(None);
-            }
-            Err(e) => return Err(e),
-        }
-        if self.stored_uid_validity(&folder)? != Some(i64::from(status.uid_validity)) {
-            // The reset did not happen (an action changed things meanwhile): try again shortly.
-            let again = BackendError::Transient("the folder changed on the server".into());
-            self.rejected(&op, again)?;
-            return Ok(None);
         }
         let now = self.shared.lock().queue().get(op.id).cloned();
         Ok(now.filter(|o| o.account == account && o.state == croft_mail_core::OpState::Applying))

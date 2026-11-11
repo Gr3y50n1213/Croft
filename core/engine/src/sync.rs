@@ -21,8 +21,8 @@ use crate::worker::{Worker, REASON_LOST_AFTER_RESET};
 
 impl Worker {
     /// Syncs the folder list, then every selectable folder (Inbox first), then resolves awaiting
-    /// entries whose destination was not synced. A folder the server refuses is skipped; any
-    /// other error stops the sync.
+    /// entries whose destination the server does not list. A folder the server refuses is
+    /// skipped; any other error stops the sync.
     pub(crate) async fn sync_all(&self) -> Result<(), EngineError> {
         let account = self.account();
         let mut remote = self
@@ -44,22 +44,24 @@ impl Worker {
         if changed {
             self.shared.emit(Change::Folders { account });
         }
+        let listed: Vec<String> = remote.iter().map(|f| f.path.clone()).collect();
         remote.retain(|f| f.selectable);
         remote.sort_by_key(|f| f.special_use != SpecialUse::Inbox);
-        let mut synced = Vec::new();
         for f in &remote {
             if self.stop_now() {
                 return Ok(());
             }
             match self.sync_folder(&f.path).await {
-                Ok(()) => synced.push(f.path.clone()),
+                Ok(()) => {}
                 Err(EngineError::Backend(BackendError::Permanent(_))) => {
                     log::warn!("account {account}: the server refused to sync one folder");
                 }
                 Err(e) => return Err(e),
             }
         }
-        self.resolve_awaiting_into(None, &synced).await
+        // Moves into a folder the server no longer lists are never looked for by a sync of it:
+        // look now (the lookups fail and, after the third, the later operations are given up).
+        self.resolve_awaiting_into(None, &listed).await
     }
 
     /// Syncs one folder: status, snapshot (skipped when CONDSTORE says nothing changed), plan,
@@ -94,7 +96,11 @@ impl Worker {
                 .snapshot(path)
                 .await
                 .map_err(|e| self.backend_error(e))?;
-            self.apply_snapshot(stored.id, path, &snapshot).await?;
+            if !self.apply_snapshot(stored.id, path, &snapshot).await? {
+                // A reset was put off, so the folder's rows are still in the old numbering: a
+                // message found here now must not be copied over them.
+                return Ok(());
+            }
         }
         self.resolve_awaiting_into(Some(path), &[]).await
     }
@@ -132,12 +138,14 @@ impl Worker {
         keep
     }
 
+    /// Applies a snapshot. Returns false when the folder's UIDVALIDITY changed and the reset was
+    /// put off (the local rows are still in the old numbering).
     async fn apply_snapshot(
         &self,
         folder_id: i64,
         path: &str,
         snapshot: &RemoteSnapshot,
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
         let account = self.account();
         let reset = {
             let q = self.shared.lock();
@@ -146,7 +154,7 @@ impl Worker {
         if reset && !self.reset_folder(folder_id, path, snapshot).await? {
             // An action changed what points into the folder while we looked things up: the
             // folder still has its old UIDVALIDITY, so the next sync starts the reset again.
-            return Ok(());
+            return Ok(false);
         }
 
         let (fetch, changed) = {
@@ -154,7 +162,7 @@ impl Worker {
             let local = self.local_folder(&q, folder_id, path)?;
             let plan = plan(&local, snapshot);
             if plan.reset {
-                return Ok(());
+                return Ok(false);
             }
             let keep = local.pending;
             let changed = q.store_mut().db_mut().transaction(|tx| {
@@ -186,7 +194,7 @@ impl Worker {
 
         for chunk in fetch.chunks(self.shared.config.fetch_chunk.max(1)) {
             if self.stop_now() {
-                return Ok(());
+                return Ok(true);
             }
             let headers = self
                 .backend()
@@ -213,7 +221,7 @@ impl Worker {
             &snapshot.status,
             self.shared.now(),
         )?;
-        Ok(())
+        Ok(true)
     }
 
     fn emit_folder(&self, folder_id: i64) {

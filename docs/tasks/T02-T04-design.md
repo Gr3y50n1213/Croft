@@ -195,10 +195,14 @@ with a task, `attach_account` without one, `remove_account`, `shutdown`), `Engin
 - **Awaiting entry whose destination folder is reset.** Found there → re-pointed in the reset batch. Not found → left
   waiting and counted by the usual lookups (up to 3), not failed at once: its old hidden row is in the source folder,
   which was not reset, so waiting is safe.
-- **Folder check before every operation (new).** Before an operation is sent, the folder's UIDVALIDITY is read
-  (`folder_status`) and compared with the stored one; if it changed, that folder is synced (reset) first and the
-  operation continues as re-pointed, or fails. Without it, an operation queued before the server renumbered a folder,
-  and sent before the next sync noticed, goes to whichever message now has the old UID. Cost: one STATUS per operation.
+- **Folder check before every operation (new).** Before an operation is sent, the UIDVALIDITY of its folder and, for a
+  move, of the destination is read (`folder_status`) and compared with the stored one; if it changed, that folder is
+  synced (reset) first and the operation continues as re-pointed, or fails. Without it, an operation queued before the
+  server renumbered its folder, and sent before the next sync noticed, goes to whichever message now has the old UID;
+  and a move into a renumbered destination gets a new UID in the new numbering, so `CopyMessage` would write the moved
+  copy over the stale local row with that UID and later operations would follow the wrong Message-ID. For the same
+  reason, awaiting entries are not resolved into a folder whose reset was put off. Cost: one STATUS per folder per
+  operation.
   A small window remains between that STATUS and the STORE/MOVE: closing it needs the adapter to check UIDVALIDITY when
   it selects the folder for a write, which `MailBackend` does not offer (reported, not changed: `core/protocols` is
   another task's).

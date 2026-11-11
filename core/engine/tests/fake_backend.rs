@@ -499,6 +499,34 @@ async fn read_archive_star_with_copyuid_survives_a_uidvalidity_change_before_the
 }
 
 #[tokio::test]
+async fn archive_and_star_into_a_folder_renumbered_since_its_last_sync_follow_the_right_message() {
+    // Archive was synced holding z@x at UID 1. Then, on the server, z@x is deleted and Archive is
+    // recreated (new UIDVALIDITY, numbering starts again at 1). The archived copy of a@x gets
+    // UID 1 there: it must not be written over the stale local row of z@x at UID 1.
+    let (rig, id) = read_archive_star_setup().await;
+    rig.backend
+        .st()
+        .folders
+        .get_mut("Archive")
+        .unwrap()
+        .messages
+        .clear();
+    rig.backend.change_uid_validity("Archive", 200);
+    rig.ui.mark_seen(rig.account, id, true).unwrap();
+    rig.ui.move_to(rig.account, id, "Archive").unwrap();
+    rig.ui.set_flagged(rig.account, id, true).unwrap();
+    rig.advance(5_000);
+    rig.run().await;
+    assert_eq!(rig.backend.uid_of("Archive", "a@x"), Some(1));
+    let row = rig.row("Archive", 1).unwrap();
+    assert_eq!(row.message_id_hdr.as_deref(), Some("<a@x>"));
+    let server = rig.backend.flags("Archive", 1).unwrap();
+    assert!(server.seen && server.flagged);
+    assert!(row.is_seen && row.is_flagged && row.pending_ops == 0);
+    assert!(rig.row_by_id("Archive", "z@x").is_none());
+}
+
+#[tokio::test]
 async fn archive_and_star_after_the_inbox_was_renumbered_act_on_the_right_message() {
     let rig = synced(&["a@x", "b@x"]).await;
     let a = row_id(&rig, "INBOX", 1);

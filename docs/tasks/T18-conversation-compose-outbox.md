@@ -23,6 +23,12 @@ This is the largest task. It has two parts that can be committed separately; if 
 - S24: no keys exist before phase 3, so build only the policy seam: an `EncryptionPolicy` the compose screen asks before sending. With a fake policy that says "required, recipient X has no key" the S24 sheet names X and offers Send unencrypted or Cancel; Send never proceeds without a choice. The default policy says "not required".
 - Not in this task: S25 Schedule send (needs a Companion), S22 invitations, S31 unsubscribe.
 
+**Store rules (from the 11 November audit)**
+- Attachments use the system document picker and photo picker. Request no storage permission and no `READ_MEDIA_*` (Play limits them to apps whose core function needs them; **Confirm**). No `READ_CONTACTS`: use the system Contact Picker if device contacts are ever offered.
+- Sharing and opening attachments go through a `FileProvider` with a temporary URI grant, never `file://`.
+- The `mailto:` and `SEND` intent filters are exported and BROWSABLE: declare only what is handled.
+- If a WebView renders HTML mail, turn off JavaScript and file access; remote content stays blocked by default.
+
 ## Done when
 - Rust: parser tests over fixtures (plain, multipart/alternative, inline cid, nested attachments, broken charset, huge part, truncated MIME); sanitiser tests show script, iframe, event handler, tracking pixel, CSS url() and remote image removed with blocking on and kept with it off; no body text appears in any error string.
 - Integration (container Stalwart and GreenMail, feature `integration`): fetch a body and an attachment over IMAP and JMAP; draft APPEND then replace; send with the T06 fake SMTP server, with no network (queued, then sent exactly once on reconnect), and Undo inside the window sends nothing.

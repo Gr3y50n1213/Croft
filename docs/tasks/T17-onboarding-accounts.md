@@ -8,7 +8,7 @@ Depends on: T05 (discovery), T10 (discover, verify sign-in, add account), T11 (s
 `docs/ux/build-order.md` (step 7), `docs/ux/screens.md` and `design/screens.csv` (S01 to S09, S44, S45 rows), `docs/ux/state-machines.md` (account connection), `docs/ux/controls.md` (text fields, buttons, banners), `docs/ux/accessibility.md` (plain language), `docs/ux/navigation.md` (onboarding back rule), `docs/store/READINESS.md` (review access, Gmail wording, no new permissions), `docs/tasks/T05-account-discovery.md`, `docs/PLAN.md` (Gmail and Microsoft sign-in), `design/wireframes/` for these screens.
 
 ## Goal
-S01 Welcome, S02 Add account, S03 Finding your server, S04 Sign in, S05 Server settings, S09 First sync, S44 Accounts, S45 Account, with the real discovery code and a built-in demo mailbox for store review. S06 (Companion) and S08 (built in T12) are only linked: the "I run a Companion" button is shown disabled with "Coming later" until phase 2.
+S01 Welcome, S02 Add account, S03 Finding your server, S04 Sign in, S05 Server settings, S09 First sync, S44 Accounts, S45 Account, S60 About and diagnostics, with the real discovery code and a built-in demo mailbox for store review. S06 (Companion) and S08 (built in T12) are only linked: the "I run a Companion" button is hidden in store builds until phase 2 (no disabled placeholder).
 
 ## Spec
 - **S02:** Continue stays disabled until the address is valid (validate on blur, live after the first error); shortcuts for Gmail, Outlook, iCloud, Other.
@@ -20,6 +20,14 @@ S01 Welcome, S02 Add account, S03 Finding your server, S04 Sign in, S05 Server s
 - **Failure copy:** every discovery or sign-in error has a plain-language message from the T05 reason keys (Couldn't connect to mail.example.org. Check the address, or try again.), technical detail behind a Details link, no raw codes. Keep strings in resources so they can be translated.
 - **Demo mailbox ("Try with sample mail"):** a `DemoBackend` implementing `MailBackend` in `core/protocols` that serves a fixed set of fictional messages (people and `example.org` addresses only) from the app, read-only: no socket is ever opened, actions are kept on the device only and the row says "Not saved to server" (contract rule for read-only mailboxes). It has an Inbox with threads, an attachment, a blocked-image message, Sent, Drafts, Trash. The account is marked demo and can be removed. This is what store review uses (`READINESS.md`, review access): every phase-1 screen must be reachable with it.
 
+**Store rules (from the 11 November audit)**
+- The sample mailbox must allow local actions (move, star, compose into a local outbox), not only reading: Apple 2.1(a) wants a demo mode to show the app's full features. Ship it in all builds. The review notes still give the real test mailbox, and the same notes serve Play's App access declaration.
+- Hide the "I run a Companion" button in store builds instead of showing a disabled "Coming later" placeholder (Apple 2.1 rejects placeholder content). Replace the disabled-button line in the Goal accordingly.
+- No Companion registration (S06, S58) in a Play or App Store build until in-app account deletion and a web deletion page exist. Adding a mail account is not creating a Croft account.
+- Sign in with Apple is not required (Apple 4.8 exempts a client for a third-party mail service). Revisit if the Companion ever offers "Sign in with Google" for its own account.
+- No step may depend on push or notifications.
+- **S60 About and diagnostics** (found in no other task): privacy policy link, open-source licences screen, app version, and "Erase all Croft data on this device" (also added to S45), so Android and iOS behave the same. Keep it minimal: a plain list screen, strings in resources, licence list generated from the dependency licence check.
+
 ## Done when
 - Rust: `DemoBackend` tests (folders, snapshot, headers, flag change stays local) and a test that constructing and using it does not touch a network connector (inject a connector that panics).
 - JVM tests (host library, T10 surface): discovery of three test servers (GreenMail, Dovecot or the in-process IMAP, Stalwart) each ends at S04 with the right settings; one wrong password shows the inline error; one self-signed certificate shows the trust prompt, and after trust the account connects and the pinned fingerprint is stored; a changed certificate prompts again.
@@ -28,4 +36,5 @@ S01 Welcome, S02 Add account, S03 Finding your server, S04 Sign in, S05 Server s
 - Removing an account in S44 deletes its rows and secrets (core test plus `SecretStore` test) and the confirmation lists them.
 - Screenshot tests for S01 to S05, S09, S44, S45: compact, medium, expanded, light and dark, font scale 1.0 and 2.0, LTR and RTL.
 - Sample mail: a Compose/Robolectric flow starts from S01 and reaches the inbox, a conversation (once T18 exists), Settings and Accounts without network (airplane-mode flag).
+- S60: a Compose/Robolectric test that the privacy-policy link and the open-source licences screen exist and open (the link fires a view intent to the policy address; the licences screen lists at least one dependency), and that reset app erases the local data after confirmation.
 - On a device (not checkable here): password manager autofill, the browser-tab hand-off, TalkBack script for "add account" (run by hand before release).

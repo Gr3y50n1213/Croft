@@ -21,6 +21,7 @@ Check `CLAUDE.md` rules before starting and read the linked UX docs for any scre
 | [T14](T14-message-list.md) | Message list on fake data (step 4) | android |
 | [T15](T15-swipe-engine.md) | Swipe engine, long-press menus, S47 and S48 (step 5) | android |
 | [T16](T16-queue-wiring.md) | List and actions wired to the real core (step 6) | android + core/ffi |
+| [T16b](T16b-release-build.md) | Release build, F-Droid metadata, manifest allowlist, 16 KB check | android + CI |
 | [T17](T17-onboarding-accounts.md) | Onboarding, accounts, sample mailbox (step 7) | android + core/protocols |
 | [T18](T18-conversation-compose-outbox.md) | Conversation, compose, Outbox (step 8, part 1) | core + android |
 | [T19](T19-search.md) | Search, local then server (step 8, part 2) | core + android |

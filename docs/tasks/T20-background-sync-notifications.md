@@ -19,6 +19,13 @@ New mail arrives while the app is closed, using only WorkManager periodic work, 
 - **S46 (minimal).** Master switch, per account switch, check frequency, action buttons (pick up to three; the customisation table says two and the screens table says three: use three and record it), Send test. Quiet hours and push-method health wait for phase 2.
 - **Manifest.** Only the permissions in the READINESS table are allowed. Inspect the merged manifest: if WorkManager's `SystemForegroundService` entry or any `FOREGROUND_SERVICE_*` permission is merged in, remove it with `tools:node="remove"` and record in `docs/DECISIONS.md` (the READINESS item "confirm with a pre-launch review" stays open).
 
+**Store rules (from the 11 November audit)**
+- WorkManager only: no foreground service, no exact alarms.
+- Do not use `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (Play restricts it; **Confirm**). Link to the system battery settings instead.
+- Ask for `POST_NOTIFICATIONS` after S07 only, and the app must work fully if it is refused.
+- Push payloads are content-free (required on iOS, same on the Play flavour). Locally built notifications may show text; offer a lock-screen privacy option.
+- An FCM flavour adds Google libraries: it changes the Data safety answer (device ID) and its merged manifest must be checked. F-Droid and UnifiedPush builds must not carry them.
+
 ## Done when
 - Rust: the notifiable-message function over a table of cases (first sync, already read, other folder, older than marker, marker advance only after post, duplicate delivery); `sync_once` against the in-process IMAP server returns exactly the new messages and respects the deadline (fake clock).
 - Robolectric with `work-testing` (`TestListenableWorkerBuilder`): the worker syncs two accounts with a fake `Core`, skips a paused one, returns success, returns retry on Transient and posts nothing twice on a re-run; the periodic request has the unique name, the chosen interval and constraints, and uses no expedited flag.

@@ -8,6 +8,7 @@ import android.content.res.Resources
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -36,7 +37,12 @@ import com.example.croft.mail.MessageRowData
 import com.example.croft.mail.MessageScope
 import com.example.croft.mail.OpId
 import com.example.croft.mail.RowCursor
+import com.example.croft.swipe.SwipeAction
+import com.example.croft.swipe.SwipeDirection
+import com.example.croft.swipe.SwipeSettings
+import com.example.croft.swipe.SwipeSlot
 import com.example.croft.theme.CroftTimings
+import com.example.croft.ui.swipe.SwipeRules
 import com.example.croft.ui.components.BannerKind
 import com.example.croft.ui.components.CroftSnackbarState
 import kotlinx.coroutines.CancellationException
@@ -82,6 +88,13 @@ class InboxTexts(private val res: Resources) {
     val noTrash: String get() = res.getString(R.string.mail_snack_no_trash)
     val failed: String get() = res.getString(R.string.mail_snack_failed)
     val refreshFailed: String get() = res.getString(R.string.mail_snack_refresh_failed)
+    fun spammed(n: Int): String = res.getQuantityString(R.plurals.mail_snack_spam, n, n)
+    fun markedRead(n: Int): String = res.getQuantityString(R.plurals.mail_snack_marked_read, n, n)
+    val noSpam: String get() = res.getString(R.string.mail_snack_no_spam)
+    val notAvailable: String get() = res.getString(R.string.swipe_not_available)
+    val nothingUnread: String get() = res.getString(R.string.mail_snack_nothing_unread)
+    val synced: String get() = res.getString(R.string.mail_snack_synced)
+    val replyLater: String get() = res.getString(R.string.mail_snack_reply_later)
 }
 
 /**
@@ -121,6 +134,12 @@ class InboxController(
 
     /** Every haptic goes through this (set by the screen). */
     var haptics: Haptics = NoHaptics
+
+    /** What a swipe does (S47), set by the screen from the stored settings. */
+    var swipeSettings: SwipeSettings = SwipeSettings.Default
+
+    /** The fast scroller's thumb is being dragged: swipes are off meanwhile. */
+    var fastScrolling by mutableStateOf(false)
 
     /** The one snackbar of the screen. */
     val snackbar = CroftSnackbarState()
@@ -229,8 +248,10 @@ class InboxController(
     val toolbar: SelectionToolbar
         get() {
             val chosen = rows.filter { it.id in selected }
-            val archiveOk = chosen.map { it.account }.distinct().all { a -> folders.any { it.account == a && it.role == FolderRole.ARCHIVE } }
-            return SelectionRules.toolbar(chosen, scopeRole, archiveOk)
+            val accountsInvolved = chosen.map { it.account }.distinct()
+            val archiveOk = accountsInvolved.all { a -> folders.any { it.account == a && it.role == FolderRole.ARCHIVE } }
+            val spamOk = accountsInvolved.all { a -> folders.any { it.account == a && it.role == FolderRole.SPAM } }
+            return SelectionRules.toolbar(chosen, scopeRole, archiveOk, spamOk)
         }
 
     /** The banner now shown (one at a time, the most urgent) and the account it is about. */
@@ -599,6 +620,15 @@ class InboxController(
                 SelectionAction.UNSTAR -> repository.setFlagged(ids, false)
                 SelectionAction.ARCHIVE -> removeWithUndo(ids, texts.archived(ids.size)) { repository.archive(ids) }
                 SelectionAction.DELETE -> removeWithUndo(ids, texts.deleted(ids.size)) { repository.trash(ids) }
+                SelectionAction.SPAM -> {
+                    val byAccount = rows.filter { it.id in ids }.groupBy { it.account }
+                    removeWithUndo(ids, texts.spammed(ids.size)) {
+                        byAccount.flatMap { (account, rs) ->
+                            val spam = folders.firstOrNull { it.account == account && it.role == FolderRole.SPAM } ?: throw MailException(MailError.NO_SPAM_FOLDER)
+                            repository.moveTo(rs.map { it.id }, spam.id)
+                        }
+                    }
+                }
                 SelectionAction.DELETE_FOREVER -> {
                     prepareFocus(ids)
                     removedByMe += ids
@@ -618,14 +648,15 @@ class InboxController(
             haptics.perform(HapticEvent.Success)
         } catch (e: MailException) {
             haptics.perform(HapticEvent.Rejected)
-            snackbar.show(
-                when (e.error) {
-                    MailError.NO_ARCHIVE_FOLDER -> texts.noArchive
-                    MailError.NO_TRASH_FOLDER -> texts.noTrash
-                    MailError.NOT_FOUND -> texts.failed
-                },
-            )
+            snackbar.show(errorText(e.error))
         }
+    }
+
+    private fun errorText(error: MailError): String = when (error) {
+        MailError.NO_ARCHIVE_FOLDER -> texts.noArchive
+        MailError.NO_TRASH_FOLDER -> texts.noTrash
+        MailError.NO_SPAM_FOLDER -> texts.noSpam
+        MailError.NOT_FOUND -> texts.failed
     }
 
     private suspend fun removeWithUndo(ids: List<MessageId>, text: String, block: suspend () -> List<OpId>) {
@@ -634,7 +665,13 @@ class InboxController(
         val ops = block()
         snackbar.show(text, texts.undo, stayMs = UNDO_WINDOW_MS) {
             // The ids stay in removedByMe: a message that comes back through Undo is not new mail, whatever its date.
-            scope.launch { ops.forEach { repository.undo(it) } }
+            scope.launch {
+                session.rowActions.undo(ops)
+                // Undo returns the row with the list's own motion and a brief highlight (the new-row tint, which Reduced keeps and Off drops).
+                arrived = arrived + ids
+                delay(CroftTimings.NEW_ROW_MARK_MS)
+                arrived = arrived - ids.toSet()
+            }
         }
     }
 
@@ -646,6 +683,136 @@ class InboxController(
         if (firstGone < 0) return
         val after = list.drop(firstGone).firstOrNull { it.id !in gone }
         focusTarget = (after ?: list.take(firstGone).lastOrNull { it.id !in gone })?.id
+    }
+
+    // ---- Swipe, row actions and mailbox menus ----
+
+    private val rowIds by derivedStateOf { rows.mapTo(HashSet(rows.size * 2)) { it.id } }
+
+    /** Whether the row of [id] is still in the list: a row that a sync removed ends the drag on it without an action. */
+    fun isPresent(id: MessageId): Boolean = id in rowIds
+
+    private fun hasFolder(account: AccountId, role: FolderRole) = folders.any { it.account == account && it.role == role }
+
+    /** What a swipe in [direction] does for [row] here: the configured action, and whether this row can do it (its account and folder). */
+    fun slotOf(row: MessageRowData, direction: SwipeDirection): SwipeSlot =
+        SwipeRules.slot(swipeSettings.actionOf(direction), scopeRole, hasFolder(row.account, FolderRole.ARCHIVE), hasFolder(row.account, FolderRole.SPAM))
+
+    /** Whether [action] can run on [row] here (the custom actions of a row use the same rule as its swipe). */
+    fun canDo(row: MessageRowData, action: SwipeAction): Boolean =
+        SwipeRules.available(action, scopeRole, hasFolder(row.account, FolderRole.ARCHIVE), hasFolder(row.account, FolderRole.SPAM))
+
+    /** The row whose Delete forever swipe waits for its confirmation dialog (the card is parked at 40 percent). */
+    var parkedRow by mutableStateOf<MessageRowData?>(null)
+        private set
+
+    /** The answer to a parked card, for its row to take: (message id, confirmed). */
+    var parkResolution by mutableStateOf<Pair<MessageId, Boolean>?>(null)
+        private set
+
+    /** An armed swipe parked its card. Only Delete forever has a dialog yet; Snooze and Move to wait for their sheets, and are not offered. */
+    fun swipeParked(row: MessageRowData, action: SwipeAction) {
+        if (SwipeRules.deletesForever(action, scopeRole)) { parkedFromSwipe = true; parkedRow = row } else parkResolution = row.id to false
+    }
+
+    private var parkedFromSwipe = false
+
+    /** The dialog of a parked card was answered (or the dialog of a Delete forever from the row's accessibility actions, which has no card). */
+    fun resolveParked(confirmed: Boolean) {
+        val row = parkedRow ?: return
+        parkedRow = null
+        if (parkedFromSwipe) parkResolution = row.id to confirmed
+        else if (confirmed) removeAction(row, SwipeAction.DELETE)
+    }
+
+    /** The row took the answer. */
+    fun parkHandled(id: MessageId) { if (parkResolution?.first == id) parkResolution = null }
+
+    /** A swipe asked for something this row cannot do: Rejected has played; the snackbar says so (and screen readers hear it). */
+    fun swipeNotAvailable() { snackbar.show(texts.notAvailable) }
+
+    /** A swipe that leaves the row in place (read, star), or the same from the row's accessibility actions: quiet, no snackbar. */
+    fun keepAction(row: MessageRowData, action: SwipeAction) {
+        scope.launch {
+            try {
+                when (action) {
+                    SwipeAction.TOGGLE_READ -> session.rowActions.markSeen(row, !row.seen)
+                    SwipeAction.TOGGLE_STAR -> session.rowActions.setFlagged(row, !row.flagged)
+                    else -> Unit
+                }
+            } catch (e: MailException) {
+                haptics.perform(HapticEvent.Rejected)
+                snackbar.show(errorText(e.error))
+            }
+        }
+    }
+
+    /**
+     * A removing action finished its slide-out and collapse (or came from the row's accessibility actions): run it through
+     * [com.example.croft.mail.RowActions]. Archive, Delete and Spam show the Undo snackbar; Delete forever (Trash, Spam) does not
+     * and has been confirmed. If the account cannot do it [onFailed] brings the row back with the Rejected haptic and a snackbar.
+     */
+    fun removeAction(row: MessageRowData, action: SwipeAction, onFailed: () -> Unit = {}) {
+        scope.launch {
+            try {
+                when {
+                    SwipeRules.deletesForever(action, scopeRole) -> {
+                        prepareFocus(listOf(row.id))
+                        removedByMe += row.id
+                        session.rowActions.deleteForever(row)
+                        snackbar.show(texts.deletedForever(1))
+                    }
+                    action == SwipeAction.DELETE -> removeWithUndo(listOf(row.id), texts.deleted(1)) { session.rowActions.trash(row) }
+                    action == SwipeAction.ARCHIVE -> removeWithUndo(listOf(row.id), texts.archived(1)) { session.rowActions.archive(row) }
+                    action == SwipeAction.SPAM -> removeWithUndo(listOf(row.id), texts.spammed(1)) { session.rowActions.markSpam(row) }
+                    else -> throw MailException(MailError.NOT_FOUND)
+                }
+            } catch (e: MailException) {
+                removedByMe -= row.id
+                focusTarget = null
+                haptics.perform(HapticEvent.Rejected)
+                snackbar.show(errorText(e.error))
+                onFailed()
+            }
+        }
+    }
+
+    /** Run [action] on [row] from a place that is not a swipe (TalkBack custom action, a menu): leaves or keeps the row as the action does. */
+    fun act(row: MessageRowData, action: SwipeAction) {
+        if (action == SwipeAction.NONE) return
+        if (!canDo(row, action)) { haptics.perform(HapticEvent.Rejected); swipeNotAvailable(); return }
+        if (action.removesRow) {
+            if (SwipeRules.deletesForever(action, scopeRole)) { parkedFromSwipe = false; parkedRow = row; return }
+            removeAction(row, action)
+        } else keepAction(row, action)
+    }
+
+    /** Reply is T18's; until the compose screen exists the row's Reply action says so. */
+    fun reply(row: MessageRowData) { snackbar.show(texts.replyLater) }
+
+    /** Mailbox menu: mark every unread message of [folder] (of every account's Inbox when [unified]) as read, with Undo. */
+    fun markMailboxRead(folder: FolderInfo, unified: Boolean = false) {
+        scope.launch {
+            val targets = if (unified) folders.filter { it.role == FolderRole.INBOX } else listOf(folder)
+            val ids = ArrayList<MessageId>()
+            for (f in targets) {
+                var cursor: RowCursor? = null
+                do {
+                    val page = repository.listMessages(MessageScope.Folder(f.account, f.id), cursor, ALL_IDS_PAGE)
+                    page.rows.forEach { if (!it.seen) ids += it.id }
+                    cursor = page.next
+                } while (cursor != null)
+            }
+            if (ids.isEmpty()) { snackbar.show(texts.nothingUnread); return@launch }
+            repository.markSeen(ids, true)
+            snackbar.show(texts.markedRead(ids.size), texts.undo, stayMs = UNDO_WINDOW_MS) { scope.launch { repository.markSeen(ids, false) } }
+        }
+    }
+
+    /** Mailbox menu: sync [folder]'s account now. */
+    fun syncMailbox(folder: FolderInfo) {
+        scope.launch { repository.syncNow(folder.account) }
+        snackbar.show(texts.synced)
     }
 
     // ---- Drawer and switcher helpers ----

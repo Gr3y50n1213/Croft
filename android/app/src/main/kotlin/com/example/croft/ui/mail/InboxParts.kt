@@ -186,6 +186,7 @@ fun SelectionAction.icon(): ImageVector = when (this) {
     SelectionAction.MARK_UNREAD -> Icons.Filled.Email
     SelectionAction.STAR, SelectionAction.UNSTAR -> Icons.Filled.Star
     SelectionAction.RESTORE -> CroftIcons.Inbox
+    SelectionAction.SPAM -> CroftIcons.Shield
 }
 
 /** The words of a selection action; Restore depends on where the messages are (Move to inbox, Not spam, Restore). */
@@ -199,6 +200,7 @@ fun SelectionAction.label(role: FolderRole): String = stringResource(
         SelectionAction.MARK_UNREAD -> R.string.mail_action_mark_unread
         SelectionAction.STAR -> R.string.mail_action_star
         SelectionAction.UNSTAR -> R.string.mail_action_unstar
+        SelectionAction.SPAM -> R.string.mail_action_spam
         SelectionAction.RESTORE -> when (role) {
             FolderRole.SPAM -> R.string.mail_action_not_spam
             FolderRole.TRASH -> R.string.mail_action_restore
@@ -498,7 +500,15 @@ fun MailBottomBar(enabled: Boolean, onMail: () -> Unit, modifier: Modifier = Mod
  * label. It is for touch and mouse only: screen readers scroll the list itself, so it is hidden from them.
  */
 @Composable
-fun FastScroller(listState: LazyListState, items: List<ListItem>, labelOf: (DateBucket) -> String, haptics: Haptics, modifier: Modifier = Modifier) {
+fun FastScroller(
+    listState: LazyListState,
+    items: List<ListItem>,
+    labelOf: (DateBucket) -> String,
+    haptics: Haptics,
+    modifier: Modifier = Modifier,
+    /** Told when the thumb is taken hold of or let go (swipes are off while it is held). */
+    onDraggingChange: (Boolean) -> Unit = {},
+) {
     val scope = rememberCoroutineScope()
     val level = LocalMotionLevel.current
     var trackPx by remember { mutableIntStateOf(0) }
@@ -545,8 +555,9 @@ fun FastScroller(listState: LazyListState, items: List<ListItem>, labelOf: (Date
                         dragFraction = (listState.firstVisibleItemIndex.toFloat() / (total - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
                         lastLabel = labelAt(listState.firstVisibleItemIndex)
                         dragging = true
+                        onDraggingChange(true)
                     },
-                    onDragStopped = { dragging = false },
+                    onDragStopped = { dragging = false; onDraggingChange(false) },
                 ),
             contentAlignment = Alignment.CenterEnd,
         ) {

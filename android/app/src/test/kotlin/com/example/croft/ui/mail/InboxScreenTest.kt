@@ -711,16 +711,17 @@ class InboxScreenTest {
     fun a11y_everyRowHasCustomActionsSoNoOneNeedsASwipeOrALongPress() {
         val f = open()
         val labels = rule.rowCard(f.topId).fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label }
-        assertEquals(listOf("Select", "Star", "Archive", "Delete", "Mark as read"), labels)
+        // Select and Star, then the configured swipe actions (the Triage default: right Mark read, left Delete), then Reply.
+        assertEquals(listOf("Select", "Star", "Mark as read", "Delete", "Reply"), labels)
         val read = rule.rowCard(f.topId - 3).fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label }
         assertTrue("Mark as unread on a read row", "Mark as unread" in read && "Mark as read" !in read)
 
         // `f.topId` is the newest message of the Inbox *now*; once the first row is archived it names the next one, so keep the id.
         val first = f.topId
-        val archive = rule.rowCard(first).fetchSemanticsNode().config[SemanticsActions.CustomActions].first { it.label == "Archive" }
-        rule.runOnUiThread { archive.action() }
+        val delete = rule.rowCard(first).fetchSemanticsNode().config[SemanticsActions.CustomActions].first { it.label == "Delete" }
+        rule.runOnUiThread { delete.action() }
         rule.waitUntil(10_000) { f.repo.snapshot(inbox).none { it.id == first } }
-        waitForText("1 conversation archived")
+        waitForText("1 conversation deleted")
     }
 
     @Test

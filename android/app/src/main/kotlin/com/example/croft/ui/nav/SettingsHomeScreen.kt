@@ -31,6 +31,7 @@ import com.example.croft.R
 object SettingsTags {
     const val SCREEN = "settings"
     const val APPEARANCE = "settings-appearance"
+    const val SWIPE_ACTIONS = "settings-swipe-actions"
     const val GALLERY = "settings-gallery"
     const val ABOUT = "settings-about"
 }
@@ -47,6 +48,8 @@ fun SettingsHomeScreen(
     onOpenGallery: (() -> Unit)?,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** S47 Swipe actions; the entry is hidden when null. */
+    onOpenSwipeActions: (() -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.testTag(SettingsTags.SCREEN),
@@ -66,6 +69,13 @@ fun SettingsHomeScreen(
                 supportingContent = { Text(stringResource(R.string.settings_appearance_hint)) },
                 modifier = Modifier.testTag(SettingsTags.APPEARANCE).clickable(role = Role.Button, onClick = onOpenAppearance),
             )
+            if (onOpenSwipeActions != null) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_swipe_actions)) },
+                    supportingContent = { Text(stringResource(R.string.settings_swipe_actions_hint)) },
+                    modifier = Modifier.testTag(SettingsTags.SWIPE_ACTIONS).clickable(role = Role.Button, onClick = onOpenSwipeActions),
+                )
+            }
             ListItem(
                 headlineContent = { Text(stringResource(R.string.settings_about)) },
                 supportingContent = {

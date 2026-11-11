@@ -10,6 +10,7 @@ import com.example.croft.design.CroftMode
 import com.example.croft.design.CroftPreset
 import com.example.croft.design.CroftSchemes
 import com.example.croft.design.CroftStatus
+import androidx.compose.ui.graphics.toArgb
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -105,14 +106,52 @@ class ThemeContrastTest(private val preset: CroftPreset, private val mode: Croft
                 val r = Contrast.ratio(amber.color, bg)
                 if (r + 1e-9 < Contrast.LARGE) add("amber on $name: %.2f".format(r))
             }
-            if (contrast == CroftContrast.STANDARD) {
-                val r = Contrast.ratio(amber.color, roles.primaryContainer)
-                if (r + 1e-9 < Contrast.LARGE) add("amber on primaryContainer (selected row): %.2f".format(r))
-            }
             val text = Contrast.ratio(amber.onContainer, amber.container)
             val min = if (contrast == CroftContrast.HIGH) Contrast.HIGH else Contrast.NORMAL
             if (text + 1e-9 < min) add("onAmberContainer on amberContainer: %.2f".format(text))
         }
         assertTrue("amber $preset $mode $contrast: $failures", failures.isEmpty())
+    }
+
+    /**
+     * T15 accessibility fix: the star meets 3 to 1 on every background a row draws it on, at every preset, mode and contrast.
+     * On the list's surfaces that is amber; on a selected row (primaryContainer, where amber fell to 1.0 to 2.2 to 1 at Medium and High
+     * contrast) it is onPrimaryContainer, by [starColourFor], the function the row uses. The "just arrived" tint (the primary colour at
+     * its strongest) is laid over each of them as well, and the swipe card (the lowest surface container) is one of the surfaces.
+     */
+    @Test
+    fun theStarMeetsThreeToOneOnEveryBackgroundItIsDrawnOn() {
+        val amber = androidx.compose.ui.graphics.Color(CroftStatus.amber(mode, contrast).color)
+        val roles = CroftSchemes.roles(preset, mode, contrast)
+        fun c(v: Long) = androidx.compose.ui.graphics.Color(v)
+        fun argb(col: androidx.compose.ui.graphics.Color) = col.toArgb().toLong() and 0xFFFFFFFFL
+        fun tinted(bg: Long) = argb(androidx.compose.ui.graphics.lerp(c(bg), c(roles.primary), com.example.croft.ui.components.NEW_TINT_ALPHA))
+        val backgrounds = linkedMapOf(
+            "surface (flat list)" to (false to roles.surface),
+            "surfaceContainerLow (container list)" to (false to roles.surfaceContainerLow),
+            "surfaceContainerLowest (swipe card)" to (false to roles.surfaceContainerLowest),
+            "surfaceContainer (page behind a card)" to (false to roles.surfaceContainer),
+            "new tint on surface" to (false to tinted(roles.surface)),
+            "new tint on surfaceContainerLow" to (false to tinted(roles.surfaceContainerLow)),
+            "new tint on surfaceContainerLowest" to (false to tinted(roles.surfaceContainerLowest)),
+            "primaryContainer (selected row)" to (true to roles.primaryContainer),
+            "new tint on primaryContainer (selected row)" to (true to tinted(roles.primaryContainer)),
+        )
+        val failures = backgrounds.mapNotNull { (name, selectedAndBg) ->
+            val (selected, bg) = selectedAndBg
+            val star = argb(starColourFor(selected, amber, c(roles.onPrimaryContainer)))
+            val r = Contrast.ratio(star, bg)
+            if (r + 1e-9 < Contrast.LARGE) "star on $name: %.2f".format(r) else null
+        }
+        assertTrue("star $preset $mode $contrast: $failures", failures.isEmpty())
+    }
+
+    /** The old rule, for the record: amber itself on a selected row is not enough at some presets, which is why the rule above exists. */
+    @Test
+    fun theRowUsesAmberOffTheSelectedRowAndTheContentColourOnIt() {
+        val amber = androidx.compose.ui.graphics.Color(CroftStatus.amber(mode, contrast).color)
+        val on = androidx.compose.ui.graphics.Color(CroftSchemes.roles(preset, mode, contrast).onPrimaryContainer)
+        assertTrue(starColourFor(false, amber, on) == amber)
+        assertTrue(starColourFor(true, amber, on) == on)
     }
 }

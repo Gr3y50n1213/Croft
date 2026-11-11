@@ -5,6 +5,7 @@
 package com.example.croft.ui.nav
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -15,8 +16,11 @@ import androidx.compose.ui.Modifier
 import com.example.croft.CroftTheme
 import com.example.croft.RustInfo
 import com.example.croft.mail.MailSession
+import com.example.croft.swipe.SwipeSettings
 import com.example.croft.theme.ThemeSettings
 import com.example.croft.theme.ThemeStore
+import com.example.croft.ui.swipe.LocalSwipeSettings
+import com.example.croft.ui.swipe.SwipeSettingsStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -27,20 +31,35 @@ import kotlinx.coroutines.launch
  * keeps the writes in order, so the last one wins.
  */
 @Composable
-fun CroftApp(store: ThemeStore, info: RustInfo?, session: MailSession, modifier: Modifier = Modifier, startAt: Route = Route.HOME) {
+fun CroftApp(
+    store: ThemeStore,
+    info: RustInfo?,
+    session: MailSession,
+    modifier: Modifier = Modifier,
+    startAt: Route = Route.HOME,
+    swipeStore: SwipeSettingsStore? = null,
+) {
     var settings by remember { mutableStateOf<ThemeSettings?>(null) }
     LaunchedEffect(store) { settings = store.settings.first() }
+    var swipe by remember { mutableStateOf<SwipeSettings?>(null) }
+    LaunchedEffect(swipeStore) { swipe = swipeStore?.settings?.first() ?: SwipeSettings.Default }
     val scope = rememberCoroutineScope()
-    settings?.let { current ->
-        CroftTheme(current) {
-            CroftNavHost(
-                info = info,
-                session = session,
-                settings = current,
-                modifier = modifier,
-                startAt = startAt,
-                onSettingsChange = { next -> settings = next; scope.launch { store.set(next) } },
-            )
+    val swipeNow = swipe
+    val themeNow = settings
+    if (themeNow != null && swipeNow != null) {
+        CroftTheme(themeNow) {
+            CompositionLocalProvider(LocalSwipeSettings provides swipeNow) {
+                CroftNavHost(
+                    info = info,
+                    session = session,
+                    settings = themeNow,
+                    modifier = modifier,
+                    startAt = startAt,
+                    onSettingsChange = { next -> settings = next; scope.launch { store.set(next) } },
+                    swipeSettings = swipeNow,
+                    onSwipeSettingsChange = { next -> swipe = next; scope.launch { swipeStore?.set(next) } },
+                )
+            }
         }
     }
 }

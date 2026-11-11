@@ -111,3 +111,11 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
   `tools/test_check_release_manifest.py` (`python3 -m unittest discover -s tools`). CI job: `android-release`.
 - The application ID is defined once, in `gradle.properties` (`croft.applicationId`); the Kotlin `package` lines and
   `design/generated/kotlin/CroftTokens.kt` carry the same name and move in one commit when it changes.
+
+## Swipe engine (T15)
+`:swipe` is a plain Kotlin JVM module (no Android or Compose types): the swipe state machine, the settings types and the pill
+geometry, with property tests (kotest-property) that run as ordinary JVM tests: `./gradlew :swipe:test` (also a dependency of
+`:app:testDebugUnitTest`, so one command and CI cover both). The app's gesture layer, the row host, S47 and S48 are in
+`app/src/main/kotlin/com/example/croft/ui/swipe/`; what a swipe, a menu item or a TalkBack action does to a row goes through the
+`RowActions` interface (`mail/RowActions.kt`), which T16 implements on the core. A device benchmark of the swipe is
+`macrobenchmark/.../SwipeBenchmark.kt` (not run in CI).

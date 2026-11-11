@@ -57,8 +57,18 @@ class ListRulesTest {
 
     @Test
     fun starFollowsTheSelectionInTheOverflowMenu() {
-        assertEquals(listOf(SelectionAction.STAR), toolbar(listOf(row(1), row(2, flagged = true))).overflow)
-        assertEquals(listOf(SelectionAction.UNSTAR), toolbar(listOf(row(1, flagged = true), row(2, flagged = true))).overflow)
+        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM), toolbar(listOf(row(1), row(2, flagged = true))).overflow)
+        assertEquals(listOf(SelectionAction.UNSTAR, SelectionAction.SPAM), toolbar(listOf(row(1, flagged = true), row(2, flagged = true))).overflow)
+    }
+
+    @Test
+    fun markAsSpamIsInTheOverflowMenuExceptWhereTheSwipeRulesHideIt() {
+        assertTrue(SelectionAction.SPAM in toolbar(listOf(row(1))).overflow)
+        assertTrue(SelectionAction.SPAM in toolbar(listOf(row(1)), FolderRole.ARCHIVE).overflow)
+        for (role in listOf(FolderRole.SPAM, FolderRole.TRASH, FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX)) {
+            assertFalse("no Mark as spam in $role", SelectionAction.SPAM in toolbar(listOf(row(1)), role).overflow)
+        }
+        assertFalse("an account without a Spam folder", SelectionAction.SPAM in SelectionRules.toolbar(listOf(row(1)), FolderRole.INBOX, archiveAvailable = true, spamAvailable = false).overflow)
     }
 
     @Test

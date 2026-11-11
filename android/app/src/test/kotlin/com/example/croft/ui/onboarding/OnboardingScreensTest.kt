@@ -9,7 +9,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -79,18 +81,21 @@ class OnboardingScreensTest {
     private fun waitTag(t: String) = rule.waitUntil(10_000) { exists(t) }
     private fun waitWords(text: String) = rule.waitUntil(10_000) { hasWords(text) }
 
+    /** A tap on something in a screen's scrolling column: scrolled into view first, as a person does in a small window. */
+    private fun SemanticsNodeInteraction.tap() = performScrollTo().performClick()
+
     private fun back() {
         rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
         rule.waitForIdle()
     }
 
-    private fun toAddAccount() { tag(OnboardingTags.ADD_BUTTON).performClick(); waitTag(OnboardingTags.ADD_ACCOUNT) }
+    private fun toAddAccount() { tag(OnboardingTags.ADD_BUTTON).tap(); waitTag(OnboardingTags.ADD_ACCOUNT) }
 
+    /** S01 to S02, the address, Continue. The lookup may already be over when this returns (a scripted answer is instant), so the caller waits for the screen it expects. */
     private fun toLookup(email: String = "sam@example.org") {
         toAddAccount()
         tag(OnboardingTags.EMAIL).performTextInput(email)
-        tag(OnboardingTags.CONTINUE).performClick()
-        waitTag(OnboardingTags.FINDING)
+        tag(OnboardingTags.CONTINUE).tap()
     }
 
     private fun toSignIn(provider: KnownProvider? = null) {
@@ -100,7 +105,7 @@ class OnboardingScreensTest {
     }
 
     private fun typePassword(tagName: String = OnboardingTags.PASSWORD, text: String = "made-up-pw-1234") {
-        tag(tagName).performTextInput(text)
+        tag(tagName).performScrollTo().performTextInput(text)
     }
 
     private fun row(r: ProbeRow) = tag(OnboardingTags.probeRow(r))
@@ -112,11 +117,11 @@ class OnboardingScreensTest {
         show()
         tag(OnboardingTags.WELCOME).assertIsDisplayed()
         tag(OnboardingTags.ADD_BUTTON).assertIsDisplayed()
-        tag(OnboardingTags.SAMPLE_BUTTON).assertIsDisplayed()
+        tag(OnboardingTags.SAMPLE_BUTTON).performScrollTo().assertIsDisplayed()
         // Hidden, not disabled: there is no such node at all (no store flag exists yet, so it is hidden in every build).
         assertFalse(exists(OnboardingTags.COMPANION_BUTTON))
         assertFalse(hasWords("Companion"))
-        tag(OnboardingTags.SAMPLE_BUTTON).performClick()
+        tag(OnboardingTags.SAMPLE_BUTTON).tap()
         assertEquals(1, sampleTaps)
     }
 
@@ -157,12 +162,12 @@ class OnboardingScreensTest {
         show()
         toAddAccount()
         tag(OnboardingTags.EMAIL).performTextInput("sam")
-        tag(OnboardingTags.shortcut("gmail")).performClick()
+        tag(OnboardingTags.shortcut("gmail")).tap()
         tag(OnboardingTags.EMAIL).assert(hasText("sam@gmail.com"))
         tag(OnboardingTags.CONTINUE).assertIsEnabled()
-        tag(OnboardingTags.shortcut("outlook")).performClick()
+        tag(OnboardingTags.shortcut("outlook")).tap()
         tag(OnboardingTags.EMAIL).assert(hasText("sam@outlook.com"))
-        tag(OnboardingTags.shortcut("icloud")).performClick()
+        tag(OnboardingTags.shortcut("icloud")).tap()
         tag(OnboardingTags.EMAIL).assert(hasText("sam@icloud.com"))
         tag(OnboardingTags.shortcut("other")).assertIsDisplayed()
     }
@@ -175,17 +180,18 @@ class OnboardingScreensTest {
         // S02 -> S03 (held): Back cancels the lookup and returns to S02.
         backend.discoverGate = CompletableDeferred()
         toLookup()
+        waitTag(OnboardingTags.FINDING)
         back()
         waitTag(OnboardingTags.ADD_ACCOUNT)
         // S03 -> S04: Back from S04 is the address screen (the finished lookup is not shown again).
         backend.discoverGate = null
-        tag(OnboardingTags.CONTINUE).performClick()
+        tag(OnboardingTags.CONTINUE).tap()
         waitTag(OnboardingTags.SIGN_IN)
         back()
         waitTag(OnboardingTags.ADD_ACCOUNT)
         // Nothing found: S05, and Back from there is S02 as well.
         backend.onDiscover = { _, _ -> throw DiscoverException.NothingFound() }
-        tag(OnboardingTags.CONTINUE).performClick()
+        tag(OnboardingTags.CONTINUE).tap()
         waitTag(OnboardingTags.SETTINGS)
         back()
         waitTag(OnboardingTags.ADD_ACCOUNT)
@@ -201,7 +207,7 @@ class OnboardingScreensTest {
     fun backFromServerSettingsOpenedOnSignInReturnsToSignIn() {
         show()
         toSignIn()
-        tag(OnboardingTags.SIGN_IN_SETTINGS).performClick()
+        tag(OnboardingTags.SIGN_IN_SETTINGS).tap()
         waitTag(OnboardingTags.SETTINGS)
         back()
         waitTag(OnboardingTags.SIGN_IN)
@@ -216,6 +222,7 @@ class OnboardingScreensTest {
         backend.onDiscover = { e, o -> observer = o; fakeFound(e) }
         backend.discoverGate = CompletableDeferred()
         toLookup()
+        waitTag(OnboardingTags.FINDING)
         rule.waitUntil(10_000) { observer != null }
         // Before any word from the core every row waits.
         ProbeRow.entries.forEach { row(it).assertTextContains("waiting") }
@@ -243,16 +250,16 @@ class OnboardingScreensTest {
         toLookup()
         waitTag(OnboardingTags.FINDING_FAILURE)
         waitWords("Check that you are online")
-        tag(OnboardingTags.FINDING_RETRY).assertIsDisplayed()
-        tag(OnboardingTags.FINDING_MANUAL).assertIsDisplayed()
+        tag(OnboardingTags.FINDING_RETRY).performScrollTo().assertIsDisplayed()
+        tag(OnboardingTags.FINDING_MANUAL).performScrollTo().assertIsDisplayed()
         // No raw code on the surface.
         assertFalse(hasWords("discover.offline"))
         // Details opens the technical lines, behind a link.
-        rule.onNode(hasText("Details")).performClick()
+        rule.onNode(hasText("Details")).tap()
         waitWords("No more detail")
         // Try again, now online: on to the sign-in.
         backend.onDiscover = { e, _ -> fakeFound(e) }
-        tag(OnboardingTags.FINDING_RETRY).performClick()
+        tag(OnboardingTags.FINDING_RETRY).tap()
         waitTag(OnboardingTags.SIGN_IN)
     }
 
@@ -276,7 +283,7 @@ class OnboardingScreensTest {
         toSignIn()
         backend.onVerify = { _, _, _ -> throw VerifyFailure.WrongPassword() }
         typePassword()
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         waitWords("did not accept that address and password")
         tag(OnboardingTags.SIGN_IN).assertIsDisplayed()
         assertFalse("no dialog for a wrong password", exists(OnboardingTags.TRUST_DIALOG))
@@ -303,7 +310,7 @@ class OnboardingScreensTest {
         toSignIn()
         backend.onVerify = { _, _, pin -> if (pin == null) throw VerifyFailure.UntrustedCertificate(FAKE_FINGERPRINT) }
         typePassword(text = "made-up-pw-1234")
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         waitTag(OnboardingTags.TRUST_DIALOG)
         tag(OnboardingTags.TRUST_FINGERPRINT).assertTextContains(FAKE_FINGERPRINT)
         waitWords("mail.example.org")
@@ -322,7 +329,7 @@ class OnboardingScreensTest {
         toSignIn()
         backend.onVerify = { _, _, _ -> throw VerifyFailure.UntrustedCertificate(FAKE_FINGERPRINT) }
         typePassword()
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         waitTag(OnboardingTags.TRUST_DIALOG)
         tag(OnboardingTags.TRUST_CANCEL).performClick()
         rule.waitForIdle()
@@ -338,7 +345,7 @@ class OnboardingScreensTest {
         toSignIn()
         backend.onVerify = { _, _, _ -> throw VerifyFailure.CertificateChanged(FAKE_FINGERPRINT) }
         typePassword()
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         waitTag(OnboardingTags.TRUST_DIALOG)
         waitWords("certificate changed")
         waitWords("someone may be intercepting")
@@ -352,10 +359,10 @@ class OnboardingScreensTest {
         toSignIn()
         backend.onVerify = { _, _, _ -> throw VerifyFailure.CannotConnect() }
         typePassword()
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         waitTag(OnboardingTags.SIGN_IN_FAILURE)
         waitWords("Couldn't connect to mail.example.org. Check the address, or try again.")
-        rule.onNode(hasText("Details")).performClick()
+        rule.onNode(hasText("Details")).tap()
         waitWords("port 993")
     }
 
@@ -387,7 +394,7 @@ class OnboardingScreensTest {
         typePassword(OnboardingTags.SETTINGS_PASSWORD)
         backend.verifyGate = CompletableDeferred()
         backend.onVerify = { _, _, _ -> throw VerifyFailure.CertificateInvalid() }
-        tag(OnboardingTags.TEST_BUTTON).performClick()
+        tag(OnboardingTags.TEST_BUTTON).tap()
         waitTag(OnboardingTags.testStep("REACH_SERVER"))
         // While the call works: the first step runs, the others wait.
         tag(OnboardingTags.testStep("REACH_SERVER")).assertTextContains("checking")
@@ -402,7 +409,7 @@ class OnboardingScreensTest {
         // Fixed on the server: all three steps are done and nothing was added.
         backend.verifyGate = null
         backend.onVerify = { _, _, _ -> }
-        tag(OnboardingTags.TEST_BUTTON).performClick()
+        tag(OnboardingTags.TEST_BUTTON).tap()
         waitWords("The connection works.")
         listOf("REACH_SERVER", "CERTIFICATE", "SIGN_IN").forEach { tag(OnboardingTags.testStep(it)).assertTextContains("done") }
         assertTrue(backend.adds.isEmpty())
@@ -413,7 +420,7 @@ class OnboardingScreensTest {
         show()
         toServerSettings()
         assertFalse("the outgoing server is behind Advanced", exists(OnboardingTags.OUT_HOST))
-        tag(OnboardingTags.ADVANCED).performClick()
+        tag(OnboardingTags.ADVANCED).tap()
         waitTag(OnboardingTags.OUT_HOST)
         assertTrue(hasWords("SSL/TLS"))
         assertTrue(hasWords("STARTTLS"))
@@ -428,7 +435,7 @@ class OnboardingScreensTest {
         toServerSettings()
         typePassword(OnboardingTags.SETTINGS_PASSWORD)
         tag(OnboardingTags.HOST).performTextReplacement("not a host")
-        tag(OnboardingTags.TEST_BUTTON).performClick()
+        tag(OnboardingTags.TEST_BUTTON).tap()
         waitWords("That is not a server name")
         assertTrue("nothing was checked", backend.verifies.isEmpty())
     }
@@ -440,12 +447,12 @@ class OnboardingScreensTest {
         show()
         toSignIn()
         typePassword()
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         waitTag(OnboardingTags.FIRST_SYNC)
-        tag(OnboardingTags.SYNC_SKELETON).assertIsDisplayed()
-        tag(OnboardingTags.SYNC_CONTINUE).assertIsDisplayed()
+        tag(OnboardingTags.SYNC_SKELETON).performScrollTo().assertIsDisplayed()
+        tag(OnboardingTags.SYNC_CONTINUE).performScrollTo().assertIsDisplayed()
         assertTrue("not finished while the sync runs", finished.isEmpty())
-        tag(OnboardingTags.SYNC_CONTINUE).performClick()
+        tag(OnboardingTags.SYNC_CONTINUE).tap()
         rule.waitUntil(10_000) { finished.isNotEmpty() }
         assertEquals(listOf(7L), finished.toList())
     }
@@ -456,7 +463,7 @@ class OnboardingScreensTest {
         show()
         toSignIn()
         typePassword()
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         rule.waitUntil(15_000) { finished.isNotEmpty() }
         assertEquals(listOf(7L), finished.toList())
     }
@@ -466,7 +473,7 @@ class OnboardingScreensTest {
         show()
         toSignIn()
         typePassword()
-        tag(OnboardingTags.SIGN_IN_BUTTON).performClick()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
         waitTag(OnboardingTags.FIRST_SYNC)
         back()
         rule.waitUntil(10_000) { finished.isNotEmpty() }

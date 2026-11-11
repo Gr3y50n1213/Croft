@@ -49,11 +49,12 @@ mod tls;
 mod wire;
 
 pub use config::{SmtpConfig, SmtpSecurity};
+pub use wire::data_lines;
 
 use crate::imap::{CertFingerprint, Credential};
 use crate::types::BackendError;
 use base64::Engine as _;
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tls::Trust;
@@ -145,7 +146,7 @@ impl SmtpSender {
         let allowance = Duration::from_secs((body.len() / (16 * 1024)) as u64);
         let budget = self.config.deadline.saturating_add(allowance);
         // Set once the final `.` line has been written. After that a failure is ambiguous.
-        let past_the_point_of_no_return = Cell::new(false);
+        let past_the_point_of_no_return = AtomicBool::new(false);
         let outcome = timeout(
             budget,
             self.run(&envelope, &body, &past_the_point_of_no_return),
@@ -159,7 +160,7 @@ impl SmtpSender {
                 Ok(receipt)
             }
             Ok(Err(e)) => Err(e),
-            Err(_) if past_the_point_of_no_return.get() => Err(maybe_sent()),
+            Err(_) if past_the_point_of_no_return.load(Ordering::SeqCst) => Err(maybe_sent()),
             Err(_) => Err(BackendError::Transient("sending took too long".to_owned())),
         }
     }
@@ -168,7 +169,7 @@ impl SmtpSender {
         &self,
         env: &Envelope<'_>,
         body: &[u8],
-        past_the_point_of_no_return: &Cell<bool>,
+        past_the_point_of_no_return: &AtomicBool,
     ) -> Result<(SendReceipt, Conn), BackendError> {
         let (mut conn, caps) = self.open(&self.trust()).await?;
         self.sign_in(&mut conn, &caps).await?;
@@ -219,7 +220,7 @@ impl SmtpSender {
         // Until the terminator is out the server cannot have accepted the message, so a failure
         // here is an ordinary retryable one.
         conn.write_chunked(body).await.map_err(|e| net_error(&e))?;
-        past_the_point_of_no_return.set(true);
+        past_the_point_of_no_return.store(true, Ordering::SeqCst);
         if conn.write(b".\r\n").await.is_err() {
             return Err(maybe_sent());
         }
@@ -236,7 +237,7 @@ impl SmtpSender {
         }
         // A definite answer that is not success: the server did not take the message (or, for an
         // answer that is neither success nor refusal, below, we cannot tell).
-        past_the_point_of_no_return.set(false);
+        past_the_point_of_no_return.store(false, Ordering::SeqCst);
         if reply.is_temporary() {
             // The server said, in so many words, that it did not take the message.
             return Err(BackendError::Transient(TRY_LATER.into()));

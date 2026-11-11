@@ -357,11 +357,21 @@ impl Outbox {
 
     /// Ids of messages that [`Outbox::take_due`] would hand out now, oldest first, at most `limit`.
     pub fn due(&self, now_ms: i64, limit: usize) -> Vec<OutboxId> {
+        self.due_matching(None, now_ms, limit)
+    }
+
+    /// Like [`Outbox::due`], for one account only: what [`Outbox::take_due_for`] would hand out.
+    pub fn due_for(&self, account: AccountId, now_ms: i64, limit: usize) -> Vec<OutboxId> {
+        self.due_matching(Some(account), now_ms, limit)
+    }
+
+    fn due_matching(&self, only: Option<AccountId>, now_ms: i64, limit: usize) -> Vec<OutboxId> {
         let mut due: Vec<&OutboxEntry> = self
             .entries
             .values()
             .filter(|e| {
-                e.state == OutboxState::Queued
+                only.is_none_or(|a| a == e.account)
+                    && e.state == OutboxState::Queued
                     && e.send_at_ms <= now_ms
                     && self.may_send(e.account, now_ms)
             })
@@ -376,6 +386,18 @@ impl Outbox {
     /// reports the outcome it is Sending and is never returned again.
     pub fn take_due(&mut self, now_ms: i64, limit: usize) -> Vec<OutboxEntry> {
         let ids = self.due(now_ms, limit);
+        self.take(&ids)
+    }
+
+    /// Like [`Outbox::take_due`], but only for `account`: another account's messages are never
+    /// handed out, whatever their state.
+    pub fn take_due_for(
+        &mut self,
+        account: AccountId,
+        now_ms: i64,
+        limit: usize,
+    ) -> Vec<OutboxEntry> {
+        let ids = self.due_for(account, now_ms, limit);
         self.take(&ids)
     }
 
@@ -491,13 +513,39 @@ impl Outbox {
         self.take_for_filing(&ids)
     }
 
+    /// Like [`Outbox::take_filing`], but only for `account`.
+    pub fn take_filing_for(
+        &mut self,
+        account: AccountId,
+        now_ms: i64,
+        limit: usize,
+    ) -> Vec<OutboxEntry> {
+        let ids = self.filing_due_for(account, now_ms, limit);
+        self.take_for_filing(&ids)
+    }
+
     /// Ids of messages that [`Outbox::take_filing`] would hand out now, oldest first.
     pub fn filing_due(&self, now_ms: i64, limit: usize) -> Vec<OutboxId> {
+        self.filing_due_matching(None, now_ms, limit)
+    }
+
+    /// Like [`Outbox::filing_due`], for one account only.
+    pub fn filing_due_for(&self, account: AccountId, now_ms: i64, limit: usize) -> Vec<OutboxId> {
+        self.filing_due_matching(Some(account), now_ms, limit)
+    }
+
+    fn filing_due_matching(
+        &self,
+        only: Option<AccountId>,
+        now_ms: i64,
+        limit: usize,
+    ) -> Vec<OutboxId> {
         let mut ids: Vec<(i64, OutboxId)> = self
             .entries
             .values()
             .filter(|e| {
-                e.state == OutboxState::Submitted
+                only.is_none_or(|a| a == e.account)
+                    && e.state == OutboxState::Submitted
                     && e.send_at_ms <= now_ms
                     && self.may_file(e.account, now_ms)
             })
@@ -676,16 +724,28 @@ impl Outbox {
     /// waiting (or everything waiting is held up by an offline or paused account, which wakes the
     /// engine by other means).
     pub fn next_wake_ms(&self) -> Option<i64> {
+        self.next_wake_matching(None)
+    }
+
+    /// Like [`Outbox::next_wake_ms`], for one account only. This is what an account's task sleeps
+    /// until. It follows the same rules as [`Outbox::take_due_for`] and
+    /// [`Outbox::take_filing_for`], so it is never earlier than the time at which they would hand
+    /// something out (a task that woke at a time where nothing can be handed out would spin):
+    /// `None` while the account is paused (waiting for a sign-in) or offline, and a time never
+    /// before the account's back-off hold.
+    pub fn next_wake_ms_for(&self, account: AccountId) -> Option<i64> {
+        self.next_wake_matching(Some(account))
+    }
+
+    fn next_wake_matching(&self, only: Option<AccountId>) -> Option<i64> {
         self.entries
             .values()
+            .filter(|e| only.is_none_or(|a| a == e.account))
+            .filter(|e| self.may_send_ignoring_time(e.account))
             .filter_map(|e| {
                 let hold = match e.state {
-                    OutboxState::Queued if self.may_send_ignoring_time(e.account) => {
-                        self.send_holds.get(&e.account)
-                    }
-                    OutboxState::Submitted if self.may_send_ignoring_time(e.account) => {
-                        self.file_holds.get(&e.account)
-                    }
+                    OutboxState::Queued => self.send_holds.get(&e.account),
+                    OutboxState::Submitted => self.file_holds.get(&e.account),
                     _ => return None,
                 };
                 Some(e.send_at_ms.max(hold.copied().unwrap_or(i64::MIN)))
@@ -695,6 +755,24 @@ impl Outbox {
 
     fn may_send_ignoring_time(&self, account: AccountId) -> bool {
         !self.paused.contains(&account) && !self.offline.contains(&account)
+    }
+
+    /// Ends the account's back-off, for when the connection came back (a connection that was lost
+    /// says nothing about how long the server needs). The hold is dropped, and so is the retry time
+    /// of each message that was already tried (a Queued one handed out before, a Submitted one
+    /// whose copy was tried before): they are due at `now_ms`. A message that has not been tried
+    /// keeps its own time, so **an Undo window is never shortened**. Attempts already used stay
+    /// used. Mirrors [`OpQueue::clear_hold`](crate::ops::OpQueue::clear_hold).
+    pub fn clear_hold(&mut self, account: AccountId, now_ms: i64) {
+        self.send_holds.remove(&account);
+        self.file_holds.remove(&account);
+        for e in self.entries.values_mut().filter(|e| {
+            e.account == account
+                && e.attempts > 0
+                && matches!(e.state, OutboxState::Queued | OutboxState::Submitted)
+        }) {
+            e.send_at_ms = e.send_at_ms.min(now_ms);
+        }
     }
 
     /// Drops finished ([`Sent`](OutboxState::Sent)) messages and returns their ids.
@@ -1132,6 +1210,128 @@ mod tests {
         assert_eq!(o.next_wake_ms(), Some(3_000));
         o.set_offline(A, true);
         assert_eq!(o.next_wake_ms(), None);
+    }
+
+    #[test]
+    fn the_per_account_takes_hand_out_only_that_accounts_mail() {
+        let mut o = Outbox::new();
+        let a = o.queue(msg(A), 0, 0);
+        let b = o.queue(msg(B), 0, 0);
+        assert_eq!(o.due_for(A, 0, 10), vec![a]);
+        assert_eq!(o.due_for(B, 0, 10), vec![b]);
+        let got: Vec<_> = o.take_due_for(A, 0, 10).iter().map(|e| e.id).collect();
+        assert_eq!(got, vec![a]);
+        assert_eq!(state(&o, a), OutboxState::Sending);
+        assert_eq!(state(&o, b), OutboxState::Queued, "B was not touched");
+        assert!(o.take_due_for(A, 0, 10).is_empty());
+        let got: Vec<_> = o.take_due_for(B, 0, 10).iter().map(|e| e.id).collect();
+        assert_eq!(got, vec![b]);
+
+        // The same for the copies in Sent.
+        assert!(o.submitted(a, 5));
+        assert!(o.submitted(b, 5));
+        assert_eq!(o.filing_due_for(A, 5, 10), vec![a]);
+        let got: Vec<_> = o.take_filing_for(B, 5, 10).iter().map(|e| e.id).collect();
+        assert_eq!(got, vec![b]);
+        assert_eq!(state(&o, a), OutboxState::Submitted, "A was not touched");
+        assert_eq!(state(&o, b), OutboxState::Filing);
+        let got: Vec<_> = o.take_filing_for(A, 5, 10).iter().map(|e| e.id).collect();
+        assert_eq!(got, vec![a]);
+    }
+
+    #[test]
+    fn a_per_account_take_follows_that_accounts_offline_pause_and_hold_only() {
+        let mut o = Outbox::new();
+        let a = o.queue(msg(A), 0, 0);
+        let b = o.queue(msg(B), 0, 0);
+        o.set_offline(B, true);
+        assert!(o.take_due_for(B, 0, 10).is_empty());
+        let got: Vec<_> = o.take_due_for(A, 0, 10).iter().map(|e| e.id).collect();
+        assert_eq!(got, vec![a], "B being offline does not hold A back");
+        assert_eq!(state(&o, b), OutboxState::Queued);
+        assert_eq!(o.get(b).unwrap().attempts, 0);
+    }
+
+    #[test]
+    fn the_wake_time_of_an_account_follows_its_own_pause_offline_and_hold() {
+        let mut o = Outbox::new();
+        let a = o.queue(msg(A), 0, 1_000);
+        o.queue(msg(B), 0, 3_000);
+        assert_eq!(o.next_wake_ms_for(A), Some(1_000));
+        assert_eq!(o.next_wake_ms_for(B), Some(3_000));
+        assert_eq!(o.next_wake_ms_for(9), None);
+
+        // A sign-in failure: back to Queued with an old time, but paused: no wake time at all (a
+        // task that woke for it would find nothing to hand out, and wake again at once).
+        o.take_due_for(A, 1_000, 1);
+        o.failed(a, &BackendError::Auth("no".into()), 1_500);
+        assert!(o.is_paused(A));
+        assert_eq!(o.get(a).unwrap().send_at_ms, 1_000);
+        assert_eq!(o.next_wake_ms_for(A), None);
+        assert_eq!(o.next_wake_ms_for(B), Some(3_000), "B is not affected");
+        o.resume(A);
+        assert_eq!(o.next_wake_ms_for(A), Some(1_000));
+
+        o.set_offline(A, true);
+        assert_eq!(o.next_wake_ms_for(A), None);
+        o.set_offline(A, false);
+
+        // A back-off hold moves the wake time to the hold.
+        o.take_due_for(A, 1_000, 1);
+        assert_eq!(
+            o.failed(a, &transient(), 2_000),
+            Some(SendRejection::RetryAt(2_000 + backoff_ms(1)))
+        );
+        assert_eq!(o.next_wake_ms_for(A), Some(2_000 + backoff_ms(1)));
+        // Never earlier than what take_due_for would hand out.
+        let wake = o.next_wake_ms_for(A).unwrap();
+        assert!(o.take_due_for(A, wake - 1, 1).is_empty());
+        assert_eq!(o.take_due_for(A, wake, 1).len(), 1);
+    }
+
+    #[test]
+    fn clear_hold_makes_tried_messages_due_but_never_shortens_an_undo_window() {
+        let mut o = Outbox::new();
+        let tried = o.queue(msg(A), 0, 0);
+        let fresh = o.queue(msg(A), 0, 60_000);
+        let other = o.queue(msg(B), 0, 0);
+        o.take_due_for(A, 0, 10);
+        o.take_due_for(B, 0, 10);
+        o.failed(tried, &transient(), 1_000);
+        o.failed(other, &transient(), 1_000);
+        let at = 1_000 + backoff_ms(1);
+        assert_eq!(o.get(tried).unwrap().send_at_ms, at);
+        assert!(o.take_due_for(A, at - 1, 10).is_empty(), "held");
+
+        o.clear_hold(A, 2_000);
+        assert_eq!(o.get(tried).unwrap().send_at_ms, 2_000);
+        assert_eq!(o.get(tried).unwrap().attempts, 1, "attempts stay used");
+        assert_eq!(
+            o.get(fresh).unwrap().send_at_ms,
+            60_000,
+            "the Undo window is never shortened"
+        );
+        assert_eq!(o.get(other).unwrap().send_at_ms, at, "B keeps its back-off");
+        assert_eq!(o.next_wake_ms_for(A), Some(2_000));
+        let got: Vec<_> = o.take_due_for(A, 2_000, 10).iter().map(|e| e.id).collect();
+        assert_eq!(got, vec![tried]);
+        assert!(o.undo(fresh, 2_000).is_ok(), "still inside its window");
+    }
+
+    #[test]
+    fn clear_hold_also_ends_the_hold_on_saving_copies() {
+        let mut o = Outbox::new();
+        let id = o.queue(msg(A), 0, 0);
+        o.take_due_for(A, 0, 1);
+        o.submitted(id, 0);
+        o.take_filing_for(A, 0, 1);
+        assert!(matches!(
+            o.filing_failed(id, &transient(), 100),
+            Some(FilingRejection::RetryAt(_))
+        ));
+        assert!(o.take_filing_for(A, 200, 1).is_empty());
+        o.clear_hold(A, 200);
+        assert_eq!(o.take_filing_for(A, 200, 1).len(), 1);
     }
 
     #[test]

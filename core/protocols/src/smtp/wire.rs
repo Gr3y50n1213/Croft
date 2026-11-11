@@ -301,41 +301,45 @@ pub(crate) fn is_8bit(bytes: &[u8]) -> bool {
     bytes.iter().any(|b| *b >= 0x80)
 }
 
-/// Prepares a message for `DATA`: every line ends in `CRLF` (a bare `LF` or `CR` is turned into
-/// one, so a server cannot be confused about where the message ends), a line that starts with a
-/// dot gets a second dot (RFC 5321 section 4.5.2), and the text ends with a line end. The
-/// terminating `.` line is **not** included: the caller sends it separately so it knows exactly
-/// when the point of no return was crossed.
-pub(crate) fn encode_for_data(mime: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(mime.len() + mime.len() / 40 + 8);
-    let mut at_line_start = true;
-    let mut i = 0;
-    while i < mime.len() {
-        let b = mime[i];
-        match b {
-            b'\r' => {
-                if mime.get(i + 1) == Some(&b'\n') {
-                    i += 1;
-                }
-                out.extend_from_slice(b"\r\n");
-                at_line_start = true;
-            }
-            b'\n' => {
-                out.extend_from_slice(b"\r\n");
-                at_line_start = true;
-            }
-            b'.' if at_line_start => {
-                out.extend_from_slice(b"..");
-                at_line_start = false;
-            }
-            _ => {
-                out.push(b);
-                at_line_start = false;
+/// Splits a message into lines exactly as [`encode_for_data`] does: a line ends at `CRLF`, at a
+/// bare `LF` or at a bare `CR` (a `CR` followed by `LF` is one terminator, not two). The
+/// terminators are not part of the lines. A text that ends in a terminator has no extra empty
+/// line at the end, and a last line with no terminator is yielded as it is.
+///
+/// This is the one definition of "where a line ends" for what goes to the server. Code that
+/// inspects the header section of a message before it is sent (for example to refuse a `Bcc:`
+/// header) must split with this function: a different rule (only `LF`, say) would read as one line
+/// what the server receives as two.
+pub fn data_lines(mime: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut rest = mime;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        match rest.iter().position(|b| matches!(b, b'\r' | b'\n')) {
+            None => Some(std::mem::take(&mut rest)),
+            Some(i) => {
+                let line = &rest[..i];
+                let crlf = rest[i] == b'\r' && rest.get(i + 1) == Some(&b'\n');
+                rest = &rest[i + if crlf { 2 } else { 1 }..];
+                Some(line)
             }
         }
-        i += 1;
-    }
-    if !at_line_start {
+    })
+}
+
+/// Prepares a message for `DATA`: every line ends in `CRLF` (a bare `LF` or `CR` is turned into
+/// one, so a server cannot be confused about where the message ends; see [`data_lines`]), a line
+/// that starts with a dot gets a second dot (RFC 5321 section 4.5.2), and the text ends with a
+/// line end. The terminating `.` line is **not** included: the caller sends it separately so it
+/// knows exactly when the point of no return was crossed.
+pub(crate) fn encode_for_data(mime: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(mime.len() + mime.len() / 40 + 8);
+    for line in data_lines(mime) {
+        if line.first() == Some(&b'.') {
+            out.push(b'.');
+        }
+        out.extend_from_slice(line);
         out.extend_from_slice(b"\r\n");
     }
     out
@@ -384,6 +388,33 @@ mod tests {
         );
         // A lone LF followed by a dot is also a line start.
         assert_eq!(enc("a\n.\nb"), "a\r\n..\r\nb\r\n");
+    }
+
+    #[test]
+    fn lines_end_at_crlf_lf_or_cr_and_nowhere_else() {
+        let split = |s: &str| -> Vec<String> {
+            data_lines(s.as_bytes())
+                .map(|l| String::from_utf8_lossy(l).into_owned())
+                .collect()
+        };
+        assert_eq!(split("a\r\nb\nc\rd"), ["a", "b", "c", "d"]);
+        assert_eq!(split("a\r\n"), ["a"]);
+        assert_eq!(split("a\r\n\r\nb"), ["a", "", "b"]);
+        // A CR before a CRLF is a line end of its own.
+        assert_eq!(split("a\r\r\nb"), ["a", "", "b"]);
+        assert_eq!(split("a\n\rb"), ["a", "", "b"]);
+        assert_eq!(split("\r"), [""]);
+        assert!(split("").is_empty());
+        // What the server receives is exactly these lines, each ended by CRLF.
+        for text in ["a\rb\r\n\rc\n", "x\r\r\ny", ".a\n.b\r.c"] {
+            let joined: String = data_lines(text.as_bytes())
+                .map(|l| {
+                    let dot = if l.first() == Some(&b'.') { "." } else { "" };
+                    format!("{dot}{}\r\n", String::from_utf8_lossy(l))
+                })
+                .collect();
+            assert_eq!(enc(text), joined);
+        }
     }
 
     #[test]

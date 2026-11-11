@@ -369,32 +369,58 @@ impl<S: OutboxStore> PersistentOutbox<S> {
     /// For each message the caller must report exactly one outcome: [`PersistentOutbox::submitted`]
     /// or [`PersistentOutbox::failed`].
     pub fn take_due(&mut self, now_ms: i64, limit: usize) -> Result<Vec<DueMessage>, S::Error> {
-        let before = self.outbox.clone();
         let ids = self.outbox.due(now_ms, limit);
-        let (readable, missing) = self.read_all(&ids)?;
-        for id in &missing {
-            self.outbox.give_up_unreadable(*id);
-        }
-        let entries = self
-            .outbox
-            .take(&readable.iter().map(|(id, _)| *id).collect::<Vec<_>>());
-        self.commit_or_restore(before, &entries, readable)
+        self.take_ids(&ids, false)
+    }
+
+    /// Like [`PersistentOutbox::take_due`], but only for `account`: the messages of every other
+    /// account stay as they are, whatever their state, so one account's task never touches
+    /// another's mail.
+    pub fn take_due_for(
+        &mut self,
+        account: AccountId,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<DueMessage>, S::Error> {
+        let ids = self.outbox.due_for(account, now_ms, limit);
+        self.take_ids(&ids, false)
     }
 
     /// Like [`PersistentOutbox::take_due`], for copies waiting to be saved to Sent: hands out up
     /// to `limit` Submitted messages (marked Filing on disk first), with their bytes. Report each
     /// with [`PersistentOutbox::filed`] or [`PersistentOutbox::filing_failed`].
     pub fn take_filing(&mut self, now_ms: i64, limit: usize) -> Result<Vec<DueMessage>, S::Error> {
-        let before = self.outbox.clone();
         let ids = self.outbox.filing_due(now_ms, limit);
-        let (readable, missing) = self.read_all(&ids)?;
+        self.take_ids(&ids, true)
+    }
+
+    /// Like [`PersistentOutbox::take_filing`], but only for `account`.
+    pub fn take_filing_for(
+        &mut self,
+        account: AccountId,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<DueMessage>, S::Error> {
+        let ids = self.outbox.filing_due_for(account, now_ms, limit);
+        self.take_ids(&ids, true)
+    }
+
+    /// Reads the bytes of `ids`, marks the readable ones Sending (`filing` false) or Filing
+    /// (`filing` true) and commits before returning them. A message whose bytes cannot be found
+    /// is given up instead of being handed out.
+    fn take_ids(&mut self, ids: &[OutboxId], filing: bool) -> Result<Vec<DueMessage>, S::Error> {
+        let before = self.outbox.clone();
+        let (readable, missing) = self.read_all(ids)?;
         for id in &missing {
             self.outbox.give_up_unreadable(*id);
         }
-        self.outbox.purge_finished();
-        let entries = self
-            .outbox
-            .take_for_filing(&readable.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        let readable_ids: Vec<OutboxId> = readable.iter().map(|(id, _)| *id).collect();
+        let entries = if filing {
+            self.outbox.purge_finished();
+            self.outbox.take_for_filing(&readable_ids)
+        } else {
+            self.outbox.take(&readable_ids)
+        };
         self.commit_or_restore(before, &entries, readable)
     }
 
@@ -469,6 +495,12 @@ impl<S: OutboxStore> PersistentOutbox<S> {
         now_ms: i64,
     ) -> Result<Option<FilingRejection>, S::Error> {
         self.run(|o| o.filing_failed(id, error, now_ms), |_| Vec::new())
+    }
+
+    /// Ends the account's back-off (the connection is back), without ever shortening an Undo
+    /// window. See [`Outbox::clear_hold`]. The changed retry times are committed.
+    pub fn clear_hold(&mut self, account: AccountId, now_ms: i64) -> Result<(), S::Error> {
+        self.run(|o| o.clear_hold(account, now_ms), |_| Vec::new())
     }
 
     /// Retry on a Failed message. See [`Outbox::retry`].
@@ -924,6 +956,58 @@ mod tests {
         p.store.fail_commits = true;
         assert!(matches!(p.abandon(A, id), Err(OutboxError::Store(_))));
         assert_eq!(p.outbox().get(id).unwrap().state, OutboxState::Sending);
+    }
+
+    #[test]
+    fn the_per_account_takes_mark_only_that_accounts_rows_on_disk() {
+        let other: AccountId = 2;
+        let mut p = open();
+        let a = p.queue(new_msg(), b"A".to_vec(), 0, 0).unwrap();
+        let mut for_other = new_msg();
+        for_other.account = other;
+        let b = p.queue(for_other, b"B".to_vec(), 0, 0).unwrap();
+
+        let due = p.take_due_for(A, 0, 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!((due[0].entry.id, due[0].mime.as_slice()), (a, &b"A"[..]));
+        assert_eq!(row_state(&p, a), Some(OutboxState::Sending));
+        assert_eq!(
+            p.store().rows.get(&(other, b)).map(|(e, _)| e.state),
+            Some(OutboxState::Queued),
+            "the other account's row is untouched on disk"
+        );
+        let due = p.take_due_for(other, 0, 10).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!((due[0].entry.id, due[0].mime.as_slice()), (b, &b"B"[..]));
+
+        p.submitted(a, 1).unwrap();
+        p.submitted(b, 1).unwrap();
+        let filing = p.take_filing_for(other, 1, 10).unwrap();
+        assert_eq!(filing.len(), 1);
+        assert_eq!(filing[0].entry.id, b);
+        assert_eq!(row_state(&p, a), Some(OutboxState::Submitted));
+        let filing = p.take_filing_for(A, 1, 10).unwrap();
+        assert_eq!(filing.len(), 1);
+        assert_eq!(filing[0].entry.id, a);
+    }
+
+    #[test]
+    fn clear_hold_is_committed_and_leaves_an_undo_window_alone() {
+        let mut p = open();
+        let tried = p.queue(new_msg(), b"1".to_vec(), 0, 0).unwrap();
+        let fresh = p.queue(new_msg(), b"2".to_vec(), 0, 60_000).unwrap();
+        p.take_due_for(A, 0, 1).unwrap();
+        p.failed(tried, &BackendError::Transient("down".into()), 1_000)
+            .unwrap();
+        let held = p.store().rows.get(&(A, tried)).unwrap().0.send_at_ms;
+        assert!(held > 2_000);
+        p.clear_hold(A, 2_000).unwrap();
+        assert_eq!(p.store().rows.get(&(A, tried)).unwrap().0.send_at_ms, 2_000);
+        assert_eq!(
+            p.store().rows.get(&(A, fresh)).unwrap().0.send_at_ms,
+            60_000
+        );
+        assert_eq!(p.take_due_for(A, 2_000, 10).unwrap().len(), 1);
     }
 
     #[test]

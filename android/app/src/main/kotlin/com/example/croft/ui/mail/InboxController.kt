@@ -665,7 +665,13 @@ class InboxController(
         val ops = block()
         snackbar.show(text, texts.undo, stayMs = UNDO_WINDOW_MS) {
             // The ids stay in removedByMe: a message that comes back through Undo is not new mail, whatever its date.
-            scope.launch { session.rowActions.undo(ops) }
+            scope.launch {
+                session.rowActions.undo(ops)
+                // Undo returns the row with the list's own motion and a brief highlight (the new-row tint, which Reduced keeps and Off drops).
+                arrived = arrived + ids
+                delay(CroftTimings.NEW_ROW_MARK_MS)
+                arrived = arrived - ids.toSet()
+            }
         }
     }
 

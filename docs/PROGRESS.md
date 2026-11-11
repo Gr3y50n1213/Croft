@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T04: Sync engine (11 November 2026)
+
+**Status:** done except IDLE (push from the server while the app is open): wake-ups use the next due action, a 15-minute timer and a nudge on every action. The place to add IDLE is marked in `core/engine/src/worker.rs`. Within an account, actions run one at a time (the contract allows four in parallel; a later speed-up).
+
+**What was built:** new crate `core/engine` (`croft-engine`): one task per account; `EngineHandle` for the screens (mark read, star, move, delete forever, Undo, change notifications, online/offline, sync now), every action one local SQLite transaction that never waits for the network. Folder sync with the planner, chunked so a big sync does not freeze the screen. Follows a moved message to its new UID (from the server's answer, or by Message-ID when the server cannot say), and handles a server renumbering a folder (UIDVALIDITY change) without acting on the wrong message.
+
+**Checks run and seen passing (by the orchestrator):** fmt, clippy, `cargo test` 520 passed, 0 failed, three runs in a row on the merged branch; storage with `sqlcipher` 135 passed; `check_schema.py` all ok. 58 engine tests: 47 against a scripted fake server, 5 against the real IMAP adapter and the in-process IMAP server, plus resilience and task-loop tests.
+
+**Review:** Opus, three rounds. Round 1: 1 high (an interrupted folder reset could leave a folder showing almost nothing until the server changed), 2 medium, 3 low. Round 2 (of the fixes): 2 medium (an interrupted reset could make a "delete forever" hit the other copy of a duplicated message; a check computed too early), 2 low. All fixed with tests that failed before the fix. Round 3's fixes were not reviewed again.
+
+**Next:** T06 part B (outbox in the engine), T10 (FFI surface for the app).
+
+---
+
 ## T06: SMTP send and Outbox, part A (11 November 2026)
 
 **Status:** part A done; part B (wiring the outbox into the engine so "send with no network queues and sends later exactly once" runs end to end) is not done yet. Its plan is at the end of `docs/tasks/T06-smtp-outbox.md`.

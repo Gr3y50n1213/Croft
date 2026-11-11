@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T08: Design token generator (11 November 2026)
+
+**Status:** done except: the generated Kotlin and Swift files have not been compiled (no `kotlinc` or `swiftc` here). The Kotlin file is compiled for the first time when the Android project exists (T07/stage 3).
+
+**What was built:** `design/generator/` (TypeScript, run by Node 22) reads `design/tokens.json` and writes `design/generated/` (Kotlin, CSS, Swift, TypeScript): 8 presets × light/dark/pure black × 3 contrast levels = 72 colour schemes of 48 roles, from Google's Material Color Utilities; motion springs, shapes, spacing, swipe and haptics values. `design/CLAUDE.md` holds the token rules.
+
+**Checks run and seen passing (by the orchestrator, not only the agent):** `npm ci && npm run generate && npm test`: 60 of 60 tests pass; re-generating leaves `design/generated/` unchanged.
+
+**Unverified:** Kotlin and Swift compile; the contrast acceptance test (build-order step 2, not this task).
+
+**Next:** compile `CroftTokens.kt` inside the Android app.
+
+---
+
 ## Stage 0: environment, baseline, licences, instruction file (11 November 2026)
 
 **Status:** done.

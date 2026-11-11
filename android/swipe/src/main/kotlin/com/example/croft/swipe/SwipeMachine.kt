@@ -186,13 +186,16 @@ object SwipeReducer {
     /** The distance at which the action arms. */
     fun threshold(tuning: SwipeTuning, ctx: SwipeContext): Float = tuning.armFraction(ctx.sensitivity) * ctx.width
 
-    private fun isGesture(p: SwipePhase) = p == SwipePhase.IDLE || p == SwipePhase.DRAGGING || p == SwipePhase.ARMED || p == SwipePhase.SETTLING_BACK
+    /** A read or star that was committed only springs back, so a new touch can take the card (swipe again to reverse it). */
+    private fun isGesture(s: SwipeState) =
+        s.phase == SwipePhase.IDLE || s.phase == SwipePhase.DRAGGING || s.phase == SwipePhase.ARMED || s.phase == SwipePhase.SETTLING_BACK ||
+            (s.phase == SwipePhase.COMMITTING && !s.action.removesRow)
 
     private fun drag(t: SwipeTuning, ctx: SwipeContext, s: SwipeState, input: SwipeInput.Drag): SwipeStep {
-        // Once released into a commit, or parked, the card is no longer the finger's.
-        if (!isGesture(s.phase)) return SwipeStep(s, emptyList())
+        // Once released into a commit that removes the row, or parked, the card is no longer the finger's.
+        if (!isGesture(s)) return SwipeStep(s, emptyList())
         // A touch during the spring back takes the card over: a new gesture from the card's place.
-        val base = if (s.phase == SwipePhase.SETTLING_BACK) SwipeState() else s
+        val base = if (s.phase == SwipePhase.SETTLING_BACK || s.phase == SwipePhase.COMMITTING) SwipeState() else s
         val effects = ArrayList<SwipeEffect>()
         if (input.dx == 0f) {
             val dir = base.direction ?: return SwipeStep(base, emptyList())

@@ -204,6 +204,7 @@ class SwipePropertyTest {
                     else -> SwipeInput.Reset
                 }
                 val before = m.state.phase
+                val beforeAction = m.state.action
                 val fx = m.send(input)
                 for (e in fx) {
                     if (e is SwipeEffect.Commit || e is SwipeEffect.Park) committedOrParked = true
@@ -213,8 +214,9 @@ class SwipePropertyTest {
                 if (input is SwipeInput.Reset) { committedOrParked = false }
                 if (m.state.phase == SwipePhase.DONE) assertTrue("DONE from $before (seed $seed)", before == SwipePhase.COMMITTING || before == SwipePhase.PARKED || before == SwipePhase.DONE)
                 assertTrue("offset out of range (seed $seed)", abs(m.state.offset) <= ctx.width + 0.001f)
-                if (before == SwipePhase.COMMITTING || before == SwipePhase.PARKED || before == SwipePhase.DONE) {
-                    assertTrue("the finger moved a committed card (seed $seed)", input !is SwipeInput.Drag || m.state.phase == before)
+                val keepsRow = !beforeAction.removesRow
+                if ((before == SwipePhase.COMMITTING && !keepsRow) || before == SwipePhase.PARKED || before == SwipePhase.DONE) {
+                    assertTrue("the finger moved a card that is leaving (seed $seed)", input !is SwipeInput.Drag || m.state.phase == before)
                 }
             }
         }

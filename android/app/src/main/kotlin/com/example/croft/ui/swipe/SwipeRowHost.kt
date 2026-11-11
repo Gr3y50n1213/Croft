@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
@@ -190,7 +191,9 @@ internal class SwipeRowDriver(private val scope: CoroutineScope) {
 
     /** True while the card is the finger's or can be taken by it. */
     val canBeGrabbed: Boolean
-        get() = state.phase == SwipePhase.IDLE || state.phase == SwipePhase.SETTLING_BACK || state.phase == SwipePhase.DRAGGING || state.phase == SwipePhase.ARMED
+        get() = state.phase == SwipePhase.IDLE || state.phase == SwipePhase.SETTLING_BACK || state.phase == SwipePhase.DRAGGING || state.phase == SwipePhase.ARMED ||
+            // A read or star that is springing back can be swiped again at once, to reverse it.
+            (state.phase == SwipePhase.COMMITTING && !state.action.removesRow)
 
     /** The finger took hold: whatever moved the card stops where it is. Returns the card's place in px. */
     fun takeOver(): Float {
@@ -430,6 +433,7 @@ fun SwipeRowHost(
         }
     }
     val outlined = theme.contrast == CroftContrast.HIGH
+    val pageColour = MaterialTheme.colorScheme.surfaceContainer
     val cardLook = if (showPill) SwipeCardLook(RoundedCornerShape(cardRadiusDp.dp), outlined) else null
 
     Column(
@@ -454,7 +458,8 @@ fun SwipeRowHost(
                 .fillMaxWidth()
                 .onSizeChanged { driver.widthPx = it.width; heightPx = it.height }
                 .onGloballyPositioned { leftInWindow = it.positionInWindow().x }
-                .then(if (showPill) Modifier.background(MaterialTheme.colorScheme.surfaceContainer) else Modifier)
+                // The page behind the card (the container tone) shows only while the card is lifted. Drawn, not a changing modifier, so the gesture below is never rebuilt.
+                .drawBehind { if (showPill) drawRect(pageColour) }
                 .pointerInput(Unit) {
                     val dens = this.density
                     val slop = SwipeTokens.SLOP_DP * dens
@@ -479,7 +484,7 @@ fun SwipeRowHost(
                             val dx = change.position.x - down.position.x
                             val dy = change.position.y - down.position.y
                             if (abs(dx) >= slop || abs(dy) >= slop) {
-                                if (abs(dx) >= slop && abs(dy) <= abs(dx) * tangent) { decided = true; origin = change.position.x }
+                                if (abs(dx) >= slop && abs(dy) <= abs(dx) * tangent) { decided = true; origin = change.position.x; change.consume() }
                                 else { ignoreRestOfGesture(); return@awaitEachGesture }
                             }
                         }

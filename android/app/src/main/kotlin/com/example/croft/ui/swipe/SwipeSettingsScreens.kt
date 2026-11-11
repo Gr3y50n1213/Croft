@@ -95,6 +95,8 @@ fun SwipeSettingsFlow(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     startAt: SwipeRoute = SwipeRoute.S47,
+    /** Play the looped demonstration in the preview (tests and screenshots switch it off: it never lets a test go idle). */
+    demo: Boolean = true,
 ) {
     var route by rememberSaveable { androidx.compose.runtime.mutableStateOf(startAt) }
     val level = LocalMotionLevel.current
@@ -109,6 +111,7 @@ fun SwipeSettingsFlow(
         when (current) {
             SwipeRoute.S47 -> SwipeActionsScreen(
                 settings, onChange, onBack,
+                demo = demo,
                 onPick = { d -> route = if (d == SwipeDirection.START_TO_END) SwipeRoute.S48_START_TO_END else SwipeRoute.S48_END_TO_START },
             )
             SwipeRoute.S48_START_TO_END -> ChooseSwipeActionScreen(SwipeDirection.START_TO_END, settings, onChange, onBack = { route = SwipeRoute.S47 })
@@ -156,7 +159,7 @@ private fun ActionBadge(action: SwipeAction, modifier: Modifier = Modifier) {
  * stopped by a finger) and can be swiped by hand. Nothing it does touches mail: a committed action is shown and the row comes back.
  */
 @Composable
-private fun SwipePreview(settings: SwipeSettings) {
+private fun SwipePreview(settings: SwipeSettings, demo: Boolean) {
     val res = LocalContext.current.resources
     val noop = remember { SwipeCallbacks(onKeep = {}, onRemoved = { _, restore -> restore() }, onPark = {}, onNotAvailable = {}) }
     Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth().testTag(SwipeTags.PREVIEW)) {
@@ -177,7 +180,7 @@ private fun SwipePreview(settings: SwipeSettings) {
                 callbacks = noop,
                 parkResolution = null,
                 onParkResolutionHandled = {},
-                demo = listOf(SwipeDirection.START_TO_END, SwipeDirection.END_TO_START),
+                demo = if (demo) listOf(SwipeDirection.START_TO_END, SwipeDirection.END_TO_START) else null,
             ) { card ->
                 MessageRow(
                     sender = res.getString(R.string.swipe_preview_sender),
@@ -211,13 +214,14 @@ fun SwipeActionsScreen(
     onBack: () -> Unit,
     onPick: (SwipeDirection) -> Unit,
     modifier: Modifier = Modifier,
+    demo: Boolean = true,
 ) {
     val res = LocalContext.current.resources
     SettingsFrame(
         title = stringResource(R.string.swipe_title),
         onBack = onBack,
         modifier = modifier.testTag(SwipeTags.S47),
-        preview = { SwipePreview(settings) },
+        preview = { SwipePreview(settings, demo) },
     ) {
         for (d in listOf(SwipeDirection.START_TO_END, SwipeDirection.END_TO_START)) {
             val action = settings.actionOf(d)

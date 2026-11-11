@@ -281,7 +281,8 @@ fun MessageRow(
     }
 }
 
-private const val NEW_TINT_ALPHA = 0.16f
+/** The strongest the "just arrived" tint gets: the primary colour at this opacity over the row. */
+internal const val NEW_TINT_ALPHA = 0.16f
 
 /** From this combined font scale a row's sender and subject wrap instead of ending in an ellipsis. */
 private const val BIG_TEXT_FROM_FONT_SCALE = 1.3f

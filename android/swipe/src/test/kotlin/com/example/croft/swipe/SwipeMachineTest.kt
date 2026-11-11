@@ -185,13 +185,27 @@ class SwipeMachineTest {
     }
 
     @Test
-    fun a_committing_or_parked_card_ignores_the_finger() {
-        val committing = machine().also { it.drag(0.5f * W, 0); it.release() }
-        assertTrue(committing.drag(0.1f * W, 300).isEmpty())
+    fun a_card_sliding_out_or_parked_ignores_the_finger() {
+        val committing = machine().also { it.drag(-0.5f * W, 0); it.release() }
+        assertEquals(SwipeAction.DELETE, committing.state.action)
+        assertTrue(committing.drag(-0.1f * W, 300).isEmpty())
         assertEquals(SwipePhase.COMMITTING, committing.state.phase)
         val parked = machine(ctx(start = SwipeSlot(SwipeAction.MOVE_TO))).also { it.drag(0.5f * W, 0); it.release() }
         assertTrue(parked.drag(0.1f * W, 300).isEmpty())
         assertEquals(SwipePhase.PARKED, parked.state.phase)
+    }
+
+    @Test
+    fun a_read_or_star_that_is_springing_back_can_be_swiped_again_at_once() {
+        val m = machine().also { it.drag(0.5f * W, 0); it.release() }
+        assertEquals(SwipePhase.COMMITTING, m.state.phase)
+        assertEquals(SwipeAction.TOGGLE_READ, m.state.action)
+        m.drag(0.1f * W, 100)
+        assertEquals(SwipePhase.DRAGGING, m.state.phase)
+        m.drag(0.5f * W, 200)
+        assertEquals(SwipePhase.ARMED, m.state.phase)
+        val fx = m.release(0f, 300)
+        assertTrue("and it reverses: a second commit", fx.any { it is SwipeEffect.Commit })
     }
 
     @Test

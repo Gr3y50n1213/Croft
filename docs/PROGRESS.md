@@ -21,6 +21,8 @@ unverified, the next step.
 
 **Unverified:** TalkBack, password-manager autofill and the real Keystore on a device.
 
+**Opus review: 1 high, 1 medium, 4 low; all fixed.** High: changing the port or security on S05 dropped the provider, so an interceptor's certificate of `imap.gmail.com` could be trusted. The core now treats a listed provider's own server host as that provider's (`provider_for_host`, used by `verify` and `add_account`: a pin is never accepted, `add_account` refuses it with `BadSettings`), and S05 keeps the provider whenever the host is a provider's. Medium: the account add (core call and storing the password) now runs to its end even if the screen goes away, Back waits for it, and a second sign-in for an address that already has an account finds it instead of adding another. Low: each attempt owns its password and a cancelled one cannot wipe the next; a late probe callback of an older lookup is ignored; the security choices on S05 are disabled while a test runs; `onFinished` fires once. T17a (core sample mailbox, FFI version 6) is merged in; the app's fake-data session flag is now `MailSession.usesFakeData`, apart from the core's `AccountInfo.is_demo`.
+
 ---
 
 ## T17a: sample mailbox in the core (11 November 2026)

@@ -24,10 +24,10 @@ import uniffi.croft_ffi.ServerSettings
 const val FAKE_FINGERPRINT = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89"
 
 /** Settings as a lookup would find them, for a made-up address. */
-fun fakeFound(email: String = "sam@example.org", provider: KnownProvider? = null) = FfiDiscovered(
+fun fakeFound(email: String = "sam@example.org", provider: KnownProvider? = null, host: String = "mail.example.org") = FfiDiscovered(
     email = email,
-    imap = ServerSettings("mail.example.org", 993u, SecurityMode.TLS, email),
-    smtp = ServerSettings("mail.example.org", 465u, SecurityMode.TLS, email),
+    imap = ServerSettings(host, 993u, SecurityMode.TLS, email),
+    smtp = ServerSettings(host, 465u, SecurityMode.TLS, email),
     jmap = null, source = DiscoverySource.AUTOCONFIG, provider = provider, authHint = AuthKind.PASSWORD,
 )
 
@@ -44,6 +44,9 @@ class FakeBackend : OnboardingBackend {
     var discoverGate: CompletableDeferred<Unit>? = null
     var verifyGate: CompletableDeferred<Unit>? = null
 
+    /** The settings the last `verify` was given. */
+    @Volatile var lastVerified: FfiDiscovered? = null
+
     val discovers = CopyOnWriteArrayList<String>()
     val verifies = CopyOnWriteArrayList<Pair<String?, String>>()
     val adds = CopyOnWriteArrayList<Pair<String?, String>>()
@@ -58,6 +61,7 @@ class FakeBackend : OnboardingBackend {
     override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?) {
         val text = String(password)
         verifies += pinnedFingerprint to text
+        lastVerified = discovered
         verifyGate?.await()
         onVerify(discovered, text, pinnedFingerprint)
     }

@@ -53,8 +53,9 @@ data class ServerForm(
 
     /**
      * The settings for [email], or null while [problems] is not empty. [base] is what discovery found: when the incoming server is
-     * still the one it found, its provider and source are kept; when the person changed it, the account is no longer "known
-     * provider" (the core would otherwise ignore a pinned certificate for it).
+     * still the one it found, its source is kept. **The provider is kept whenever the host belongs to a large provider** (found by
+     * discovery, or typed by hand, with any port or security): such a server never takes a pinned certificate, so changing the port on
+     * S05 must not make the interceptor of `imap.gmail.com` look like a server the person may trust. A host that is no provider's has none.
      */
     fun toDiscovered(email: String, base: FfiDiscovered?): FfiDiscovered? {
         if (problems().isNotEmpty()) return null
@@ -67,7 +68,7 @@ data class ServerForm(
             smtp = smtp,
             jmap = base?.jmap,
             source = kept?.source ?: DiscoverySource.AUTOCONFIG,
-            provider = kept?.provider,
+            provider = ProviderHosts.providerFor(imap.host),
             authHint = kept?.authHint ?: AuthKind.PASSWORD,
         )
     }

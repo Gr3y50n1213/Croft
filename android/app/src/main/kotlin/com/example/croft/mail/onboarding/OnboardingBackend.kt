@@ -61,8 +61,15 @@ class CoreOnboardingBackend(private val core: Core, private val adder: AccountAd
         }
     }
 
-    override suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long =
-        adder(discovered, displayName, pinnedFingerprint, password)
+    /**
+     * Adds the account, **once per address**: when the core already has an account with this address (not the sample mailbox), that
+     * account's id is returned and nothing is added. This is what makes a second sign-in harmless when the first one did add the
+     * account but its screen was gone before it could say so (the add runs to its end even then, see `OnboardingFlow`).
+     */
+    override suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long {
+        core.listAccounts().firstOrNull { !it.isDemo && it.email.equals(discovered.email.trim(), ignoreCase = true) }?.let { return it.id }
+        return adder(discovered, displayName, pinnedFingerprint, password)
+    }
 
     override fun toString(): String = "[redacted]"
 }

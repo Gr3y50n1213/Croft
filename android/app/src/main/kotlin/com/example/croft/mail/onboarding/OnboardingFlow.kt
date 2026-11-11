@@ -5,13 +5,16 @@
 package com.example.croft.mail.onboarding
 
 import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import uniffi.croft_ffi.AuthKind
 import uniffi.croft_ffi.CoreException
 import uniffi.croft_ffi.DiscoverException
@@ -67,6 +70,11 @@ data class OnboardingState(
     val pinnedFingerprint: String? = null,
     /** The new account, once it was added (S09). */
     val addedAccount: Long? = null,
+    /**
+     * The account is being added right now (the core call and the storing of the password). That step cannot be cancelled and Back
+     * waits for it (see [OnboardingFlow.back]).
+     */
+    val adding: Boolean = false,
 ) {
     val step: Step get() = stack.last()
 }
@@ -78,7 +86,8 @@ data class OnboardingState(
  * **The password.** A screen hands it over as a `ByteArray` in [signIn], [testConnection] or [addFromSettings]; the flow owns that
  * array from then on and wipes it (`fill(0)`) as soon as the attempt ends: on success, on any failure, on Back, and on [close].
  * The one case where it is kept longer is the trust question (an untrusted certificate): the same bytes are used again after
- * "Trust this server", because the person should not have to type the password twice, and wiped on Cancel. It is never put in
+ * "Trust this server", because the person should not have to type the password twice, and wiped on Cancel. Each attempt owns
+ * its own array, so a cancelled attempt cannot wipe the next one's. It is never put in
  * [state], [snapshot], a log line or an exception.
  */
 class OnboardingFlow(
@@ -92,10 +101,21 @@ class OnboardingFlow(
     val state: StateFlow<OnboardingState> = mutable.asStateFlow()
 
     private var job: Job? = null
-    @Volatile private var held: ByteArray? = null
-    private var pending: Pending? = null
 
-    private class Pending(val discovered: FfiDiscovered, val add: Boolean)
+    /**
+     * One sign-in attempt and the password it owns. Only the attempt's own code, its superseding by the next one, [back], [cancelTrust]
+     * and [close] wipe [password]; a cancelled attempt that is still unwinding can never wipe the next attempt's array, because each
+     * attempt has its own and only touches the shared fields while it is still [run].
+     */
+    private class Run(val discovered: FfiDiscovered, val add: Boolean, val password: ByteArray) {
+        fun wipe() = password.fill(0)
+    }
+
+    /** The attempt that is current (running, or waiting on the trust question). */
+    @Volatile private var run: Run? = null
+
+    /** The number of the lookup that is current; a probe callback or an answer of an older lookup is ignored. */
+    private val lookups = AtomicLong()
 
     init {
         if (saved != null) restore(saved)
@@ -132,18 +152,21 @@ class OnboardingFlow(
 
     private fun startLookup() {
         job?.cancel()
+        val me = lookups.incrementAndGet()
         val email = mutable.value.email.trim()
         mutable.update { it.copy(lookup = Lookup.Running, probes = waitingRows(), emailRejected = false) }
-        val board = ProbeBoard { rows -> mutable.update { it.copy(probes = rows) } }
+        // The board belongs to this lookup: a late callback of an older one (the core delivers from a thread of its own) is dropped.
+        val board = ProbeBoard { rows -> mutable.update { if (lookups.get() == me) it.copy(probes = rows) else it } }
         job = scope.launch {
             try {
-                onDiscovered(backend.discover(email, board), email)
+                val found = backend.discover(email, board)
+                if (lookups.get() == me) onDiscovered(found, email)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: DiscoverException) {
-                onDiscoverFailed(e, email)
+                if (lookups.get() == me) onDiscoverFailed(e, email)
             } catch (e: Exception) {
-                mutable.update { it.copy(lookup = Lookup.Failed(OnboardingFailure.Unexpected())) }
+                if (lookups.get() == me) mutable.update { it.copy(lookup = Lookup.Failed(OnboardingFailure.Unexpected())) }
             }
         }
     }
@@ -184,7 +207,7 @@ class OnboardingFlow(
     fun openServerSettings() {
         val s = mutable.value
         if (s.step != Step.FINDING && s.step != Step.SIGN_IN) return
-        job?.cancel(); wipeHeld(); pending = null
+        job?.cancel(); lookups.incrementAndGet(); endRun()
         val form = s.discovered?.let { ServerForm.from(it) } ?: ServerForm.guessFor(s.email)
         mutable.update {
             val next = if (s.step == Step.FINDING) it.stack.dropLast(1) + Step.SERVER_SETTINGS else it.stack + Step.SERVER_SETTINGS
@@ -248,45 +271,66 @@ class OnboardingFlow(
     // ---- the attempt (S04 and S05) ----
 
     private fun begin(d: FfiDiscovered, add: Boolean, password: ByteArray) {
-        wipeHeld()
-        held = password
-        pending = Pending(d, add)
+        // The attempt before this one (waiting on a trust question, say) is over: its password is wiped.
+        run?.wipe()
+        val r = Run(d, add, password)
+        run = r
         job?.cancel()
-        job = scope.launch { runAttempt() }
+        job = scope.launch { execute(r) }
     }
 
-    private suspend fun runAttempt() {
-        val p = pending ?: return
-        val password = held ?: return
-        val d = p.discovered
+    private suspend fun execute(r: Run) {
+        val d = r.discovered
         val host = d.imap?.host
         val pin = mutable.value.pinnedFingerprint
-        mutable.update { it.copy(attempt = Attempt.Working, test = if (it.step == Step.SERVER_SETTINGS) ConnectionTest.started() else null) }
+        mutable.update { if (run === r) it.copy(attempt = Attempt.Working, test = if (it.step == Step.SERVER_SETTINGS) ConnectionTest.started() else null) else it }
         try {
-            backend.verify(d, password, pin)
-            if (p.add) {
-                val id = backend.addAccount(d, EmailInput.localPartOf(d.email), pin, password)
-                wipeHeld(); pending = null
-                mutable.update { it.copy(attempt = Attempt.Idle, test = null, addedAccount = id, stack = listOf(Step.FIRST_SYNC)) }
+            backend.verify(d, r.password, pin)
+            if (run !== r) { r.wipe(); return }
+            if (r.add) {
+                mutable.update { it.copy(adding = true) }
+                val id = addAccountToCompletion(r, pin)
+                endRun(r)
+                mutable.update { it.copy(attempt = Attempt.Idle, test = null, addedAccount = id, stack = listOf(Step.FIRST_SYNC), adding = false) }
             } else {
-                wipeHeld(); pending = null
+                endRun(r)
                 mutable.update { it.copy(attempt = Attempt.Idle, test = ConnectionTest.passed()) }
             }
         } catch (e: CancellationException) {
-            wipeHeld()
+            r.wipe()
+            // Cancelled while adding: the add still ran to its end (see addAccountToCompletion), so nothing is half done.
+            mutable.update { if (it.adding && run === r) it.copy(adding = false) else it }
             throw e
         } catch (f: VerifyFailure) {
-            onVerifyFailed(f, host)
+            onVerifyFailed(r, f, host)
         } catch (e: CoreException) {
-            fail(OnboardingFailure.Add(e, host))
+            fail(r, OnboardingFailure.Add(e, host))
         } catch (e: StorageUnavailableException) {
-            fail(OnboardingFailure.Storage())
+            fail(r, OnboardingFailure.Storage())
         } catch (e: Exception) {
-            fail(OnboardingFailure.Unexpected())
+            fail(r, OnboardingFailure.Unexpected())
         }
     }
 
-    private fun onVerifyFailed(f: VerifyFailure, host: String?) {
+    /**
+     * Adds the account **and keeps the password** as one step that nothing can cancel: the core inserts the account even if the caller
+     * is cancelled (its call does not stop on cancel), so a cancel between that and the storing of the password would leave an
+     * account with no secret, and a retry would then add a second one. The step works on its own copy of the password, so that
+     * wiping the attempt's array meanwhile (Back, rotation) cannot store zeros. The result is the account's id; if nobody is
+     * listening any more, the account is there with its secret and the next start shows it (the app starts on the Inbox once an
+     * account exists), and a second sign-in for the same address finds it ([CoreOnboardingBackend.addAccount]).
+     */
+    private suspend fun addAccountToCompletion(r: Run, pin: String?): Long = withContext(NonCancellable) {
+        val copy = r.password.copyOf()
+        try {
+            backend.addAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), pin, copy)
+        } finally {
+            copy.fill(0)
+        }
+    }
+
+    private fun onVerifyFailed(r: Run, f: VerifyFailure, host: String?) {
+        if (run !== r) { r.wipe(); return }
         val trust = when (f) {
             is VerifyFailure.UntrustedCertificate -> Attempt.Trust(host.orEmpty(), f.fingerprint, changed = false)
             is VerifyFailure.CertificateChanged -> Attempt.Trust(host.orEmpty(), f.fingerprint, changed = true)
@@ -294,30 +338,37 @@ class OnboardingFlow(
         }
         mutable.update { it.copy(test = if (it.step == Step.SERVER_SETTINGS) ConnectionTest.stoppedAt(ConnectionTest.stepOf(f)) else null) }
         if (trust != null) {
-            // The password stays (in `held`) until the question is answered.
+            // The password stays in the run until the question is answered.
             mutable.update { it.copy(attempt = trust) }
         } else {
-            fail(OnboardingFailure.Verify(f, host))
+            fail(r, OnboardingFailure.Verify(f, host))
         }
     }
 
-    private fun fail(failure: OnboardingFailure) {
-        wipeHeld(); pending = null
-        mutable.update { it.copy(attempt = Attempt.Failed(failure)) }
+    private fun fail(r: Run, failure: OnboardingFailure) {
+        if (run !== r) { r.wipe(); return }
+        endRun(r)
+        mutable.update { it.copy(attempt = Attempt.Failed(failure), adding = false) }
+    }
+
+    /** Wipes the run's password and, if it is still the current one, drops it. */
+    private fun endRun(r: Run? = run) {
+        r?.wipe()
+        if (r != null && run === r) run = null
     }
 
     /** "Trust this server": the certificate shown is pinned for this server, and the attempt runs again with it. */
     fun trustServer() {
         val trust = mutable.value.attempt as? Attempt.Trust ?: return
-        if (held == null || pending == null) return
+        val r = run ?: return
         mutable.update { it.copy(pinnedFingerprint = trust.fingerprint) }
         job?.cancel()
-        job = scope.launch { runAttempt() }
+        job = scope.launch { execute(r) }
     }
 
     /** Cancel on the trust question: nothing is trusted, the password is wiped. */
     fun cancelTrust() {
-        job?.cancel(); wipeHeld(); pending = null
+        job?.cancel(); endRun()
         mutable.update { it.copy(attempt = Attempt.Idle, test = null) }
     }
 
@@ -328,24 +379,23 @@ class OnboardingFlow(
 
     /**
      * Back goes one step back. Returns false when the flow cannot go back (S01: the system leaves the app; S09: the screen
-     * continues in the background instead). Going back cancels what is running and wipes the password.
+     * continues in the background instead). Going back cancels what is running and wipes the password, except while the account is
+     * being added: that step finishes first, and Back does nothing meanwhile.
      */
     fun back(): Boolean {
         val s = mutable.value
         if (s.stack.size <= 1 || s.step == Step.FIRST_SYNC) return false
-        job?.cancel(); job = null; wipeHeld(); pending = null
+        // Adding the account cannot be stopped half way, so Back waits for it (the press is taken and does nothing). Checking the
+        // password can be cancelled, and is.
+        if (s.adding) return true
+        job?.cancel(); job = null; lookups.incrementAndGet(); endRun()
         mutable.update { it.copy(stack = it.stack.dropLast(1), attempt = Attempt.Idle, lookup = Lookup.Idle, test = null) }
         return true
     }
 
     /** The screen is going away: stops what runs and wipes the password. */
     fun close() {
-        job?.cancel(); job = null; wipeHeld(); pending = null
-    }
-
-    private fun wipeHeld() {
-        held?.fill(0)
-        held = null
+        job?.cancel(); job = null; lookups.incrementAndGet(); endRun()
     }
 
     private fun push(step: Step) = mutable.update { it.copy(stack = it.stack + step) }

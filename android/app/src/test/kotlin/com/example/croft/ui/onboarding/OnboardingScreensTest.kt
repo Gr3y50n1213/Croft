@@ -440,7 +440,91 @@ class OnboardingScreensTest {
         assertTrue("nothing was checked", backend.verifies.isEmpty())
     }
 
+    @Test
+    fun theSecurityChoicesAreDisabledWhileATestRuns() {
+        show()
+        toServerSettings()
+        typePassword(OnboardingTags.SETTINGS_PASSWORD)
+        backend.verifyGate = CompletableDeferred()
+        tag(OnboardingTags.TEST_BUTTON).tap()
+        waitTag(OnboardingTags.testStep("REACH_SERVER"))
+        rule.onNode(hasText("STARTTLS")).assertIsNotEnabled()
+        rule.onNode(hasText("SSL/TLS")).assertIsNotEnabled()
+        backend.verifyGate!!.complete(Unit)
+        waitWords("The connection works.")
+        rule.onNode(hasText("STARTTLS")).assertIsEnabled()
+    }
+
+    // ---- H1: a big provider's server never takes a pin ----
+
+    /** Mirrors the core's rule (`verify` in `core/protocols`): settings that carry a provider never offer a pin, they are intercepted. */
+    private fun mirrorTheCoreRule() {
+        backend.onVerify = { d, _, pin ->
+            if (d.provider != null) throw VerifyFailure.ConnectionIntercepted()
+            if (pin == null) throw VerifyFailure.UntrustedCertificate(FAKE_FINGERPRINT)
+        }
+    }
+
+    @Test
+    fun aGmailAccountSwitchedToStartTlsOnServerSettingsStillShowsInterceptedAndNeverATrustPrompt() {
+        show()
+        // Scripted backend that mirrors the core's rule (a provider's settings are never trusted): the core itself is tested in Rust.
+        mirrorTheCoreRule()
+        backend.onDiscover = { e, _ -> fakeFound(e, KnownProvider.GMAIL, host = "imap.gmail.com") }
+        toLookup("sam@gmail.com")
+        waitTag(OnboardingTags.SIGN_IN)
+        // First sign-in on an intercepted network: no trust offered.
+        typePassword()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
+        waitWords("talking to your email provider")
+        assertFalse(exists(OnboardingTags.TRUST_DIALOG))
+        // Then Server settings, STARTTLS (port 143): the provider must stay on the settings.
+        tag(OnboardingTags.SIGN_IN_SETTINGS).tap()
+        waitTag(OnboardingTags.SETTINGS)
+        rule.onNode(hasText("STARTTLS")).performScrollTo().performClick()
+        rule.waitForIdle()
+        tag(OnboardingTags.PORT).assert(hasText("143"))
+        typePassword(OnboardingTags.SETTINGS_PASSWORD)
+        backend.verifies.clear()
+        tag(OnboardingTags.TEST_BUTTON).tap()
+        waitWords("talking to your email provider")
+        assertFalse("never a trust prompt for imap.gmail.com", exists(OnboardingTags.TRUST_DIALOG))
+        assertEquals(1, backend.verifies.size)
+        assertEquals(KnownProvider.GMAIL, backend.lastVerified!!.provider)
+        assertEquals(143.toUShort(), backend.lastVerified!!.imap!!.port)
+    }
+
+    @Test
+    fun aProviderHostTypedByHandAfterNothingWasFoundStillCarriesItsProvider() {
+        show()
+        mirrorTheCoreRule()
+        toServerSettings()
+        typePassword(OnboardingTags.SETTINGS_PASSWORD)
+        tag(OnboardingTags.HOST).performTextReplacement("IMAP.Gmail.com")
+        tag(OnboardingTags.TEST_BUTTON).tap()
+        waitWords("talking to your email provider")
+        assertFalse(exists(OnboardingTags.TRUST_DIALOG))
+        assertEquals(KnownProvider.GMAIL, backend.lastVerified!!.provider)
+    }
+
     // ---- S09 ----
+
+    @Test
+    fun theFirstSyncSaysFinishedOnlyOnce_whateverReachesItFirst() {
+        show()
+        toSignIn()
+        typePassword()
+        tag(OnboardingTags.SIGN_IN_BUTTON).tap()
+        waitTag(OnboardingTags.FIRST_SYNC)
+        tag(OnboardingTags.SYNC_CONTINUE).tap()
+        tag(OnboardingTags.SYNC_CONTINUE).tap()
+        firstSync.status = FirstSyncStatus(inboxMessages = 50, done = true, failed = false)
+        back()
+        rule.waitUntil(10_000) { finished.isNotEmpty() }
+        rule.mainClock.advanceTimeBy(5_000)
+        rule.waitForIdle()
+        assertEquals("the Inbox's session is built once", listOf(7L), finished.toList())
+    }
 
     @Test
     fun theFirstSyncShowsSkeletonsAndContinueInBackgroundIsAlwaysThere() {

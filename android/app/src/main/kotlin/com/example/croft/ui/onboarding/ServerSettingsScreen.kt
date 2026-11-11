@@ -103,7 +103,7 @@ fun ServerSettingsScreen(
         ChoiceRow(
             options = listOf(SecurityMode.TLS, SecurityMode.START_TLS), selected = form.security,
             label = { securityLabel(it) }, onSelect = { onFormChange(form.withSecurity(it)) },
-            modifier = Modifier.testTag(OnboardingTags.SECURITY),
+            modifier = Modifier.testTag(OnboardingTags.SECURITY), enabled = !working,
         )
         Text(stringResource(R.string.onb_encrypted_only), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         CroftTextField(
@@ -136,6 +136,7 @@ fun ServerSettingsScreen(
             ChoiceRow(
                 options = listOf(SecurityMode.TLS, SecurityMode.START_TLS), selected = form.outSecurity,
                 label = { securityLabel(it) }, onSelect = { onFormChange(form.withOutSecurity(it)) },
+                enabled = !working,
             )
         }
         state.test?.let { TestSteps(it) }

@@ -66,7 +66,11 @@ fun OnboardingHost(
     DisposableEffect(flow) { onDispose { flow.close() } }
     val state by flow.state.collectAsState()
 
-    val finish = { state.addedAccount?.let(onFinished) ?: Unit }
+    // The first sync ending, Continue and Back can all say "finished" at about the same moment: only the first counts, so the
+    // app builds the Inbox's session once.
+    val fired = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val fire: (Long) -> Unit = { id -> if (fired.compareAndSet(false, true)) onFinished(id) }
+    val finish = { state.addedAccount?.let(fire) ?: Unit }
     // S01: no handler, so the system leaves the app. S09: Back is Continue in background. Elsewhere: one step back.
     BackHandler(enabled = state.step != Step.WELCOME) { if (state.step == Step.FIRST_SYNC) finish() else flow.back() }
 
@@ -109,7 +113,7 @@ fun OnboardingHost(
                         }
                         if (now != null) status = now
                         // Done: the Inbox has its first messages. (A failed account stays here until the person continues.)
-                        if (now?.done == true) { onFinished(account); return@LaunchedEffect }
+                        if (now?.done == true) { fire(account); return@LaunchedEffect }
                         delay(FirstSyncPollMs)
                     }
                 }

@@ -1,14 +1,42 @@
-# Mail servers the integration tests run against. Not yet run: the environment this file was written
-# in has no Docker daemon, so image tags and ports below are from each project's documentation.
-# Add Dovecot + Postfix and the second JMAP server here when the IMAP adapter lands.
+# Mail servers the integration tests run against.
+#
+#   docker compose -f test-servers/docker-compose.yml up -d greenmail dovecot
+#   cd core && cargo test -p croft-protocols --features integration
+#   docker compose -f test-servers/docker-compose.yml down
+#
+# Everything here is for tests on localhost only. The users and passwords are throwaway values.
+# Image tags are pinned; bump them on purpose, not by accident.
 services:
+  # GreenMail: a Java test server. IMAP 3143 (plain, localhost only), IMAPS 3993 (self-signed,
+  # certificate changes on every start, so tests pin the fingerprint they read with
+  # probe_certificate). Users are created at start: login test / password test, and alice / alice.
   greenmail:
-    image: greenmail/standalone:latest
+    image: greenmail/standalone:2.1.15
     environment:
       GREENMAIL_OPTS: >-
         -Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0
         -Dgreenmail.users=test:test@localhost,alice:alice@localhost
-    ports: ["3025:3025", "3143:3143", "3993:3993", "3465:3465"]   # SMTP, IMAP, IMAPS, SMTPS
+    ports:
+      - "127.0.0.1:3025:3025"   # SMTP
+      - "127.0.0.1:3143:3143"   # IMAP
+      - "127.0.0.1:3993:3993"   # IMAPS
+      - "127.0.0.1:3465:3465"   # SMTPS
+
+  # Dovecot 2.4 (the official image): MOVE, UIDPLUS, SPECIAL-USE, CONDSTORE and QRESYNC. Its
+  # example config accepts ANY user name with the one password in USER_PASSWORD, and creates the
+  # mailbox on first login. IMAP 31143 (STARTTLS required for login) and IMAPS 31993 both use the
+  # throwaway self-signed certificate in test-servers/dovecot/ssl (CN=localhost, test only).
+  dovecot:
+    image: dovecot/dovecot:2.4.5
+    environment:
+      USER_PASSWORD: "{PLAIN}testpass"
+    ports:
+      - "127.0.0.1:31143:31143"
+      - "127.0.0.1:31993:31993"
+    volumes:
+      - ./dovecot/conf.d/90-test.conf:/etc/dovecot/conf.d/90-test.conf:ro
+      - ./dovecot/ssl/tls.crt:/etc/dovecot/ssl/tls.crt:ro
+      - ./dovecot/ssl/tls.key:/etc/dovecot/ssl/tls.key:ro
 
   stalwart:
     image: stalwartlabs/stalwart:latest

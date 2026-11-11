@@ -366,7 +366,7 @@ object GalleryCatalog {
             GalleryEntry(id("banner", k.name.lowercase()), k.name.lowercase().replace('_', ' '), listOf("Banner")) {
                 BannerHost(listOf(k), onAction = {}, onDismiss = {}, accountName = "Sam")
             }
-        } + GalleryEntry(id("banner", "most_urgent"), "All four active: only the most urgent shows", listOf("Banner")) {
+        } + GalleryEntry(id("banner", "most_urgent"), "All active: only the most urgent shows", listOf("Banner")) {
             BannerHost(BannerKind.entries, onAction = {}, onDismiss = {}, accountName = "Sam")
         },
     )

@@ -58,6 +58,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -91,7 +93,16 @@ data class MessageRowState(
     /** Just arrived: a tint that fades over 1.2 s. The caller sets it only while the row is on screen. */
     val isNew: Boolean = false,
     val hasAttachment: Boolean = false,
+    /** Messages in the conversation; a count chip shows when there is more than one. */
+    val threadCount: Int = 1,
 )
+
+/** One extra action of a row for screen readers and switch users (the swipe actions of T15 will fill the list). */
+class RowAction(val label: String, val onClick: () -> Unit)
+
+/** Whether swiping the row is on. Selection mode turns it off; the swipe engine (T15) reads it. Tests read it too. */
+val SwipeEnabled = androidx.compose.ui.semantics.SemanticsPropertyKey<Boolean>("SwipeEnabled")
+var androidx.compose.ui.semantics.SemanticsPropertyReceiver.swipeEnabled by SwipeEnabled
 
 private val RedEdgeWidth = 4.dp
 private val PillGapToCard = 4.dp
@@ -124,6 +135,16 @@ fun MessageRow(
     forceLifted: Boolean = false,
     failedEdgeHoldMs: Long? = CroftTimings.FAILED_EDGE_MS,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
+    /** How the time is read aloud ("2 hours ago"); the shown [time] when null. */
+    timeDescription: String? = null,
+    /** A Sent or Drafts row: [sender] holds the recipients, so it is read as "To ...". */
+    outgoing: Boolean = false,
+    /** Swiping is on (off in selection mode). The row only reports it; the swipe engine is T15. */
+    swipeEnabled: Boolean = true,
+    /** More actions for screen readers, after Select and Star (Archive, Delete, Mark read...). */
+    extraActions: List<RowAction> = emptyList(),
+    /** Lets the screen move focus to this row (after a removal). */
+    focusRequester: androidx.compose.ui.focus.FocusRequester? = null,
 ) {
     val settings = LocalThemeSettings.current
     val colors = MaterialTheme.colorScheme
@@ -150,7 +171,8 @@ fun MessageRow(
     val description = buildString {
         append(unreadWord).append(". ")
         if (state.selected) append(stringResource(R.string.control_selected)).append(". ")
-        append(stringResource(R.string.row_from, sender)).append(". ").append(subject).append(". ").append(time).append(". ")
+        append(stringResource(if (outgoing) R.string.mail_to else R.string.row_from, sender)).append(". ").append(subject).append(". ").append(timeDescription ?: time).append(". ")
+        if (state.threadCount > 1) append(pluralStringResource(R.plurals.mail_thread_count, state.threadCount, state.threadCount)).append(". ")
         if (state.hasAttachment) append(stringResource(R.string.row_has_attachment)).append(". ")
         if (state.starred) append(stringResource(R.string.row_starred)).append(". ")
         when (state.encryption) {
@@ -195,6 +217,7 @@ fun MessageRow(
                 .offset { IntOffset(-dragOffset.roundToPx(), 0) }
                 .croftFocusRing(interactionSource, shape)
                 .clip(shape)
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
                 .croftClickable(
                     interactionSource = interactionSource,
                     role = Role.Button,
@@ -204,11 +227,13 @@ fun MessageRow(
                 )
                 .semantics(mergeDescendants = true) {
                     contentDescription = description
+                    this.swipeEnabled = swipeEnabled
                     selected = state.selected
                     if (state.failed) stateDescription = failedState
                     customActions = buildList {
                         if (onAvatarClick != null || onLongClick != null) add(CustomAccessibilityAction(selectLabel) { (onAvatarClick ?: onLongClick)?.invoke(); true })
                         if (onToggleStar != null) add(CustomAccessibilityAction(starLabel) { onToggleStar(); true })
+                        for (a in extraActions) add(CustomAccessibilityAction(a.label) { a.onClick(); true })
                     }
                 },
         ) {
@@ -229,6 +254,11 @@ fun MessageRow(
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text(sender, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = weight, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
+                            if (state.threadCount > 1) {
+                                Surface(shape = MaterialTheme.shapes.small, color = colors.surfaceContainerHighest, contentColor = colors.onSurfaceVariant) {
+                                    Text(state.threadCount.toString(), Modifier.padding(horizontal = 6.dp, vertical = 1.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                }
+                            }
                             if (state.pendingOffline) Icon(CroftIcons.Schedule, null, Modifier.size(14.dp), tint = colors.onSurfaceVariant)
                             Text(
                                 time,
@@ -243,8 +273,9 @@ fun MessageRow(
                             Text(preview, Modifier.testTag(ROW_PREVIEW_TAG), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant, maxLines = density.previewLines, overflow = TextOverflow.Ellipsis)
                         }
                     }
-                    if (state.starred || state.encryption != EncryptionMark.NONE) {
+                    if (state.starred || state.hasAttachment || state.encryption != EncryptionMark.NONE) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (state.hasAttachment) Icon(CroftIcons.Attachment, null, Modifier.size(18.dp), tint = colors.onSurfaceVariant)
                             if (state.starred) Icon(Icons.Filled.Star, null, Modifier.size(20.dp), tint = statusColors().amber)
                             when (state.encryption) {
                                 EncryptionMark.ENCRYPTED -> Icon(Icons.Filled.Lock, null, Modifier.size(16.dp), tint = colors.onSurfaceVariant)

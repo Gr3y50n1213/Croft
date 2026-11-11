@@ -51,12 +51,16 @@ import com.example.croft.design.CroftTokens
 import com.example.croft.theme.CroftTimings
 import com.example.croft.theme.LocalMotionLevel
 import com.example.croft.theme.MotionLevel
+import com.example.croft.theme.statusColors
 import kotlinx.coroutines.delay
 
 /** The persistent banners (docs/ux/controls.md). */
 enum class BannerKind {
     /** The account needs sign-in. The most urgent. */
     NEEDS_SIGN_IN,
+
+    /** The server cannot be reached or refuses (TLS error, rate limit, server error): amber, with Retry. */
+    SERVER_PROBLEM,
 
     /** No network. */
     OFFLINE,
@@ -116,14 +120,17 @@ fun CroftBanner(
 ) {
     val colors = MaterialTheme.colorScheme
     val urgent = kind == BannerKind.NEEDS_SIGN_IN
+    val amber = statusColors()
     val message = when (kind) {
         BannerKind.NEEDS_SIGN_IN -> stringResource(R.string.banner_needs_sign_in, accountName)
+        BannerKind.SERVER_PROBLEM -> stringResource(R.string.banner_server_problem, accountName)
         BannerKind.OFFLINE -> stringResource(R.string.banner_offline)
         BannerKind.REMOTE_IMAGES_BLOCKED -> stringResource(R.string.banner_remote_images)
         BannerKind.UNSUBSCRIBE -> stringResource(R.string.banner_unsubscribe)
     }
     val action = when (kind) {
         BannerKind.NEEDS_SIGN_IN -> stringResource(R.string.banner_action_sign_in)
+        BannerKind.SERVER_PROBLEM -> stringResource(R.string.banner_action_retry)
         BannerKind.REMOTE_IMAGES_BLOCKED -> stringResource(R.string.banner_action_show_images)
         BannerKind.UNSUBSCRIBE -> stringResource(R.string.banner_action_unsubscribe)
         BannerKind.OFFLINE -> null
@@ -136,20 +143,28 @@ fun CroftBanner(
     }
     Surface(
         modifier = modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
-        color = if (urgent) colors.errorContainer else colors.surfaceContainerHigh,
-        contentColor = if (urgent) colors.onErrorContainer else colors.onSurface,
+        color = when (kind) {
+            BannerKind.NEEDS_SIGN_IN -> colors.errorContainer
+            BannerKind.SERVER_PROBLEM -> amber.amberContainer
+            else -> colors.surfaceContainerHigh
+        },
+        contentColor = when (kind) {
+            BannerKind.NEEDS_SIGN_IN -> colors.onErrorContainer
+            BannerKind.SERVER_PROBLEM -> amber.onAmberContainer
+            else -> colors.onSurface
+        },
     ) {
         if (bigText) {
             Column(Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp, end = 4.dp)) {
                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(if (urgent) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, Modifier.size(20.dp))
+                    Icon(if (urgent || kind == BannerKind.SERVER_PROBLEM) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, Modifier.size(20.dp))
                     Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                 }
                 Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) { buttons() }
             }
         } else {
             Row(Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(if (urgent) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, Modifier.size(20.dp))
+                Icon(if (urgent || kind == BannerKind.SERVER_PROBLEM) Icons.Filled.Warning else Icons.Filled.Info, contentDescription = null, Modifier.size(20.dp))
                 Text(message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                 buttons()
             }

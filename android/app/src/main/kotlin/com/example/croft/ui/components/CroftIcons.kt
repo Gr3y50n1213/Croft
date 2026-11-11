@@ -66,4 +66,65 @@ object CroftIcons {
             }
         }
     }
+
+    // Plain geometric glyphs for the drawer and the selection bar, drawn here from straight lines (no copied artwork).
+
+    /** A tray: the Inbox. */
+    val Inbox: ImageVector by lazy {
+        materialIcon(name = "Croft.Inbox") {
+            materialPath {
+                moveTo(3f, 5f); horizontalLineTo(21f); verticalLineTo(19f); horizontalLineTo(3f); close()
+                moveTo(5f, 7f); verticalLineTo(13f); horizontalLineTo(9f); verticalLineTo(15f); horizontalLineTo(15f); verticalLineTo(13f); horizontalLineTo(19f); verticalLineTo(7f); close()
+            }
+        }
+    }
+
+    /** A box with a lid and a slot: Archive. */
+    val Archive: ImageVector by lazy {
+        materialIcon(name = "Croft.Archive") {
+            materialPath {
+                moveTo(3f, 3f); horizontalLineTo(21f); verticalLineTo(8f); horizontalLineTo(3f); close()
+                moveTo(4f, 10f); horizontalLineTo(20f); verticalLineTo(21f); horizontalLineTo(4f); close()
+                moveTo(9f, 13f); verticalLineTo(15f); horizontalLineTo(15f); verticalLineTo(13f); close()
+            }
+        }
+    }
+
+    /** A page with a folded corner: Drafts. */
+    val Drafts: ImageVector by lazy {
+        materialIcon(name = "Croft.Drafts") {
+            materialPath {
+                moveTo(6f, 3f); horizontalLineTo(14f); lineTo(19f, 8f); verticalLineTo(21f); horizontalLineTo(6f); close()
+            }
+        }
+    }
+
+    /** An arrow leaving a line: Outbox. */
+    val Outbox: ImageVector by lazy {
+        materialIcon(name = "Croft.Outbox") {
+            materialPath {
+                moveTo(12f, 3f); lineTo(18f, 10f); horizontalLineTo(14f); verticalLineTo(17f); horizontalLineTo(10f); verticalLineTo(10f); horizontalLineTo(6f); close()
+                moveTo(5f, 19f); horizontalLineTo(19f); verticalLineTo(21f); horizontalLineTo(5f); close()
+            }
+        }
+    }
+
+    /** A tag: a label. */
+    val Label: ImageVector by lazy {
+        materialIcon(name = "Croft.Label") {
+            materialPath {
+                moveTo(4f, 6f); horizontalLineTo(15f); lineTo(21f, 12f); lineTo(15f, 18f); horizontalLineTo(4f); close()
+            }
+        }
+    }
+
+    /** An open envelope: Mark as read. */
+    val EnvelopeOpen: ImageVector by lazy {
+        materialIcon(name = "Croft.EnvelopeOpen") {
+            materialPath {
+                moveTo(4f, 10f); lineTo(12f, 4f); lineTo(20f, 10f); close()
+                moveTo(4f, 11.5f); horizontalLineTo(20f); verticalLineTo(20f); horizontalLineTo(4f); close()
+            }
+        }
+    }
 }

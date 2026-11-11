@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import java.util.Base64
 import org.gradle.api.tasks.Exec
 
 plugins {
@@ -197,21 +196,7 @@ afterEvaluate {
 
 tasks.named("preBuild") { dependsOn("generateUniffiBindings", "buildRustAndroid") }
 
-// TEMPORARY (T15 first CI run): print the new gallery-row picture into the log so it can be committed as the golden.
-tasks.register("dumpRoborazzi") {
-    doLast {
-        val dir = layout.buildDirectory.dir("outputs/roborazzi").get().asFile
-        println("ROBORAZZI-FILES " + (dir.list()?.sorted() ?: emptyList<String>()).filter { it.startsWith("gallery-row") })
-        dir.listFiles()?.filter { it.name.startsWith("gallery-row-light-font1.0-ltr") && !it.name.endsWith("_compare.png") }?.forEach { f ->
-            println("ROBORAZZI-BEGIN ${f.name}")
-            println(Base64.getEncoder().encodeToString(f.readBytes()).chunked(4000).joinToString("\n"))
-            println("ROBORAZZI-END")
-        }
-    }
-}
-
 tasks.withType<Test>().configureEach {
-    finalizedBy("dumpRoborazzi")
     dependsOn("buildRustHost")
     // The pure swipe machine's tests (module :swipe) run with the app's, so one command (and CI) covers both.
     dependsOn(":swipe:test")

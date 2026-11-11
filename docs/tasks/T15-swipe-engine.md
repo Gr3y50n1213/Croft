@@ -78,6 +78,19 @@ Other tests: `SwipeSettingsScreenTest` (S47 and S48: preview, pickers, presets, 
 - The long-press on a drawer entry is watched in the Initial pass and takes the rest of the touch once it fires; if the release still clicks the entry, `longPressMenu` in `Foundation.kt` is where to look.
 - `SwipeScreenshotTest` S14 to S16: the finger stays down for S14 and S15 and is lifted after the picture (the T14 lesson), but a row at 200 percent font may need more than one `waitForIdle`.
 
+### First CI run (PR #8): 4 failures of 1823, and what each was
+
+The first real run of the T15 tests was GitHub CI: 1823 tests, 4 failed, 1 skipped as before. Two were **screen bugs** (fixed in the code), one a **gallery entry** that made a card with no visible area, one a **test assumption**. No test was deleted, skipped, `@Ignore`d or loosened, and one golden picture was re-recorded for an intended change. After the fixes the `android` job and the six others are green (1823 tests, 0 failed, 1 skipped).
+
+| Test | Root cause | Kind | Fix |
+|---|---|---|---|
+| `SwipeMenuTest.s12_markAllAsReadReadsEveryUnreadMessage...WithAnUndoThatPutsThemBack` | Mark all as read ran, but the drawer stayed open, and its scrim covers the list's snackbar: the tap on Undo never reached the button (the 10 s wait at the last line is for the Undo). This is a real bug: the Undo of the menu could not be pressed while the drawer was open. The cause was inferred from where the wait ended and from the layout (the snackbar is part of the list, under the modal drawer); it was confirmed by the test passing with the change. | **Screen bug** | `InboxScreen` closes the drawer when a mailbox menu item is chosen (Mark all as read, Sync now, Mailbox settings), so the answer and its Undo are on the list. |
+| `GallerySemanticsTest.everyInteractiveControlIsAtLeast48dpHighAndWide[swipe-font1]` | The entry `swipe.delete_committing` put the card at minus 330 dp in a row 294 dp wide, so the card was wholly outside the window: a Button of size 0 x 0. | Gallery entry (a state that cannot be seen is not a useful picture) | The card is at minus 270 dp (56 dp of it still shows, the pill is 258 dp wide of 294) and the label says so. The test is unchanged. |
+| `SwipeMotionTest.interrupt_aTouchDuringTheSpringBack...` | The test compared the card after the second touch with where it was seen *before* the touch. The injected events take test time (one frame before the slop is passed), so the spring had run on and the finger took the card from about 43 dp, not 55 dp: 43 + 20 = 63 as measured. The code took the card from where it was, as the spec says. This was the "checking a spring one frame too early" risk. | Test assumption | It reads `swipe-offset` right after the finger has taken the card (it must be between 1 dp and where it was seen, so neither 0 nor 60), then checks that a further 20 dp move puts the card at that value plus 20. |
+| `GalleryScreenshotTest[row-false-1-false]` (golden `gallery-row-light-font1.0-ltr`) | The entry `row.dragging` is now drawn by the swipe engine (card in the lowest container tone, tonal pill, page behind), which is the intended T15 change. It also used `+120 dp` (Delete pill on the wrong side) where the old picture dragged to the left. | Intended change, and a small gallery bug | Offset is minus 120 dp as before. The golden was re-recorded from the CI picture; the other twelve entries of the picture are unchanged pixel for pixel in appearance (checked by eye against the old golden). |
+
+How the golden was got: this container cannot run Robolectric, so a temporary Gradle step printed the CI picture in the log, it was decoded and committed, and the step was removed in the next commit.
+
 ### Choices to copy into `docs/DECISIONS.md`
 | Date | Choice | Why |
 |---|---|---|

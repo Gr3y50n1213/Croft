@@ -57,9 +57,9 @@ impl CertFingerprint {
             return Err(bad());
         }
         let mut out = [0u8; 32];
-        for (i, pair) in digits.chunks_exact(2).enumerate() {
-            let hi = hex_val(pair[0]).ok_or_else(bad)?;
-            let lo = hex_val(pair[1]).ok_or_else(bad)?;
+        for (i, [h, l]) in digits.as_chunks::<2>().0.iter().enumerate() {
+            let hi = hex_val(*h).ok_or_else(bad)?;
+            let lo = hex_val(*l).ok_or_else(bad)?;
             out[i] = (hi << 4) | lo;
         }
         Ok(Self(out))

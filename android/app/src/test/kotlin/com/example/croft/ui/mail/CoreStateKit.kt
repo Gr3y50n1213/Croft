@@ -157,7 +157,10 @@ class CoreFixture(
 
     val core = ScriptedCore(accounts, folders, rows)
     val mapping = InMemoryFolderMapping()
-    val repo = CoreMessageRepository(core, mapping, Dispatchers.Default)
+    // Unconfined, not Dispatchers.Default: the scripted core is in memory, and on a background thread the compose test's unconfined
+    // effect dispatcher resumes the screen's coroutines on that thread, so the list's state is written off the main thread while the
+    // test waits for the frame (the list then sometimes stayed on its skeleton). On the real main dispatcher the app resumes on main.
+    val repo = CoreMessageRepository(core, mapping, Dispatchers.Unconfined)
     val haptics = RecordingHaptics()
     val session = MailSession(repo, InMemoryAnchorStore(), { NOW }, ZoneId.of("UTC"), CoreRowActions(repo, mapping), mapping)
 }

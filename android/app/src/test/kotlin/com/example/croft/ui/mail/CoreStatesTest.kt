@@ -28,7 +28,6 @@ import com.example.croft.swipe.SwipeSettings
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -115,8 +114,9 @@ class CoreStatesTest {
     fun s18_needsSignInShowsItsBanner_andTheButtonRaisesTheEventForTheSignInScreen() {
         val f = CoreFixture(statusOf = { if (it == 2L) AccountStatus.NEEDS_SIGN_IN else AccountStatus.OK })
         val raised = CompletableDeferred<MailEvent>()
-        // The sign-in screen (T17) will listen like this.
-        val listener = CoroutineScope(Dispatchers.Default).launch { raised.complete(f.session.events.first()) }
+        // The sign-in screen (T17) will listen like this: for as long as it is on screen, not for one event (a one-shot listener that
+        // has gone by the time the screen checks for a listener would make the screen show its placeholder note).
+        val listener = CoroutineScope(Dispatchers.Default).launch { f.session.events.collect { raised.complete(it) } }
         show(f)
         waitForText("Sign in again to Work")
         rule.waitUntil(20_000) { f.session.hasEventListener }

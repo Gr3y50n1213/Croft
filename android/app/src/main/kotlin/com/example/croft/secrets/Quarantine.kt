@@ -16,8 +16,9 @@ import java.util.concurrent.TimeUnit
  * per incident, `<root>/<timestamp in milliseconds>/`, holding `database/`, `secrets/` and `key/`
  * with the files under their own names (the encrypted database and its side files, the wrapped
  * account secrets, the wrapped database key). The data stays encrypted. The point is that a wrong
- * call (a Keystore failure that looked like a loss) can be undone by moving the files back, which
- * is a support step: nothing in the app does it.
+ * call (a Keystore failure that looked like a loss) can be undone: at the next start `AppSecrets`
+ * checks whether a quarantined wrapped key opens with the current wrapping key and, if so, moves
+ * the files back (or offers to, see [QuarantineRestore]).
  *
  * An incident is deleted for good only when it is at least [retentionMs] old **and** at least
  * [requiredStarts] successful app starts have happened since (see [recordSuccessfulStart]).
@@ -49,6 +50,17 @@ internal class Quarantine(
         syncDirectory(incident)
         syncDirectory(root)
         return incident
+    }
+
+    /** Moves [files] (those that exist) into [target], keeping their names; replaces a file of the same name. */
+    fun moveInto(target: File, files: List<File>) {
+        for (file in files) {
+            if (!file.exists()) continue
+            target.mkdirs()
+            move(file, File(target, file.name), replace = true)
+            syncDirectory(file.absoluteFile.parentFile ?: continue)
+        }
+        if (target.exists()) syncDirectory(target)
     }
 
     /** The incident folders now kept, oldest first. */
@@ -101,11 +113,12 @@ internal class Quarantine(
     /** The incident's time, from its name (`<ms>` or `<ms>-<n>`); null for any other folder, which is left alone. */
     private fun timestampOf(folder: File): Long? = folder.name.substringBefore('-').toLongOrNull()
 
-    private fun move(from: File, to: File) {
+    private fun move(from: File, to: File, replace: Boolean = false) {
+        val options = if (replace) arrayOf(StandardCopyOption.REPLACE_EXISTING) else emptyArray()
         try {
-            Files.move(from.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            Files.move(from.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE, *options)
         } catch (e: AtomicMoveNotSupportedException) {
-            Files.move(from.toPath(), to.toPath())
+            Files.move(from.toPath(), to.toPath(), *options)
         }
     }
 

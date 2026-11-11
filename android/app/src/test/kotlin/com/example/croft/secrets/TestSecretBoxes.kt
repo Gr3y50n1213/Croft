@@ -12,28 +12,39 @@ import javax.crypto.SecretKey
 /**
  * A wrapping key held in memory: a plain JCE AES-256 key, so the envelope code of
  * [AesGcmSecretBox] runs for real on the JVM, and the failure paths (key gone, keystore busy) can
- * be switched on by the test. Everything here is made-up test data.
+ * be switched on by the test. Like the real source it never makes a key while sealing: [create]
+ * does, and [creates] counts the calls. A source starts with a key unless [withKey] is false.
+ * Everything here is made-up test data.
  */
-class MemoryKeySource : WrappingKeySource {
-    private var key: SecretKey? = null
+class MemoryKeySource(withKey: Boolean = true) : WrappingKeySource {
+    private var key: SecretKey? = if (withKey) fresh() else null
 
     /** Set to make every call fail the way a busy or broken keystore does. */
     @Volatile
     var unavailable = false
+
+    /** Makes a lost key look like weak evidence (Android 8 to 11), not like proof. */
+    @Volatile
+    var weakLoss = false
     var discards = 0
+    var creates = 0
 
     private fun fresh(): SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
 
     @Synchronized
-    override fun keyForSealing(): SecretKey {
-        if (unavailable) throw SecretBoxException(SecretBoxException.Kind.UNAVAILABLE)
-        return key ?: fresh().also { key = it }
-    }
+    override fun keyForSealing(): SecretKey = keyForOpening()
 
     @Synchronized
     override fun keyForOpening(): SecretKey {
         if (unavailable) throw SecretBoxException(SecretBoxException.Kind.UNAVAILABLE)
-        return key ?: throw SecretBoxException(SecretBoxException.Kind.KEY_LOST)
+        return key ?: throw SecretBoxException(SecretBoxException.Kind.KEY_LOST, weak = weakLoss)
+    }
+
+    @Synchronized
+    override fun create(): SecretKey {
+        if (unavailable) throw SecretBoxException(SecretBoxException.Kind.UNAVAILABLE)
+        creates++
+        return fresh().also { key = it }
     }
 
     @Synchronized
@@ -91,8 +102,13 @@ internal class FakeKeystore : KeystoreOps {
     val aliasSteps = ArrayDeque<Result<List<String>>>()
     var aliasesDefault: Result<List<String>> = Result.success(emptyList())
 
+    /** What `canaryWorks` returns or throws, in order. */
+    val canarySteps = ArrayDeque<Result<Boolean>>()
+    var canaryDefault: Result<Boolean> = Result.success(false)
+
     val getKeyCalls = AtomicInteger()
     val aliasCalls = AtomicInteger()
+    val canaryCalls = AtomicInteger()
     val generated = mutableListOf<String>()
     val deleted = mutableListOf<String>()
     var generateFails: Throwable? = null
@@ -107,6 +123,11 @@ internal class FakeKeystore : KeystoreOps {
     override fun aliases(): List<String> {
         aliasCalls.incrementAndGet()
         return (aliasSteps.removeFirstOrNull() ?: aliasesDefault).getOrThrow()
+    }
+
+    override fun canaryWorks(alias: String): Boolean {
+        canaryCalls.incrementAndGet()
+        return (canarySteps.removeFirstOrNull() ?: canaryDefault).getOrThrow()
     }
 
     override fun delete(alias: String) {
@@ -132,6 +153,15 @@ class ScriptedBox(private val inner: SecretBox) : SecretBox {
     var opens = 0
     var seals = 0
 
+    /** Makes the scripted KEY_LOST and UNAVAILABLE failures weak evidence (Android 8 to 11). */
+    @Volatile
+    var weak = false
+
+    private fun failure(kind: SecretBoxException.Kind) = SecretBoxException(
+        kind,
+        weak && (kind == SecretBoxException.Kind.KEY_LOST || kind == SecretBoxException.Kind.UNAVAILABLE),
+    )
+
     /** Makes every seal take this long (to hold the lock in a race test). */
     @Volatile
     var sealDelayMs = 0L
@@ -139,13 +169,13 @@ class ScriptedBox(private val inner: SecretBox) : SecretBox {
     override fun seal(plain: ByteArray, context: ByteArray): ByteArray {
         seals++
         if (sealDelayMs > 0) Thread.sleep(sealDelayMs)
-        sealFailures.removeFirstOrNull()?.let { throw SecretBoxException(it) }
+        sealFailures.removeFirstOrNull()?.let { throw failure(it) }
         return inner.seal(plain, context)
     }
 
     override fun open(blob: ByteArray, context: ByteArray): ByteArray {
         opens++
-        openFailures.removeFirstOrNull()?.let { throw SecretBoxException(it) }
+        openFailures.removeFirstOrNull()?.let { throw failure(it) }
         return inner.open(blob, context)
     }
 }
@@ -167,6 +197,8 @@ class FailingKey(private val failure: Throwable) : SecretKey {
 /** A key source that hands out [key] for both purposes. */
 class FixedKeySource(private val key: Key) : WrappingKeySource {
     override fun keyForSealing(): SecretKey = key as SecretKey
+
+    override fun create(): SecretKey = key as SecretKey
 
     override fun keyForOpening(): SecretKey = key as SecretKey
 

@@ -16,6 +16,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -49,10 +50,18 @@ class AppSecretsTest {
         root.deleteRecursively()
     }
 
+    private var onMainThread = false
+
     private fun secrets(box: SecretBox = AesGcmSecretBox(keys)) = AppSecrets(
         dir, box, keys, db, SecureRandom(), listOf(100L, 500L, 2000L), { sleeps += it },
-        Quarantine(quarantineDir, { now }),
+        Quarantine(quarantineDir, { now }), { now }, { onMainThread },
     )
+
+    /** One app start that got as far as the core opening (what `openCore` reports). */
+    private fun start(s: AppSecrets = secrets()) {
+        s.databaseKey().close()
+        s.recordSuccessfulStart()
+    }
 
     private fun keyBytes(s: AppSecrets): ByteArray = s.databaseKey().use { k -> k.withBytes { it.copyOf() } }
 
@@ -90,6 +99,7 @@ class AppSecretsTest {
         assertFalse(containsBytes(files.single().readBytes(), key))
         assertFalse(s.keyLoss.pending.value)
         assertFalse(quarantineDir.exists())
+        assertEquals("the wrapping key is made once, by the first run", 1, keys.creates)
     }
 
     @Test
@@ -99,6 +109,7 @@ class AppSecretsTest {
         assertArrayEquals(first, keyBytes(secrets()))
         assertTrue(db.exists())
         assertFalse(quarantineDir.exists())
+        assertEquals("no wrapping key is made once wrapped files exist", 1, keys.creates)
     }
 
     @Test
@@ -181,38 +192,127 @@ class AppSecretsTest {
     }
 
     @Test
-    fun aKeyThatCannotSealTheNewKeyIsReplacedOnce() {
-        // The entry is itself the dead key: the new key cannot be sealed until it is replaced.
+    fun afterADeclaredLossADeadWrappingKeyIsReplacedOnce() {
+        // Data without its wrapped key is a declared loss; the Keystore entry is itself dead.
+        makeDatabaseFiles()
         val box = ScriptedBox(AesGcmSecretBox(keys))
         box.sealFailures += SecretBoxException.Kind.KEY_LOST
         secrets(box).databaseKey().close()
-        assertEquals(1, keys.discards)
+        assertEquals("one new wrapping key, by the reset path", 1, keys.creates)
         assertEquals(2, box.seals)
+        assertFalse(db.exists())
     }
 
-    @Test
-    fun aWrongCallCanBeUndoneFromTheQuarantine() {
+    /** A Keystore failure that was wrongly taken for a loss: the real key is still there. */
+    private class WrongCall(val original: ByteArray, val incident: File, val newKey: ByteArray)
+
+    private fun makeWrongCall(): WrongCall {
         val s = secrets()
         val original = keyBytes(s)
         makeDatabaseFiles()
         s.secrets.put(1, SecretKind.PASSWORD, Fixture.PASSWORD.toByteArray())
-
-        // A Keystore failure that was wrongly taken for a loss (the real key is still there).
         val box = ScriptedBox(AesGcmSecretBox(keys))
         box.openFailures += SecretBoxException.Kind.KEY_LOST
         val after = secrets(box)
-        assertNotEquals(original.toList(), keyBytes(after).toList())
-        val incident = incidents().single()
+        val newKey = keyBytes(after)
+        assertNotEquals(original.toList(), newKey.toList())
+        assertFalse(db.exists())
+        return WrongCall(original, incidents().single(), newKey)
+    }
 
-        // Support moves the files back: everything opens again, with the old key.
-        File(dir, "db-key.v1").delete()
-        File(incident, "key").listFiles()!!.forEach { it.copyTo(File(dir, it.name)) }
-        File(incident, "secrets").listFiles()!!.forEach { it.copyTo(File(dir, it.name), overwrite = true) }
-        File(incident, "database").listFiles()!!.forEach { it.copyTo(File(root, it.name), overwrite = true) }
-        val restored = secrets()
-        assertArrayEquals(original, keyBytes(restored))
-        assertArrayEquals(Fixture.PASSWORD.toByteArray(), restored.secrets.get(1, SecretKind.PASSWORD))
-        assertTrue(db.exists())
+    /** What the person does after the reset: the core makes a database, they sign in and mail arrives. */
+    private fun writeNewData() {
+        db.writeText("new mail")
+        SecretStore(dir, AesGcmSecretBox(keys)).put(7, SecretKind.PASSWORD, "new-password".toByteArray())
+    }
+
+    @Test
+    fun aWrongCallIsUndoneAtTheNextStartWhenNothingNewWasWritten() {
+        val (original, incident) = makeWrongCall().let { it.original to it.incident }
+        db.writeText("the new, empty database")
+        val next = secrets()
+        assertFalse(next.quarantineRestore.available.value)
+        assertArrayEquals("the old key is back", original, keyBytes(next))
+        assertEquals("the old database is back", "not really sqlite croft.db", db.readText())
+        assertArrayEquals(Fixture.PASSWORD.toByteArray(), next.secrets.get(1, SecretKind.PASSWORD))
+        assertFalse("the notice no longer applies", next.keyLoss.pending.value)
+        assertFalse(next.quarantineRestore.available.value)
+        // The new files were kept, not deleted.
+        assertEquals("the new, empty database", File(incident, "superseded/database/croft.db").readText())
+        assertTrue(File(incident, "superseded/key/db-key.v1").exists())
+        // And a later start finds nothing more to restore.
+        assertArrayEquals(original, keyBytes(secrets()))
+    }
+
+    @Test
+    fun aWrongCallWithNewDataIsOfferedNotRestoredAndRestoresOnRequest() {
+        val wrong = makeWrongCall()
+        val original = wrong.original
+        val incident = wrong.incident
+        writeNewData() // the person signed in again after the reset and mail came in
+
+        val later = secrets()
+        assertArrayEquals("nothing is restored behind the person's back", wrong.newKey, keyBytes(later))
+        assertTrue(later.quarantineRestore.available.value)
+        assertEquals("new mail", db.readText())
+
+        later.quarantineRestore.restore()
+        assertFalse(later.quarantineRestore.available.value)
+        assertFalse(later.keyLoss.pending.value)
+        assertArrayEquals(original, keyBytes(later))
+        assertEquals("not really sqlite croft.db", db.readText())
+        assertArrayEquals(Fixture.PASSWORD.toByteArray(), later.secrets.get(1, SecretKind.PASSWORD))
+        assertNull("the new account's secret moved away", later.secrets.get(7, SecretKind.PASSWORD))
+        // Nothing is deleted: the new data is in the incident.
+        assertEquals("new mail", File(incident, "superseded/database/croft.db").readText())
+        assertTrue(File(incident, "superseded/secrets/acct-7.password.v1").exists())
+    }
+
+    @Test
+    fun anOfferThePersonDismissesDoesNotComeBack() {
+        makeWrongCall()
+        writeNewData()
+        val later = secrets()
+        keyBytes(later)
+        assertTrue(later.quarantineRestore.available.value)
+        later.quarantineRestore.dismiss()
+        assertFalse(later.quarantineRestore.available.value)
+        val after = secrets()
+        keyBytes(after)
+        assertFalse(after.quarantineRestore.available.value)
+    }
+
+    @Test
+    fun aRealLossIsNotRestored() {
+        // The wrapping key really changed: the quarantined key cannot be opened, nothing is offered.
+        val s = secrets()
+        s.databaseKey().close()
+        makeDatabaseFiles()
+        keys.lose()
+        val fresh = secrets()
+        fresh.databaseKey().close()
+        val next = secrets()
+        next.databaseKey().close()
+        assertFalse(next.quarantineRestore.available.value)
+        assertTrue(next.keyLoss.pending.value)
+        assertFalse(db.exists())
+        assertEquals(1, incidents().size)
+    }
+
+    @Test
+    fun aRestoreThatWasCutShortIsFinishedAtTheNextStart() {
+        val wrong = makeWrongCall()
+        val original = wrong.original
+        val incident = wrong.incident
+        // Simulate a kill after the marker, the live files moved away and the database brought back,
+        // but before the secrets and the key: the incident still holds both.
+        File(incident, "restoring").writeBytes(ByteArray(0))
+        File(incident, "superseded/database").mkdirs()
+        File(incident, "database").listFiles()!!.forEach { it.renameTo(File(root, it.name)) }
+        val next = secrets()
+        assertArrayEquals(original, keyBytes(next))
+        assertEquals("not really sqlite croft.db", db.readText())
+        assertArrayEquals(Fixture.PASSWORD.toByteArray(), next.secrets.get(1, SecretKind.PASSWORD))
     }
 
     // ---- everything else: nothing is moved or deleted ----
@@ -318,6 +418,221 @@ class AppSecretsTest {
         assertFalse("no notice for a reset that did not happen", secrets().keyLoss.pending.value)
     }
 
+    // ---- weak evidence of a loss: only after 3 starts over an hour ----
+
+    private val minute = 60L * 1000
+
+    /** An app start with a Keystore that reports a loss only weakly, as keystore1 does. */
+    private fun weakLossStart(): SecureStorageException.Reason {
+        val box = ScriptedBox(AesGcmSecretBox(keys)).apply {
+            weak = true
+            repeat(20) { openFailures += SecretBoxException.Kind.KEY_LOST }
+        }
+        return failureOf { secrets(box).databaseKey() }
+    }
+
+    @Test
+    fun aWeaklySuspectedLossIsActedOnOnlyAfterThreeStartsOverAnHour() {
+        val s = secrets()
+        s.databaseKey().close()
+        makeDatabaseFiles()
+        val before = snapshot()
+        val sdkTag = File(dir, "loss-suspected.v1")
+
+        assertEquals(SecureStorageException.Reason.NOT_READY, weakLossStart()) // start 1
+        assertEquals(SecureStorageException.Reason.NOT_READY, weakLossStart()) // start 2
+        now += 30 * minute
+        assertEquals(SecureStorageException.Reason.NOT_READY, weakLossStart()) // start 3, but only 30 minutes
+        assertTrue(sdkTag.exists())
+        assertFalse("nothing moved", quarantineDir.exists())
+        assertTrue(db.exists())
+        assertFalse(secrets().keyLoss.pending.value)
+        assertEquals(1, keys.creates)
+        // Only the suspicion record changed.
+        assertEquals(before.keys, snapshot().keys - "secrets/loss-suspected.v1")
+
+        now += 31 * minute
+        // Start 4: three starts, 61 minutes since the first sighting: now it is a loss.
+        val box = ScriptedBox(AesGcmSecretBox(keys)).apply {
+            weak = true
+            repeat(20) { openFailures += SecretBoxException.Kind.KEY_LOST }
+        }
+        val reset = secrets(box)
+        reset.databaseKey().close()
+        assertTrue(reset.keyLoss.pending.value)
+        assertFalse(db.exists())
+        assertEquals(1, incidents().size)
+        assertFalse("the record is cleared once the reset is done", sdkTag.exists())
+    }
+
+    @Test
+    fun threeStartsWithinAnHourAreNotEnoughAndAnHourWithTwoStartsIsNotEither() {
+        secrets().databaseKey().close()
+        makeDatabaseFiles()
+        repeat(5) { assertEquals(SecureStorageException.Reason.NOT_READY, weakLossStart()) }
+        assertFalse("five starts in the same minute", quarantineDir.exists())
+        // Fresh record: one start, two hours, one more start.
+        File(dir, "loss-suspected.v1").delete()
+        weakLossStart()
+        now += 120 * minute
+        assertEquals(SecureStorageException.Reason.NOT_READY, weakLossStart())
+        assertFalse("two starts over two hours", quarantineDir.exists())
+    }
+
+    @Test
+    fun aStartThatOpensTheKeyForgetsTheSuspicion() {
+        secrets().databaseKey().close()
+        makeDatabaseFiles()
+        weakLossStart()
+        weakLossStart()
+        assertTrue(File(dir, "loss-suspected.v1").exists())
+        secrets().databaseKey().close() // the key opens: it was a false alarm
+        assertFalse(File(dir, "loss-suspected.v1").exists())
+        now += 3 * 60 * minute
+        assertEquals("the count starts again", SecureStorageException.Reason.NOT_READY, weakLossStart())
+        assertEquals(SecureStorageException.Reason.NOT_READY, weakLossStart())
+        assertFalse(quarantineDir.exists())
+    }
+
+    @Test
+    fun theCountGoesUpOncePerProcessHoweverOftenTheKeyIsAsked() {
+        secrets().databaseKey().close()
+        makeDatabaseFiles()
+        val box = ScriptedBox(AesGcmSecretBox(keys)).apply {
+            weak = true
+            repeat(50) { openFailures += SecretBoxException.Kind.KEY_LOST }
+        }
+        val s = secrets(box)
+        repeat(5) { failureOf { s.databaseKey() } }
+        assertEquals(1, LossConfirmation(File(dir, "loss-suspected.v1"), { now }).count())
+    }
+
+    @Test
+    fun aKeyAndCanaryThatBothLookAbsentAreAlsoOnlyDeclaredLostWhenTheyPersist() {
+        secrets().databaseKey().close()
+        makeDatabaseFiles()
+        fun start(): SecureStorageException.Reason {
+            val box = ScriptedBox(AesGcmSecretBox(keys)).apply {
+                weak = true
+                repeat(20) { openFailures += SecretBoxException.Kind.UNAVAILABLE }
+            }
+            return failureOf { secrets(box).databaseKey() }
+        }
+        assertEquals(SecureStorageException.Reason.NOT_READY, start())
+        assertEquals(SecureStorageException.Reason.NOT_READY, start())
+        assertEquals(SecureStorageException.Reason.NOT_READY, start())
+        assertFalse(quarantineDir.exists())
+        now += 61 * minute
+        val box = ScriptedBox(AesGcmSecretBox(keys)).apply {
+            weak = true
+            repeat(20) { openFailures += SecretBoxException.Kind.UNAVAILABLE }
+        }
+        secrets(box).databaseKey().close()
+        assertEquals(1, incidents().size)
+    }
+
+    @Test
+    fun aDefiniteLossIsNotHeldBackByThePersistenceRule() {
+        secrets().databaseKey().close()
+        makeDatabaseFiles()
+        keys.lose() // MemoryKeySource: a definite KEY_LOST
+        secrets().databaseKey().close()
+        assertEquals(1, incidents().size)
+    }
+
+    // ---- no key is ever made over wrapped files ----
+
+    @Test
+    fun noWrappingKeyIsMadeWhileAnyWrappedFileExistsWhateverTheKeystoreSays() {
+        val s = secrets()
+        s.databaseKey().close()
+        makeDatabaseFiles()
+        s.secrets.put(1, SecretKind.PASSWORD, "x".toByteArray())
+        assertEquals(1, keys.creates)
+
+        keys.unavailable = true
+        failureOf { secrets().databaseKey() }
+        keys.unavailable = false
+        weakLossStart()
+        // A definite loss whose quarantine move fails: the files stay, so no key is made either.
+        keys.lose()
+        quarantineDir.writeText("in the way")
+        assertEquals(SecureStorageException.Reason.STORAGE_ERROR, failureOf { secrets().databaseKey() })
+        assertEquals("the reset path never ran", 1, keys.creates)
+        assertTrue(File(dir, "db-key.v1").exists())
+    }
+
+    @Test
+    fun afterADeclaredLossTheNewKeyIsMadeByTheResetPathOnlyAndOnlyOnceTheLossIsConfirmed() {
+        // Account secrets without their wrapped key (a declared loss): they move into the quarantine,
+        // but the Keystore says "lost" only weakly, so no new wrapping key is made yet.
+        val s = secrets()
+        s.databaseKey().close()
+        s.secrets.put(1, SecretKind.PASSWORD, "x".toByteArray())
+        File(dir, "db-key.v1").delete()
+        keys.lose()
+        keys.weakLoss = true
+        assertEquals(SecureStorageException.Reason.NOT_READY, failureOf { secrets().databaseKey() })
+        assertEquals("the reset moved the old data aside", 1, incidents().size)
+        assertEquals("no key yet", 1, keys.creates)
+        assertFalse(File(dir, "db-key.v1").exists())
+        // The next starts finish the reset (it is not mistaken for a first run) once the loss has persisted.
+        assertEquals(SecureStorageException.Reason.NOT_READY, failureOf { secrets().databaseKey() })
+        assertEquals(SecureStorageException.Reason.NOT_READY, failureOf { secrets().databaseKey() })
+        assertEquals(1, keys.creates)
+        now += 61 * minute
+        assertEquals(32, keyBytes(secrets()).size)
+        assertEquals("made by the reset path", 2, keys.creates)
+        assertEquals(1, incidents().size)
+    }
+
+    // ---- threads ----
+
+    @Test
+    fun theKeyIsRefusedOnTheMainThreadAndNothingIsTouched() {
+        onMainThread = true
+        try {
+            secrets().databaseKey()
+            fail("expected IllegalStateException")
+        } catch (e: IllegalStateException) {
+            // main thread
+        }
+        assertFalse(File(dir, "db-key.v1").exists())
+        assertEquals(0, keys.creates)
+        try {
+            secrets().recordSuccessfulStart() // housekeeping never throws and never needs the Keystore
+        } finally {
+            onMainThread = false
+        }
+        assertEquals(32, keyBytes(secrets()).size)
+    }
+
+    @Test
+    fun theRetryBackoffSleepsWithTheProcessLockReleased() {
+        secrets().databaseKey().close()
+        keys.unavailable = true
+        var otherKey: ByteArray? = null
+        var otherFinished = false
+        val slept = mutableListOf<Long>()
+        val app = AppSecrets(
+            dir, AesGcmSecretBox(keys), keys, db, SecureRandom(), listOf(100L, 500L, 2000L),
+            { ms ->
+                slept += ms
+                if (slept.size == 1) {
+                    keys.unavailable = false
+                    // Another instance asks for the key while this one sleeps: it must not wait for us.
+                    val t = thread { otherKey = keyBytes(secrets()); otherFinished = true }
+                    t.join(5_000)
+                }
+            },
+            Quarantine(quarantineDir, { now }), { now }, { false },
+        )
+        app.databaseKey().close()
+        assertTrue("the other instance got the key during the sleep", otherFinished)
+        assertEquals(32, otherKey!!.size)
+        assertEquals(listOf(100L), slept)
+    }
+
     // ---- housekeeping: 7 days and 3 later successful starts ----
 
     private fun loseAndStartAgain(): File {
@@ -325,7 +640,7 @@ class AppSecretsTest {
         s.databaseKey().close()
         makeDatabaseFiles()
         keys.lose()
-        secrets().databaseKey().close() // the start that moved the data aside
+        start() // the start that moved the data aside
         return incidents().single()
     }
 
@@ -336,10 +651,10 @@ class AppSecretsTest {
         assertEquals(0, Quarantine(quarantineDir, { now }).startsOf(incident))
 
         now += 8 * day
-        secrets().databaseKey().close() // start 1
-        secrets().databaseKey().close() // start 2
+        start() // start 1
+        start() // start 2
         assertTrue("old enough but only 2 starts", incident.exists())
-        secrets().databaseKey().close() // start 3
+        start() // start 3
         assertFalse("7 days and 3 starts", incident.exists())
     }
 
@@ -347,11 +662,11 @@ class AppSecretsTest {
     fun threeStartsWithinSevenDaysKeepIt() {
         val incident = loseAndStartAgain()
         now += 6 * day
-        repeat(5) { secrets().databaseKey().close() }
+        repeat(5) { start() }
         assertTrue(incident.exists())
         assertEquals(5, Quarantine(quarantineDir, { now }).startsOf(incident))
         now += 1 * day + 1
-        secrets().databaseKey().close()
+        start()
         assertFalse(incident.exists())
     }
 
@@ -359,7 +674,7 @@ class AppSecretsTest {
     fun aStartIsCountedOncePerInstanceNoMatterHowOftenTheKeyIsOpened() {
         val incident = loseAndStartAgain()
         val s = secrets()
-        repeat(4) { s.databaseKey().close() }
+        repeat(4) { start(s) }
         assertEquals(1, Quarantine(quarantineDir, { now }).startsOf(incident))
     }
 
@@ -369,6 +684,17 @@ class AppSecretsTest {
         keys.unavailable = true
         failureOf { secrets().databaseKey() }
         assertEquals(0, Quarantine(quarantineDir, { now }).startsOf(incident))
+    }
+
+    @Test
+    fun obtainingTheKeyIsNotAStartUntilTheCoreHasOpened() {
+        val incident = loseAndStartAgain()
+        val s = secrets()
+        s.databaseKey().close()
+        s.databaseKey().close()
+        assertEquals("databaseKey() alone counts nothing", 0, Quarantine(quarantineDir, { now }).startsOf(incident))
+        s.recordSuccessfulStart()
+        assertEquals(1, Quarantine(quarantineDir, { now }).startsOf(incident))
     }
 
     // ---- races ----

@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import uniffi.croft_ffi.CredentialProvider
 import uniffi.croft_ffi.FfiCredential
+import uniffi.croft_ffi.ProviderException
 
 /** The accounts that need the person to sign in again, for the screens to observe. */
 class SignInNeeded {
@@ -32,8 +33,11 @@ class SignInNeeded {
 /**
  * The credential callback the core calls each time an account's connection signs in (on a core
  * thread, never the UI thread). It reads [store], hands the core a [FfiCredential] and wipes its
- * own copy of the bytes straight after. It never logs and never throws a secret: any failure of
- * the store reads as "no credential", and the core then calls [signInNeeded].
+ * own copy of the bytes straight after. It never logs and never throws a secret. A failure of the
+ * store reads as "no credential" and the core then calls [signInNeeded], except a Keystore that is
+ * unavailable (or whose loss is only suspected): that throws `ProviderException.NotReady`, which the
+ * core treats as a transient failure of this connection attempt (the account is not paused and
+ * [signInNeeded] is not called; it asks again later with back-off).
  *
  * The core asks only about accounts the app already stored a secret for (at `open` and
  * `signedIn`). A new account's credential is not looked up here: it goes into `Core.addAccount`
@@ -58,6 +62,11 @@ class SecretStoreCredentials(
                 password.fill(0)
             }
         } catch (e: SecretBoxException) {
+            // A Keystore that cannot answer now (or answers on weak evidence of a loss, see
+            // SecretBoxException.weak) says nothing about the person's sign-in: the core is told
+            // "not ready", keeps the account running and asks again later. Marking the account as
+            // needing a sign-in here would send the person to retype a password that is safe.
+            if (e.kind == SecretBoxException.Kind.UNAVAILABLE || e.weak) throw ProviderException.NotReady()
             return null
         }
     }

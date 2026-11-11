@@ -48,12 +48,14 @@ class SecretPrintingTest {
             "SecretStore" to store,
             "AppSecrets" to appSecrets,
             "AesGcmSecretBox" to box,
-            "KeystoreKeySource" to KeystoreKeySource("croft.test", FakeKeystore(), KeystoreErrors(), emptyList()) {},
+            "KeystoreKeySource" to KeystoreKeySource("croft.test", FakeKeystore(), KeystoreErrors(), emptyList(), {}),
             "KeyLossNotice" to appSecrets.keyLoss,
             "SignInNeeded" to signIns,
             "SecretStoreCredentials" to provider,
             "AccountSecrets" to AccountSecrets(store, signIns),
             "Quarantine" to Quarantine(File(dir, "q"), { 0L }),
+            "QuarantineRestore" to appSecrets.quarantineRestore,
+            "LossConfirmation" to LossConfirmation(File(dir, "suspect"), { 0L }),
         )
         printed.forEach { (name, obj) ->
             val text = "$obj / ${obj.toString()} / $name: $obj"
@@ -66,7 +68,7 @@ class SecretPrintingTest {
     @Test
     fun theBoxExceptionAndItsKindsCarryNoText() {
         SecretBoxException.Kind.values().forEach {
-            val e = SecretBoxException(it)
+            val e = SecretBoxException(it, weak = true)
             assertEquals(it.name, e.message)
             assertNull(e.cause)
             assertFalse(leaks(e.toString(), Fixture.PASSWORD))

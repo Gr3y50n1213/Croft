@@ -37,7 +37,10 @@ const val EXPECTED_FFI_API_VERSION: UInt = 4u
 
 /**
  * Opens the core on [databasePath] with the database key from [secrets] (made on the first run,
- * unwrapped from the Keystore later; see `secrets/AppSecrets.kt`). Call it off the main thread.
+ * unwrapped from the Keystore later; see `secrets/AppSecrets.kt`). **Call it off the main thread**:
+ * the Keystore can make it wait for seconds, so it throws [IllegalStateException] on the main thread
+ * before touching anything. A successful return also counts as one successful start for the
+ * quarantine's housekeeping (`AppSecrets.recordSuccessfulStart`); a failure does not.
  *
  * The key is always passed: a library built without the `sqlcipher` feature refuses it
  * (`StorageReason.EncryptionUnavailable`) instead of opening an unencrypted database, so a build
@@ -50,12 +53,16 @@ const val EXPECTED_FFI_API_VERSION: UInt = 4u
  * and offers "try again".
  */
 fun openCore(databasePath: String, secrets: AppSecrets, provider: CredentialProvider): Core {
+    secrets.assertNotMainThread()
     val key = secrets.databaseKey()
-    try {
-        return key.withBytes { Core.open(databasePath, it, provider) }
+    val core = try {
+        key.withBytes { Core.open(databasePath, it, provider) }
     } finally {
         key.close()
     }
+    // A start counts only now: the key was made or opened AND the core accepted it.
+    secrets.recordSuccessfulStart()
+    return core
 }
 
 /** What the Rust core reports about itself. */

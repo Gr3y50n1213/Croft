@@ -1,8 +1,8 @@
 Jetpack Compose app, Material 3 Expressive. It currently has one screen (`MainActivity`) that shows the version of the Rust core, proving Rust → UniFFI → Kotlin → Compose. Build the real screens from `docs/ux/` and the wireframes (S01 to S60) in `design/wireframes/`.
 
 ## Build
-Needs: JDK 17+ (CI and the first setup use 21), the Android SDK (`ANDROID_HOME`) with `platforms;android-36`,
-`build-tools;36.0.0` and `ndk;29.0.14206865`, Rust with the targets
+Needs: JDK 17+ (CI and the first setup use 21), the Android SDK (`ANDROID_HOME`) with `platforms;android-37.0`
+(compileSdk 37: Material 3 1.5 and Compose 1.12 require it; targetSdk stays 36), `build-tools;36.0.0` and `ndk;29.0.14206865`, Rust with the targets
 `aarch64-linux-android` and `x86_64-linux-android`, and `cargo install cargo-ndk --version 4.1.2 --locked`.
 
 ```
@@ -10,6 +10,9 @@ cd android
 ./gradlew :app:assembleDebug :app:testDebugUnitTest
 tools/check-16kb-alignment.sh app/build/generated/rust/jniLibs   # LOAD segments must be 0x4000 aligned
 ```
+
+The unit tests include Robolectric tests, which download Android jars from Maven Central on first run. Behind a
+proxy or mirror, set `ROBOLECTRIC_REPO_URL` to the Maven repository to use.
 
 What Gradle does (see `app/build.gradle.kts`):
 - `buildRustAndroid`: `cargo ndk` builds `libcroft_ffi.so` (release) for `arm64-v8a` and `x86_64` into `app/build/generated/rust/jniLibs`.

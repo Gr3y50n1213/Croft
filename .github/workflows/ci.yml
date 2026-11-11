@@ -20,6 +20,7 @@ jobs:
           workspaces: core
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy -p croft-ffi --all-targets --features cli -- -D warnings
       - run: cargo test
 
   schema:
@@ -44,7 +45,7 @@ jobs:
           java-version: 21
       - uses: android-actions/setup-android@v3
         with:
-          packages: "platform-tools platforms;android-36 build-tools;36.0.0 ndk;${{ env.NDK_VERSION }}"
+          packages: "platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;${{ env.NDK_VERSION }}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
@@ -58,7 +59,11 @@ jobs:
         run: ./gradlew :app:assembleDebug :app:testDebugUnitTest
       - name: Check 16 KB page alignment of the native libraries
         working-directory: android
-        run: tools/check-16kb-alignment.sh app/build/generated/rust/jniLibs
+        run: |
+          tools/check-16kb-alignment.sh app/build/generated/rust/jniLibs
+          rm -rf app/build/apk-libs && unzip -q app/build/outputs/apk/debug/app-debug.apk 'lib/*' -d app/build/apk-libs
+          tools/check-16kb-alignment.sh app/build/apk-libs
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v4
         with:
           name: croft-debug-apk

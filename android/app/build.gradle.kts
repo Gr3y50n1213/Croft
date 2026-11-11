@@ -121,6 +121,9 @@ tasks.withType<Test>().configureEach {
     // JNA finds the host build of the library here; the generated bindings load it by name.
     systemProperty("jna.library.path", hostLibDir.asFile.path)
     systemProperty("croft.cargoVersion", cargoVersion)
+    // Robolectric downloads its Android jars from Maven Central at run time. Behind a proxy or
+    // mirror, set ROBOLECTRIC_REPO_URL to the Maven repository to use instead.
+    System.getenv("ROBOLECTRIC_REPO_URL")?.let { systemProperty("robolectric.dependency.repo.url", it) }
 }
 
 dependencies {

@@ -1,0 +1,104 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package com.example.croft.mail.onboarding
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import uniffi.croft_ffi.AccountStatus
+import uniffi.croft_ffi.Core
+import uniffi.croft_ffi.DiscoveryObserver
+import uniffi.croft_ffi.FfiCredential
+import uniffi.croft_ffi.FfiDiscovered
+
+/** The secure storage (or the core) could not be opened, or the password could not be kept: no account was added. */
+class StorageUnavailableException : Exception()
+
+/**
+ * What the sign-in flow needs from the Rust core (T10's `discover`, `verify` and `add_account`) and from the secret store. The
+ * flow talks only to this interface, so a screen test can script it and the JVM tests can run it over the real core.
+ *
+ * **Passwords** cross as UTF-8 `ByteArray`. A call never keeps the array and never wipes it: the caller ([OnboardingFlow]) owns it
+ * and wipes it. Each call makes its own copy for the core's credential object and wipes that copy.
+ *
+ * Failures are the typed ones of the core: `discover` throws `DiscoverException`, `verify` throws `VerifyFailure`, `addAccount`
+ * throws `CoreException`, and [StorageUnavailableException] when the password could not be stored (the account is then not added).
+ */
+interface OnboardingBackend {
+    /** Looks up the settings for [email], reporting each probe to [observer]. Cancelling the coroutine stops the probes. */
+    suspend fun discover(email: String, observer: DiscoveryObserver): FfiDiscovered
+
+    /** Signs in with [discovered] and [password] to check them; [pinnedFingerprint] is a certificate the person trusted. */
+    suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?)
+
+    /** Adds the verified account and keeps [password] in the secret store under the new id. Returns the id. */
+    suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long
+}
+
+/**
+ * Where the password is stored once the core has added the account: `(discovered, displayName, pinnedFingerprint, password)` to the
+ * new account's id. In the app this is `AccountSecrets.addPasswordAccount` (core call first, then the secret store, and the account
+ * is removed again if the store fails); the JVM tests give a plain call to the core.
+ */
+typealias AccountAdder = suspend (FfiDiscovered, String, String?, ByteArray) -> Long
+
+/** [OnboardingBackend] over the real [Core]. */
+class CoreOnboardingBackend(private val core: Core, private val adder: AccountAdder) : OnboardingBackend {
+    override suspend fun discover(email: String, observer: DiscoveryObserver): FfiDiscovered = core.discover(email, observer)
+
+    override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?) {
+        val copy = password.copyOf()
+        try {
+            val credential = FfiCredential.password(copy)
+            try {
+                core.verify(discovered, credential, pinnedFingerprint)
+            } finally {
+                credential.close()
+            }
+        } finally {
+            copy.fill(0)
+        }
+    }
+
+    /**
+     * Adds the account, **once per address**: when the core already has an account with this address (not the sample mailbox), that
+     * account's id is returned and nothing is added. This is what makes a second sign-in harmless when the first one did add the
+     * account but its screen was gone before it could say so (the add runs to its end even then, see `OnboardingFlow`).
+     */
+    override suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long {
+        core.listAccounts().firstOrNull { !it.isDemo && it.email.equals(discovered.email.trim(), ignoreCase = true) }?.let { return it.id }
+        return adder(discovered, displayName, pinnedFingerprint, password)
+    }
+
+    override fun toString(): String = "[redacted]"
+}
+
+/** How far the first sync of a new account has come (S09). */
+data class FirstSyncStatus(
+    /** Messages in the Inbox so far. */
+    val inboxMessages: Int,
+    /** The first folders have synced: the Inbox can be read. */
+    val done: Boolean,
+    /** The account stopped (the server refused the sign-in, or it cannot run): the sync will not finish by itself. */
+    val failed: Boolean,
+)
+
+/** Reads the progress of the first sync of an account. */
+interface FirstSyncSource {
+    /** The status now. Cheap; S09 asks about twice a second. */
+    suspend fun status(accountId: Long): FirstSyncStatus
+}
+
+/** [FirstSyncSource] over the core: done when a folder has synced, failed when the account needs a sign-in or cannot run. */
+class CoreFirstSync(private val core: Core) : FirstSyncSource {
+    override suspend fun status(accountId: Long): FirstSyncStatus = withContext(Dispatchers.IO) {
+        val account = core.listAccounts().firstOrNull { it.id == accountId } ?: return@withContext FirstSyncStatus(0, done = false, failed = true)
+        val inbox = core.listFolders(accountId).firstOrNull { it.specialUse == "inbox" }?.totalCount?.toInt() ?: 0
+        FirstSyncStatus(
+            inboxMessages = inbox,
+            done = account.lastSyncedMs != null && account.status != AccountStatus.SYNCING,
+            failed = account.status == AccountStatus.NEEDS_SIGN_IN || account.status == AccountStatus.ERROR,
+        )
+    }
+}

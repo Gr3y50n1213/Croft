@@ -1210,6 +1210,44 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
 }
 
 #[test]
+fn a_pin_for_a_providers_own_server_is_refused_even_when_the_provider_field_is_empty() {
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let pin = CertFingerprint::of_der(b"an interceptor's certificate").to_string();
+    // The settings of a Gmail address after the person changed the port or the security on the
+    // server settings screen: the host is Gmail's, the provider field was dropped.
+    for (host, port, security) in [
+        ("imap.gmail.com", 143, SecurityMode::StartTls),
+        ("IMAP.GMAIL.COM", 993, SecurityMode::Tls),
+        ("outlook.office365.com", 143, SecurityMode::StartTls),
+        ("imap.mail.me.com", 143, SecurityMode::StartTls),
+        ("imap.fastmail.com", 143, SecurityMode::StartTls),
+    ] {
+        let edited = FfiDiscovered {
+            email: "sam@example.org".into(),
+            imap: Some(ServerSettings {
+                host: host.into(),
+                port,
+                security,
+                username: "sam".into(),
+            }),
+            smtp: None,
+            jmap: None,
+            source: DiscoverySource::Autoconfig,
+            provider: None,
+            auth_hint: AuthKind::Password,
+        };
+        assert_eq!(
+            block(core.add_account(edited, "x".into(), Some(pin.clone()), password_cred("x"))),
+            Err(CoreError::BadSettings),
+            "{host}"
+        );
+    }
+    // Nothing was added, and a server of the person's own still takes a pin.
+    assert!(core.list_accounts().unwrap().is_empty());
+}
+
+#[test]
 fn a_removed_accounts_id_is_not_given_to_the_next_account() {
     let db = TempDb::new();
     let core = db.open(&MemProvider::new());

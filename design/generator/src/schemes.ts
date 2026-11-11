@@ -6,6 +6,7 @@
 
 import {
   Hct,
+  TonalPalette,
   SchemeExpressive,
   SchemeFidelity,
   SchemeMonochrome,
@@ -112,4 +113,61 @@ export function buildAllSchemes(tokens: Tokens): SchemeEntry[] {
     }
   }
   return entries;
+}
+
+// ---- Status colours (amber): a fixed HCT hue and chroma read at tones set in tokens.json ----
+
+export const STATUS_MODES = ['light', 'dark', 'pureBlack'] as const;
+
+export interface StatusRoles {
+  color: string;
+  container: string;
+  onContainer: string;
+}
+
+export interface StatusEntry {
+  name: string;
+  mode: Mode;
+  contrast: ContrastId;
+  colors: StatusRoles;
+}
+
+type ToneSet = { color: number; container: number; onContainer: number };
+
+function toneSet(raw: unknown, where: string): ToneSet {
+  const t = raw as Record<string, unknown> | undefined;
+  const out = {} as ToneSet;
+  for (const k of ['color', 'container', 'onContainer'] as const) {
+    const v = t?.[k];
+    if (typeof v !== 'number' || v < 0 || v > 100) throw new Error(`status ${where}.${k}: needs a tone from 0 to 100`);
+    out[k] = v;
+  }
+  return out;
+}
+
+/** One entry per status colour, mode and contrast. Pure black uses the dark tones. Not preset-dependent. */
+export function buildStatusColors(tokens: Tokens): StatusEntry[] {
+  const entries: StatusEntry[] = [];
+  for (const [name, raw] of Object.entries(tokens.status ?? {})) {
+    if (name.startsWith('_')) continue;
+    const def = raw as { hue?: unknown; chroma?: unknown; tones?: Record<string, Record<string, unknown>> };
+    if (typeof def.hue !== 'number' || typeof def.chroma !== 'number') throw new Error(`status ${name}: needs hue and chroma`);
+    const palette = TonalPalette.fromHueAndChroma(def.hue, def.chroma);
+    for (const mode of STATUS_MODES) {
+      const toneMode = mode === 'light' ? 'light' : 'dark';
+      for (const contrast of CONTRASTS) {
+        const tones = toneSet(def.tones?.[toneMode]?.[contrast.id], `${name}.tones.${toneMode}.${contrast.id}`);
+        const hex = (tone: number): string => hexFromArgb(palette.tone(tone)).toUpperCase();
+        entries.push({
+          name, mode, contrast: contrast.id,
+          colors: { color: hex(tones.color), container: hex(tones.container), onContainer: hex(tones.onContainer) },
+        });
+      }
+    }
+  }
+  return entries;
+}
+
+export function statusNames(entries: StatusEntry[]): string[] {
+  return [...new Set(entries.map((e) => e.name))];
 }

@@ -4,8 +4,8 @@
 
 // Kotlin output: Compose colour schemes, token constants and MotionScheme wrappers.
 
-import { ROLES, MODES, CONTRASTS, presetsOf } from './schemes.ts';
-import type { Role, SchemeEntry } from './schemes.ts';
+import { ROLES, MODES, CONTRASTS, presetsOf, statusNames } from './schemes.ts';
+import type { Role, SchemeEntry, StatusEntry } from './schemes.ts';
 import { pascal, upperSnake } from './tokens.ts';
 import type { Tokens } from './tokens.ts';
 import { MPL_HEADER_SLASH } from './header.ts';
@@ -62,6 +62,7 @@ export function emitKotlin(
   tokens: Tokens,
   generic: Record<string, unknown>,
   schemes: SchemeEntry[],
+  status: StatusEntry[],
 ): string {
   const presets = presetsOf(tokens);
   const out: string[] = [];
@@ -136,6 +137,25 @@ export function emitKotlin(
   push('');
   push('    fun roles(preset: CroftPreset, mode: CroftMode, contrast: CroftContrast = CroftContrast.STANDARD): CroftColorRoles =');
   push('        all.getValue(CroftSchemeKey(preset, mode, contrast))');
+  push('}', '');
+
+  // Status colours
+  push('/** One status colour at one mode and contrast: the colour (icons), a container fill and the text on it. */');
+  push('data class CroftStatusRoles(val color: Long, val container: Long, val onContainer: Long)', '');
+  push('data class CroftStatusKey(val mode: CroftMode, val contrast: CroftContrast)', '');
+  push('/** Status colours from tokens.json (a fixed HCT hue and chroma at set tones). Pure black uses the dark tones. */');
+  push('object CroftStatus {');
+  for (const name of statusNames(status)) {
+    push(`    private val ${name}Table = mapOf(`);
+    for (const e of status.filter((x) => x.name === name)) {
+      push(
+        `        CroftStatusKey(CroftMode.${upperSnake(e.mode)}, CroftContrast.${upperSnake(e.contrast)}) to CroftStatusRoles(${ktColor(e.colors.color)}, ${ktColor(e.colors.container)}, ${ktColor(e.colors.onContainer)}),`,
+      );
+    }
+    push('    )', '');
+    push(`    fun ${name}(mode: CroftMode, contrast: CroftContrast = CroftContrast.STANDARD): CroftStatusRoles =`);
+    push(`        ${name}Table.getValue(CroftStatusKey(mode, contrast))`);
+  }
   push('}', '');
 
   // Compose builders

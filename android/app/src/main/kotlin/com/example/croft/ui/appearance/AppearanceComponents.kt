@@ -69,14 +69,15 @@ import com.example.croft.R
 import com.example.croft.design.CroftMode
 import com.example.croft.design.CroftPreset
 import com.example.croft.design.CroftSchemes
+import com.example.croft.design.CroftTokens
 
 /** The three width classes the Appearance screens lay out for (docs/ux: compact, medium, expanded). */
 enum class WidthClass { COMPACT, MEDIUM, EXPANDED;
     companion object {
-        /** Compact below 600 dp, medium below 840 dp, expanded from 840 dp. */
+        /** Compact below 600 dp, medium below 840 dp, expanded from `layout.expandedWidthFromDp`. */
         fun of(width: Dp): WidthClass = when {
             width < 600.dp -> COMPACT
-            width < 840.dp -> MEDIUM
+            width < CroftTokens.Layout.expandedWidthFromDp.dp -> MEDIUM
             else -> EXPANDED
         }
     }

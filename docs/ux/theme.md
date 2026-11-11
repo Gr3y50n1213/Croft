@@ -47,6 +47,10 @@ Each preset is a seed colour plus a style. Names are plain words, not product-y 
 - The same library exists for Kotlin, TypeScript and Swift. A golden test feeds each preset's seed to all three and requires identical colour roles, so the platforms cannot drift.
 - A custom seed with almost no colour (very low chroma) is allowed; the library handles it. The picker shows a note when the chosen style makes the scheme look grey.
 
+### Status colours
+
+Amber (the star, the Server problem chip and banner, the blocked attachment chip) is not a Material role. It is `status.amber` in `design/tokens.json`: HCT hue 78, chroma 80, read at the tones listed there for light, dark (and pure black) at Standard, Medium and High contrast, and generated as colour, container and on-container for every platform. It is not harmonised with the seed, so it stays amber in every theme. The generator tests hold the icon to 3 to 1 on the list surfaces and the text on the container to 4.5 to 1 (7 to 1 at High).
+
 ### Shape and density (S52)
 
 | Setting | Options | Default | Effect |

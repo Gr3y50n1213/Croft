@@ -9,6 +9,7 @@ import com.example.croft.design.CroftContrast
 import com.example.croft.design.CroftMode
 import com.example.croft.design.CroftPreset
 import com.example.croft.design.CroftSchemes
+import com.example.croft.design.CroftStatus
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -93,4 +94,25 @@ class ThemeContrastTest(private val preset: CroftPreset, private val mode: Croft
     @Test
     fun runtimeSchemeMeetsContrast() =
         check(ThemeEngine.runtimeRoles(preset.seed, ThemeEngine.styleOf(preset), mode, contrast), "runtime")
+
+    @Test
+    fun amberMeetsContrastWhereItIsUsed() {
+        val amber = CroftStatus.amber(mode, contrast)
+        val roles = CroftSchemes.roles(preset, mode, contrast)
+        val failures = buildList {
+            // The star on list rows (surface, container low), and text on the amber fill (chip, banner, attachment chip).
+            for ((name, bg) in listOf("surface" to roles.surface, "surfaceContainerLow" to roles.surfaceContainerLow, "surfaceContainer" to roles.surfaceContainer)) {
+                val r = Contrast.ratio(amber.color, bg)
+                if (r + 1e-9 < Contrast.LARGE) add("amber on $name: %.2f".format(r))
+            }
+            if (contrast == CroftContrast.STANDARD) {
+                val r = Contrast.ratio(amber.color, roles.primaryContainer)
+                if (r + 1e-9 < Contrast.LARGE) add("amber on primaryContainer (selected row): %.2f".format(r))
+            }
+            val text = Contrast.ratio(amber.onContainer, amber.container)
+            val min = if (contrast == CroftContrast.HIGH) Contrast.HIGH else Contrast.NORMAL
+            if (text + 1e-9 < min) add("onAmberContainer on amberContainer: %.2f".format(text))
+        }
+        assertTrue("amber $preset $mode $contrast: $failures", failures.isEmpty())
+    }
 }

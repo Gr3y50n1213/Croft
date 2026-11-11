@@ -5,6 +5,7 @@
 package com.example.croft.ui.mail
 
 import androidx.compose.ui.unit.dp
+import com.example.croft.design.CroftTokens
 
 /** Test tags of the message list screens (S10 to S19). */
 object InboxTags {
@@ -42,8 +43,8 @@ object InboxTags {
     fun switcherAccount(id: Long) = "switcher-account-$id"
 }
 
-/** The pull to refresh arming distance, from docs/ux/state-machines.md ("Drag past 80 dp"). `tokens.json` has no entry for it yet. */
-val PULL_ARM_DP = 80.dp
+/** The pull to refresh arming distance, from docs/ux/state-machines.md ("Drag past 80 dp"); `tokens.json` `layout.pullToRefreshArmDp`. */
+val PULL_ARM_DP = CroftTokens.Layout.pullToRefreshArmDp.dp
 
 /** The widths at which the layout changes (Material window size classes): the drawer is permanent from [EXPANDED_FROM_DP]. */
-const val EXPANDED_FROM_DP = 840
+const val EXPANDED_FROM_DP = CroftTokens.Layout.expandedWidthFromDp

@@ -156,9 +156,9 @@ class AccountsScreensTest {
         // The list of what is deleted on this device.
         rule.onNodeWithText("Remove Work?").assertIsDisplayed()
         rule.onNodeWithText("Its messages and folders", substring = true).assertExists()
-        rule.onNodeWithText("Changes that are waiting to be sent to the server").assertExists()
-        rule.onNodeWithText("Its drafts and its outbox").assertExists()
-        rule.onNodeWithText("Its saved password").assertExists()
+        rule.onNodeWithText("Changes that are waiting to be sent to the server", substring = true).assertExists()
+        rule.onNodeWithText("Its drafts and its outbox", substring = true).assertExists()
+        rule.onNodeWithText("Its saved password", substring = true).assertExists()
         assertTrue("nothing is removed before the person confirms", ops.removed.isEmpty() && secrets.has(2, SecretKind.PASSWORD))
         rule.onNodeWithText("Remove").performClick()
         waitGone(AccountsTags.row(2))
@@ -188,8 +188,8 @@ class AccountsScreensTest {
         openAccounts()
         tag(AccountsTags.remove(3)).performClick()
         waitFor(AccountsTags.REMOVE_DIALOG)
-        rule.onNodeWithText("Its drafts and its outbox").assertExists()
-        assertTrue(rule.onAllNodes(hasText("Its saved password")).fetchSemanticsNodes().isEmpty())
+        rule.onNodeWithText("Its drafts and its outbox", substring = true).assertExists()
+        assertTrue(rule.onAllNodes(hasText("Its saved password", substring = true)).fetchSemanticsNodes().isEmpty())
     }
 
     @Test
@@ -260,7 +260,7 @@ class AccountsScreensTest {
     @Test
     fun folderMappingSavesTheChosenFolder() {
         // Account 1 has no Archive folder on its server: the row asks, and the choice is remembered.
-        (repo.base()).removeFolder(1, FakeData.ARCHIVE)
+        repo.missingFolders += FakeData.folderId(1, FakeData.ARCHIVE)
         show()
         openAccounts()
         tag(AccountsTags.row(1)).performClick()
@@ -286,7 +286,7 @@ class AccountsScreensTest {
         waitFor(AccountsTags.ACCOUNT)
         tag(AccountsTags.REMOVE).performScrollTo().performClick()
         waitFor(AccountsTags.REMOVE_DIALOG)
-        rule.onNodeWithText("Its saved password").assertExists()
+        rule.onNodeWithText("Its saved password", substring = true).assertExists()
         rule.onNodeWithText("Remove").performClick()
         waitFor(AccountsTags.ACCOUNTS)
         assertEquals(listOf(2L), ops.removed.toList())
@@ -359,7 +359,7 @@ class AccountsScreensTest {
         openAbout()
         tag(AccountsTags.ERASE_ALL).performScrollTo().performClick()
         waitFor(AccountsTags.ERASE_DIALOG)
-        rule.onNodeWithText("Every saved password").assertExists()
+        rule.onNodeWithText("Every saved password", substring = true).assertExists()
         assertFalse("nothing is erased before the person confirms", ops.erased)
         rule.onNodeWithText("Erase everything").performClick()
         waitFor(OnboardingTags.WELCOME)
@@ -397,8 +397,9 @@ class AccountsScreensTest {
         waitFor(InboxTags.SCREEN)
         assertEquals("the core's own sample account was asked for", 1, ops.samples)
         // Its rows say they are not saved to a server.
-        rule.waitUntil(10_000) { exists(com.example.croft.ui.components.ROW_NOT_SAVED_TAG) }
-        assertTrue(rule.onAllNodes(hasText("Not saved to server")).fetchSemanticsNodes().isNotEmpty())
+        // (The row merges its children for screen readers, so the line is looked up in the unmerged tree; the row's spoken text has it too.)
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(com.example.croft.ui.components.ROW_NOT_SAVED_TAG), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        assertTrue(rule.onAllNodes(androidx.compose.ui.test.hasContentDescription("Not saved to server", substring = true)).fetchSemanticsNodes().isNotEmpty())
         tag(InboxTags.MENU_BUTTON).performClick()
         rule.waitForIdle()
         tag("drawer-settings").performScrollTo().performClick()

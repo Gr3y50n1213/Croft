@@ -104,7 +104,7 @@ class MainActivityTest {
         rule.onNodeWithTag(OnboardingTags.SAMPLE_BUTTON).performClick()
         rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
         // The sample messages come from the core and each row says it is not saved to a server.
-        rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(com.example.croft.ui.components.ROW_NOT_SAVED_TAG)).fetchSemanticsNodes().isNotEmpty() }
+        rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(com.example.croft.ui.components.ROW_NOT_SAVED_TAG), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         rule.onNodeWithTag(InboxTags.MENU_BUTTON).performClick()
         rule.waitForIdle()
         rule.onNodeWithTag("drawer-settings").performScrollTo().performClick()

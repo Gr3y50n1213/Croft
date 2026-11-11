@@ -24,11 +24,13 @@ import java.util.concurrent.CopyOnWriteArrayList
  * removal list has numbers to show. Account names and addresses are made up.
  */
 class AccountsRepo(private val base: FakeMessageRepository, val accounts: MutableList<AccountInfo>) : MessageRepository by base {
-    val baseRepository: FakeMessageRepository get() = base
-
     override suspend fun listAccounts(): List<AccountInfo> = synchronized(this) { accounts.toList() }
 
-    override suspend fun listFolders(account: AccountId): List<FolderInfo> = base.listFolders(account).map { it.copy(totalCount = FOLDER_TOTAL) }
+    /** Folder ids the server of a test account "does not have" (the fake repository lists every folder of every account). */
+    val missingFolders: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    override suspend fun listFolders(account: AccountId): List<FolderInfo> =
+        base.listFolders(account).filter { it.id !in missingFolders }.map { it.copy(totalCount = FOLDER_TOTAL) }
 
     companion object {
         /** The message count every test folder reports. */
@@ -90,6 +92,3 @@ class RecordingOps(private val repo: AccountsRepo, private val secrets: SecretSt
 
     fun putPassword(id: AccountId) = secrets?.put(id, SecretKind.PASSWORD, "made-up-password".toByteArray())
 }
-
-/** The fake repository under [AccountsRepo], for a test that changes it (a folder that goes missing). */
-fun AccountsRepo.base(): FakeMessageRepository = baseRepository

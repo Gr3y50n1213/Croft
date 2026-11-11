@@ -47,6 +47,7 @@ class MainActivityTest {
     fun showsTheVersionFromRust() {
         val expected = System.getProperty("croft.cargoVersion")
         rule.onNodeWithText("Core version $expected").assertIsDisplayed()
-        rule.onNodeWithText("FFI API version 1").assertIsDisplayed()
+        // The app refuses a library with another version, so the screen shows the one it expects.
+        rule.onNodeWithText("FFI API version $EXPECTED_FFI_API_VERSION").assertIsDisplayed()
     }
 }

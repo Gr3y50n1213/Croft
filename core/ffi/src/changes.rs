@@ -116,6 +116,12 @@ impl Hub {
             Change::SignInNeeded { account } => {
                 self.sign_in_needed(account);
             }
+            // Sending is not on this surface yet (it comes with its own version bump, see
+            // `docs/tasks/T10-ffi-mail-surface.md`): an outbox change only tells the app that
+            // something about the account changed.
+            Change::Outbox { account }
+            | Change::SendFailed { account, .. }
+            | Change::NotFiled { account, .. } => self.push([Entry::Account(account)]),
         }
     }
 

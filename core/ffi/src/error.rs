@@ -164,9 +164,10 @@ impl From<EngineError> for CoreError {
         match e {
             EngineError::Storage(e) => e.into(),
             EngineError::UnknownAccount(_) => Self::NoSuchAccount,
-            EngineError::Backend(_) | EngineError::AccountExists(_) | EngineError::NoRuntime => {
-                Self::Internal
-            }
+            EngineError::Backend(_)
+            | EngineError::AccountExists(_)
+            | EngineError::NoRuntime
+            | EngineError::NoOutbox => Self::Internal,
         }
     }
 }

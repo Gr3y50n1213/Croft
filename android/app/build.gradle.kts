@@ -106,6 +106,17 @@ android {
 
     buildFeatures { compose = true }
 
+    buildTypes {
+        // For the macrobenchmark module (T14): the release build, signed with the debug key so it installs, and profileable
+        // (app/src/benchmark/AndroidManifest.xml) so that the benchmark can measure it. Not for distribution.
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            isDebuggable = false
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

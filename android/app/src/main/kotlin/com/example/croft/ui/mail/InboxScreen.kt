@@ -56,6 +56,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import com.example.croft.R
 import com.example.croft.haptics.LocalHaptics
@@ -96,7 +97,7 @@ import java.time.format.FormatStyle
  * back-callback API: the account switcher and the drawer close first, then selection mode, then the navigation leaves the
  * screen (the handlers are registered in that order of priority: the last registered is asked first).
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun InboxScreen(
     session: MailSession,
@@ -138,7 +139,8 @@ fun InboxScreen(
         )
     }
 
-    BoxWithConstraints(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag(InboxTags.SCREEN)) {
+    // The test tags are exposed as resource ids so that the macrobenchmark (UiAutomator) can find the list.
+    BoxWithConstraints(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag(InboxTags.SCREEN).semantics { testTagsAsResourceId = true }) {
         val expanded = maxWidth >= EXPANDED_FROM_DP.dp
         if (expanded) {
             Row(Modifier.fillMaxSize()) {

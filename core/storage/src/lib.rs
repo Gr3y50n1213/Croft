@@ -150,6 +150,8 @@ mod tests {
     #[test]
     fn every_table_has_an_account_scope_or_is_global() {
         // Guards the multi-user rule: new tables must either carry account_id or be listed here.
+        // `AUTOINCREMENT` (on `outbox`) makes SQLite create its own `sqlite_sequence` table. It
+        // holds only `('outbox', seq)`, the id high-water mark, and is global on purpose.
         let global = [
             "account",
             "message_body",

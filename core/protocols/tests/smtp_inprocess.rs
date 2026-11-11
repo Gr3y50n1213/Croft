@@ -502,7 +502,10 @@ async fn starttls_never_falls_back_to_plaintext() {
         .send("a@example.org", &["b@example.org"], MSG)
         .await
         .unwrap_err();
-    assert!(matches!(err, BackendError::Permanent(_)), "{err:?}");
+    assert!(
+        matches!(&err, BackendError::Auth(m) if m == "the server did not offer a secure connection"),
+        "{err:?}"
+    );
     assert!(!server.commands().iter().any(|c| c.starts_with("AUTH")));
     assert!(server.accepted().is_empty());
 }

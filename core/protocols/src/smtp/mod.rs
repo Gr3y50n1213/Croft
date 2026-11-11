@@ -315,8 +315,10 @@ impl SmtpSender {
 
         if cfg.security == SmtpSecurity::StartTls {
             if !caps.starttls {
-                return Err(BackendError::Permanent(
-                    "the server does not support STARTTLS, so the message was not sent".into(),
+                // Same class as a certificate failure: the account pauses and the mail stays
+                // queued, instead of the message failing for good.
+                return Err(BackendError::Auth(
+                    "the server did not offer a secure connection".into(),
                 ));
             }
             let reply = command(&mut conn, "STARTTLS").await?;

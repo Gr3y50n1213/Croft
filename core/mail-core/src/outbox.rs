@@ -64,6 +64,7 @@
 use croft_protocols::smtp::MAYBE_SENT_REASON;
 use croft_protocols::BackendError;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 pub use crate::ops::{backoff_ms, AccountId, MAX_ATTEMPTS};
 
@@ -108,7 +109,7 @@ impl OutboxState {
 }
 
 /// What the caller supplies for a new message. The bytes go to the store separately.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NewMessage {
     /// The account that sends it.
     pub account: AccountId,
@@ -121,8 +122,19 @@ pub struct NewMessage {
     pub recipients: Vec<String>,
 }
 
+impl fmt::Debug for NewMessage {
+    /// Never prints addresses: only the account, identity and the number of recipients.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewMessage")
+            .field("account", &self.account)
+            .field("identity", &self.identity)
+            .field("recipients", &self.recipients.len())
+            .finish()
+    }
+}
+
 /// One message in the Outbox, without its bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OutboxEntry {
     /// Id, for Undo, Retry, Edit and Discard.
     pub id: OutboxId,
@@ -144,6 +156,22 @@ pub struct OutboxEntry {
     /// The reason it failed, or the last problem, in plain words. Never contains server text or
     /// an address.
     pub last_error: Option<String>,
+}
+
+impl fmt::Debug for OutboxEntry {
+    /// Never prints addresses: ids, state, attempts and the recipient count only.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutboxEntry")
+            .field("id", &self.id)
+            .field("account", &self.account)
+            .field("identity", &self.identity)
+            .field("state", &self.state)
+            .field("recipients", &self.recipients.len())
+            .field("send_at_ms", &self.send_at_ms)
+            .field("attempts", &self.attempts)
+            .field("has_error", &self.last_error.is_some())
+            .finish()
+    }
 }
 
 impl OutboxEntry {
@@ -198,7 +226,7 @@ pub enum FilingRejection {
 }
 
 /// The Outbox. Lives in memory; [`crate::outbox_store::PersistentOutbox`] keeps it in a store.
-#[derive(Debug, Default, Clone)]
+#[derive(Default, Clone)]
 pub struct Outbox {
     entries: BTreeMap<OutboxId, OutboxEntry>,
     next_id: OutboxId,
@@ -210,6 +238,18 @@ pub struct Outbox {
     send_holds: BTreeMap<AccountId, i64>,
     /// The same for filing copies in Sent (a different server, so a separate hold).
     file_holds: BTreeMap<AccountId, i64>,
+}
+
+impl fmt::Debug for Outbox {
+    /// Never prints messages: counts only.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Outbox")
+            .field("entries", &self.entries.len())
+            .field("next_id", &self.next_id)
+            .field("paused_accounts", &self.paused.len())
+            .field("offline_accounts", &self.offline.len())
+            .finish()
+    }
 }
 
 impl Outbox {
@@ -552,6 +592,18 @@ impl Outbox {
         e.send_at_ms = now_ms;
         e.attempts = 0;
         e.last_error = None;
+        Ok(())
+    }
+
+    /// Gives up on a message that is Sending without knowing whether the server took it: it
+    /// becomes Failed with [`REASON_MAY_NOT_HAVE_BEEN_SENT`]. It never goes back to Queued.
+    pub fn abandon(&mut self, id: OutboxId) -> Result<(), ActionError> {
+        let e = self.entries.get_mut(&id).ok_or(ActionError::NotFound)?;
+        if e.state != OutboxState::Sending {
+            return Err(ActionError::WrongState);
+        }
+        e.state = OutboxState::Failed;
+        e.last_error = Some(REASON_MAY_NOT_HAVE_BEEN_SENT.to_owned());
         Ok(())
     }
 

@@ -32,7 +32,7 @@ use crate::outbox::{
 };
 
 /// What changes in one step, written atomically by [`OutboxStore::commit`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct OutboxBatch {
     /// New messages with their bytes.
     pub inserted: Vec<(OutboxEntry, Vec<u8>)>,
@@ -41,6 +41,22 @@ pub struct OutboxBatch {
     /// Messages that left the Outbox (undone, edited, discarded, sent): account and id. The store
     /// deletes the row and the bytes with it.
     pub removed: Vec<(AccountId, OutboxId)>,
+}
+
+impl fmt::Debug for OutboxBatch {
+    /// Never prints messages or addresses: counts and byte lengths only.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let inserted: Vec<(OutboxId, usize)> = self
+            .inserted
+            .iter()
+            .map(|(e, bytes)| (e.id, bytes.len()))
+            .collect();
+        f.debug_struct("OutboxBatch")
+            .field("inserted_id_and_mime_bytes", &inserted)
+            .field("updated", &self.updated)
+            .field("removed", &self.removed)
+            .finish()
+    }
 }
 
 impl OutboxBatch {
@@ -146,11 +162,20 @@ impl fmt::Debug for RemovedMessage {
 type BytesRead = (Vec<(OutboxId, Vec<u8>)>, Vec<OutboxId>);
 
 /// An [`Outbox`] kept in an [`OutboxStore`].
-#[derive(Debug)]
 pub struct PersistentOutbox<S: OutboxStore> {
     outbox: Outbox,
     store: S,
     recovered: Vec<OutboxId>,
+}
+
+impl<S: OutboxStore> fmt::Debug for PersistentOutbox<S> {
+    /// Never prints messages or addresses: the Outbox's counts only.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersistentOutbox")
+            .field("outbox", &self.outbox)
+            .field("recovered", &self.recovered.len())
+            .finish()
+    }
 }
 
 impl<S: OutboxStore> PersistentOutbox<S> {
@@ -249,9 +274,13 @@ impl<S: OutboxStore> PersistentOutbox<S> {
     /// reaches the server, and returns it (with its bytes) so the draft can be reopened.
     pub fn undo(
         &mut self,
+        account: AccountId,
         id: OutboxId,
         now_ms: i64,
     ) -> Result<RemovedMessage, OutboxError<S::Error>> {
+        if !self.owns(account, id) {
+            return Err(OutboxError::Undo(UndoError::NotFound));
+        }
         let before = self.outbox.clone();
         let entry = self.outbox.undo(id, now_ms).map_err(OutboxError::Undo)?;
         self.finish_removal(before, entry)
@@ -261,8 +290,12 @@ impl<S: OutboxStore> PersistentOutbox<S> {
     /// it can become a draft again.
     pub fn edit_back_to_draft(
         &mut self,
+        account: AccountId,
         id: OutboxId,
     ) -> Result<RemovedMessage, OutboxError<S::Error>> {
+        if !self.owns(account, id) {
+            return Err(OutboxError::Action(ActionError::NotFound));
+        }
         let before = self.outbox.clone();
         let entry = self
             .outbox
@@ -272,7 +305,14 @@ impl<S: OutboxStore> PersistentOutbox<S> {
     }
 
     /// Discard: drops a Queued or Failed message and its bytes.
-    pub fn discard(&mut self, id: OutboxId) -> Result<OutboxEntry, OutboxError<S::Error>> {
+    pub fn discard(
+        &mut self,
+        account: AccountId,
+        id: OutboxId,
+    ) -> Result<OutboxEntry, OutboxError<S::Error>> {
+        if !self.owns(account, id) {
+            return Err(OutboxError::Action(ActionError::NotFound));
+        }
         let before = self.outbox.clone();
         let entry = self.outbox.discard(id).map_err(OutboxError::Action)?;
         let batch = OutboxBatch {
@@ -286,6 +326,12 @@ impl<S: OutboxStore> PersistentOutbox<S> {
                 Err(OutboxError::Store(e))
             }
         }
+    }
+
+    /// True when message `id` exists and belongs to `account`. Every action checks this, so an id
+    /// from another account is "no such message".
+    fn owns(&self, account: AccountId, id: OutboxId) -> bool {
+        self.outbox.get(id).is_some_and(|e| e.account == account)
     }
 
     /// Reads the bytes of a removed entry, then deletes the row. If either step fails the Outbox
@@ -426,8 +472,34 @@ impl<S: OutboxStore> PersistentOutbox<S> {
     }
 
     /// Retry on a Failed message. See [`Outbox::retry`].
-    pub fn retry(&mut self, id: OutboxId, now_ms: i64) -> Result<(), OutboxError<S::Error>> {
+    pub fn retry(
+        &mut self,
+        account: AccountId,
+        id: OutboxId,
+        now_ms: i64,
+    ) -> Result<(), OutboxError<S::Error>> {
+        if !self.owns(account, id) {
+            return Err(OutboxError::Action(ActionError::NotFound));
+        }
         self.run(|o| o.retry(id, now_ms), |_| Vec::new())
+            .map_err(OutboxError::Store)?
+            .map_err(OutboxError::Action)
+    }
+
+    /// For the engine to call when a send future was dropped, or when the commit that records
+    /// [`PersistentOutbox::submitted`] or [`PersistentOutbox::failed`] failed after the message was
+    /// submitted: the message may have gone out, so it must not stay Sending until a restart.
+    /// Sending becomes Failed with [`REASON_MAY_NOT_HAVE_BEEN_SENT`], committed. It never goes back
+    /// to Queued. [`ActionError::WrongState`] when the message is not Sending.
+    pub fn abandon(
+        &mut self,
+        account: AccountId,
+        id: OutboxId,
+    ) -> Result<(), OutboxError<S::Error>> {
+        if !self.owns(account, id) {
+            return Err(OutboxError::Action(ActionError::NotFound));
+        }
+        self.run(|o| o.abandon(id), |_| Vec::new())
             .map_err(OutboxError::Store)?
             .map_err(OutboxError::Action)
     }
@@ -558,12 +630,12 @@ mod tests {
     fn undo_inside_the_window_removes_the_row_and_nothing_is_ever_handed_out() {
         let mut p = open();
         let id = p.queue(new_msg(), b"MIME".to_vec(), 0, WINDOW).unwrap();
-        let back = p.undo(id, 1_000).unwrap();
+        let back = p.undo(A, id, 1_000).unwrap();
         assert_eq!(back.mime, b"MIME");
         assert!(p.store().rows.is_empty());
         assert!(p.take_due(i64::MAX / 2, 10).unwrap().is_empty());
         assert!(matches!(
-            p.undo(id, 1_000),
+            p.undo(A, id, 1_000),
             Err(OutboxError::Undo(UndoError::NotFound))
         ));
     }
@@ -573,7 +645,7 @@ mod tests {
         let mut p = open();
         let id = p.queue(new_msg(), b"MIME".to_vec(), 0, WINDOW).unwrap();
         assert!(matches!(
-            p.undo(id, WINDOW),
+            p.undo(A, id, WINDOW),
             Err(OutboxError::Undo(UndoError::TooLate))
         ));
         assert_eq!(row_state(&p, id), Some(OutboxState::Queued));
@@ -633,7 +705,7 @@ mod tests {
         assert!(p.recovered_after_restart().is_empty());
         assert!(p.take_due(i64::MAX / 2, 10).unwrap().is_empty());
         // The person checked Sent and chose Retry.
-        p.retry(id, 100).unwrap();
+        p.retry(A, id, 100).unwrap();
         assert_eq!(p.take_due(100, 10).unwrap().len(), 1);
     }
 
@@ -729,13 +801,13 @@ mod tests {
             p.store().rows[&(A, id)].0.last_error.as_deref(),
             Some("The server refused the message")
         );
-        let back = p.edit_back_to_draft(id).unwrap();
+        let back = p.edit_back_to_draft(A, id).unwrap();
         assert_eq!(back.mime, b"MIME");
         assert!(p.store().rows.is_empty());
 
         let id2 = p.queue(new_msg(), b"TWO".to_vec(), 0, 0).unwrap();
         assert!(matches!(
-            p.discard(id2).map(|e| e.id),
+            p.discard(A, id2).map(|e| e.id),
             Ok(i) if i == id2
         ));
         assert!(p.store().rows.is_empty());
@@ -782,5 +854,109 @@ mod tests {
             mime: d.mime.clone(),
         };
         assert!(!format!("{r:?}").contains("SECRET"));
+    }
+
+    const MARK_ADDR: &str = "marker-addr@marker.example";
+    const MARK_BODY: &[u8] = b"MARKER-BODY-BYTES";
+
+    #[test]
+    fn debug_of_every_outbox_type_hides_addresses_and_bytes() {
+        let mut p = open();
+        let msg = NewMessage {
+            account: A,
+            identity: Some(3),
+            envelope_from: MARK_ADDR.into(),
+            recipients: vec![MARK_ADDR.into()],
+        };
+        let shown = [format!("{msg:?}")];
+        let id = p.queue(msg, MARK_BODY.to_vec(), 0, WINDOW).unwrap();
+        let entry = p.outbox().get(id).unwrap().clone();
+        let batch = OutboxBatch {
+            inserted: vec![(entry.clone(), MARK_BODY.to_vec())],
+            updated: vec![entry.clone()],
+            removed: vec![(A, id)],
+        };
+        let outputs = [
+            shown[0].clone(),
+            format!("{entry:?}"),
+            format!("{batch:?}"),
+            format!("{:?}", p.outbox()),
+            format!("{p:?}"),
+        ];
+        for out in &outputs {
+            assert!(!out.contains("marker"), "{out}");
+            assert!(!out.contains("MARKER"), "{out}");
+            assert!(!out.contains(&format!("{:?}", MARK_BODY)), "{out}");
+        }
+    }
+
+    #[test]
+    fn abandon_turns_sending_into_failed_maybe_sent_and_never_queued() {
+        let mut p = open();
+        let id = p.queue(new_msg(), b"MIME".to_vec(), 0, WINDOW).unwrap();
+        assert!(matches!(
+            p.abandon(A, id),
+            Err(OutboxError::Action(ActionError::WrongState))
+        ));
+        assert_eq!(p.take_due(WINDOW, 10).unwrap().len(), 1);
+        assert_eq!(row_state(&p, id), Some(OutboxState::Sending));
+        p.abandon(A, id).unwrap();
+        assert_eq!(row_state(&p, id), Some(OutboxState::Failed));
+        let e = p.outbox().get(id).unwrap();
+        assert!(e.may_have_been_sent());
+        // Never handed out again, now or later, and a second abandon is refused.
+        assert!(p.take_due(i64::MAX / 2, 10).unwrap().is_empty());
+        assert_eq!(row_state(&p, id), Some(OutboxState::Failed));
+        assert!(matches!(
+            p.abandon(A, id),
+            Err(OutboxError::Action(ActionError::WrongState))
+        ));
+        // Survives a restart as Failed.
+        let p = PersistentOutbox::open(p.into_store()).unwrap();
+        assert_eq!(p.outbox().get(id).unwrap().state, OutboxState::Failed);
+    }
+
+    #[test]
+    fn abandon_commit_failure_leaves_sending_in_memory() {
+        let mut p = open();
+        let id = p.queue(new_msg(), b"MIME".to_vec(), 0, WINDOW).unwrap();
+        p.take_due(WINDOW, 10).unwrap();
+        p.store.fail_commits = true;
+        assert!(matches!(p.abandon(A, id), Err(OutboxError::Store(_))));
+        assert_eq!(p.outbox().get(id).unwrap().state, OutboxState::Sending);
+    }
+
+    #[test]
+    fn actions_refuse_an_id_from_another_account() {
+        let other: AccountId = 2;
+        let mut p = open();
+        let id = p.queue(new_msg(), b"MIME".to_vec(), 0, WINDOW).unwrap();
+        assert!(matches!(
+            p.undo(other, id, 1),
+            Err(OutboxError::Undo(UndoError::NotFound))
+        ));
+        assert!(matches!(
+            p.discard(other, id),
+            Err(OutboxError::Action(ActionError::NotFound))
+        ));
+        assert!(matches!(
+            p.edit_back_to_draft(other, id),
+            Err(OutboxError::Action(ActionError::NotFound))
+        ));
+        p.take_due(WINDOW, 10).unwrap();
+        assert!(matches!(
+            p.abandon(other, id),
+            Err(OutboxError::Action(ActionError::NotFound))
+        ));
+        assert_eq!(p.outbox().get(id).unwrap().state, OutboxState::Sending);
+        p.abandon(A, id).unwrap();
+        assert!(matches!(
+            p.retry(other, id, 9),
+            Err(OutboxError::Action(ActionError::NotFound))
+        ));
+        assert_eq!(p.outbox().get(id).unwrap().state, OutboxState::Failed);
+        p.retry(A, id, 9).unwrap();
+        assert_eq!(p.outbox().get(id).unwrap().state, OutboxState::Queued);
+        assert!(p.undo(A, id, 1).is_ok());
     }
 }

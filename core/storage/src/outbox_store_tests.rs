@@ -135,7 +135,7 @@ fn undo_inside_the_window_removes_the_row_and_take_due_never_returns_it() {
     let mut o = open(&f.path);
     let id = o.queue(msg(f.a1), b"MIME".to_vec(), 0, WINDOW).unwrap();
     assert_eq!(row_count(&f.path), 1);
-    let back = o.undo(id, WINDOW - 1).unwrap();
+    let back = o.undo(f.a1, id, WINDOW - 1).unwrap();
     assert_eq!(back.mime, b"MIME");
     assert_eq!(row_count(&f.path), 0, "nothing is left to send");
     for t in [WINDOW, WINDOW * 100, i64::MAX / 2] {
@@ -153,7 +153,7 @@ fn undo_at_or_after_the_end_of_the_window_is_too_late() {
     let mut o = open(&f.path);
     let id = o.queue(msg(f.a1), b"MIME".to_vec(), 0, WINDOW).unwrap();
     assert!(matches!(
-        o.undo(id, WINDOW),
+        o.undo(f.a1, id, WINDOW),
         Err(OutboxError::Undo(UndoError::TooLate))
     ));
     assert_eq!(db_state(&f.path, id).as_deref(), Some("queued"));
@@ -226,7 +226,7 @@ fn a_restart_with_a_row_in_sending_fails_it_and_never_resends_it() {
     assert_eq!(o.recovered_after_restart(), &[other]);
     assert!(o.take_due(i64::MAX / 2, 10).unwrap().is_empty());
     // The person checked Sent and chose Retry.
-    o.retry(id, 7).unwrap();
+    o.retry(f.a1, id, 7).unwrap();
     assert_eq!(db_state(&f.path, id).as_deref(), Some("queued"));
     assert_eq!(o.take_due(7, 10).unwrap().len(), 1);
 }
@@ -317,11 +317,11 @@ fn edit_and_discard_return_or_drop_the_bytes() {
         1,
     )
     .unwrap();
-    let back = o.edit_back_to_draft(id).unwrap();
+    let back = o.edit_back_to_draft(f.a1, id).unwrap();
     assert_eq!(back.mime, b"MIME");
     assert_eq!(row_count(&f.path), 0);
     let id2 = o.queue(msg(f.a1), b"TWO".to_vec(), 0, 0).unwrap();
-    o.discard(id2).unwrap();
+    o.discard(f.a1, id2).unwrap();
     assert_eq!(row_count(&f.path), 0);
 }
 
@@ -388,10 +388,10 @@ fn ids_are_not_reused_after_the_newest_row_is_deleted_or_across_restarts() {
     let f = fixture();
     let mut o = open(&f.path);
     let first = o.queue(msg(f.a1), b"A".to_vec(), 0, WINDOW).unwrap();
-    o.undo(first, 1).unwrap();
+    o.undo(f.a1, first, 1).unwrap();
     let second = o.queue(msg(f.a1), b"B".to_vec(), 0, WINDOW).unwrap();
     assert!(second > first);
-    o.undo(second, 1).unwrap();
+    o.undo(f.a1, second, 1).unwrap();
     drop(o);
     // The table is empty; the high-water mark is not.
     let mut o = open(&f.path);
@@ -399,7 +399,7 @@ fn ids_are_not_reused_after_the_newest_row_is_deleted_or_across_restarts() {
     assert!(third > second);
     // A stale Undo for an old id cannot touch the new message.
     assert!(matches!(
-        o.undo(first, 1),
+        o.undo(f.a1, first, 1),
         Err(OutboxError::Undo(UndoError::NotFound))
     ));
     assert_eq!(row_count(&f.path), 1);
@@ -426,7 +426,7 @@ fn a_row_that_cannot_be_read_becomes_failed_not_guessed() {
     );
     assert!(o.take_due(i64::MAX / 2, 10).unwrap().is_empty());
     // The person can still take the message back.
-    assert_eq!(o.edit_back_to_draft(id).unwrap().mime, b"MIME");
+    assert_eq!(o.edit_back_to_draft(f.a1, id).unwrap().mime, b"MIME");
 }
 
 #[test]

@@ -137,6 +137,9 @@ jobs:
       - run: docker compose -f test-servers/docker-compose.yml up -d --wait greenmail dovecot stalwart
       - run: bash test-servers/stalwart/setup.sh
       - run: cd core && cargo test --locked -p croft-protocols --features integration
+      # Compose through the exported calls against GreenMail: draft append and replace, a message sent
+      # with no network delivered once, Undo sending nothing (T18c).
+      - run: cd core && cargo test --locked -p croft-ffi --features integration compose::tests::integration
       - if: always()
         run: docker compose -f test-servers/docker-compose.yml down -v
 

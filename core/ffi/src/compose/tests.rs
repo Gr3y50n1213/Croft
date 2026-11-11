@@ -3,6 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod drafts;
+#[cfg(feature = "integration")]
+mod integration;
 mod reply;
 mod sending;
 

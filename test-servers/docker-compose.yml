@@ -17,10 +17,10 @@ services:
         -Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0
         -Dgreenmail.users=test:test@localhost,alice:alice@localhost
     ports:
-      - "127.0.0.1:3025:3025"   # SMTP
-      - "127.0.0.1:3143:3143"   # IMAP
-      - "127.0.0.1:3993:3993"   # IMAPS
-      - "127.0.0.1:3465:3465"   # SMTPS
+      - "127.0.0.1:${CROFT_GREENMAIL_SMTP_PORT:-3025}:3025"   # SMTP
+      - "127.0.0.1:${CROFT_GREENMAIL_IMAP_PORT:-3143}:3143"   # IMAP
+      - "127.0.0.1:${CROFT_GREENMAIL_IMAPS_PORT:-3993}:3993"   # IMAPS
+      - "127.0.0.1:${CROFT_GREENMAIL_SMTPS_PORT:-3465}:3465"   # SMTPS
 
   # Dovecot 2.4 (the official image): MOVE, UIDPLUS, SPECIAL-USE, CONDSTORE and QRESYNC. Its
   # example config accepts ANY user name with the one password in USER_PASSWORD, and creates the

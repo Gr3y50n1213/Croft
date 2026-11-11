@@ -30,6 +30,11 @@ sqlcipher-vendored-openssl = ["sqlcipher", "rusqlite/bundled-sqlcipher-vendored-
 # fails if the release `.so` holds the test symbols); only the host library the JVM tests load has it.
 test-server = ["dep:croft-test-support"]
 
+# Compose tests against real servers in containers (GreenMail): `cargo test -p croft-ffi --features
+# integration compose::tests::integration`. See test-servers/docker-compose.yml. Needs the containers
+# running; not part of a plain `cargo test`.
+integration = []
+
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"

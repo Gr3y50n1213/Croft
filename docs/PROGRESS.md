@@ -5,6 +5,36 @@ unverified, the next step.
 
 ---
 
+## T01: SQLite connection layer (11 November 2026)
+
+**Status:** done.
+
+**What was built:** `core/storage`: `Db::open(path, key)` with WAL, foreign keys, forward-only migrations each in their own transaction, `SchemaTooNew` for a newer database, optional SQLCipher (`--features sqlcipher`). Repositories for accounts, folders, messages (list newest first without snoozed or hidden rows, upsert from server headers without overwriting a pending local change, flags, delete) and settings. Every folder and message query filters `account_id`. All 17 Python schema checks are ported to Rust tests.
+
+**Checks run and seen passing (by the orchestrator):** fmt, clippy (with and without `sqlcipher`), `cargo test` 98 tests (37 mail-core, 4 protocols, 57 storage), 60 storage tests with `sqlcipher`, `check_schema.py` 17/17. Test suite run three times in a row: stable.
+
+**Review:** two rounds by a separate Opus agent; every finding fixed (see `docs/REVIEW-QUEUE.md`). Listed for the owner to read by hand.
+
+**Unverified:** read-only file permissions (the container runs as root, which ignores them). Behaviour on a real Android file system.
+
+**Next:** T02 (persist the queue), already built on top of this.
+
+---
+
+## T08: Design token generator (11 November 2026)
+
+**Status:** done except: the generated Kotlin and Swift files have not been compiled (no `kotlinc` or `swiftc` here). The Kotlin file is compiled for the first time when the Android project exists (T07/stage 3).
+
+**What was built:** `design/generator/` (TypeScript, run by Node 22) reads `design/tokens.json` and writes `design/generated/` (Kotlin, CSS, Swift, TypeScript): 8 presets × light/dark/pure black × 3 contrast levels = 72 colour schemes of 48 roles, from Google's Material Color Utilities; motion springs, shapes, spacing, swipe and haptics values. `design/CLAUDE.md` holds the token rules.
+
+**Checks run and seen passing (by the orchestrator, not only the agent):** `npm ci && npm run generate && npm test`: 60 of 60 tests pass; re-generating leaves `design/generated/` unchanged.
+
+**Unverified:** Kotlin and Swift compile; the contrast acceptance test (build-order step 2, not this task).
+
+**Next:** compile `CroftTokens.kt` inside the Android app.
+
+---
+
 ## Stage 0: environment, baseline, licences, instruction file (11 November 2026)
 
 **Status:** done.

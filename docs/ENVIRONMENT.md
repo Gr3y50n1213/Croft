@@ -51,3 +51,9 @@ straight from Maven Central: it was still rate-limited (429). So:
 - The repository itself only names `google()` and `mavenCentral()`.
 A later session (or CI on GitHub) should run `./gradlew --refresh-dependencies :app:assembleDebug :app:testDebugUnitTest`
 once Maven Central answers, to confirm everything with files from Central itself.
+
+## Disk
+The session has a fixed disk allowance (about 40 GB written in total), not the 252 GB `df` shows. With seven git worktrees
+each holding its own Rust `target/` folder (0.5 to 5 GB each), the disk filled up during T04's checks and tests failed
+with "no space left". Fix used: remove each task's worktree as soon as it is merged. Keep at most three or four
+worktrees with build output at once.

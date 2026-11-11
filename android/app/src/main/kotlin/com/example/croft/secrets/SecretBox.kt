@@ -4,13 +4,7 @@
 
 package com.example.croft.secrets
 
-import java.security.GeneralSecurityException
-import java.security.InvalidKeyException
-import java.security.UnrecoverableKeyException
-import javax.crypto.AEADBadTagException
-import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
-import javax.crypto.IllegalBlockSizeException
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
@@ -22,13 +16,33 @@ class SecretBoxException(val kind: Kind) : Exception(kind.name) {
     // No cause is chained on purpose: a provider's message can name key aliases or sizes.
 
     enum class Kind {
-        /** The wrapping key is definitely gone (restore to a new phone, lock-screen reset, removed key). */
+        /**
+         * The wrapping key is definitely gone, on definite evidence only: the platform said the key
+         * is permanently invalidated (or, on Android 13 and later, reported a key-specific error that
+         * is not transient), or the alias was missing from the keystore's list on every one of
+         * several spaced checks while other keystore calls worked (see [KeystoreErrors] and
+         * [KeystoreKeySource]).
+         */
         KEY_LOST,
 
-        /** The stored bytes are not a valid envelope or fail the authentication check (damage, tampering, wrong entry). */
+        /**
+         * The stored bytes are not a valid envelope (too short, version byte 0) or fail the
+         * authentication check ([javax.crypto.AEADBadTagException]): damage, tampering or a blob
+         * that belongs to another entry. Nothing else maps here.
+         */
         CORRUPT,
 
-        /** The keystore failed in a way that may pass (busy, restarting, hardware error). Nothing must be deleted because of it. */
+        /**
+         * The envelope's version byte is higher than this build knows: the data was written by a
+         * newer Croft. It is never reset and never deleted; the open fails and the person is told.
+         */
+        UNSUPPORTED_VERSION,
+
+        /**
+         * Everything else: the keystore failed in a way that may pass (busy, restarting, hardware
+         * error, or one of the many failures the platform reports as a plain key exception).
+         * Nothing may be moved or deleted because of it; the caller retries with backoff.
+         */
         UNAVAILABLE,
     }
 }
@@ -51,13 +65,24 @@ interface SecretBox {
 
 /** Where [AesGcmSecretBox] gets its AES-256 key: the Android Keystore in the app, memory in tests. */
 interface WrappingKeySource {
-    /** The key to seal with. Creates it on first use. Throws [SecretBoxException] (UNAVAILABLE) when that fails. */
+    /**
+     * The key to seal with. Creates it on first use, but only when it is definitely absent (never
+     * after a failure that may pass: a new key under the same name would destroy the old one).
+     * Throws [SecretBoxException] (UNAVAILABLE) when that cannot be decided or fails.
+     */
     fun keyForSealing(): SecretKey
 
-    /** The key to open with. Throws [SecretBoxException] with KEY_LOST when it does not exist any more. */
+    /**
+     * The key to open with. Throws [SecretBoxException] with KEY_LOST only on definite evidence
+     * that it does not exist or cannot be used any more, and with UNAVAILABLE otherwise.
+     */
     fun keyForOpening(): SecretKey
 
-    /** Forgets the key (used when the database and the secrets are reset after a key loss). */
+    /**
+     * Deletes the key. A key loss does not call this (the entry is kept, in case the loss was a
+     * wrong call and the quarantined data can be opened again); it is for a future "erase
+     * everything" and for the one case where the entry is itself the dead key (see `AppSecrets`).
+     */
     fun discard()
 }
 
@@ -70,16 +95,31 @@ interface WrappingKeySource {
  * bytes 13..    ciphertext followed by the 16-byte GCM tag
  * ```
  *
- * The context is the additional authenticated data. Nothing about the secret (not even its
- * length class) is kept outside the ciphertext.
+ * The additional authenticated data is the version byte followed by the context, so neither a
+ * blob copied onto another entry nor a changed version byte authenticates. Nothing about the
+ * secret (not even its length class) is kept outside the ciphertext.
+ *
+ * Binding the version byte into the AAD changes what version 1 means. That is done in place, on
+ * purpose, and not as version 2: no build that wrote a version 1 blob has been released, so no
+ * blob made without the version in the AAD exists. Any later change to the format must use a new
+ * version byte.
+ *
+ * Failures are mapped by [errors] (see [KeystoreErrors]): [SecretBoxException.Kind.CORRUPT] only
+ * for an authentication failure or this envelope's own format checks, KEY_LOST only on definite
+ * evidence, UNSUPPORTED_VERSION for a higher version byte, and UNAVAILABLE for everything else.
  */
-class AesGcmSecretBox(private val keys: WrappingKeySource) : SecretBox {
+class AesGcmSecretBox internal constructor(
+    private val keys: WrappingKeySource,
+    private val errors: KeystoreErrors,
+) : SecretBox {
+    constructor(keys: WrappingKeySource) : this(keys, KeystoreErrors())
+
     override fun seal(plain: ByteArray, context: ByteArray): ByteArray {
         val key = keys.keyForSealing()
         try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, key)
-            cipher.updateAAD(context)
+            cipher.updateAAD(aad(context))
             val iv = cipher.iv
             check(iv.size == IV_BYTES) { "unexpected IV size" }
             val sealed = cipher.doFinal(plain)
@@ -89,15 +129,18 @@ class AesGcmSecretBox(private val keys: WrappingKeySource) : SecretBox {
             sealed.copyInto(out, 1 + IV_BYTES)
             sealed.fill(0)
             return out
-        } catch (e: GeneralSecurityException) {
-            throw classify(e)
-        } catch (e: RuntimeException) {
+        } catch (e: Exception) {
             // Android wraps keystore failures (ProviderException and others) in unchecked exceptions.
-            throw SecretBoxException(SecretBoxException.Kind.UNAVAILABLE)
+            throw SecretBoxException(sealFailure(e))
         }
     }
 
     override fun open(blob: ByteArray, context: ByteArray): ByteArray {
+        if (blob.isEmpty()) throw SecretBoxException(SecretBoxException.Kind.CORRUPT)
+        // The version is read as unsigned: a higher one is a newer Croft's data, not damage.
+        if ((blob[0].toInt() and 0xff) > (VERSION.toInt() and 0xff)) {
+            throw SecretBoxException(SecretBoxException.Kind.UNSUPPORTED_VERSION)
+        }
         if (blob.size < 1 + IV_BYTES + TAG_BYTES || blob[0] != VERSION) {
             throw SecretBoxException(SecretBoxException.Kind.CORRUPT)
         }
@@ -105,24 +148,25 @@ class AesGcmSecretBox(private val keys: WrappingKeySource) : SecretBox {
         try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BYTES * 8, blob, 1, IV_BYTES))
-            cipher.updateAAD(context)
+            cipher.updateAAD(aad(context))
             return cipher.doFinal(blob, 1 + IV_BYTES, blob.size - 1 - IV_BYTES)
-        } catch (e: GeneralSecurityException) {
-            throw classify(e)
-        } catch (e: RuntimeException) {
-            throw SecretBoxException(SecretBoxException.Kind.UNAVAILABLE)
+        } catch (e: Exception) {
+            throw SecretBoxException(errors.classify(e))
         }
     }
 
-    private fun classify(e: GeneralSecurityException): SecretBoxException {
-        val kind = when (e) {
-            is AEADBadTagException, is BadPaddingException, is IllegalBlockSizeException ->
-                SecretBoxException.Kind.CORRUPT
-            // KeyPermanentlyInvalidatedException is an InvalidKeyException.
-            is InvalidKeyException, is UnrecoverableKeyException -> SecretBoxException.Kind.KEY_LOST
-            else -> SecretBoxException.Kind.UNAVAILABLE
+    /** Sealing has no authentication step, so an authentication failure cannot be CORRUPT here. */
+    private fun sealFailure(e: Exception): SecretBoxException.Kind =
+        when (val kind = errors.classify(e)) {
+            SecretBoxException.Kind.CORRUPT -> SecretBoxException.Kind.UNAVAILABLE
+            else -> kind
         }
-        return SecretBoxException(kind)
+
+    private fun aad(context: ByteArray): ByteArray {
+        val out = ByteArray(1 + context.size)
+        out[0] = VERSION
+        context.copyInto(out, 1)
+        return out
     }
 
     override fun toString(): String = "[redacted]"

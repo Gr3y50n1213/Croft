@@ -11,8 +11,10 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -30,10 +32,15 @@ import org.robolectric.annotation.Config
 class KeystoreWiringTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
 
+    @Before
+    fun forgetEarlierInstances() = ProcessSecrets.clearForTests()
+
     @Test
     fun theAppSecretsLiveInTheNoBackupFolder() {
         val db = File(context.noBackupFilesDir, "croft.db")
         val secrets = createAppSecrets(context, db)
+        // One instance per process and folder.
+        assertSame(secrets, createAppSecrets(context, db))
         val dir = secretsDirectory(context)
         assertEquals(File(context.noBackupFilesDir, "croft-secrets"), dir)
         assertTrue(dir.isDirectory)

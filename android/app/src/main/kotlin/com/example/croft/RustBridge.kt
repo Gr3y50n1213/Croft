@@ -5,6 +5,7 @@
 package com.example.croft
 
 import com.example.croft.secrets.AppSecrets
+import com.example.croft.secrets.SecureStorageException
 import uniffi.croft_ffi.Core
 import uniffi.croft_ffi.CredentialProvider
 import uniffi.croft_ffi.croftVersion
@@ -14,7 +15,7 @@ import uniffi.croft_ffi.ffiApiVersion
  * The FFI API version this app was written against. Bump it together with the Rust constant
  * `FFI_API_VERSION` in core/ffi/src/lib.rs, after adapting to the change that made it necessary.
  */
-const val EXPECTED_FFI_API_VERSION: UInt = 3u
+const val EXPECTED_FFI_API_VERSION: UInt = 4u
 
 /**
  * Using `uniffi.croft_ffi.Core` from the app (see also core/ffi/README.md):
@@ -41,8 +42,12 @@ const val EXPECTED_FFI_API_VERSION: UInt = 3u
  * The key is always passed: a library built without the `sqlcipher` feature refuses it
  * (`StorageReason.EncryptionUnavailable`) instead of opening an unencrypted database, so a build
  * that lost the feature fails here, loudly. Our copy of the key is wiped as soon as `Core.open`
- * has returned. If the keystore key is gone, [AppSecrets.databaseKey] deletes the database and the
- * account secrets first and raises `secrets.keyLoss`.
+ * has returned. If the keystore key is definitely gone, [AppSecrets.databaseKey] moves the database
+ * and the account secrets into the quarantine folder first and raises `secrets.keyLoss`.
+ *
+ * Throws [SecureStorageException] when the secure storage cannot be used now (the Keystore is not
+ * ready, or the data is from a newer Croft): nothing is reset then; the screen shows the reason
+ * and offers "try again".
  */
 fun openCore(databasePath: String, secrets: AppSecrets, provider: CredentialProvider): Core {
     val key = secrets.databaseKey()

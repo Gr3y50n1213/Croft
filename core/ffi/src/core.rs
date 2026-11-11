@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use croft_engine::{ActionError, Engine, EngineConfig, EngineHandle, OpId, SystemClock};
 use croft_protocols::discovery::{verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions};
-use croft_protocols::CertFingerprint;
+use croft_protocols::{CertFingerprint, Credential};
 use croft_storage::accounts::{self, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
 use croft_storage::{folders, Db};
@@ -111,14 +111,19 @@ impl Inner {
         self.backends.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Builds the account's backend, asks the provider for the credential and starts the
-    /// account's task in the engine. Needs a runtime context (the engine spawns the task).
-    /// Blocks while the provider answers: call it from `open` or a blocking thread.
-    fn start_account(&self, id: i64, settings: &StoredSettings) -> Result<(), CoreError> {
+    /// Builds the account's backend from `credential` and starts the account's task in the
+    /// engine. Needs a runtime context (the engine spawns the task). `credential` is what the app
+    /// gave for a new account (`add_account`) or what the provider answered for a stored one (see
+    /// [`Inner::start_stored_account`]); `None` starts the account in the needs-sign-in state.
+    fn start_account(
+        &self,
+        id: i64,
+        settings: &StoredSettings,
+        credential: Option<Credential>,
+    ) -> Result<(), CoreError> {
         let config = settings.imap_config().map_err(|_| CoreError::BadSettings)?;
         config.validate().map_err(|_| CoreError::BadSettings)?;
         let backend = Arc::new(AccountBackend::new(config));
-        let credential = ask(&*self.provider, id);
         match backend.set_credential(credential) {
             Readiness::Ready => {}
             Readiness::NeedsSignIn => self.hub.sign_in_needed(id),
@@ -130,6 +135,14 @@ impl Inner {
             self.handle.set_online(id, false);
         }
         Ok(())
+    }
+
+    /// Starts an account the app stored earlier: asks the provider for its credential. Blocks
+    /// while the provider answers: call it from `open` or a blocking thread. The provider is
+    /// never asked about an account the app has not stored a secret for (a new account's
+    /// credential arrives with `add_account`).
+    fn start_stored_account(&self, id: i64, settings: &StoredSettings) -> Result<(), CoreError> {
+        self.start_account(id, settings, ask(&*self.provider, id))
     }
 
     /// Every account id.
@@ -326,7 +339,7 @@ impl Core {
                 .then(|| StoredSettings::from_json(&account.config).ok())
                 .flatten();
             let started = match usable {
-                Some(settings) => inner.start_account(account.id, &settings),
+                Some(settings) => inner.start_stored_account(account.id, &settings),
                 None => Err(CoreError::BadSettings),
             };
             if started.is_err() {
@@ -399,9 +412,14 @@ impl Core {
     }
 
     /// Adds the account and starts syncing it. Stores the settings (no secret) in the account
-    /// row, then asks the credential provider for the new account's credential **before
-    /// returning** (the app answers with the secret it just verified and stores it under the new
-    /// id). With no credential the account starts in the needs-sign-in state.
+    /// row and builds the account's connection from `credential`, the one the person just
+    /// verified. The core keeps it only in the protocol layer's wiping string and never asks the
+    /// provider about a new account. The returned id is the account's: **the app stores the
+    /// credential under that id right after this returns** (and stores nothing when this fails),
+    /// so that the provider can answer for it from then on (`open`, `signed_in`). Ids are never
+    /// reused, so the id has no stored secrets of an earlier account.
+    ///
+    /// A credential that is not valid UTF-8 fails with `NoCredential` before anything is written.
     ///
     /// `pinned_fingerprint` is the certificate the person trusted (see `verify`); it is ignored
     /// for a well-known provider.
@@ -410,6 +428,7 @@ impl Core {
         discovered: FfiDiscovered,
         display_name: String,
         pinned_fingerprint: Option<String>,
+        credential: Arc<FfiCredential>,
     ) -> Result<i64, CoreError> {
         let imap = discovered
             .imap
@@ -436,10 +455,12 @@ impl Core {
             .map_or("generic", |p| p.db_name())
             .to_owned();
         let email = discovered.email;
+        // Not valid UTF-8 (the bytes are wiped): no server would accept it as a password.
+        let credential = credential.to_credential().ok_or(CoreError::NoCredential)?;
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
-                // The provider callback may block: not on a runtime worker.
+                // Starting an account does blocking work: not on a runtime worker.
                 tokio::task::spawn_blocking(move || {
                     let id = inner.handle.read(|db| {
                         let conn = db.connection();
@@ -458,7 +479,7 @@ impl Core {
                             now_ms(),
                         )?)
                     })?;
-                    if let Err(e) = inner.start_account(id, &settings) {
+                    if let Err(e) = inner.start_account(id, &settings, Some(credential)) {
                         let _ = inner
                             .handle
                             .read(|db| accounts::delete(db.connection(), id));

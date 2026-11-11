@@ -6,9 +6,12 @@ package com.example.croft.secrets
 
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 
 /** What a stored account secret is. One entry per account and kind. */
 enum class SecretKind(internal val wireName: String) {
@@ -39,10 +42,22 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     }
 
     /**
+     * Stores the first secret of a new account: first deletes every entry under this id (the core
+     * never reuses an id, so there should be none; a leftover of a crash must not be mistaken for
+     * the new account's), then stores [secret]. Throws [SecretBoxException] when it cannot be sealed.
+     */
+    @Synchronized
+    fun putForNewAccount(accountId: Long, kind: SecretKind, secret: ByteArray) {
+        removeAccount(accountId)
+        put(accountId, kind, secret)
+    }
+
+    /**
      * The secret, or null when there is none for this account and kind. An entry that cannot be
      * opened because it is damaged or does not belong there is deleted and reads as null, so the
-     * person is asked to sign in again. A keystore that fails (KEY_LOST or UNAVAILABLE) is
-     * reported with [SecretBoxException] and nothing is deleted.
+     * person is asked to sign in again. A keystore that fails (KEY_LOST or UNAVAILABLE) and an
+     * entry from a newer Croft (UNSUPPORTED_VERSION) are reported with [SecretBoxException] and
+     * nothing is deleted.
      */
     @Synchronized
     fun get(accountId: Long, kind: SecretKind): ByteArray? {
@@ -73,7 +88,11 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
         file(accountId, kind).delete()
     }
 
-    /** Deletes every entry of an account. Call it when the account is removed. */
+    /**
+     * Deletes every entry of an account. Call it **before** `Core.removeAccount` (a crash in
+     * between leaves an account that only needs a sign-in; the other order could leave a secret
+     * that a later account with the same id would find).
+     */
     @Synchronized
     fun removeAccount(accountId: Long) {
         SecretKind.values().forEach { remove(accountId, it) }
@@ -102,7 +121,11 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     }
 }
 
-/** Writes through a temporary file and renames it, so a crash leaves the old file or the new one. */
+/**
+ * Writes through a temporary file and renames it, so a crash leaves the old file or the new one.
+ * The file is synced before the rename and the directory after it, so the rename itself survives
+ * a power loss.
+ */
 internal fun writeAtomically(target: File, bytes: ByteArray) {
     val parent = target.absoluteFile.parentFile ?: error("no parent directory")
     parent.mkdirs()
@@ -115,5 +138,19 @@ internal fun writeAtomically(target: File, bytes: ByteArray) {
         Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
     } catch (e: AtomicMoveNotSupportedException) {
         Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+    syncDirectory(parent)
+}
+
+/**
+ * Syncs a directory, which is what makes a rename, a creation or a move in it durable. A
+ * filesystem that cannot open or sync a directory (an IOException) is tolerated; the sync of the
+ * file's own data is not (see [writeAtomically]).
+ */
+internal fun syncDirectory(dir: File) {
+    try {
+        FileChannel.open(dir.toPath(), StandardOpenOption.READ).use { it.force(true) }
+    } catch (e: IOException) {
+        // Not supported here (some filesystems refuse a read-only open of a directory for force).
     }
 }

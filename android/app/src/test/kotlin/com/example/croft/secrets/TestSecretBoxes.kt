@@ -4,6 +4,8 @@
 
 package com.example.croft.secrets
 
+import java.security.Key
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 
@@ -74,4 +76,99 @@ fun containsBytes(haystack: ByteArray, needle: ByteArray): Boolean {
         if ((needle.indices).all { haystack[i + it] == needle[it] }) return true
     }
     return false
+}
+
+/**
+ * A [KeystoreOps] whose answers a test scripts: each call takes the next step from its queue (or
+ * repeats [default] when the queue is empty). A step is a value or an exception to throw.
+ */
+internal class FakeKeystore : KeystoreOps {
+    /** What `getKey` returns or throws, in order. */
+    val getKeySteps = ArrayDeque<Result<SecretKey?>>()
+    var getKeyDefault: Result<SecretKey?> = Result.success(null)
+
+    /** What `aliases()` returns or throws, in order. */
+    val aliasSteps = ArrayDeque<Result<List<String>>>()
+    var aliasesDefault: Result<List<String>> = Result.success(emptyList())
+
+    val getKeyCalls = AtomicInteger()
+    val aliasCalls = AtomicInteger()
+    val generated = mutableListOf<String>()
+    val deleted = mutableListOf<String>()
+    var generateFails: Throwable? = null
+
+    private fun fresh(): SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+
+    override fun getKey(alias: String): SecretKey? {
+        getKeyCalls.incrementAndGet()
+        return (getKeySteps.removeFirstOrNull() ?: getKeyDefault).getOrThrow()
+    }
+
+    override fun aliases(): List<String> {
+        aliasCalls.incrementAndGet()
+        return (aliasSteps.removeFirstOrNull() ?: aliasesDefault).getOrThrow()
+    }
+
+    override fun delete(alias: String) {
+        deleted += alias
+    }
+
+    override fun generate(alias: String): SecretKey {
+        generateFails?.let { throw it }
+        generated += alias
+        return fresh()
+    }
+}
+
+/**
+ * A [SecretBox] that fails the way a test says before (or instead of) delegating, to run
+ * [AppSecrets] against each kind of failure without a real keystore. [opens] and [seals] count
+ * the calls that reached it.
+ */
+class ScriptedBox(private val inner: SecretBox) : SecretBox {
+    /** Failures for the next `open` calls, in order; an empty queue delegates. */
+    val openFailures = ArrayDeque<SecretBoxException.Kind>()
+    val sealFailures = ArrayDeque<SecretBoxException.Kind>()
+    var opens = 0
+    var seals = 0
+
+    /** Makes every seal take this long (to hold the lock in a race test). */
+    @Volatile
+    var sealDelayMs = 0L
+
+    override fun seal(plain: ByteArray, context: ByteArray): ByteArray {
+        seals++
+        if (sealDelayMs > 0) Thread.sleep(sealDelayMs)
+        sealFailures.removeFirstOrNull()?.let { throw SecretBoxException(it) }
+        return inner.seal(plain, context)
+    }
+
+    override fun open(blob: ByteArray, context: ByteArray): ByteArray {
+        opens++
+        openFailures.removeFirstOrNull()?.let { throw SecretBoxException(it) }
+        return inner.open(blob, context)
+    }
+}
+
+/**
+ * A key whose bytes cannot be read: the JCE cipher asks for them at `init`, and this throws
+ * [failure] there, the way a Keystore key fails when it is used. (Kotlin does not check exception
+ * types, so a checked [java.security.GeneralSecurityException] can be thrown from here.)
+ */
+class FailingKey(private val failure: Throwable) : SecretKey {
+    override fun getAlgorithm() = "AES"
+
+    // "RAW": the provider must accept the key; the failure then comes from reading its bytes.
+    override fun getFormat(): String = "RAW"
+
+    override fun getEncoded(): ByteArray = throw failure
+}
+
+/** A key source that hands out [key] for both purposes. */
+class FixedKeySource(private val key: Key) : WrappingKeySource {
+    override fun keyForSealing(): SecretKey = key as SecretKey
+
+    override fun keyForOpening(): SecretKey = key as SecretKey
+
+    override fun discard() {}
 }

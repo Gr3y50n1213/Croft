@@ -15,12 +15,13 @@ crate-type = ["cdylib", "lib"]
 [features]
 # Builds the `uniffi-bindgen` binary that generates the Kotlin (and later Swift) bindings.
 cli = ["uniffi/cli"]
-# Encrypts the database file (SQLCipher). Without it `Core.open` refuses a key instead of storing
-# mail unencrypted. The host build for the JVM tests leaves it off; the Android build turns on
-# `sqlcipher-vendored-openssl`.
+# Encrypts the database file (SQLCipher), linked against the computer's OpenSSL. Without a SQLCipher
+# feature `Core.open` refuses a key instead of storing mail unencrypted. Used by
+# `cargo test -p croft-ffi --features sqlcipher`; the Gradle builds (Android and the host library for
+# the JVM tests) use `sqlcipher-vendored-openssl`.
 sqlcipher = ["croft-storage/sqlcipher"]
 # SQLCipher with its own OpenSSL crypto, compiled from source (openssl-src) for the target. The
-# Android build uses this one: the NDK has no OpenSSL to link against.
+# Android build uses this one: the NDK has no OpenSSL to link against. Needs perl and make.
 sqlcipher-vendored-openssl = ["sqlcipher", "rusqlite/bundled-sqlcipher-vendored-openssl"]
 
 [[bin]]

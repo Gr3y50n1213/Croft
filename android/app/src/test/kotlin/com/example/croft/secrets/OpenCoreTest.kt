@@ -93,6 +93,9 @@ class OpenCoreTest {
         assertTrue(s.keyLoss.pending.value)
         assertTrue(db.exists())
         assertFalse(db.readBytes().contentEquals(before))
+        // The old database was moved aside, not deleted.
+        val moved = File(dir, "croft-quarantine").listFiles()!!.single()
+        assertTrue(File(moved, "database/croft.db").readBytes().contentEquals(before))
         closeAll()
         // And the new key is the one that works from now on.
         assertTrue(core(secrets()).listAccounts().isEmpty())

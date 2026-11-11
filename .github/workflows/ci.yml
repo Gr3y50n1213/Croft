@@ -98,7 +98,7 @@ jobs:
       - if: always()
         run: docker compose -f test-servers/docker-compose.yml down -v
 
-  # The storage crate with SQLCipher, which compiles OpenSSL/SQLCipher from source.
+  # The storage and FFI crates with SQLCipher (the host's OpenSSL here; the Android build compiles its own).
   sqlcipher:
     runs-on: ubuntu-latest
     defaults:
@@ -116,6 +116,7 @@ jobs:
           workspaces: core
       - run: cargo clippy --locked --all-targets --features sqlcipher -p croft-storage -- -D warnings
       - run: cargo test --locked -p croft-storage --features sqlcipher
+      - run: cargo test --locked -p croft-ffi --features sqlcipher
 
   design:
     runs-on: ubuntu-latest

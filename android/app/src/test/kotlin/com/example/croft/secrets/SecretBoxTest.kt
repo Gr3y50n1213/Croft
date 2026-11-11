@@ -4,6 +4,7 @@
 
 package com.example.croft.secrets
 
+import javax.crypto.Cipher
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -65,6 +66,37 @@ class SecretBoxTest {
         assertEquals(SecretBoxException.Kind.CORRUPT, failure { box.open(blob.copyOf(blob.size - 1), context) })
         assertEquals(SecretBoxException.Kind.CORRUPT, failure { box.open(ByteArray(0), context) })
         assertEquals(SecretBoxException.Kind.CORRUPT, failure { box.open(blob.copyOf(20), context) })
+    }
+
+    @Test
+    fun aHigherVersionIsUnsupportedNotCorruptAndNotAReset() {
+        val blob = box.seal(plain, context)
+        for (version in listOf(2, 3, 0x7f, 0x80, 0xff)) {
+            val newer = blob.copyOf().also { it[0] = version.toByte() }
+            assertEquals("version $version", SecretBoxException.Kind.UNSUPPORTED_VERSION, failure { box.open(newer, context) })
+        }
+        // Even when the rest is too short to be an envelope of this version.
+        assertEquals(SecretBoxException.Kind.UNSUPPORTED_VERSION, failure { box.open(byteArrayOf(2), context) })
+        // Version 0 never existed: damage.
+        assertEquals(SecretBoxException.Kind.CORRUPT, failure { box.open(blob.copyOf().also { it[0] = 0 }, context) })
+    }
+
+    @Test
+    fun theVersionByteIsPartOfTheAuthenticatedData() {
+        val key = keys.keyForSealing()
+        fun sealWithAad(aad: ByteArray): ByteArray {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            cipher.updateAAD(aad)
+            val sealed = cipher.doFinal(plain)
+            return byteArrayOf(1) + cipher.iv + sealed
+        }
+        // The documented format: AAD = version byte, then the context.
+        assertArrayEquals(plain, box.open(sealWithAad(byteArrayOf(1) + context), context))
+        // The context alone (no version byte) does not authenticate.
+        assertEquals(SecretBoxException.Kind.CORRUPT, failure { box.open(sealWithAad(context), context) })
+        // Another version byte in the AAD does not either.
+        assertEquals(SecretBoxException.Kind.CORRUPT, failure { box.open(sealWithAad(byteArrayOf(0) + context), context) })
     }
 
     @Test

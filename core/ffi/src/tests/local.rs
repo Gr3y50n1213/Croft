@@ -41,9 +41,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_3() {
-    assert_eq!(FFI_API_VERSION, 3);
-    assert_eq!(ffi_api_version(), 3);
+fn the_version_is_4() {
+    assert_eq!(FFI_API_VERSION, 4);
+    assert_eq!(ffi_api_version(), 4);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -879,11 +879,16 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
         ..base.clone()
     };
     assert_eq!(
-        block(core.add_account(jmap_only, "x".into(), None)),
+        block(core.add_account(jmap_only, "x".into(), None, password_cred("x"))),
         Err(CoreError::UnsupportedServer)
     );
     assert_eq!(
-        block(core.add_account(base.clone(), "x".into(), Some("zz".into()))),
+        block(core.add_account(
+            base.clone(),
+            "x".into(),
+            Some("zz".into()),
+            password_cred("x")
+        )),
         Err(CoreError::BadFingerprint)
     );
     let no_host = FfiDiscovered {
@@ -891,11 +896,48 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
             host: "  ".into(),
             ..good
         }),
-        ..base
+        ..base.clone()
     };
     assert_eq!(
-        block(core.add_account(no_host, "x".into(), None)),
+        block(core.add_account(no_host, "x".into(), None, password_cred("x"))),
         Err(CoreError::BadSettings)
     );
+    // A credential that is not UTF-8 is refused with a typed error, and nothing is written.
+    assert_eq!(
+        block(core.add_account(
+            base,
+            "x".into(),
+            None,
+            FfiCredential::password(vec![0xff, 0xfe])
+        )),
+        Err(CoreError::NoCredential)
+    );
     assert!(core.list_accounts().unwrap().is_empty());
+}
+
+#[test]
+fn a_removed_accounts_id_is_not_given_to_the_next_account() {
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let found = FfiDiscovered {
+        email: "alice@example.org".into(),
+        imap: Some(ServerSettings {
+            host: "127.0.0.1".into(),
+            port: 1,
+            security: SecurityMode::Tls,
+            username: "alice".into(),
+        }),
+        smtp: None,
+        jmap: None,
+        source: DiscoverySource::Autoconfig,
+        provider: None,
+        auth_hint: AuthKind::Password,
+    };
+    let add = |name: &str| {
+        block(core.add_account(found.clone(), name.into(), None, password_cred("x"))).unwrap()
+    };
+    assert_eq!(add("one"), 1);
+    assert_eq!(add("two"), 2);
+    block(core.remove_account(2)).unwrap();
+    assert_eq!(add("three"), 3);
 }

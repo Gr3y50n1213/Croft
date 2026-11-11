@@ -4,7 +4,6 @@
 
 package com.example.croft.secrets
 
-import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import uniffi.croft_ffi.CredentialProvider
@@ -36,6 +35,11 @@ class SignInNeeded {
  * own copy of the bytes straight after. It never logs and never throws a secret: any failure of
  * the store reads as "no credential", and the core then calls [signInNeeded].
  *
+ * The core asks only about accounts the app already stored a secret for (at `open` and
+ * `signedIn`). A new account's credential is not looked up here: it goes into `Core.addAccount`
+ * and is stored under the returned id afterwards (see [AccountSecrets]), so the answer for one
+ * account can never be another account's password.
+ *
  * An OAuth access token is used when one is stored and [userFor] knows the account name it
  * belongs to (a name is not a secret, so it is kept elsewhere than here); otherwise the password.
  */
@@ -44,13 +48,10 @@ class SecretStoreCredentials(
     private val signInNeeded: SignInNeeded,
     private val userFor: (accountId: Long) -> String? = { null },
 ) : CredentialProvider {
-    private val staged = AtomicReference<ByteArray?>(null)
-
     override fun credential(accountId: Long): FfiCredential? {
         try {
             oauth(accountId)?.let { return it }
-            val password = store.get(accountId, SecretKind.PASSWORD)
-                ?: return adoptStaged(accountId)
+            val password = store.get(accountId, SecretKind.PASSWORD) ?: return null
             return try {
                 FfiCredential.password(password)
             } finally {
@@ -73,33 +74,6 @@ class SecretStoreCredentials(
 
     override fun signInNeeded(accountId: Long) {
         signInNeeded.mark(accountId)
-    }
-
-    /**
-     * For a new account: the core asks for the credential of the new row id before `addAccount`
-     * returns, and the app has no stored secret under that id yet. Inside [block] (put the
-     * `addAccount` call there) the first such question is answered with [password], which is also
-     * stored under that id. [password] is copied; the copy is wiped when [block] ends, used or
-     * not. Wipe [password] yourself afterwards.
-     */
-    fun <R> withStagedPassword(password: ByteArray, block: () -> R): R {
-        val copy = password.copyOf()
-        staged.getAndSet(copy)?.fill(0)
-        try {
-            return block()
-        } finally {
-            staged.getAndSet(null)?.fill(0)
-        }
-    }
-
-    private fun adoptStaged(accountId: Long): FfiCredential? {
-        val secret = staged.getAndSet(null) ?: return null
-        try {
-            store.put(accountId, SecretKind.PASSWORD, secret)
-            return FfiCredential.password(secret)
-        } finally {
-            secret.fill(0)
-        }
     }
 
     override fun toString(): String = "[redacted]"

@@ -6,7 +6,7 @@
 //! one account's adapter.
 //!
 //! The core never stores a secret. It asks the [`CredentialProvider`] when it builds an account's
-//! adapter (at `open`, at `add_account`, at `signed_in`) and hands the answer straight to
+//! adapter for a stored account (at `open`, at `signed_in`) and hands the answer straight to
 //! `ImapBackend::new`, which keeps it in a `Zeroizing` string for as long as the adapter lives.
 //! Nothing here writes a secret to SQLite, a log line or an error.
 
@@ -147,9 +147,10 @@ pub trait CredentialProvider: Send + Sync {
     /// The credential for the account, or `None` when there is none (the account then starts in
     /// the needs-sign-in state and `sign_in_needed` is called).
     ///
-    /// For an account being added, this is called before `add_account` returns, with the id of the
-    /// new row: the app answers with the secret it has just verified and stores it under that id.
-    /// The secret lives in the returned object, which wipes it when released; the app should wipe
+    /// Called only for accounts the app has already stored a secret for (at `open` and
+    /// `signed_in`). It is never called for an account being added: `add_account` takes that
+    /// account's credential as an argument, and the app stores it under the returned id. The
+    /// secret lives in the returned object, which wipes it when released; the app should wipe
     /// the `ByteArray` it built the object from.
     fn credential(&self, account_id: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError>;
 

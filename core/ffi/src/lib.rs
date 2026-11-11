@@ -54,8 +54,10 @@ uniffi::setup_scaffolding!();
 
 /// Version of this FFI surface. Version 2 replaced the free-text storage reason with
 /// `StorageReason`. Version 3 is the mail surface: accounts, discovery, message lists, change
-/// notices, actions and the credential provider. Bump on any change to what is exported.
-pub const FFI_API_VERSION: u32 = 3;
+/// notices, actions and the credential provider. Version 4: `add_account` takes the new account's
+/// credential, so the provider is only asked about accounts the app already stored. Bump on any
+/// change to what is exported.
+pub const FFI_API_VERSION: u32 = 4;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

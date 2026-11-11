@@ -99,7 +99,7 @@ mod with_sqlcipher {
     #[test]
     fn an_account_is_stored_in_the_encrypted_file_without_its_password() {
         let db = TempDb::new();
-        let provider = MemProvider::with_pending(PASSWORD);
+        let provider = MemProvider::new();
         let core = Core::open(
             db.path.display().to_string(),
             Some(KEY.to_vec()),
@@ -123,6 +123,7 @@ mod with_sqlcipher {
             },
             "Alice".into(),
             None,
+            password_cred(PASSWORD),
         ))
         .unwrap();
         assert_eq!(core.list_accounts().unwrap()[0].id, account);

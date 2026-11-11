@@ -5,21 +5,27 @@
 package com.example.croft.secrets
 
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.io.path.createTempDirectory
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Assert.fail
 import org.junit.Test
 import uniffi.croft_ffi.AccountStatus
 import uniffi.croft_ffi.AuthKind
 import uniffi.croft_ffi.Core
+import uniffi.croft_ffi.CoreException
+import uniffi.croft_ffi.CredentialProvider
 import uniffi.croft_ffi.DiscoverySource
+import uniffi.croft_ffi.FfiCredential
 import uniffi.croft_ffi.FfiDiscovered
 import uniffi.croft_ffi.SecurityMode
 import uniffi.croft_ffi.ServerSettings
@@ -49,7 +55,7 @@ class SecretStoreCredentialsTest {
 
     private fun provider(userFor: (Long) -> String? = { null }) = SecretStoreCredentials(store, signIns, userFor)
 
-    private fun core(provider: SecretStoreCredentials): Core =
+    private fun core(provider: CredentialProvider): Core =
         Core.open(File(dir, "croft.db").path, null, provider).also { open += it }
 
     private fun deadServer() = FfiDiscovered(
@@ -117,38 +123,131 @@ class SecretStoreCredentialsTest {
         assertEquals(setOf(4L), signIns.accounts.value)
     }
 
-    @Test
-    fun theStagedPasswordIsStoredUnderTheNewIdAndOnlyOnce() {
-        val p = provider()
-        val pw = Fixture.PASSWORD.toByteArray()
-        p.withStagedPassword(pw) {
-            assertNotNull(p.credential(9))
-            // A second unknown account is not given it.
-            assertNull(p.credential(10))
+    /** Records which accounts the core asked about, over the real store-backed provider. */
+    private class Recording(private val inner: CredentialProvider) : CredentialProvider {
+        val asked = CopyOnWriteArrayList<Long>()
+
+        override fun credential(accountId: Long): FfiCredential? {
+            asked.add(accountId)
+            return inner.credential(accountId)
         }
-        assertArrayEquals(Fixture.PASSWORD.toByteArray(), pw) // the caller's array is untouched
-        assertArrayEquals(Fixture.PASSWORD.toByteArray(), store.get(9, SecretKind.PASSWORD))
-        assertFalse(store.has(10, SecretKind.PASSWORD))
-        // Outside the block nothing is offered.
-        assertNull(p.credential(11))
+
+        override fun signInNeeded(accountId: Long) = inner.signInNeeded(accountId)
+    }
+
+    private fun accounts() = AccountSecrets(store, signIns)
+
+    private fun add(core: Core, password: String = Fixture.PASSWORD): Long =
+        runBlocking { accounts().addPasswordAccount(core, deadServer(), "Alice", null, password.toByteArray()) }
+
+    @Test
+    fun aNewAccountIsStoredUnderItsReturnedIdAndTheProviderWasNotAskedAboutIt() {
+        val recording = Recording(provider())
+        val core = core(recording)
+        val id = add(core)
+        assertArrayEquals(Fixture.PASSWORD.toByteArray(), store.get(id, SecretKind.PASSWORD))
+        assertTrue("the provider is only asked about stored accounts", recording.asked.isEmpty())
+        assertEquals(AccountStatus.OK, core.listAccounts().single().status)
     }
 
     @Test
-    fun theCoreGetsTheStoredPasswordWhenItAddsAndReopensAnAccount() {
-        val p = provider()
-        val first = core(p)
-        val id = p.withStagedPassword(Fixture.PASSWORD.toByteArray()) {
-            runBlocking { first.addAccount(deadServer(), "Alice", null) }
+    fun aNewAccountNeverGetsAnotherAccountsPasswordOrTheOtherWayAround() {
+        val recording = Recording(provider())
+        val core = core(recording)
+        val first = add(core, "first-account-pw-Ab-1")
+        // The second account has its own password; nothing is "staged" for it to pick up.
+        val second = add(core, "second-account-pw-Cd-2")
+        assertNotEquals(first, second)
+        assertArrayEquals("first-account-pw-Ab-1".toByteArray(), store.get(first, SecretKind.PASSWORD))
+        assertArrayEquals("second-account-pw-Cd-2".toByteArray(), store.get(second, SecretKind.PASSWORD))
+        // An id nobody stored anything for stays unanswered, whatever was added before.
+        assertNull(provider().credential(second + 1))
+        assertTrue(recording.asked.isEmpty())
+    }
+
+    @Test
+    fun ifAddAccountFailsNothingIsStored() {
+        val core = core(provider())
+        val jmapOnly = deadServer().copy(imap = null, jmap = "https://example.org/.well-known/jmap")
+        try {
+            runBlocking { accounts().addPasswordAccount(core, jmapOnly, "Alice", null, Fixture.PASSWORD.toByteArray()) }
+            fail("expected CoreException")
+        } catch (e: CoreException) {
+            // refused by the core
         }
-        // The core asked for the new account's credential; the answer was stored under its id.
-        assertTrue(store.has(id, SecretKind.PASSWORD))
+        assertFalse(store.hasAny())
+        assertTrue(core.listAccounts().isEmpty())
+    }
+
+    @Test
+    fun ifTheSecretCannotBeStoredTheAccountIsNotKept() {
+        val keys = MemoryKeySource()
+        val failing = SecretStore(File(dir, "failing"), AesGcmSecretBox(keys))
+        val core = core(SecretStoreCredentials(failing, signIns))
+        keys.unavailable = true
+        try {
+            runBlocking {
+                AccountSecrets(failing, signIns)
+                    .addPasswordAccount(core, deadServer(), "Alice", null, Fixture.PASSWORD.toByteArray())
+            }
+            fail("expected SecretBoxException")
+        } catch (e: SecretBoxException) {
+            assertEquals(SecretBoxException.Kind.UNAVAILABLE, e.kind)
+        }
+        assertTrue(core.listAccounts().isEmpty())
+    }
+
+    @Test
+    fun anIdIsNeverReusedAndALeftoverUnderTheNewIdIsCleared() {
+        val core = core(provider())
+        add(core)
+        val second = add(core)
+        runBlocking { accounts().removeAccount(core, second) }
+        // A leftover of a crash, under the id the next account will get if ids were reused (2) or
+        // the next one (3): both are cleared before the new secret is stored.
+        store.put(2, SecretKind.OAUTH_REFRESH, "stale".toByteArray())
+        store.put(3, SecretKind.OAUTH_REFRESH, "stale".toByteArray())
+        val third = add(core, "third-account-pw-Ef-3")
+        assertEquals("ids are never reused", 3L, third)
+        assertFalse(store.has(3, SecretKind.OAUTH_REFRESH))
+        assertArrayEquals("third-account-pw-Ef-3".toByteArray(), store.get(3, SecretKind.PASSWORD))
+    }
+
+    @Test
+    fun removingAnAccountDeletesItsSecretsBeforeTheCoreIsTold() {
+        val core = core(provider())
+        val id = add(core)
+        signIns.mark(id)
+        runBlocking { accounts().removeAccount(core, id) }
+        assertFalse(store.has(id, SecretKind.PASSWORD))
+        assertTrue(core.listAccounts().isEmpty())
+        assertTrue(signIns.accounts.value.isEmpty())
+
+        // Order: the core refuses an unknown id, yet the secrets are already gone (a crash between
+        // the two steps would look the same: an account that needs a sign-in, never a stray secret).
+        store.put(999, SecretKind.PASSWORD, "x".toByteArray())
+        try {
+            runBlocking { accounts().removeAccount(core, 999) }
+            fail("expected NoSuchAccount")
+        } catch (e: CoreException.NoSuchAccount) {
+            // fixed category
+        }
+        assertFalse(store.has(999, SecretKind.PASSWORD))
+    }
+
+    @Test
+    fun theCoreGetsTheStoredPasswordWhenItReopensAnAccount() {
+        val first = core(provider())
+        val id = add(first)
         assertEquals(AccountStatus.OK, first.listAccounts().single().status)
         first.close()
         open.remove(first)
 
         // A fresh provider over the same store hands it to the core again at open.
-        val second = core(provider())
+        val recording = Recording(provider())
+        val second = core(recording)
         assertEquals(AccountStatus.OK, second.listAccounts().single().status)
+        assertEquals(listOf(id), recording.asked.toList())
         assertTrue(signIns.accounts.value.isEmpty())
     }
 
@@ -156,9 +255,7 @@ class SecretStoreCredentialsTest {
     fun aMissingSecretLeadsToNeedsSignInAndTheAccountIsMarked() {
         val p = provider()
         val first = core(p)
-        val id = p.withStagedPassword(Fixture.PASSWORD.toByteArray()) {
-            runBlocking { first.addAccount(deadServer(), "Alice", null) }
-        }
+        val id = add(first)
         first.close()
         open.remove(first)
 

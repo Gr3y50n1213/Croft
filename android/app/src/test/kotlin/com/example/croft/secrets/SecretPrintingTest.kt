@@ -43,22 +43,22 @@ class SecretPrintingTest {
         val signIns = SignInNeeded().apply { mark(1) }
         val provider = SecretStoreCredentials(store, signIns) { "alice" }
 
-        // Held inside the provider while this runs.
-        provider.withStagedPassword(Fixture.PASSWORD.toByteArray()) {
-            val printed = mapOf(
-                "DatabaseKey" to databaseKey,
-                "SecretStore" to store,
-                "AppSecrets" to appSecrets,
-                "AesGcmSecretBox" to box,
-                "KeyLossNotice" to appSecrets.keyLoss,
-                "SignInNeeded" to signIns,
-                "SecretStoreCredentials" to provider,
-            )
-            printed.forEach { (name, obj) ->
-                val text = "$obj / ${obj.toString()} / $name: $obj"
-                assertEquals(name, "[redacted]", obj.toString())
-                listOf(Fixture.PASSWORD, Fixture.TOKEN).forEach { assertFalse("$name leaks", leaks(text, it)) }
-            }
+        val printed = mapOf(
+            "DatabaseKey" to databaseKey,
+            "SecretStore" to store,
+            "AppSecrets" to appSecrets,
+            "AesGcmSecretBox" to box,
+            "KeystoreKeySource" to KeystoreKeySource("croft.test", FakeKeystore(), KeystoreErrors(), emptyList()) {},
+            "KeyLossNotice" to appSecrets.keyLoss,
+            "SignInNeeded" to signIns,
+            "SecretStoreCredentials" to provider,
+            "AccountSecrets" to AccountSecrets(store, signIns),
+            "Quarantine" to Quarantine(File(dir, "q"), { 0L }),
+        )
+        printed.forEach { (name, obj) ->
+            val text = "$obj / ${obj.toString()} / $name: $obj"
+            assertEquals(name, "[redacted]", obj.toString())
+            listOf(Fixture.PASSWORD, Fixture.TOKEN).forEach { assertFalse("$name leaks", leaks(text, it)) }
         }
         databaseKey.close()
     }
@@ -70,6 +70,11 @@ class SecretPrintingTest {
             assertEquals(it.name, e.message)
             assertNull(e.cause)
             assertFalse(leaks(e.toString(), Fixture.PASSWORD))
+        }
+        SecureStorageException.Reason.values().forEach {
+            val e = SecureStorageException(it)
+            assertEquals(it.name, e.message)
+            assertNull(e.cause)
         }
     }
 

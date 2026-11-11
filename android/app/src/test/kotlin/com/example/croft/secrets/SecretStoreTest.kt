@@ -160,4 +160,44 @@ class SecretStoreTest {
         store.clear()
         assertFalse(store.hasAny())
     }
+
+    @Test
+    fun putForNewAccountClearsEveryEntryUnderTheIdFirst() {
+        store.put(4, SecretKind.OAUTH_REFRESH, bytes("stale-refresh"))
+        store.put(4, SecretKind.OAUTH_ACCESS, bytes("stale-access"))
+        store.put(4, SecretKind.PASSWORD, bytes("stale-password"))
+        store.put(5, SecretKind.PASSWORD, bytes("other-account"))
+        store.putForNewAccount(4, SecretKind.PASSWORD, bytes("fresh"))
+        assertArrayEquals(bytes("fresh"), store.get(4, SecretKind.PASSWORD))
+        assertFalse(store.has(4, SecretKind.OAUTH_REFRESH))
+        assertFalse(store.has(4, SecretKind.OAUTH_ACCESS))
+        assertArrayEquals(bytes("other-account"), store.get(5, SecretKind.PASSWORD))
+    }
+
+    @Test
+    fun anEntryFromANewerCroftIsReportedAndKept() {
+        store.put(1, SecretKind.PASSWORD, bytes("x"))
+        val f = dir.listFiles()!!.single { it.name.startsWith("acct-1.") }
+        f.writeBytes(f.readBytes().also { it[0] = 2 })
+        val before = f.readBytes()
+        try {
+            store.get(1, SecretKind.PASSWORD)
+            fail("expected UNSUPPORTED_VERSION")
+        } catch (e: SecretBoxException) {
+            assertEquals(SecretBoxException.Kind.UNSUPPORTED_VERSION, e.kind)
+        }
+        assertArrayEquals(before, f.readBytes())
+    }
+
+    @Test
+    fun writingSyncsTheDirectoryAndToleratesOneThatCannotBeSynced() {
+        // A file written through writeAtomically is in place, with no temporary file left behind.
+        val target = File(dir, "x.v1")
+        writeAtomically(target, bytes("abc"))
+        assertArrayEquals(bytes("abc"), target.readBytes())
+        assertFalse(File(dir, "x.v1.tmp").exists())
+        // A directory that cannot be opened is not an error (some filesystems refuse).
+        syncDirectory(File(dir, "no-such-directory"))
+        syncDirectory(dir)
+    }
 }

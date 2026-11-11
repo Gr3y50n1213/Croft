@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<clientConfig version="1.1">
+  <emailProvider id="bad.example">
+    <incomingServer type="imap">
+      <hostname>mail.bad.example/../evil</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+    </incomingServer>
+    <incomingServer type="imap">
+      <hostname>mail.bad.example</hostname>
+      <port>99999</port>
+      <socketType>SSL</socketType>
+    </incomingServer>
+    <incomingServer type="imap">
+      <hostname>%UNKNOWN%.bad.example</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+    </incomingServer>
+    <incomingServer type="imap">
+      <hostname>mail.bad.example</hostname>
+      <port>993</port>
+      <socketType>carrier-pigeon</socketType>
+    </incomingServer>
+  </emailProvider>
+</clientConfig>

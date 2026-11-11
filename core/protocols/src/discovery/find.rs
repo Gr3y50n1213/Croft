@@ -136,6 +136,9 @@ impl Discoverer {
 
     /// Finds the settings for `address` (no password involved, nothing secret sent). See the
     /// module documentation for the order of preference and exactly which hosts are contacted.
+    ///
+    /// Must be called inside a Tokio runtime (the probes run as tasks). Dropping the returned
+    /// future cancels every probe that is still running.
     pub async fn discover(&self, address: &str) -> Result<DiscoveredSettings, DiscoveryError> {
         let address = EmailAddress::parse(address)?;
         let emit = |probe, state| {

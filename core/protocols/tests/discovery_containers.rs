@@ -15,6 +15,11 @@
 //! docker compose -f test-servers/docker-compose.yml down
 //! ```
 //!
+//! The host ports can be changed with `CROFT_TEST_GREENMAIL_IMAPS_PORT`,
+//! `CROFT_TEST_DOVECOT_IMAPS_PORT` and `CROFT_TEST_DOVECOT_STARTTLS_PORT`, for running a second
+//! copy of the servers next to someone else's (`docker compose -p other-name ...` with remapped
+//! ports).
+//!
 //! Both servers use self-signed certificates, so each test walks the whole certificate flow:
 //! refused with a fingerprint, trusted once, signed in. The third server of "three test
 //! servers" is the in-process one in `tests/discovery.rs`.
@@ -27,6 +32,29 @@ use croft_protocols::discovery::*;
 use croft_protocols::{CertFingerprint, Credential, Security};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// A host port, from the environment when set. The defaults are the ones in
+/// `test-servers/docker-compose.yml`; the variables exist so that a second copy of the servers,
+/// started under another compose project name with other host ports, can run at the same time as
+/// someone else's.
+fn port(variable: &str, default: u16) -> u16 {
+    std::env::var(variable)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn greenmail_imaps() -> u16 {
+    port("CROFT_TEST_GREENMAIL_IMAPS_PORT", 3993)
+}
+
+fn dovecot_imaps() -> u16 {
+    port("CROFT_TEST_DOVECOT_IMAPS_PORT", 31993)
+}
+
+fn dovecot_starttls() -> u16 {
+    port("CROFT_TEST_DOVECOT_STARTTLS_PORT", 31143)
+}
 
 fn quick() -> VerifyOptions {
     VerifyOptions {
@@ -98,14 +126,18 @@ async fn greenmail_found_through_an_autoconfig_file() {
     let dns = Arc::new(FakeResolver::new());
     let http = Arc::new(FakeHttp::new());
     // %EMAILLOCALPART% makes the login name "test", which is GreenMail's user (password "test").
-    http.set_body(
-        "https://autoconfig.greenmail.test/mail/config-v1.1.xml",
-        br#"<?xml version="1.0"?>
+    let xml = format!(
+        r#"<?xml version="1.0"?>
 <clientConfig version="1.1"><emailProvider id="greenmail.test">
-<incomingServer type="imap"><hostname>127.0.0.1</hostname><port>3993</port>
+<incomingServer type="imap"><hostname>127.0.0.1</hostname><port>{}</port>
 <socketType>SSL</socketType><username>%EMAILLOCALPART%</username>
 <authentication>password-cleartext</authentication></incomingServer>
 </emailProvider></clientConfig>"#,
+        greenmail_imaps()
+    );
+    http.set_body(
+        "https://autoconfig.greenmail.test/mail/config-v1.1.xml",
+        xml.as_bytes(),
     );
     let settings = Discoverer::new(dns.clone(), http.clone())
         .discover("test@greenmail.test")
@@ -115,7 +147,7 @@ async fn greenmail_found_through_an_autoconfig_file() {
     let imap = settings.imap.clone().unwrap();
     assert_eq!(
         (imap.host.as_str(), imap.port, imap.security),
-        ("127.0.0.1", 3993, Security::Tls)
+        ("127.0.0.1", greenmail_imaps(), Security::Tls)
     );
     assert_eq!(imap.username, "test");
 
@@ -128,7 +160,7 @@ async fn greenmail_found_through_an_autoconfig_file() {
 async fn dovecot_found_through_srv_records_with_implicit_tls() {
     let dns = Arc::new(FakeResolver::new());
     let http = Arc::new(FakeHttp::new());
-    dns.set_srv("_imaps._tcp.dovecot.test", srv(31993));
+    dns.set_srv("_imaps._tcp.dovecot.test", srv(dovecot_imaps()));
     let settings = Discoverer::new(dns.clone(), http.clone())
         .discover("anyone@dovecot.test")
         .await
@@ -137,7 +169,7 @@ async fn dovecot_found_through_srv_records_with_implicit_tls() {
     let imap = settings.imap.clone().unwrap();
     assert_eq!(
         (imap.host.as_str(), imap.port, imap.security),
-        ("localhost", 31993, Security::Tls)
+        ("localhost", dovecot_imaps(), Security::Tls)
     );
     // Dovecot's certificate is the fixed test certificate, so the fingerprint is known.
     let fingerprint = flow(&settings, "testpass", "wrong").await;
@@ -148,7 +180,7 @@ async fn dovecot_found_through_srv_records_with_implicit_tls() {
 async fn dovecot_found_through_srv_records_with_starttls() {
     let dns = Arc::new(FakeResolver::new());
     let http = Arc::new(FakeHttp::new());
-    dns.set_srv("_imap._tcp.dovecot.test", srv(31143));
+    dns.set_srv("_imap._tcp.dovecot.test", srv(dovecot_starttls()));
     let settings = Discoverer::new(dns.clone(), http.clone())
         .discover("anyone@dovecot.test")
         .await

@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import com.example.croft.CroftRobolectricRunner
 import com.example.croft.RustInfo
@@ -271,7 +272,10 @@ class AccountsScreensTest {
         tag(AccountsTags.folder("archive")).performClick()
         waitFor(MoveTags.SHEET)
         val receipts = FakeData.folderId(1, FakeData.RECEIPTS)
-        tag(MoveTags.folder(receipts)).performScrollTo().performClick()
+        // Search for it so that the one entry is at the top of the sheet (a small test window shows only the top of the list).
+        tag(MoveTags.SEARCH).performTextInput("Receipts")
+        rule.waitUntil(10_000) { exists(MoveTags.folder(receipts)) }
+        tag(MoveTags.folder(receipts)).performClick()
         rule.waitUntil(10_000) { session.folderMapping.mapped(1, FolderRole.ARCHIVE) == receipts }
         rule.waitUntil(10_000) { rule.onAllNodes(hasText("Receipts")).fetchSemanticsNodes().isNotEmpty() }
         // A folder the server itself marks (Trash) is used as it is: shown, nothing to choose.

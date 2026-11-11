@@ -78,7 +78,7 @@ fun ServerSettingsScreen(
 ) {
     val form = state.form
     var password by remember { mutableStateOf("") }
-    var advanced by rememberSaveable { mutableStateOf(form.outHost.isNotBlank()) }
+    var advanced by rememberSaveable { mutableStateOf(false) }
     val working = state.attempt is Attempt.Working
     val problems = if (state.showFormProblems) form.problems() else emptyMap()
     val failure = (state.attempt as? Attempt.Failed)?.failure

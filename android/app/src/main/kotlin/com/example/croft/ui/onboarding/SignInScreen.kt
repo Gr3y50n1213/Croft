@@ -35,6 +35,7 @@ import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -146,7 +147,7 @@ private fun ProviderHint(provider: KnownProvider?) {
     }
     val notice = provider == KnownProvider.GMAIL || provider == KnownProvider.OUTLOOK
     if (notice) {
-        Surface(Modifier.fillMaxWidth().testTag(OnboardingTags.PROVIDER_HINT), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.secondaryContainer) {
+        Surface(Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}.testTag(OnboardingTags.PROVIDER_HINT), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.secondaryContainer) {
             Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
                 Icon(Icons.Filled.Info, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(20.dp))
                 Text(stringResource(text), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)

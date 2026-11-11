@@ -97,15 +97,14 @@ data class ServerForm(
         }
 
         /**
-         * The guess S05 starts from when nothing was found: the address as the login name and `mail.<domain>` as the server, both
-         * editable. It is a guess and S05 says so.
+         * The guess S05 starts from when nothing was found: the address as the login name and `mail.<domain>` as the incoming server, both
+         * editable (the outgoing server is left empty). It is a guess and S05 says so.
          */
         fun guessFor(email: String): ServerForm {
             val domain = EmailInput.domainOf(email).orEmpty()
             return ServerForm(
                 host = if (domain.isEmpty()) "" else "mail.$domain",
                 username = email.trim(),
-                outHost = if (domain.isEmpty()) "" else "mail.$domain",
             )
         }
 

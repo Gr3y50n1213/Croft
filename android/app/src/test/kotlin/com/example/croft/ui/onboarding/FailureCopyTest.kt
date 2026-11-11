@@ -17,6 +17,8 @@ import uniffi.croft_ffi.KnownProvider
 import uniffi.croft_ffi.ProbeFailureReason
 import uniffi.croft_ffi.StorageReason
 import uniffi.croft_ffi.VerifyFailure
+import uniffi.croft_ffi.discoverErrorMessageKey
+import uniffi.croft_ffi.verifyFailureMessageKey
 
 /**
  * Every discovery and sign-in error the core can return has its own plain-language text. The test walks the keys three ways, so a new
@@ -69,6 +71,9 @@ class FailureCopyTest {
         assertEquals(DiscoverException::class.java.declaredClasses.count { DiscoverException::class.java.isAssignableFrom(it) }, discover.size)
         assertEquals(VerifyFailure::class.java.declaredClasses.count { VerifyFailure::class.java.isAssignableFrom(it) }, verify.map { it.javaClass }.distinct().size)
 
+        // The app's own table of keys equals the core's key functions, variant by variant.
+        discover.forEach { assertEquals(discoverErrorMessageKey(it), OnboardingFailure.Discover(it, "mail.example.org").key) }
+        verify.forEach { assertEquals(verifyFailureMessageKey(it), OnboardingFailure.Verify(it, "mail.example.org").key) }
         val keys = discover.map { OnboardingFailure.Discover(it, "mail.example.org").key } + verify.map { OnboardingFailure.Verify(it, "mail.example.org").key }
         keys.forEach(::assertHasText)
         assertEquals("the bindings and the Rust file name the same keys", rustKeys, keys.toSet())

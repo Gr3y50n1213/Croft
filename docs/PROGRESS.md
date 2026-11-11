@@ -7,6 +7,8 @@ unverified, the next step.
 
 ## Session 1 summary (11 November 2026) — read this first
 
+**Update, first GitHub CI run (pull request #1):** all six jobs pass on GitHub (core, SQLCipher, schema, design tokens, integration against Stalwart/GreenMail/Dovecot, and Android `assembleDebug` + 27 JVM unit tests with libraries from Maven Central itself). CI found two problems the container could not: a clippy lint new in Rust 1.99, and an Android screen test still expecting FFI API version 1. Both fixed. This settles the "mirror" concern below for the Android tests.
+
 **Where things stand:** stage 0 and stage 1 are done (T01–T06), plus T07 and T08 (stage 2, "done except" device checks), and from phase 1 the JMAP adapter (T09) and the FFI surface the app will use (T10). Stage 3 (the Android screens, T11–T21) has task files but has not started: every one of those tasks needs new Android libraries from Maven Central, which rate-limits this container (429), so nothing there could be built and tested here.
 
 **Checks on the final branch (`claude/croft-build`, run by the orchestrator):** `cargo fmt --check` and both `cargo clippy -D warnings` clean; `cargo test` 703 passed, 0 failed; storage with SQLCipher 146 passed; `check_schema.py` all ok; design tokens 60 of 60. Container suites against real servers: Stalwart (JMAP) 6/6, GreenMail and Dovecot (IMAP) 9/9, SMTP to GreenMail 6/6, discovery 3/3.

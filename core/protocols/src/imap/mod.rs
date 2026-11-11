@@ -37,7 +37,7 @@ mod config;
 mod conn;
 mod error;
 mod stream;
-mod text;
+pub(crate) mod text;
 mod tls;
 
 pub use config::{CertFingerprint, Credential, ImapConfig, Security};

@@ -113,7 +113,7 @@ class MailSurfaceTest {
 
     @Test
     fun addListAndRemoveAnAccount() {
-        val provider = MemoryCredentials().apply { pending = FfiCredential.Password(password) }
+        val provider = MemoryCredentials().apply { pending = FfiCredential.password(password.toByteArray()) }
         val core = openCore(provider)
         val id = runBlocking { core.addAccount(deadServer(), "Alice", null) }
 
@@ -144,7 +144,7 @@ class MailSurfaceTest {
 
     @Test
     fun anAccountSurvivesAReopenAndTheProviderIsAskedAgain() {
-        val provider = MemoryCredentials().apply { pending = FfiCredential.Password(password) }
+        val provider = MemoryCredentials().apply { pending = FfiCredential.password(password.toByteArray()) }
         val first = openCore(provider)
         val id = runBlocking { first.addAccount(deadServer(), "Alice", null) }
         first.close()
@@ -174,14 +174,14 @@ class MailSurfaceTest {
         assertEquals(AccountStatus.NEEDS_SIGN_IN, core.listAccounts()[0].status)
 
         // The person fixed it: the app stores the secret and says so.
-        provider.store(id, FfiCredential.Password(password))
+        provider.store(id, FfiCredential.password(password.toByteArray()))
         runBlocking { core.signedIn(id) }
         assertEquals(AccountStatus.OK, core.listAccounts()[0].status)
     }
 
     @Test
     fun nextChangeReturnsWhatChangedAndWaitsForMore() {
-        val provider = MemoryCredentials().apply { pending = FfiCredential.Password(password) }
+        val provider = MemoryCredentials().apply { pending = FfiCredential.password(password.toByteArray()) }
         val core = openCore(provider)
         val id = runBlocking { core.addAccount(deadServer(), "Alice", null) }
         val batch = runBlocking { withTimeout(10_000) { core.nextChange(0u) } }
@@ -201,7 +201,7 @@ class MailSurfaceTest {
     @Test
     fun verifyAndDiscoverReportTypedFailures() {
         val core = openCore(NoCredentials())
-        val cred = FfiCredential.Password(password)
+        val cred = FfiCredential.password(password.toByteArray())
 
         // Nobody listening: a typed failure with a message key, not a string with data.
         try {
@@ -257,6 +257,73 @@ class MailSurfaceTest {
     }
 
     @Test
+    fun aKotlinExceptionInACallbackIsNoCredentialNotAPanic() {
+        val thrown = ThrowingCredentials()
+        val core = openCore(thrown)
+        // The provider throws from `credential` (and then from `signInNeeded`): the account is
+        // added and waits for a sign-in; nothing crashes and the exception text stays here.
+        val id = runBlocking { core.addAccount(deadServer(), "Alice", null) }
+        assertEquals(AccountStatus.NEEDS_SIGN_IN, core.listAccounts()[0].status)
+        try {
+            runBlocking { core.signedIn(id) }
+            fail("expected NoCredential")
+        } catch (e: CoreException.NoCredential) {
+            assertFalse(e.toString().contains(ThrowingCredentials.SECRET_TEXT))
+        }
+        assertTrue(thrown.asked.get() >= 2)
+        // The core is still usable (the sign-in state wins over offline on the chip).
+        core.setNetworkAvailable(false)
+        assertEquals(AccountStatus.NEEDS_SIGN_IN, core.listAccounts()[0].status)
+        assertTrue(runBlocking { withTimeout(10_000) { core.nextChange(0u) } }.seq > 0u)
+    }
+
+    @Test
+    fun aCredentialThatIsNotUtf8IsNoCredential() {
+        val provider = MemoryCredentials().apply {
+            pending = FfiCredential.password(byteArrayOf(0xff.toByte(), 0xfe.toByte(), 0x80.toByte()))
+        }
+        val core = openCore(provider)
+        val id = runBlocking { core.addAccount(deadServer(), "Alice", null) }
+        assertEquals(AccountStatus.NEEDS_SIGN_IN, core.listAccounts()[0].status)
+        try {
+            runBlocking { core.signedIn(id) }
+            fail("expected NoCredential")
+        } catch (e: CoreException.NoCredential) {
+            // expected
+        }
+        try {
+            runBlocking {
+                core.verify(deadServer(), FfiCredential.password(byteArrayOf(0xc0.toByte())), null)
+            }
+            fail("expected WrongPassword")
+        } catch (e: VerifyFailure.WrongPassword) {
+            // expected
+        }
+    }
+
+    @Test
+    fun anObserverThatThrowsDoesNotStopDiscovery() {
+        val core = openCore(NoCredentials())
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val observer =
+            object : DiscoveryObserver {
+                override fun onProbe(probe: DiscoveryProbe, state: ProbeProgress) {
+                    calls.incrementAndGet()
+                    throw IllegalStateException("observer failed with ${ThrowingCredentials.SECRET_TEXT}")
+                }
+            }
+        val found =
+            try {
+                runBlocking { core.discover("someone@gmail.com", observer) }
+            } catch (e: DiscoverException.ResolverUnavailable) {
+                assumeTrue("no system name servers on this machine", false)
+                throw e
+            }
+        assertEquals(KnownProvider.GMAIL, found.provider)
+        assertTrue(calls.get() > 0)
+    }
+
+    @Test
     fun actionsOnUnknownIdsAreTypedErrorsAndChangeNothing() {
         val core = openCore(NoCredentials())
         for (call in listOf<() -> Unit>(
@@ -286,7 +353,7 @@ class MailSurfaceTest {
 
     @Test
     fun noPasswordAppearsInAnyErrorOrReturnedValue() {
-        val provider = MemoryCredentials().apply { pending = FfiCredential.Password(password) }
+        val provider = MemoryCredentials().apply { pending = FfiCredential.password(password.toByteArray()) }
         val core = openCore(provider)
         val seen = mutableListOf<String>()
         fun note(what: Any?) {
@@ -294,10 +361,12 @@ class MailSurfaceTest {
             if (what is Throwable) seen.add(what.message.orEmpty())
         }
 
-        // Not noted here: the generated Kotlin `FfiCredential.Password` is a data class, so its
-        // own toString() prints the secret. The app (T11) must never log or print one.
+        // `FfiCredential` is an object, so it prints no secret (see CredentialPrintingTest); the
+        // app (T11) must still never log or print one.
         try {
-            runBlocking { core.verify(deadServer(), FfiCredential.Password(password), null) }
+            runBlocking {
+                core.verify(deadServer(), FfiCredential.password(password.toByteArray()), null)
+            }
         } catch (e: VerifyFailure) {
             note(e)
             note(verifyFailureMessageKey(e))

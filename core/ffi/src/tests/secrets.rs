@@ -141,10 +141,7 @@ fn no_password_in_any_error_value_returned_string_log_line_or_database_file() {
         "credential",
         format!(
             "{:?}",
-            FfiCredential::OAuth2 {
-                user: "alice".into(),
-                access_token: PASSWORD.into()
-            }
+            FfiCredential::oauth2("alice".into(), PASSWORD.as_bytes().to_vec())
         ),
     );
 

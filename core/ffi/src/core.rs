@@ -7,6 +7,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,7 +23,9 @@ use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
 use crate::changes::{listen, Hub};
-use crate::credentials::{ask, AccountBackend, CredentialProvider, FfiCredential, Readiness};
+use crate::credentials::{
+    ask, AccountBackend, CredentialProvider, FfiCredential, ProviderError, Readiness,
+};
 use crate::error::{CoreError, DiscoverError, VerifyFailure};
 use crate::list;
 use crate::settings::{StoredSecurity, StoredServer, StoredSettings, SETTINGS_VERSION};
@@ -32,11 +35,14 @@ use crate::types::{
 };
 
 /// Called by `discover` while it runs, for the "Finding your server" screen (S03). Callbacks come
-/// from a Rust thread: hop to the main thread before touching the UI.
+/// from a blocking thread of the core, one at a time and in order, never from a runtime worker:
+/// a slow observer delays only the progress it reports. Hop to the main thread before touching
+/// the UI. A callback that throws is reported as [`ProviderError::Failed`] and ignored.
 #[uniffi::export(with_foreign)]
 pub trait DiscoveryObserver: Send + Sync {
-    /// One probe changed state. Every probe's final state is delivered before `discover` returns.
-    fn on_probe(&self, probe: DiscoveryProbe, state: ProbeProgress);
+    /// One probe changed state. Every probe's final state is delivered before `discover` returns
+    /// (unless the call is cancelled: nothing is delivered after that).
+    fn on_probe(&self, probe: DiscoveryProbe, state: ProbeProgress) -> Result<(), ProviderError>;
 }
 
 /// The runtime or a task of it is gone (the task panicked or was stopped).
@@ -231,6 +237,19 @@ impl Core {
         }
     }
 
+    /// `discover` with a given discoverer (tests use one with a fake network), still run on the
+    /// core's runtime like the real call.
+    #[cfg(test)]
+    pub(crate) async fn discover_using(
+        &self,
+        discoverer: Discoverer,
+        email: String,
+        observer: Option<Arc<dyn DiscoveryObserver>>,
+    ) -> Result<FfiDiscovered, DiscoverError> {
+        let task = self.spawn(discover_with(discoverer, email, observer), true);
+        task.await?
+    }
+
     fn pin_from_text(text: &str) -> Result<CertFingerprint, CoreError> {
         CertFingerprint::from_hex(text).map_err(|_| CoreError::BadFingerprint)
     }
@@ -351,7 +370,7 @@ impl Core {
     pub async fn verify(
         &self,
         discovered: FfiDiscovered,
-        credential: FfiCredential,
+        credential: Arc<FfiCredential>,
         pinned_fingerprint: Option<String>,
     ) -> Result<(), VerifyFailure> {
         let pin = pinned_fingerprint
@@ -359,7 +378,10 @@ impl Core {
             .transpose()
             .map_err(|_| VerifyFailure::BadSettings)?;
         let settings = discovered.to_settings();
-        let credential = credential.into_credential();
+        // Not valid UTF-8 (the bytes are wiped): no server would accept it as a password.
+        let credential = credential
+            .to_credential()
+            .ok_or(VerifyFailure::WrongPassword)?;
         let task = self.spawn(
             async move {
                 let options = VerifyOptions {
@@ -705,17 +727,24 @@ pub(crate) async fn discover_with(
     email: String,
     observer: Option<Arc<dyn DiscoveryObserver>>,
 ) -> Result<FfiDiscovered, DiscoverError> {
+    // Set when this call ends early (the app cancelled it): the forwarder then delivers nothing
+    // more, though a callback that is already running is not interrupted.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _stop = StopOnDrop(cancelled.clone());
     let (discoverer, forwarder) = match observer {
         None => (discoverer, None),
         Some(observer) => {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProbeUpdate>();
-            let task = tokio::spawn(async move {
-                while let Some(update) = rx.recv().await {
-                    let (probe, state) = (update.probe.into(), update.state.into());
+            // The app's callback may block: not on a runtime worker. The loop ends when the
+            // channel closes (the discoverer is dropped) or the call is cancelled.
+            let stop = cancelled.clone();
+            let task = tokio::task::spawn_blocking(move || {
+                while let Some(update) = rx.blocking_recv() {
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
                     // An exception on the app's side must not stop discovery.
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        observer.on_probe(probe, state)
-                    }));
+                    let _ = observer.on_probe(update.probe.into(), update.state.into());
                 }
             });
             (discoverer.with_progress(tx), Some(task))
@@ -730,5 +759,14 @@ pub(crate) async fn discover_with(
     match result {
         Ok(found) => Ok(FfiDiscovered::from_settings(email.trim(), &found)),
         Err(e) => Err(DiscoverError::from(&e)),
+    }
+}
+
+/// Sets the flag when dropped: the forwarder's signal to stop delivering.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }

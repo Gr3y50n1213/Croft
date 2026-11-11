@@ -43,7 +43,7 @@ mod tests;
 mod types;
 
 pub use crate::core::{Core, DiscoveryObserver};
-pub use credentials::{CredentialProvider, FfiCredential};
+pub use credentials::{CredentialProvider, FfiCredential, ProviderError};
 pub use error::{
     discover_error_default_message, discover_error_message_key, verify_failure_default_message,
     verify_failure_message_key, CoreError, DiscoverError, StorageReason, VerifyFailure,

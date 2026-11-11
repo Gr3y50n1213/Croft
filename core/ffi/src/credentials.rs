@@ -10,54 +10,138 @@
 //! `ImapBackend::new`, which keeps it in a `Zeroizing` string for as long as the adapter lives.
 //! Nothing here writes a secret to SQLite, a log line or an error.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use croft_protocols::{
     BackendError, BackendFuture, Capabilities, Credential, FlagChange, FolderStatus, ImapBackend,
     ImapConfig, MailBackend, MoveOutcome, RemoteFolder, RemoteHeader, RemoteSnapshot, Uid,
 };
+use zeroize::{Zeroize, Zeroizing};
 
-/// What proves who the person is, as the app hands it over. The core wraps the strings in
-/// `Zeroizing` on arrival.
-#[derive(Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum FfiCredential {
-    /// An account password (or app password).
-    Password {
-        /// The secret.
-        secret: String,
-    },
-    /// An OAuth 2 access token.
+/// What proves who the person is, as the app hands it over: build one with [`FfiCredential::password`]
+/// or [`FfiCredential::oauth2`].
+///
+/// This is an object, not an enum with fields, on purpose. UniFFI generates a Kotlin `data class`
+/// for every enum variant that has fields, and a data class's `toString()` prints all of its
+/// properties: a `String` field prints the secret, and so does a `ByteArray` field (Kotlin prints
+/// the array's elements). An object has no fields on the Kotlin side, so it prints as
+/// `FfiCredential@1a2b3c` and nothing else. The secret bytes live in Rust, in a `Zeroizing`
+/// buffer that is wiped when the object is released (Kotlin `close()`, or the cleaner). The
+/// constructors take the app's `ByteArray` (UTF-8), which the app can `fill(0)` as soon as the
+/// constructor has returned. Bytes that are not UTF-8 count as "no credential". The core copies
+/// the secret into the protocol layer's wiping credential for each use, so one object can serve
+/// several calls. No `Clone`, no `PartialEq`, and `Debug` prints `***`. See the README for the
+/// copies the core cannot wipe.
+#[derive(uniffi::Object)]
+pub struct FfiCredential {
+    kind: Kind,
+}
+
+/// The two shapes of credential. The secrets are wiped on drop.
+enum Kind {
+    Password(Zeroizing<Vec<u8>>),
     OAuth2 {
-        /// The account name the token belongs to.
         user: String,
-        /// The current access token.
-        access_token: String,
+        access_token: Zeroizing<Vec<u8>>,
     },
+}
+
+#[uniffi::export]
+impl FfiCredential {
+    /// An account password (or app password), as UTF-8 bytes.
+    #[uniffi::constructor]
+    pub fn password(secret: Vec<u8>) -> Arc<Self> {
+        Arc::new(Self {
+            kind: Kind::Password(Zeroizing::new(secret)),
+        })
+    }
+
+    /// An OAuth 2 access token (UTF-8 bytes) and the account name it belongs to.
+    #[uniffi::constructor]
+    pub fn oauth2(user: String, access_token: Vec<u8>) -> Arc<Self> {
+        Arc::new(Self {
+            kind: Kind::OAuth2 {
+                user,
+                access_token: Zeroizing::new(access_token),
+            },
+        })
+    }
 }
 
 impl std::fmt::Debug for FfiCredential {
     /// Prints `***` for everything.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Password { .. } => f.write_str("FfiCredential::Password(***)"),
-            Self::OAuth2 { .. } => f.write_str("FfiCredential::OAuth2(***)"),
+        match self.kind {
+            Kind::Password(_) => f.write_str("FfiCredential::Password(***)"),
+            Kind::OAuth2 { .. } => f.write_str("FfiCredential::OAuth2(***)"),
+        }
+    }
+}
+
+/// Copies secret bytes into a string that wipes itself. Bytes that are not UTF-8 are wiped and
+/// give `None`.
+fn secret_string(bytes: &[u8]) -> Option<Zeroizing<String>> {
+    match String::from_utf8(bytes.to_vec()) {
+        Ok(s) => Some(Zeroizing::new(s)),
+        Err(e) => {
+            // The error owns the copy: wipe it before it is dropped.
+            let mut copy = e.into_bytes();
+            copy.zeroize();
+            None
         }
     }
 }
 
 impl FfiCredential {
-    /// Moves the strings into the protocol layer's wiping credential (no copy is made).
-    pub(crate) fn into_credential(self) -> Credential {
-        match self {
-            Self::Password { secret } => Credential::password(secret),
-            Self::OAuth2 { user, access_token } => Credential::oauth2(user, access_token),
+    /// The protocol layer's wiping credential. The one copy made here is moved into it (no
+    /// further copy); the bytes in `self` are wiped when the object is released. `None` when a
+    /// secret is not valid UTF-8.
+    pub(crate) fn to_credential(&self) -> Option<Credential> {
+        match &self.kind {
+            Kind::Password(secret) => {
+                let mut secret = secret_string(secret)?;
+                Some(Credential::password(std::mem::take(&mut *secret)))
+            }
+            Kind::OAuth2 { user, access_token } => {
+                let mut token = secret_string(access_token)?;
+                Some(Credential::oauth2(
+                    user.clone(),
+                    std::mem::take(&mut *token),
+                ))
+            }
         }
+    }
+}
+
+/// The only error a callback into the app can report. It has no fields and no text on purpose:
+/// when Kotlin code throws, UniFFI would otherwise turn the exception into a panic whose message
+/// holds the exception text, and that text could carry a secret. A thrown exception maps to
+/// `Failed` and the text is dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Error)]
+pub enum ProviderError {
+    /// The app's code failed (it threw, or reported a failure). The core treats it like "no
+    /// credential".
+    Failed,
+}
+
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the app's callback failed")
+    }
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for ProviderError {
+    /// Any exception that is not a [`ProviderError`]: its text is discarded here.
+    fn from(_: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Failed
     }
 }
 
 /// Implemented by the app (T11 on Android: the keystore). Called from Rust threads, never from a
 /// UI thread; keep the answers quick.
+///
+/// A callback that throws is reported as [`ProviderError::Failed`] (see there); the core treats
+/// `credential` failing like having no credential.
 #[uniffi::export(with_foreign)]
 pub trait CredentialProvider: Send + Sync {
     /// The credential for the account, or `None` when there is none (the account then starts in
@@ -65,24 +149,28 @@ pub trait CredentialProvider: Send + Sync {
     ///
     /// For an account being added, this is called before `add_account` returns, with the id of the
     /// new row: the app answers with the secret it has just verified and stores it under that id.
-    fn credential(&self, account_id: i64) -> Option<FfiCredential>;
+    /// The secret lives in the returned object, which wipes it when released; the app should wipe
+    /// the `ByteArray` it built the object from.
+    fn credential(&self, account_id: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError>;
 
     /// The account needs the person to sign in again (no credential, or the server refused it).
     /// Called once each time the account enters that state; `signed_in` ends it.
-    fn sign_in_needed(&self, account_id: i64);
+    fn sign_in_needed(&self, account_id: i64) -> Result<(), ProviderError>;
 }
 
-/// Asks the provider. A panic or exception on the app's side counts as "no credential".
+/// Asks the provider. A failure on the app's side (or a credential that is not UTF-8) counts as
+/// "no credential".
 pub(crate) fn ask(provider: &dyn CredentialProvider, account: i64) -> Option<Credential> {
-    catch_unwind(AssertUnwindSafe(|| provider.credential(account)))
+    provider
+        .credential(account)
         .ok()
         .flatten()
-        .map(FfiCredential::into_credential)
+        .and_then(|c| c.to_credential())
 }
 
-/// Tells the provider the account needs a sign-in. A panic on the app's side is ignored.
+/// Tells the provider the account needs a sign-in. A failure on the app's side is ignored.
 pub(crate) fn tell_sign_in_needed(provider: &dyn CredentialProvider, account: i64) {
-    let _ = catch_unwind(AssertUnwindSafe(|| provider.sign_in_needed(account)));
+    let _ = provider.sign_in_needed(account);
 }
 
 /// What an account's backend can do right now.

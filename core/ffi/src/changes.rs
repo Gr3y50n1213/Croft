@@ -262,10 +262,15 @@ mod tests {
 
     struct Nobody;
     impl CredentialProvider for Nobody {
-        fn credential(&self, _: i64) -> Option<crate::FfiCredential> {
-            None
+        fn credential(
+            &self,
+            _: i64,
+        ) -> Result<Option<std::sync::Arc<crate::FfiCredential>>, crate::ProviderError> {
+            Ok(None)
         }
-        fn sign_in_needed(&self, _: i64) {}
+        fn sign_in_needed(&self, _: i64) -> Result<(), crate::ProviderError> {
+            Ok(())
+        }
     }
 
     fn hub() -> Arc<Hub> {

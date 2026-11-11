@@ -6,6 +6,7 @@ package com.example.croft
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import uniffi.croft_ffi.CredentialProvider
 import uniffi.croft_ffi.FfiCredential
 
@@ -44,5 +45,25 @@ class MemoryCredentials : CredentialProvider {
 
     override fun signInNeeded(accountId: Long) {
         signIns.add(accountId)
+    }
+}
+
+/** A provider whose every callback throws, as a keystore failure in the app would. */
+class ThrowingCredentials : CredentialProvider {
+    val asked = AtomicInteger()
+
+    override fun credential(accountId: Long): FfiCredential? {
+        asked.incrementAndGet()
+        throw IllegalStateException("keystore failed: $SECRET_TEXT")
+    }
+
+    override fun signInNeeded(accountId: Long) {
+        asked.incrementAndGet()
+        throw IllegalStateException("sign-in hand-off failed: $SECRET_TEXT")
+    }
+
+    companion object {
+        /** Stands for text from an exception that must not reach any Rust-side message. */
+        const val SECRET_TEXT = "exception-text-Zq4-6612"
     }
 }

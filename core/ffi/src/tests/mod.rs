@@ -55,8 +55,8 @@ pub(crate) fn block_for<F: Future>(limit: Duration, f: F) -> Option<F::Output> {
 /// the Android implementation does when `add_account` asks).
 #[derive(Default)]
 pub(crate) struct MemProvider {
-    stored: Mutex<HashMap<i64, FfiCredential>>,
-    pending: Mutex<Option<FfiCredential>>,
+    stored: Mutex<HashMap<i64, Arc<FfiCredential>>>,
+    pending: Mutex<Option<Arc<FfiCredential>>>,
     asked: Mutex<Vec<i64>>,
     sign_ins: Mutex<Vec<i64>>,
 }
@@ -72,11 +72,11 @@ impl MemProvider {
         p
     }
 
-    pub(crate) fn set_pending(&self, c: Option<FfiCredential>) {
+    pub(crate) fn set_pending(&self, c: Option<Arc<FfiCredential>>) {
         *self.pending.lock().unwrap() = c;
     }
 
-    pub(crate) fn store(&self, id: i64, c: FfiCredential) {
+    pub(crate) fn store(&self, id: i64, c: Arc<FfiCredential>) {
         self.stored.lock().unwrap().insert(id, c);
     }
 
@@ -90,24 +90,27 @@ impl MemProvider {
 }
 
 impl CredentialProvider for MemProvider {
-    fn credential(&self, account_id: i64) -> Option<FfiCredential> {
+    fn credential(&self, account_id: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
         self.asked.lock().unwrap().push(account_id);
         let mut stored = self.stored.lock().unwrap();
         if let Some(c) = stored.get(&account_id) {
-            return Some(c.clone());
+            return Ok(Some(c.clone()));
         }
-        let pending = self.pending.lock().unwrap().take()?;
+        let Some(pending) = self.pending.lock().unwrap().take() else {
+            return Ok(None);
+        };
         stored.insert(account_id, pending.clone());
-        Some(pending)
+        Ok(Some(pending))
     }
 
-    fn sign_in_needed(&self, account_id: i64) {
+    fn sign_in_needed(&self, account_id: i64) -> Result<(), ProviderError> {
         self.sign_ins.lock().unwrap().push(account_id);
+        Ok(())
     }
 }
 
-pub(crate) fn password_cred(p: &str) -> FfiCredential {
-    FfiCredential::Password { secret: p.into() }
+pub(crate) fn password_cred(p: &str) -> Arc<FfiCredential> {
+    FfiCredential::password(p.as_bytes().to_vec())
 }
 
 /// An in-process server with TLS, one user and the fixture password.

@@ -15,7 +15,13 @@ val croftApplicationId = providers.gradleProperty("croft.applicationId").get()
 // Rust side. Paths are relative to android/ (this project's parent).
 val coreDir = rootProject.layout.projectDirectory.dir("../core")
 val rustSources = fileTree(coreDir) {
-    include("Cargo.toml", "Cargo.lock", "ffi/**", "storage/**", "protocols/**")
+    // Every crate croft-ffi depends on (engine -> mail-core, protocols, storage), the vendored
+    // async-imap that [patch.crates-io] points at, and the workspace manifest and lock file.
+    // test-support is a dev-dependency only: the library builds do not compile it.
+    include(
+        "Cargo.toml", "Cargo.lock",
+        "ffi/**", "engine/**", "mail-core/**", "protocols/**", "storage/**", "vendor/**",
+    )
     exclude("**/target/**")
 }
 val cargoVersion = Regex("""(?m)^version\s*=\s*"([^"]+)"""")

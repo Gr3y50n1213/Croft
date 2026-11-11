@@ -5,7 +5,9 @@
 //! Tests that need no network: opening, errors, discovery against fakes, the message list and
 //! the actions on rows put in the database directly.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use croft_protocols::discovery::testing::{FakeHttp, FakeResolver};
 use croft_protocols::discovery::Discoverer;
@@ -218,8 +220,9 @@ fn net_for(server_port: u16) -> (Arc<FakeResolver>, Arc<FakeHttp>) {
 struct Probes(Mutex<Vec<(DiscoveryProbe, ProbeProgress)>>);
 
 impl DiscoveryObserver for Probes {
-    fn on_probe(&self, probe: DiscoveryProbe, state: ProbeProgress) {
+    fn on_probe(&self, probe: DiscoveryProbe, state: ProbeProgress) -> Result<(), ProviderError> {
         self.0.lock().unwrap().push((probe, state));
+        Ok(())
     }
 }
 
@@ -291,6 +294,205 @@ fn discover_errors_are_typed_and_fieldless() {
         "discover.invalid_address"
     );
     assert!(!discover_error_default_message(DiscoverError::Offline).is_empty());
+}
+
+// ---- callbacks into the app ----
+
+/// A provider whose every callback fails, the way a Kotlin exception arrives.
+struct Failing;
+
+impl CredentialProvider for Failing {
+    fn credential(&self, _: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
+        Err(ProviderError::Failed)
+    }
+    fn sign_in_needed(&self, _: i64) -> Result<(), ProviderError> {
+        Err(ProviderError::Failed)
+    }
+}
+
+#[test]
+fn a_provider_that_fails_means_no_credential_and_nothing_panics() {
+    let db = TempDb::new();
+    let id = {
+        let d = Db::open(&db.path, None).unwrap();
+        insert_account(&d, 1)
+    };
+    let core = Core::open(db.path.display().to_string(), None, Arc::new(Failing)).unwrap();
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::NeedsSignIn
+    );
+    assert_eq!(block(core.signed_in(id)), Err(CoreError::NoCredential));
+    // The failing `sign_in_needed` ran on a blocking thread and was ignored; the core still works.
+    core.set_network_available(false).unwrap();
+    assert!(block(core.next_change(0)).unwrap().seq > 0);
+}
+
+#[test]
+fn a_credential_that_is_not_utf8_is_no_credential() {
+    let db = TempDb::new();
+    let id = {
+        let d = Db::open(&db.path, None).unwrap();
+        insert_account(&d, 1)
+    };
+    let provider = MemProvider::new();
+    provider.store(id, FfiCredential::password(vec![0xff, 0xfe, 0x80]));
+    let core = db.open(&provider);
+    assert_eq!(
+        core.list_accounts().unwrap()[0].status,
+        AccountStatus::NeedsSignIn
+    );
+    assert_eq!(block(core.signed_in(id)), Err(CoreError::NoCredential));
+    // `verify` refuses it too, before any network is touched.
+    let found = discovered_for_dead_port();
+    let bad = FfiCredential::oauth2("u".into(), vec![0xc0, 0x00]);
+    assert_eq!(
+        block(core.verify(found, bad, None)),
+        Err(VerifyFailure::WrongPassword)
+    );
+}
+
+fn discovered_for_dead_port() -> FfiDiscovered {
+    FfiDiscovered {
+        email: "alice@example.org".into(),
+        imap: Some(ServerSettings {
+            host: "127.0.0.1".into(),
+            port: 1,
+            security: SecurityMode::Tls,
+            username: "alice".into(),
+        }),
+        smtp: None,
+        jmap: None,
+        source: DiscoverySource::Autoconfig,
+        provider: None,
+        auth_hint: AuthKind::Password,
+    }
+}
+
+/// An observer that sleeps in every callback and counts them.
+struct Slow {
+    delay: Duration,
+    calls: AtomicUsize,
+}
+
+impl Slow {
+    fn new(delay: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            delay,
+            calls: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl DiscoveryObserver for Slow {
+    fn on_probe(&self, _: DiscoveryProbe, _: ProbeProgress) -> Result<(), ProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(self.delay);
+        Err(ProviderError::Failed)
+    }
+}
+
+#[test]
+fn a_slow_observer_does_not_delay_next_change_or_sync() {
+    let db = TempDb::new();
+    {
+        let d = Db::open(&db.path, None).unwrap();
+        insert_account(&d, 1);
+    }
+    let provider = MemProvider::new();
+    provider.store(1, password_cred("x"));
+    let core = db.open(&provider);
+
+    // Two discoveries whose observers sleep 2 s per call: with the callbacks on the runtime's
+    // two workers, both workers would be stuck.
+    let observers = [
+        Slow::new(Duration::from_secs(2)),
+        Slow::new(Duration::from_secs(2)),
+    ];
+    let running: Vec<_> = observers
+        .iter()
+        .map(|o| {
+            let (dns, http) = net_for(14993);
+            let (core, o) = (core.clone(), o.clone());
+            rt().spawn(async move {
+                core.discover_using(
+                    Discoverer::new(dns, http),
+                    "alice@example.org".into(),
+                    Some(o),
+                )
+                .await
+            })
+        })
+        .collect();
+    // Wait until both observers are inside a callback.
+    let began = std::time::Instant::now();
+    while observers
+        .iter()
+        .any(|o| o.calls.load(Ordering::SeqCst) == 0)
+    {
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "no probe reported"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let started = std::time::Instant::now();
+    core.set_network_available(false).unwrap();
+    core.sync_now(1).unwrap();
+    let batch = block_for(Duration::from_secs(1), core.next_change(0))
+        .expect("next_change was held up by a slow observer")
+        .unwrap();
+    assert!(batch.seq > 0);
+    assert!(
+        block_for(Duration::from_secs(1), core.signed_in(1)).is_some(),
+        "signed_in was held up by a slow observer"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // Cancelling the calls ends them without waiting for the observers.
+    for r in running {
+        r.abort();
+    }
+}
+
+#[test]
+fn nothing_is_delivered_after_discover_is_cancelled() {
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let observer = Slow::new(Duration::from_millis(300));
+    let (dns, http) = net_for(14993);
+    let call = {
+        let (core, o) = (core.clone(), observer.clone());
+        rt().spawn(async move {
+            core.discover_using(
+                Discoverer::new(dns, http),
+                "alice@example.org".into(),
+                Some(o),
+            )
+            .await
+        })
+    };
+    let began = std::time::Instant::now();
+    while observer.calls.load(Ordering::SeqCst) == 0 {
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "no probe reported"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    call.abort();
+    // The callback that was already running finishes; then nothing more arrives, although more
+    // updates were queued.
+    std::thread::sleep(Duration::from_millis(600));
+    let after_cancel = observer.calls.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(observer.calls.load(Ordering::SeqCst), after_cancel);
+    assert!(after_cancel <= 2, "{after_cancel} callbacks ran");
 }
 
 // ---- the message list ----

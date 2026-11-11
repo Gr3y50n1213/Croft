@@ -16,6 +16,12 @@ import uniffi.croft_ffi.FfiDiscovered
 class StorageUnavailableException : Exception()
 
 /**
+ * The person signed in again for an account that already exists, and the new password could not be kept. The core's update of the
+ * account was undone (`Core.rollbackAccountUpdate`), so the account is as it was, with its old password. Nothing was added.
+ */
+class SignInNotSavedException : Exception()
+
+/**
  * What the sign-in flow needs from the Rust core (T10's `discover`, `verify` and `add_account`) and from the secret store. The
  * flow talks only to this interface, so a screen test can script it and the JVM tests can run it over the real core.
  *
@@ -29,30 +35,47 @@ interface OnboardingBackend {
     /** Looks up the settings for [email], reporting each probe to [observer]. Cancelling the coroutine stops the probes. */
     suspend fun discover(email: String, observer: DiscoveryObserver): FfiDiscovered
 
-    /** Signs in with [discovered] and [password] to check them; [pinnedFingerprint] is a certificate the person trusted. */
-    suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?)
+    /**
+     * Signs in with [discovered] and [password] to check them; [pinnedFingerprint] is a certificate the person trusted. Returns the
+     * fingerprint the connection was checked against (the one passed, or the stored one of an account with this address and server),
+     * which is what [addAccount] must be given as its [pinnedFingerprint]; null when there is none.
+     */
+    suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?): String?
 
-    /** Adds the verified account and keeps [password] in the secret store under the new id. Returns the id. */
-    suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long
+    /**
+     * Adds the verified account and keeps [password] in the secret store under the account's id, which is returned. For an address
+     * that is already added with the same server the id is the existing account's and the new password replaces the old one.
+     * [confirmedFingerprint] is the certificate the person confirmed on the **changed-certificate** warning (never one from an ordinary
+     * first-use question), or null. Without it, equal to [pinnedFingerprint], the core refuses to replace a pin it holds, to add a pin to
+     * an account that had none, and it never drops one (`CoreException.CertificateChanged`).
+     */
+    suspend fun addAccount(
+        discovered: FfiDiscovered,
+        displayName: String,
+        pinnedFingerprint: String?,
+        confirmedFingerprint: String?,
+        password: ByteArray,
+    ): Long
 }
 
 /**
- * Where the password is stored once the core has added the account: `(discovered, displayName, pinnedFingerprint, password)` to the
- * new account's id. In the app this is `AccountSecrets.addPasswordAccount` (core call first, then the secret store, and the account
- * is removed again if the store fails); the JVM tests give a plain call to the core.
+ * Where the password is stored once the core has added the account: `(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)` to the
+ * account's id. In the app this is `AccountSecrets.addPasswordAccount` (core call first, then the secret store, and a new account
+ * is removed again if the store fails; an account that was only signed in again is kept, with the new password replacing the old);
+ * the JVM tests give a plain call to the core and store the password themselves.
  */
-typealias AccountAdder = suspend (FfiDiscovered, String, String?, ByteArray) -> Long
+typealias AccountAdder = suspend (FfiDiscovered, String, String?, String?, ByteArray) -> Long
 
 /** [OnboardingBackend] over the real [Core]. */
 class CoreOnboardingBackend(private val core: Core, private val adder: AccountAdder) : OnboardingBackend {
     override suspend fun discover(email: String, observer: DiscoveryObserver): FfiDiscovered = core.discover(email, observer)
 
-    override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?) {
+    override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?): String? {
         val copy = password.copyOf()
         try {
             val credential = FfiCredential.password(copy)
             try {
-                core.verify(discovered, credential, pinnedFingerprint)
+                return core.verify(discovered, credential, pinnedFingerprint)
             } finally {
                 credential.close()
             }
@@ -62,14 +85,20 @@ class CoreOnboardingBackend(private val core: Core, private val adder: AccountAd
     }
 
     /**
-     * Adds the account, **once per address**: when the core already has an account with this address (not the sample mailbox), that
-     * account's id is returned and nothing is added. This is what makes a second sign-in harmless when the first one did add the
-     * account but its screen was gone before it could say so (the add runs to its end even then, see `OnboardingFlow`).
+     * Adds the account. **The core decides** what an address that is already added means (`add_account`): the same server is the
+     * person signing in again, so the account keeps its id and gets the new settings, pin and password; another server fails with
+     * `CoreException.AccountExists` ("This address is already added"), and a trusted certificate is never replaced, added or dropped without
+     * [confirmedFingerprint] (`CoreException.CertificateChanged`). That is also what makes a second sign-in harmless when the
+     * first one did add the account but its screen was gone before it could say so (the add runs to its end even then, see
+     * `OnboardingFlow`): the second one finds the account and refreshes it. Nothing here reads the database.
      */
-    override suspend fun addAccount(discovered: FfiDiscovered, displayName: String, pinnedFingerprint: String?, password: ByteArray): Long {
-        core.listAccounts().firstOrNull { !it.isDemo && it.email.equals(discovered.email.trim(), ignoreCase = true) }?.let { return it.id }
-        return adder(discovered, displayName, pinnedFingerprint, password)
-    }
+    override suspend fun addAccount(
+        discovered: FfiDiscovered,
+        displayName: String,
+        pinnedFingerprint: String?,
+        confirmedFingerprint: String?,
+        password: ByteArray,
+    ): Long = adder(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)
 
     override fun toString(): String = "[redacted]"
 }

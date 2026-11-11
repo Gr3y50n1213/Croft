@@ -7,6 +7,7 @@
 //! through the `CredentialProvider`.
 
 use croft_protocols::demo::DEMO_ADDRESS;
+use croft_protocols::discovery::provider_for_host;
 use croft_protocols::{CertFingerprint, ImapConfig, Security};
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +56,14 @@ pub(crate) struct StoredSettings {
     pub(crate) smtp: Option<StoredServer>,
     /// SHA-256 of the one certificate to trust (upper-case hex with colons), when the person
     /// trusted a self-signed one.
+    ///
+    /// **There is one pin per account, and it belongs to the IMAP server.** It is never applied to
+    /// a well-known provider's server (see [`StoredSettings::imap_config`]). When sending is
+    /// connected to the SMTP server in [`StoredSettings::smtp`], the same rule must hold there:
+    /// the pin must not be applied to a provider's SMTP host (`smtp.gmail.com`), checked with
+    /// `provider_for_host` on the SMTP host itself, because the IMAP host and the SMTP host of
+    /// one account need not belong to the same provider (or to any). A pin the person trusted for
+    /// their own IMAP server says nothing about the certificate of another host.
     #[serde(default)]
     pub(crate) pinned_fingerprint: Option<String>,
 }
@@ -89,7 +98,12 @@ impl StoredSettings {
         serde_json::to_value(self).map_err(|_| SettingsError::Unreadable)
     }
 
-    /// The adapter settings.
+    /// The adapter settings. The stored pin is applied only to a server of the person's own: when
+    /// the IMAP host is a well-known provider's (`provider_for_host`), the pin is ignored and the
+    /// account keeps working with the provider's real certificate. A record like that is not
+    /// refused (a Gmail account must keep working) and is not trusted either: `add_account` never
+    /// writes such a pin, so one found here was put there by something else, and a pin on a
+    /// provider's server could only ever pin an interceptor's certificate.
     pub(crate) fn imap_config(&self) -> Result<ImapConfig, SettingsError> {
         let mut config = ImapConfig::new(
             self.imap.host.clone(),
@@ -97,6 +111,9 @@ impl StoredSettings {
             self.imap.security.to_security(),
             self.imap.username.clone(),
         );
+        if provider_for_host(&self.imap.host).is_some() {
+            return Ok(config);
+        }
         if let Some(pin) = &self.pinned_fingerprint {
             let pin = CertFingerprint::from_hex(pin).map_err(|_| SettingsError::BadFingerprint)?;
             config = config.with_pinned_cert(pin);
@@ -206,6 +223,34 @@ mod tests {
             SettingsError::Unreadable
         );
         assert!(StoredSettings::from_json(&serde_json::json!({})).is_err());
+    }
+
+    /// A stored pin on a provider's own server is ignored, whatever spelling the host has, and does
+    /// not stop the account from starting. A server of the person's own keeps its pin.
+    #[test]
+    fn a_stored_pin_is_ignored_for_a_providers_host_and_kept_for_any_other() {
+        let pin = CertFingerprint::from_bytes([9; 32]);
+        for host in [
+            "imap.gmail.com",
+            "IMAP.Gmail.COM.",
+            "[imap.gmail.com]",
+            "outlook.office365.com",
+            "imap.mail.me.com",
+            "imap.fastmail.com",
+        ] {
+            let mut s = sample();
+            s.imap.host = host.into();
+            s.pinned_fingerprint = Some(pin.to_string());
+            let config = s.imap_config().unwrap();
+            assert_eq!(config.pinned_cert, None, "{host}");
+            assert_eq!(config.host, host, "the host is used as stored");
+            // Not even a malformed pin refuses the account: it is not looked at.
+            s.pinned_fingerprint = Some("not hex".into());
+            assert_eq!(s.imap_config().unwrap().pinned_cert, None, "{host}");
+        }
+        let mut own = sample();
+        own.pinned_fingerprint = Some(pin.to_string());
+        assert_eq!(own.imap_config().unwrap().pinned_cert, Some(pin));
     }
 
     #[test]

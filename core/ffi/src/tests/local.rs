@@ -41,9 +41,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_6() {
-    assert_eq!(FFI_API_VERSION, 6);
-    assert_eq!(ffi_api_version(), 6);
+fn the_version_is_7() {
+    assert_eq!(FFI_API_VERSION, 7);
+    assert_eq!(ffi_api_version(), 7);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -1173,7 +1173,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
         ..base.clone()
     };
     assert_eq!(
-        block(core.add_account(jmap_only, "x".into(), None, password_cred("x"))),
+        block(core.add_account(jmap_only, "x".into(), None, None, password_cred("x"))),
         Err(CoreError::UnsupportedServer)
     );
     assert_eq!(
@@ -1181,6 +1181,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
             base.clone(),
             "x".into(),
             Some("zz".into()),
+            None,
             password_cred("x")
         )),
         Err(CoreError::BadFingerprint)
@@ -1193,7 +1194,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
         ..base.clone()
     };
     assert_eq!(
-        block(core.add_account(no_host, "x".into(), None, password_cred("x"))),
+        block(core.add_account(no_host, "x".into(), None, None, password_cred("x"))),
         Err(CoreError::BadSettings)
     );
     // A credential that is not UTF-8 is refused with a typed error, and nothing is written.
@@ -1201,6 +1202,7 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
         block(core.add_account(
             base,
             "x".into(),
+            None,
             None,
             FfiCredential::password(vec![0xff, 0xfe])
         )),
@@ -1238,7 +1240,13 @@ fn a_pin_for_a_providers_own_server_is_refused_even_when_the_provider_field_is_e
             auth_hint: AuthKind::Password,
         };
         assert_eq!(
-            block(core.add_account(edited, "x".into(), Some(pin.clone()), password_cred("x"))),
+            block(core.add_account(
+                edited,
+                "x".into(),
+                Some(pin.clone()),
+                None,
+                password_cred("x")
+            )),
             Err(CoreError::BadSettings),
             "{host}"
         );
@@ -1265,8 +1273,15 @@ fn a_removed_accounts_id_is_not_given_to_the_next_account() {
         provider: None,
         auth_hint: AuthKind::Password,
     };
+    // One address per account: the same address again would update the first account (see `readd`).
     let add = |name: &str| {
-        block(core.add_account(found.clone(), name.into(), None, password_cred("x"))).unwrap()
+        let found = FfiDiscovered {
+            email: format!("{name}@example.org"),
+            ..found.clone()
+        };
+        block(core.add_account(found, name.into(), None, None, password_cred("x")))
+            .unwrap()
+            .id
     };
     assert_eq!(add("one"), 1);
     assert_eq!(add("two"), 2);

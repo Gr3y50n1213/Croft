@@ -189,17 +189,8 @@ pub async fn verify(
     credential: Credential,
     options: VerifyOptions,
 ) -> Result<Verified, VerifyError> {
-    let Some(server) = &settings.imap else {
-        return Err(VerifyError::JmapOnly);
-    };
-    let settings = &*with_host_provider(settings);
-    let mut config = server.to_config().with_timeout(options.timeout);
-    // A provider-table domain never takes a pin: real providers have valid certificates, so a
-    // pin could only ever pin an interceptor's certificate. The caller's pin is ignored for the
-    // check and for the sign-in, and a certificate problem stays `ConnectionIntercepted`.
-    if let Some(pin) = pin_for(settings, options.pinned_cert) {
-        config = config.with_pinned_cert(pin);
-    }
+    let (settings, config) = prepare(settings, options)?;
+    let settings = &*settings;
     let backend =
         ImapBackend::new(config.clone(), credential).map_err(|_| VerifyError::BadSettings)?;
 
@@ -238,6 +229,30 @@ pub async fn verify(
         Err(BackendError::Transient(_)) => Err(VerifyError::CannotConnect),
         Err(BackendError::Permanent(_)) => Err(VerifyError::ServerProblem),
     }
+}
+
+/// The settings and the connection settings `verify` works with: the settings with the provider
+/// filled in from the host ([`with_host_provider`]), and the IMAP settings built from them with the
+/// timeout and, only when the settings are not a provider's, the caller's pin ([`pin_for`]).
+///
+/// This is the whole of what keeps a pin away from a provider's server, in one function that a test
+/// can call: `verify` itself needs a network.
+fn prepare(
+    settings: &DiscoveredSettings,
+    options: VerifyOptions,
+) -> Result<(std::borrow::Cow<'_, DiscoveredSettings>, ImapConfig), VerifyError> {
+    let Some(server) = &settings.imap else {
+        return Err(VerifyError::JmapOnly);
+    };
+    let settings = with_host_provider(settings);
+    let mut config = server.to_config().with_timeout(options.timeout);
+    // A provider-table domain never takes a pin: real providers have valid certificates, so a
+    // pin could only ever pin an interceptor's certificate. The caller's pin is ignored for the
+    // check and for the sign-in, and a certificate problem stays `ConnectionIntercepted`.
+    if let Some(pin) = pin_for(&settings, options.pinned_cert) {
+        config = config.with_pinned_cert(pin);
+    }
+    Ok((settings, config))
 }
 
 /// The settings with `provider` filled in from the IMAP host when it is a listed provider's own
@@ -394,6 +409,49 @@ mod tests {
         assert_eq!(
             with_host_provider(&on_host("mail.example.org", Some(Provider::Gmail))).provider,
             Some(Provider::Gmail)
+        );
+    }
+
+    /// The wiring of `verify`: the pin the caller passes does not reach the connection settings of a
+    /// provider's server, whatever the `provider` field says (the host decides), and it does for a
+    /// server of the person's own. `verify` builds its settings with `prepare`, so removing the
+    /// `with_host_provider` call there makes this fail.
+    #[test]
+    fn verify_drops_the_pin_for_a_providers_host_even_when_the_provider_field_is_empty() {
+        let pin = CertFingerprint::from_bytes([2; 32]);
+        let options = VerifyOptions {
+            pinned_cert: Some(pin),
+            ..VerifyOptions::default()
+        };
+        for host in [
+            "imap.gmail.com",
+            "[IMAP.Gmail.com.]",
+            "outlook.office365.com",
+            "imap.mail.me.com",
+            "imap.fastmail.com",
+        ] {
+            let edited = on_host(host, None);
+            let (effective, config) = prepare(&edited, options).unwrap();
+            assert!(
+                effective.provider.is_some(),
+                "{host}: provider from the host"
+            );
+            assert_eq!(config.pinned_cert, None, "{host}: the pin was dropped");
+        }
+        // The field kept and the host a provider's: still no pin.
+        let (_, config) =
+            prepare(&on_host("imap.gmail.com", Some(Provider::Gmail)), options).unwrap();
+        assert_eq!(config.pinned_cert, None);
+        // A server of the person's own takes the pin, and keeps its timeout.
+        let own = on_host("mail.example.org", None);
+        let (effective, config) = prepare(&own, options).unwrap();
+        assert_eq!(effective.provider, None);
+        assert_eq!(config.pinned_cert, Some(pin));
+        assert_eq!(config.timeout, options.timeout);
+        // JMAP only: nothing to connect to.
+        assert_eq!(
+            prepare(&found(None), options).unwrap_err(),
+            VerifyError::JmapOnly
         );
     }
 

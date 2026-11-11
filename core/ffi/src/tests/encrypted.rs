@@ -123,9 +123,11 @@ mod with_sqlcipher {
             },
             "Alice".into(),
             None,
+            None,
             password_cred(PASSWORD),
         ))
-        .unwrap();
+        .unwrap()
+        .id;
         assert_eq!(core.list_accounts().unwrap()[0].id, account);
         drop(core);
         let bytes = std::fs::read(&db.path).unwrap();

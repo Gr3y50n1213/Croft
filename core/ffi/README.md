@@ -2,13 +2,13 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 6)
+## The surface (API version 7)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
 
 `Core` (one object; `Core.open(db_path, db_key, credentials)`):
-- accounts: `discover` (async), `verify` (async), `add_account(discovered, display_name, pinned, credential)` (async; the credential is the new account's, see "Credentials"), `add_demo_account()` (async, since version 6; see "The sample mailbox"), `list_accounts`, `remove_account` (async), `signed_in` (async)
+- accounts: `discover` (async), `verify` (async; since version 7 it checks against the stored pin of the same account and returns the pin it used, which goes to `add_account`), `add_account(discovered, display_name, pinned, confirmed_fingerprint, credential)` (async; the credential is the new account's, see "Credentials"; since version 7 it takes `confirmed_fingerprint` and returns `AddedAccount { id, updated, update_token }`: an address that is already added with the same IMAP and SMTP servers (host, port, security, user name) is **updated** instead of added again: same id, new settings, the account leaves the needs-sign-in state, and the app stores the credential under that id as for a new account, then calls `commit_account_update(id, token)` (or `rollback_account_update(id, token)`, which returns whether it undid that update, if it cannot store it); other servers are `CoreError::AccountExists`; a trusted certificate pin is never replaced, added to an account that had none or dropped without the person's confirmation of that fingerprint (`CoreError::CertificateChanged`; a pin is never dropped); the sample mailbox never counts), `add_demo_account()` (async, since version 6; see "The sample mailbox"), `commit_account_update`, `rollback_account_update` (async; both since version 7), `list_accounts`, `remove_account` (async), `signed_in` (async)
 - reading: `list_folders`, `list_messages(scope, before, limit)` (keyset paging; `MessageScope` is a folder, the unified Inbox, or Starred for one account or all). Since version 5 a `MessageRow` has `thread_count` (messages sharing its conversation key in its folder) and `recipients` (names, else addresses, from the stored `to_json`), and `AccountInfo` has `last_synced_ms` (the newest folder sync)
 - observing: `next_change(after)` (async; a numbered change log, see `src/changes.rs`)
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`

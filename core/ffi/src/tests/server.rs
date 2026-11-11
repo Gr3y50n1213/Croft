@@ -93,6 +93,149 @@ fn verify_walks_the_certificate_story_and_reports_typed_failures() {
     );
 }
 
+/// A certificate the person trusted before stays the one that counts when they sign in again: with
+/// a stored pin for this address and server, `verify` without a pin reports another certificate as
+/// changed (not as an ordinary first-use "untrusted"), and the account only takes the new pin
+/// after the change was acknowledged. The pin check accepts exactly one fingerprint and skips the
+/// chain checks, so a certificate that chains to a trusted authority is a change just the same.
+#[test]
+fn a_stored_pin_makes_another_certificate_a_change_and_not_a_first_use() {
+    let server = start_server();
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let found = discovered_for(&server);
+    let good = || password_cred(PASSWORD);
+    let seen = fingerprint_of(&server);
+    let earlier = CertFingerprint::of_der(b"the certificate trusted earlier").to_string();
+
+    // No account yet: the first use.
+    assert_eq!(
+        block(core.verify(found.clone(), good(), None)).unwrap_err(),
+        VerifyFailure::UntrustedCertificate {
+            fingerprint: seen.clone()
+        }
+    );
+
+    // The address is stored with the earlier certificate pinned.
+    let added = block(core.add_account(
+        found.clone(),
+        "Alice".into(),
+        Some(earlier.clone()),
+        None,
+        good(),
+    ))
+    .unwrap();
+    assert!(!added.updated);
+
+    // Now the server shows another certificate: a change, with the fingerprint seen.
+    assert_eq!(
+        block(core.verify(found.clone(), good(), None)).unwrap_err(),
+        VerifyFailure::CertificateChanged {
+            fingerprint: seen.clone()
+        }
+    );
+    // The same address on another server is not that account: first use again.
+    let mut elsewhere = found.clone();
+    elsewhere.imap.as_mut().unwrap().username = "someone-else".into();
+    assert!(matches!(
+        block(core.verify(elsewhere, good(), None)).unwrap_err(),
+        VerifyFailure::UntrustedCertificate { .. }
+    ));
+    // The person confirmed the warning: the app verifies with the new fingerprint, which works and
+    // is what `verify` says to pass on.
+    assert_eq!(
+        block(core.verify(found.clone(), good(), Some(seen.clone()))).unwrap(),
+        Some(seen.clone())
+    );
+    // Adding it needs the confirmation of that fingerprint; without it nothing changes.
+    assert_eq!(
+        block(core.add_account(
+            found.clone(),
+            "Alice".into(),
+            Some(seen.clone()),
+            None,
+            good()
+        )),
+        Err(CoreError::CertificateChanged)
+    );
+    let confirmed = block(core.add_account(
+        found.clone(),
+        "Alice".into(),
+        Some(seen.clone()),
+        Some(seen.clone()),
+        good(),
+    ))
+    .unwrap();
+    assert!(confirmed.updated && confirmed.id == added.id);
+
+    // The stored pin is the new one now: `verify` passes with no pin, and says which one it used.
+    assert_eq!(
+        block(core.verify(found.clone(), good(), None)).unwrap(),
+        Some(seen.clone())
+    );
+    // A sign-in again with it needs no confirmation.
+    let again = block(core.add_account(found, "Alice".into(), Some(seen), None, good())).unwrap();
+    assert!(again.updated && again.id == added.id);
+}
+
+/// An account stored without a pin reached its server with a certificate that chains to an
+/// authority. A self-signed certificate now is a change (the stronger warning), not a first use:
+/// pinning it is a downgrade the person must knowingly accept. A new address still gets the
+/// ordinary first-use question.
+#[test]
+fn an_account_stored_without_a_pin_reports_a_self_signed_certificate_as_a_change() {
+    let server = start_server();
+    let db = TempDb::new();
+    let core = db.open(&MemProvider::new());
+    let found = discovered_for(&server);
+    let good = || password_cred(PASSWORD);
+    let seen = fingerprint_of(&server);
+
+    // Stored without a pin (it never reached the server over a self-signed certificate).
+    let added = block(core.add_account(found.clone(), "Alice".into(), None, None, good())).unwrap();
+    assert!(!added.updated);
+
+    assert_eq!(
+        block(core.verify(found.clone(), good(), None)).unwrap_err(),
+        VerifyFailure::CertificateChanged {
+            fingerprint: seen.clone()
+        }
+    );
+    // Another address on the same server is a new account: the first-use question.
+    let mut other = found.clone();
+    other.email = "bob@example.org".into();
+    assert!(matches!(
+        block(core.verify(other, good(), None)).unwrap_err(),
+        VerifyFailure::UntrustedCertificate { .. }
+    ));
+    // The person confirmed the warning: verify with that fingerprint works, and adding the pin needs it.
+    assert_eq!(
+        block(core.verify(found.clone(), good(), Some(seen.clone()))).unwrap(),
+        Some(seen.clone())
+    );
+    assert_eq!(
+        block(core.add_account(
+            found.clone(),
+            "Alice".into(),
+            Some(seen.clone()),
+            None,
+            good()
+        )),
+        Err(CoreError::CertificateChanged)
+    );
+    let pinned = block(core.add_account(
+        found.clone(),
+        "Alice".into(),
+        Some(seen.clone()),
+        Some(seen.clone()),
+        good(),
+    ))
+    .unwrap();
+    assert!(pinned.updated && pinned.id == added.id);
+    // Now it is an account with a pin: no more warning for that certificate.
+    assert_eq!(block(core.verify(found, good(), None)).unwrap(), Some(seen));
+}
+
 #[test]
 fn add_list_and_remove_an_account_then_list_its_folders_after_the_first_sync() {
     let rig = Rig::new(three_messages);
@@ -308,9 +451,11 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
+        None,
         password_cred("the wrong password"),
     ))
-    .unwrap();
+    .unwrap()
+    .id;
     // The app stores what the person typed under the returned id.
     provider.store(account, password_cred("the wrong password"));
 
@@ -336,6 +481,61 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
     assert_eq!(provider.sign_ins(), vec![account], "no further calls");
 }
 
+/// Signing in again for an address that is already added, with the same server: the account keeps
+/// its id, leaves the needs-sign-in state and syncs with the new password the call brought. The
+/// provider is not asked: the credential came with `add_account`, and the app stores it under the
+/// same id afterwards.
+#[test]
+fn signing_in_again_with_the_right_password_resumes_the_account_under_its_id() {
+    let server = start_server();
+    three_messages(&server);
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    let account = block(core.add_account(
+        discovered_for(&server),
+        "Alice".into(),
+        Some(fingerprint_of(&server)),
+        None,
+        password_cred("the wrong password"),
+    ))
+    .unwrap()
+    .id;
+    provider.store(account, password_cred("the wrong password"));
+    block(wait_for(&core, "needs sign-in", || {
+        core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn
+    }));
+    assert!(core.list_folders(account).unwrap().is_empty());
+
+    let again = block(core.add_account(
+        discovered_for(&server),
+        "Alice".into(),
+        Some(fingerprint_of(&server)),
+        None,
+        password_cred(PASSWORD),
+    ))
+    .unwrap()
+    .id;
+    assert_eq!(again, account, "the same account");
+    // What the app does next: the new password replaces the old one under that id.
+    provider.store(account, password_cred(PASSWORD));
+
+    block(wait_for(
+        &core,
+        "the first sync with the new password",
+        || !core.list_folders(account).unwrap().is_empty(),
+    ));
+    let accounts = core.list_accounts().unwrap();
+    assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].status, AccountStatus::Ok);
+    assert_eq!(
+        provider.sign_ins(),
+        vec![account],
+        "told once, at the first failure"
+    );
+    assert!(provider.asked().is_empty(), "the provider was not asked");
+}
+
 /// The provider is never consulted for a new account: a secret that happens to be stored under the
 /// id the new account will get (a leftover of another account) is not used, only the credential
 /// `add_account` was given.
@@ -352,9 +552,11 @@ fn a_new_account_uses_the_credential_it_was_given_not_the_providers() {
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
+        None,
         password_cred("not the password"),
     ))
-    .unwrap();
+    .unwrap()
+    .id;
     assert_eq!(account, 1);
     block(wait_for(&core, "needs sign-in", || {
         core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn

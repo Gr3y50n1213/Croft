@@ -48,6 +48,19 @@ pub enum CoreError {
     /// The credential provider had no credential for the account. The provider was told
     /// (`sign_in_needed`) and the account stays in the needs-sign-in state.
     NoCredential,
+    /// `add_account`: the address is already added, and this sign-in would replace its trusted
+    /// certificate pin, add a pin to an account that had none (its certificate used to chain to an
+    /// authority) or drop its pin, without the person having confirmed that exact fingerprint.
+    /// Nothing was changed. `verify` reports the change as `VerifyFailure::CertificateChanged`
+    /// first; after the person confirmed that warning the app calls `add_account` again with
+    /// `confirmed_fingerprint`. A pin is never dropped this way.
+    CertificateChanged,
+    /// `add_account`: an account with this address is already added, with another IMAP server,
+    /// port, security mode or user name, or another SMTP server (or with settings this version
+    /// cannot read). Nothing was changed. The same address with the same servers is not an error:
+    /// it updates that account (see `add_account`). The person removes the old account first if
+    /// they mean to replace it.
+    AccountExists,
     /// Something inside the core failed (a task panicked or stopped). Nothing the person can fix.
     Internal,
 }
@@ -110,6 +123,10 @@ impl std::fmt::Display for CoreError {
             Self::UnsupportedServer => f.write_str("the server type is not supported yet"),
             Self::BadFingerprint => f.write_str("the certificate fingerprint is not valid"),
             Self::NoCredential => f.write_str("no credential for the account"),
+            Self::CertificateChanged => {
+                f.write_str("the server's certificate is not the one that was trusted before")
+            }
+            Self::AccountExists => f.write_str("an account with this address is already added"),
             Self::Internal => f.write_str("internal error"),
         }
     }

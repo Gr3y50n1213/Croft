@@ -4,6 +4,7 @@
 
 package com.example.croft.secrets
 
+import com.example.croft.mail.onboarding.SignInNotSavedException
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +24,14 @@ import uniffi.croft_ffi.FfiDiscovered
  *   `addAccount` fails nothing is stored. A crash between the two steps leaves an account that
  *   needs a sign-in at the next start, which is safe. If storing fails, the account is removed
  *   again so that no account exists without its secret.
+ * - **Add again.** The core answers an address that is already added, with the same servers, with
+ *   that account's id and `updated` set (it keeps the account and starts it with the new password;
+ *   the core, not this class, decides which it was). The new password then **replaces** the old one
+ *   under that id (the old entry stays if the replacement cannot be sealed), and the account's
+ *   sign-in-needed mark is cleared. If storing fails the core's update is undone
+ *   (`Core.rollbackAccountUpdate`): the account stays as it was, with its synced mail, its old
+ *   settings and its old secret, and [SignInNotSavedException] is thrown for the screen to say so. Each update has a token and the
+ *   rollback only undoes that update, never a later sign-in's; if it could not be undone the plain storage failure is thrown instead.
  * Both calls are suspend functions that run on the IO dispatcher (the Keystore can make them wait).
  * - **Remove.** The secrets are deleted **before** `Core.removeAccount`. A crash in between leaves
  *   an account that needs a sign-in, which is safe; the other order could leave a secret behind.
@@ -35,33 +44,69 @@ class AccountSecrets(
     /**
      * Adds a password account. [password] is the UTF-8 secret the person just verified; it is
      * copied into the core and into the store, and the caller wipes its own array afterwards.
-     * Returns the new account's id. Throws the core's exception when it refuses, and
-     * [SecretBoxException] or [IOException] when the secret cannot be stored (the account is then
-     * removed again). Runs on the IO dispatcher: storing waits on the Keystore.
+     * Returns the account's id: a new one, or the existing account's when the address was already
+     * added with the same servers (see the class text; the core says which, `AddedAccount.updated`).
+     * [confirmedFingerprint] is passed to the core as it is: the certificate the person confirmed on the
+     * changed-certificate warning, or null. Throws the core's exception when it refuses
+     * (`CoreException.AccountExists` for the same address on other servers,
+     * `CoreException.CertificateChanged` for a pin it would replace unconfirmed), and
+     * [SecretBoxException] or [IOException] when the secret of a **new** account cannot be stored (the
+     * account is then removed again). When the new password of an **existing** account cannot be stored,
+     * the core's update is undone and [SignInNotSavedException] is thrown: the account is as it was.
+     * Runs on the IO dispatcher: storing waits on the Keystore.
      */
     suspend fun addPasswordAccount(
         core: Core,
         discovered: FfiDiscovered,
         displayName: String,
         pinnedFingerprint: String?,
+        confirmedFingerprint: String?,
         password: ByteArray,
     ): Long = withContext(dispatcher) {
         // The copy the credential is built from is wiped whatever happens.
         val copy = password.copyOf()
-        val id = try {
+        val added = try {
             val credential = FfiCredential.password(copy)
             try {
-                core.addAccount(discovered, displayName, pinnedFingerprint, credential)
+                core.addAccount(discovered, displayName, pinnedFingerprint, confirmedFingerprint, credential)
             } finally {
                 credential.close()
             }
         } finally {
             copy.fill(0)
         }
+        val id = added.id
         try {
-            store.putForNewAccount(id, SecretKind.PASSWORD, password)
+            if (added.updated) {
+                store.put(id, SecretKind.PASSWORD, password)
+                // A password sign-in: no token left from another kind of sign-in may answer instead of it.
+                store.remove(id, SecretKind.OAUTH_ACCESS)
+                store.remove(id, SecretKind.OAUTH_REFRESH)
+                signInNeeded.clear(id)
+                // Stored: the core no longer needs to keep what it would undo.
+                try {
+                    core.commitAccountUpdate(id, added.updateToken)
+                } catch (ignored: Exception) {
+                    // It only drops a note kept in memory.
+                }
+            } else {
+                store.putForNewAccount(id, SecretKind.PASSWORD, password)
+            }
         } catch (e: Exception) {
             if (e !is SecretBoxException && e !is IOException) throw e
+            if (added.updated) {
+                // The account exists, with its mail and its old secret (a failed `put` leaves the old entry): the core's update (new
+                // settings, new credential in memory) is undone, only if it is still the account's latest update, so that the account
+                // and its stored password agree again. Then "nothing was changed" is true and the screen says so. If the undo did not
+                // happen (a later sign-in of the account stands, or the undo failed), that is not true: the ordinary storage failure.
+                val undone = try {
+                    core.rollbackAccountUpdate(id, added.updateToken)
+                } catch (ignored: Exception) {
+                    false
+                }
+                if (undone) throw SignInNotSavedException()
+                throw e
+            }
             // Do not keep an account whose password could not be kept: it could never sign in again.
             try {
                 store.removeAccount(id)

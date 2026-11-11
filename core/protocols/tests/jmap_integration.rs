@@ -25,7 +25,7 @@
 
 mod common;
 
-use common::behaviour::{behaviour, seed_message, Seeded};
+use common::behaviour::{behaviour, seed_message, Seeded, DATE_HEADER_MS};
 use common::rawjmap::RawJmap;
 use croft_protocols::*;
 use std::sync::Arc;
@@ -93,7 +93,7 @@ async fn the_shared_behaviour_holds_against_stalwart() {
     let _turn = TURN.lock().await;
     let (_alice, seeded) = seeded_alice().await;
     let b = backend(ALICE, ALICE_PW, Arc::new(MemoryIdStore::new()));
-    behaviour(&b, "jmap/stalwart", &seeded).await;
+    behaviour(&b, "jmap/stalwart", &seeded, Some(DATE_HEADER_MS)).await;
 }
 
 #[tokio::test]

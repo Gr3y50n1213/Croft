@@ -123,6 +123,7 @@ struct MemoryInner {
     mailboxes: HashMap<String, MailboxMap>,
     email_state: Option<String>,
     fail: Option<IdStoreError>,
+    fail_once: Option<IdStoreError>,
 }
 
 /// An in-memory [`JmapIdStore`], for tests and for an account that is not kept on disk. It also
@@ -153,11 +154,21 @@ impl MemoryIdStore {
         }
     }
 
+    /// Makes the next call, and only that one, fail with `error`.
+    pub fn fail_next(&self, error: Option<IdStoreError>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.fail_once = error;
+        }
+    }
+
     fn with<T>(
         &self,
         f: impl FnOnce(&mut MemoryInner) -> Result<T, IdStoreError>,
     ) -> Result<T, IdStoreError> {
         let mut g = self.inner.lock().map_err(|_| IdStoreError::Unavailable)?;
+        if let Some(e) = g.fail_once.take() {
+            return Err(e);
+        }
         if let Some(e) = g.fail {
             return Err(e);
         }

@@ -504,6 +504,7 @@ name = "croft-test-support"
 version = "0.1.0"
 dependencies = [
  "rcgen",
+ "serde_json",
  "tokio",
  "tokio-rustls",
 ]

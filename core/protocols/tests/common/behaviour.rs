@@ -11,11 +11,15 @@
 //! 2. `ids[1]`, subject "Re: First", unread, `References` and `In-Reply-To` pointing at `ids[0]`;
 //! 3. `ids[2]`, subject "Third", already read.
 //!
+//! The first message's Date header is 2 March 2026 09:30:00 UTC ([`DATE_HEADER_MS`]).
 //! The test finds messages by Message-ID, never by the order of their UIDs.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 use croft_protocols::*;
 use std::collections::BTreeMap;
+
+/// The first seeded message's Date header, in Unix milliseconds.
+pub const DATE_HEADER_MS: i64 = 1_772_443_800_000;
 
 /// The Message-IDs of the three seeded messages (without angle brackets).
 pub struct Seeded {
@@ -55,7 +59,12 @@ async fn uid_by_message_id(b: &dyn MailBackend, folder: &str) -> BTreeMap<String
 }
 
 /// The shared behaviour. `label` names the adapter in failure messages.
-pub async fn behaviour(b: &dyn MailBackend, label: &str, seeded: &Seeded) {
+pub async fn behaviour(
+    b: &dyn MailBackend,
+    label: &str,
+    seeded: &Seeded,
+    date_header_ms: Option<i64>,
+) {
     let ids = &seeded.ids;
     let mid = |n: usize| format!("<{}>", ids[n]);
 
@@ -108,7 +117,12 @@ pub async fn behaviour(b: &dyn MailBackend, label: &str, seeded: &Seeded) {
     assert_eq!(h2.references, vec![mid(0)], "{label}");
     assert_eq!(h1.from_name.as_deref(), Some("Ann Example"), "{label}");
     assert_eq!(h1.from_addr.as_deref(), Some("ann@example.org"), "{label}");
-    assert_eq!(h1.date_ms, 1_772_443_800_000, "{label}: the Date header");
+    // `date_header_ms` is the first message's Date header when the adapter reports that (JMAP's
+    // `sentAt`); the IMAP adapter reports the server's internal date, which differs per server.
+    assert!(h1.date_ms > 0, "{label}");
+    if let Some(expected) = date_header_ms {
+        assert_eq!(h1.date_ms, expected, "{label}: the Date header");
+    }
     assert!(h1.size > 100, "{label}");
     assert!(!h1.flags.seen && !h2.flags.seen && h3.flags.seen, "{label}");
     // Newest first.

@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! A small in-process IMAP server for fast tests (and, in [`SmtpServer`], an SMTP one). **Test helper, not product code**: it speaks
+//! A small in-process IMAP server for fast tests (and, in [`SmtpServer`], an SMTP one, and in [`JmapServer`], a JMAP one). **Test helper, not product code**: it speaks
 //! just enough IMAP4rev1 for the adapter in `croft-protocols`, listens on `127.0.0.1` only, and
 //! keeps everything in memory.
 //!
@@ -25,9 +25,11 @@
 // This crate is test code: panics on a broken test setup are the right behaviour.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod jmap;
 mod proto;
 mod smtp;
 
+pub use jmap::{Delivery, JmapOptions, JmapServer, RequestRecord, JMAP_PASSWORD, JMAP_USER};
 pub use smtp::{AcceptedMessage, SmtpMisbehavior, SmtpOptions, SmtpServer, Stage};
 
 use std::collections::BTreeSet;

@@ -4,8 +4,8 @@ description = "Croft FFI: the small, versioned UniFFI surface the apps call"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-# Same floor as croft-storage (rusqlite needs it).
-rust-version = "1.89"
+# croft-reader's mail-parser needs Rust 1.98.
+rust-version = "1.98"
 
 [lib]
 # cdylib: the .so the Android app loads (and the host library the JVM tests load).
@@ -38,6 +38,7 @@ required-features = ["cli"]
 [dependencies]
 croft-engine = { path = "../engine" }
 croft-protocols = { path = "../protocols" }
+croft-reader = { path = "../reader" }
 croft-storage = { path = "../storage" }
 log = "0.4.29"
 # Only for the keyset message query and its row type; the bundled SQLite comes from croft-storage.

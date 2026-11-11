@@ -473,6 +473,7 @@ version = "0.1.0"
 dependencies = [
  "croft-engine",
  "croft-protocols",
+ "croft-reader",
  "croft-storage",
  "croft-test-support",
  "log",

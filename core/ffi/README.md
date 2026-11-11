@@ -2,7 +2,7 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 7)
+## The surface (API version 8)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
@@ -13,10 +13,76 @@ and `discover_error_message_key` / `discover_error_default_message`.
 - observing: `next_change(after)` (async; a numbered change log, see `src/changes.rs`)
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`
 - sync and network: `sync_now`, `set_network_available`
+- reading a message (since version 8, T18a): `open_conversation`, `load_body` (async), `save_attachment` (async),
+  `allow_remote_content`, `trust_sender`, `untrust_sender`, `trusted_senders`; see "Reading a message". Their errors
+  are `ReadError`
 
 Callback interfaces the app implements: `CredentialProvider` (`credential`, `sign_in_needed`) and `DiscoveryObserver` (`on_probe`).
 Every callback returns `Result<_, ProviderError>`; `ProviderError` has one fieldless variant, `Failed` (see "Callbacks").
-Errors: `CoreError`, `DiscoverError`, `VerifyFailure`: fixed categories, no free text.
+Errors: `CoreError`, `DiscoverError`, `VerifyFailure`, `ReadError`: fixed categories, no free text.
+
+## Reading a message (version 8)
+Everything here lives in `src/reading.rs`; the parsing and the sanitiser are in `core/reader` (`croft-reader`).
+Message ids are the same row ids as `MessageRow.id`; an id of an unknown message is `ReadError::NoSuchMessage`, and
+an attachment id is only accepted together with its own message's id.
+
+| Call | Returns | Notes |
+| --- | --- | --- |
+| `open_conversation(message_id)` | `Conversation { account, opened_id, messages: [ConversationMessage] }` | Sync, database only, offline. Oldest first. Expand `opened_id` and the newest; collapse the rest. |
+| `load_body(message_id, remote_images: RemoteImagesSetting)` | `MessageBody` | Async. Fetches the message once if it is not stored (needs the network then), else works offline. Never marks it read. |
+| `save_attachment(message_id, attachment_id, dest_dir)` | the file's path (`String`) | Async. `dest_dir`: the app's own cache directory, absolute. |
+| `allow_remote_content(message_id)` | — | "Show images" on one message. Call `load_body` again. |
+| `trust_sender(account_id, address)` | — | "Always show images from this sender" (the known-senders list). |
+| `untrust_sender(account_id, address)` | `bool` (it was there) | For the S49 list. |
+| `trusted_senders(account_id)` | `[String]` (lower case, sorted) | For the S49 list. |
+
+Records:
+- `ConversationMessage { id, account, folder, folder_special_use, sender_name, sender_address, to: [MailAddress],
+  cc: [MailAddress], date_ms, subject, snippet, seen, flagged, answered, draft, has_attachments, pending,
+  body_state: BodyState (NotLoaded | Loaded), remote_allowed }`. `to`/`cc` and `snippet` are filled once the body was
+  loaded (the sync stores headers only). `folder_special_use` is `sent` for the person's own replies (show "You").
+- `MailAddress { name: String?, address: String? }`.
+- `MessageBody { message_id, text: String?, html_sanitised: String?, remote_allowed, blocked_remote_count,
+  trackers_removed, sender_known, truncated, attachments: [AttachmentInfo] }`.
+- `AttachmentInfo { id, file_name, mime_type, size, content_id: String?, shown_inline, blocked }`: show chips for
+  `shown_inline == false`; `blocked` (programs and scripts: `.exe`, `.apk`, `.bat`, `.js`, `.scr`, `.msi`, `.jar`, ...)
+  is the "blocked for executables" chip, never opened; `save_attachment` refuses it with `AttachmentBlocked`.
+- `RemoteImagesSetting { Ask (default), KnownSenders, Never }`: the S49/S57 "Remote images" setting, passed on every
+  `load_body`.
+- `ReadError`: `NoSuchMessage`, `NoSuchAttachment`, `NoSuchAccount`, `AccountUnavailable`, `Offline` (not stored and no
+  connection), `SignInNeeded`, `NotOnServer` (moved or deleted elsewhere), `TooLarge { size }` (over 50 MiB),
+  `Unreadable`, `ServerUnavailable` (retry), `ServerRefused`, `AttachmentBlocked`, `BadDestination`, `WriteFailed`,
+  `InvalidAddress`, `Storage { reason }`, `Internal`. No variant carries text.
+
+### Who decides about remote images
+The core does. The app passes the setting; `load_body` loads remote images when:
+`Never` → never; `Ask` → the person tapped "Show images" on this message (`allow_remote_content`); `KnownSenders` → as
+`Ask`, or the sender's address is on the account's known-senders list (`trust_sender`). `MessageBody.remote_allowed`
+says what happened. **What S49 must call**: nothing when the setting changes (it is passed on each `load_body`); for its
+known-senders list, `trusted_senders(account_id)` and `untrust_sender(account_id, address)`. The S21 bar offers "Show
+images" (`allow_remote_content`, then `load_body` again) and, under `KnownSenders`, "Always from this sender"
+(`trust_sender(account, sender_address)`). Hide the bar when `blocked_remote_count == 0` or the setting is `Never`.
+
+### How the app renders a message
+- **The WebView gets `html_sanitised` and nothing else** (`loadDataWithBaseURL(null, html, "text/html", "utf-8", null)`).
+  Never the raw message, never the text pasted into HTML by the app. With `html_sanitised == None`, show `text` as plain
+  text (no HTML).
+- **JavaScript off** (`javaScriptEnabled = false`), **file and content access off** (`allowFileAccess = false`,
+  `allowContentAccess = false`), no `addJavascriptInterface`, no zoom-out tricks needed.
+- **Network off while remote content is blocked**: when `remote_allowed` is false call `blockNetworkLoads = true`
+  (and `blockNetworkImage = true`). Only when it is true allow image loads; the HTML then only names `https` images (the
+  core upgraded `http`). Inline (`cid:`) images are already in the HTML as `data:` URIs built by the core (PNG, JPEG,
+  GIF, WebP, BMP only; never SVG), so they show with the network off.
+- **Blocked images** keep their box: their `src` is a 1×1 grey GIF (`croft_reader::BLOCKED_IMAGE_PLACEHOLDER`).
+- **Links**: the HTML keeps each link's real destination (`https`, `http`, `mailto`, `tel`) with
+  `rel="noopener noreferrer"`. Handle taps in `shouldOverrideUrlLoading`: show the real URL before opening it in the
+  browser (or the composer for `mailto:`); never navigate the WebView itself.
+- **Mark as read** after the setting's delay with `mark_seen([id], true)`: `load_body` never does it.
+- **Attachments**: `save_attachment(id, attachment_id, context.cacheDir/...)`, then share the returned file through the
+  app's `FileProvider` with a temporary URI grant (store rule), never a `file://` URI.
+
+What the sanitiser keeps and removes, the limits and the tracking-pixel rule are in `core/reader/src/sanitize.rs` and
+`docs/DECISIONS.md` (T18a rows).
 
 ## The sample mailbox (version 6)
 `add_demo_account() -> AccountInfo` adds "Try with sample mail" for store review (T17): about twenty fictional messages

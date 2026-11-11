@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 use croft_protocols::{
     BackendError, BackendFuture, Capabilities, Credential, FlagChange, FolderStatus, ImapBackend,
-    ImapConfig, MailBackend, MoveOutcome, RemoteFolder, RemoteHeader, RemoteSnapshot, Uid,
+    ImapConfig, MailBackend, MoveOutcome, RawMessage, RemoteFolder, RemoteHeader, RemoteSnapshot,
+    Uid,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -424,5 +425,9 @@ impl MailBackend for AccountBackend {
 
     fn delete_forever<'a>(&'a self, folder: &'a str, uids: &'a [Uid]) -> BackendFuture<'a, ()> {
         Box::pin(async move { self.current().await?.delete_forever(folder, uids).await })
+    }
+
+    fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
+        Box::pin(async move { self.current().await?.fetch_body(folder, uid).await })
     }
 }

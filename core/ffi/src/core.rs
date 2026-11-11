@@ -53,7 +53,7 @@ pub trait DiscoveryObserver: Send + Sync {
 }
 
 /// The runtime or a task of it is gone (the task panicked or was stopped).
-struct Gone;
+pub(crate) struct Gone;
 
 impl From<Gone> for CoreError {
     fn from(_: Gone) -> Self {
@@ -75,7 +75,7 @@ impl From<Gone> for VerifyFailure {
 /// app's coroutine machinery); the work itself runs on the core's runtime. Dropping it (the app
 /// cancelled the call) aborts the task when `abort_on_drop` is set, which is right for waiting
 /// and for network probing, and wrong for a change to the database that should finish.
-struct Task<T> {
+pub(crate) struct Task<T> {
     handle: JoinHandle<T>,
     abort_on_drop: bool,
 }
@@ -99,7 +99,7 @@ impl<T> Drop for Task<T> {
 /// Everything the tasks and the synchronous calls share. Holds no runtime (see [`Core`]).
 pub(crate) struct Inner {
     engine: Engine,
-    handle: EngineHandle,
+    pub(crate) handle: EngineHandle,
     hub: Arc<Hub>,
     provider: Arc<dyn CredentialProvider>,
     backends: Mutex<HashMap<i64, Arc<AccountBackend>>>,
@@ -489,7 +489,7 @@ impl Inner {
 
     /// Finds the account of each message id (the ids are local row ids, unique across accounts).
     /// Fails with `NoSuchMessage` if any id matches no message, before anything is changed.
-    fn resolve(&self, ids: &[i64]) -> Result<Vec<Message>, CoreError> {
+    pub(crate) fn resolve(&self, ids: &[i64]) -> Result<Vec<Message>, CoreError> {
         self.handle.read(|db| {
             let conn = db.connection();
             let accounts: Vec<i64> = accounts::list(conn)?.into_iter().map(|a| a.id).collect();
@@ -565,13 +565,13 @@ impl Inner {
 /// style calls that ask the app for a secret, nothing blocking on the UI thread).
 #[derive(uniffi::Object)]
 pub struct Core {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
     rt: Handle,
     runtime: Mutex<Option<Runtime>>,
 }
 
 impl Core {
-    fn spawn<T: Send + 'static>(
+    pub(crate) fn spawn<T: Send + 'static>(
         &self,
         fut: impl Future<Output = T> + Send + 'static,
         abort_on_drop: bool,

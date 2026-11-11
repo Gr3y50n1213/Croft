@@ -1,0 +1,24 @@
+[package]
+name = "croft-engine"
+description = "Croft sync engine: joins the mail server adapter, the sync planner, the operation queue and the database"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Same as croft-storage (rusqlite 0.41 needs Rust 1.89).
+rust-version = "1.89"
+
+[dependencies]
+croft-mail-core = { path = "../mail-core" }
+croft-protocols = { path = "../protocols" }
+croft-storage = { path = "../storage" }
+log = "0.4.29"
+tokio = { version = "1.54", features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+croft-test-support = { path = "../test-support" }
+serde_json = "1.0.154"
+tempfile = "3.27"
+tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "test-util"] }
+
+[lints]
+workspace = true

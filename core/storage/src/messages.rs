@@ -6,7 +6,9 @@
 //! clause (and sets it on insert), even when it is also given a `folder_id` or message id, so one
 //! account can never read or change another account's rows by guessing an id.
 
-use croft_protocols::{FlagChange, RemoteHeader};
+use std::collections::{BTreeMap, BTreeSet};
+
+use croft_protocols::{FlagChange, Flags, RemoteHeader, Uid};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::error::{Result, StorageError};
@@ -293,4 +295,218 @@ pub fn delete(conn: &Connection, account_id: i64, message_id: i64) -> Result<boo
         params![account_id, message_id],
     )?;
     Ok(n > 0)
+}
+
+/// The message of this account at `uid` in `folder_id`, hidden or not.
+pub fn find_by_uid(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    uid: Uid,
+) -> Result<Option<Message>> {
+    Ok(conn
+        .query_row(
+            r#"SELECT id, account_id, folder_id, uid, message_id_hdr, thread_key, subject,
+                      from_name, from_addr, date_ts, size, snippet, is_seen, is_flagged, is_answered,
+                      is_draft, keywords_json, has_attachments, category, snoozed_until, pending_ops,
+                      body_state, local_hidden
+                 FROM message WHERE account_id = ?1 AND folder_id = ?2 AND uid = ?3"#,
+            params![account_id, folder_id, uid],
+            map_row,
+        )
+        .optional()?)
+}
+
+/// The flags of every message row in a folder of this account (hidden rows included), by UID: the
+/// local side of a sync plan. `deleted` is always false (it is not stored).
+pub fn folder_flags(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+) -> Result<BTreeMap<Uid, Flags>> {
+    let mut stmt = conn.prepare_cached(
+        r#"SELECT uid, is_seen, is_flagged, is_answered, is_draft, keywords_json
+             FROM message WHERE account_id = ?1 AND folder_id = ?2"#,
+    )?;
+    let rows = stmt.query_map(params![account_id, folder_id], |r| {
+        let keywords: String = r.get(5)?;
+        let keywords: BTreeSet<String> = serde_json::from_str(&keywords).map_err(|_| {
+            rusqlite::Error::FromSqlConversionFailure(
+                5,
+                rusqlite::types::Type::Text,
+                "keywords_json is not a JSON array of strings".into(),
+            )
+        })?;
+        Ok((
+            r.get::<_, i64>(0)?,
+            Flags {
+                seen: r.get(1)?,
+                flagged: r.get(2)?,
+                answered: r.get(3)?,
+                draft: r.get(4)?,
+                deleted: false,
+                keywords,
+            },
+        ))
+    })?;
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let (uid, flags) = row?;
+        let uid = Uid::try_from(uid).map_err(|_| StorageError::OutOfRange("uid"))?;
+        out.insert(uid, flags);
+    }
+    Ok(out)
+}
+
+/// Takes the server's flags for the message at `uid` in a folder of this account. As in
+/// [`upsert`], `is_seen` and `is_flagged` keep their local values while `pending_ops > 0`. Returns
+/// false when there is no such row.
+pub fn set_server_flags(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    uid: Uid,
+    flags: &Flags,
+) -> Result<bool> {
+    let keywords = serde_json::to_string(&flags.keywords)?;
+    let n = conn.execute(
+        r#"UPDATE message
+              SET is_seen    = CASE WHEN pending_ops > 0 THEN is_seen ELSE ?4 END,
+                  is_flagged = CASE WHEN pending_ops > 0 THEN is_flagged ELSE ?5 END,
+                  is_answered = ?6, is_draft = ?7, keywords_json = ?8
+            WHERE account_id = ?1 AND folder_id = ?2 AND uid = ?3"#,
+        params![
+            account_id,
+            folder_id,
+            uid,
+            flags.seen,
+            flags.flagged,
+            flags.answered,
+            flags.draft,
+            keywords
+        ],
+    )?;
+    Ok(n > 0)
+}
+
+/// Deletes the rows at these UIDs in a folder of this account (the server no longer has them).
+/// Returns how many rows went.
+pub fn delete_uids(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    uids: &[Uid],
+) -> Result<usize> {
+    let mut stmt = conn.prepare_cached(
+        "DELETE FROM message WHERE account_id = ?1 AND folder_id = ?2 AND uid = ?3",
+    )?;
+    let mut n = 0;
+    for uid in uids {
+        n += stmt.execute(params![account_id, folder_id, uid])?;
+    }
+    Ok(n)
+}
+
+/// How many message rows a folder of this account has, hidden ones included.
+pub fn count_in_folder(conn: &Connection, account_id: i64, folder_id: i64) -> Result<u64> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM message WHERE account_id = ?1 AND folder_id = ?2",
+        params![account_id, folder_id],
+        |r| r.get(0),
+    )?;
+    Ok(u64::try_from(n).unwrap_or(0))
+}
+
+/// The UIDs of every row of a folder of this account (hidden ones included), ascending. Lighter
+/// than [`folder_flags`] for the engine, which only needs to cut the rows into chunks.
+pub fn uids_in_folder(conn: &Connection, account_id: i64, folder_id: i64) -> Result<Vec<Uid>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT uid FROM message WHERE account_id = ?1 AND folder_id = ?2 ORDER BY uid",
+    )?;
+    let rows = stmt.query_map(params![account_id, folder_id], |r| r.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(Uid::try_from(row?).map_err(|_| StorageError::OutOfRange("uid"))?);
+    }
+    Ok(out)
+}
+
+/// How many rows of a folder of this account have this `Message-ID` header, not counting the row
+/// at `except_uid`. The engine uses it to tell whether a Message-ID names more than one copy.
+pub fn count_other_copies(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    message_id_hdr: &str,
+    except_uid: Uid,
+) -> Result<u64> {
+    let n: i64 = conn.query_row(
+        r#"SELECT COUNT(*) FROM message
+            WHERE account_id = ?1 AND folder_id = ?2 AND message_id_hdr = ?3 AND uid <> ?4"#,
+        params![account_id, folder_id, message_id_hdr, except_uid],
+        |r| r.get(0),
+    )?;
+    Ok(u64::try_from(n).unwrap_or(0))
+}
+
+/// The UIDs of the rows of a folder of this account whose `Message-ID` header is one of
+/// `message_ids`. The engine uses it to keep every copy of a message that has a destructive
+/// operation waiting while a reset deletes the folder's other rows.
+pub fn uids_with_message_ids(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    message_ids: &[&str],
+) -> Result<BTreeSet<Uid>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT uid FROM message WHERE account_id = ?1 AND folder_id = ?2 AND message_id_hdr = ?3",
+    )?;
+    let mut out = BTreeSet::new();
+    for id in message_ids {
+        let rows = stmt.query_map(params![account_id, folder_id, id], |r| r.get::<_, i64>(0))?;
+        for row in rows {
+            out.insert(Uid::try_from(row?).map_err(|_| StorageError::OutOfRange("uid"))?);
+        }
+    }
+    Ok(out)
+}
+
+/// Deletes every row of a folder of this account, keeping the folder (its UIDVALIDITY changed, so
+/// the cached UIDs mean nothing). Returns how many rows went.
+pub fn delete_all_in_folder(conn: &Connection, account_id: i64, folder_id: i64) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM message WHERE account_id = ?1 AND folder_id = ?2",
+        params![account_id, folder_id],
+    )?)
+}
+
+/// Clears `local_hidden` and `pending_ops` on every row of a folder of this account whose UID is
+/// not in `keep`. The sync engine passes the UIDs that still have an unfinished operation (or a
+/// move waiting for its new UID): any other hidden row or pending count is left over from an
+/// operation that is gone, and would otherwise stay stuck. Returns how many rows changed.
+pub fn release_local_state(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    keep: &BTreeSet<Uid>,
+) -> Result<usize> {
+    let mut stmt = conn.prepare_cached(
+        r#"SELECT uid FROM message
+            WHERE account_id = ?1 AND folder_id = ?2 AND (local_hidden <> 0 OR pending_ops <> 0)"#,
+    )?;
+    let stuck: Vec<i64> = stmt
+        .query_map(params![account_id, folder_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut update = conn.prepare_cached(
+        r#"UPDATE message SET local_hidden = 0, pending_ops = 0
+            WHERE account_id = ?1 AND folder_id = ?2 AND uid = ?3"#,
+    )?;
+    let mut n = 0;
+    for uid in stuck {
+        let keep_it = Uid::try_from(uid).is_ok_and(|u| keep.contains(&u));
+        if !keep_it {
+            n += update.execute(params![account_id, folder_id, uid])?;
+        }
+    }
+    Ok(n)
 }

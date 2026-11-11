@@ -8,7 +8,7 @@ Check `CLAUDE.md` rules before starting and read the linked UX docs for any scre
 | [T01](T01-sqlite-layer.md) | SQLite connection layer | core/storage |
 | [T02](T02-persist-queue.md) | Persist the operation queue | core/mail-core + core/storage |
 | [T03](T03-imap-adapter.md) | IMAP adapter | core/protocols |
-| [T04](T04-sync-engine.md) | Sync engine | core/mail-core |
+| [T04](T04-sync-engine.md) | Sync engine | core/engine |
 | [T05](T05-account-discovery.md) | Account discovery | core/protocols |
 | [T06](T06-smtp-outbox.md) | SMTP send and Outbox | core/protocols + core/mail-core |
 | [T07](T07-uniffi-hello.md) | UniFFI surface and first Compose screen | core/ffi + android |

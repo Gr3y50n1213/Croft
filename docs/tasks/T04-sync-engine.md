@@ -1,6 +1,6 @@
 # T04: Sync engine
 
-Crate / folder: `core/engine` (new crate; was `core/mail-core`, changed because `CLAUDE.md` keeps mail-core pure and synchronous. See `docs/DECISIONS.md` and `docs/tasks/T02-T04-design.md`)
+Crate / folder: `core/engine` (`croft-engine`; see `T02-T04-design.md` sections 1 and 7)
 
 ## Goal
 Join the pieces: backend, planner, queue and storage.

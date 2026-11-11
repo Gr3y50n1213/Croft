@@ -31,8 +31,8 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 
 use crate::error::{Result, StorageError};
-use crate::settings;
 use crate::Db;
+use crate::{folders, messages, settings};
 
 /// The payload format version written by this build.
 const PAYLOAD_VERSION: i64 = 1;
@@ -65,6 +65,13 @@ impl<D: BorrowMut<Db>> SqliteOpStore<D> {
     /// The database, for reads such as the message list.
     pub fn db(&self) -> &Db {
         Borrow::<Db>::borrow(&self.db)
+    }
+
+    /// The database, mutably, for transactions that are not queue rows (the sync engine applies a
+    /// folder sync through this). Do not write `op_queue` or `op_awaiting_uid` through it: the
+    /// queue in memory would no longer match.
+    pub fn db_mut(&mut self) -> &mut Db {
+        BorrowMut::<Db>::borrow_mut(&mut self.db)
     }
 
     /// Gives the database back.
@@ -503,6 +510,32 @@ fn apply_effect(tx: &Transaction<'_>, effect: &LocalEffect) -> Result<()> {
             Ok(())
         }
         LocalEffect::CopyMessage { account, from, to } => copy_message(tx, *account, from, to),
+        LocalEffect::ClearFolder { account, folder } => {
+            if let Some(id) = folder_id(tx, *account, folder)? {
+                messages::delete_all_in_folder(tx, *account, id)?;
+            }
+            Ok(())
+        }
+        LocalEffect::PutHeader {
+            account,
+            folder,
+            header,
+        } => {
+            if let Some(id) = folder_id(tx, *account, folder)? {
+                messages::upsert(tx, *account, id, header)?;
+            }
+            Ok(())
+        }
+        LocalEffect::SetFolderValidity {
+            account,
+            folder,
+            uid_validity,
+        } => {
+            if let Some(id) = folder_id(tx, *account, folder)? {
+                folders::set_validity_only(tx, *account, id, *uid_validity)?;
+            }
+            Ok(())
+        }
     }
 }
 

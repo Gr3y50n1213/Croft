@@ -23,14 +23,20 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use croft_protocols::{BackendError, Uid};
+use croft_protocols::{BackendError, RemoteHeader, Uid};
 
 use crate::ops::{
-    AccountId, AwaitingUid, CancelError, Enqueued, Op, OpId, OpKind, OpQueue, OpState, Rejection,
+    AccountId, AwaitingUid, CancelError, Enqueued, Location, Op, OpId, OpKind, OpQueue, OpState,
+    Rejection,
 };
 
 /// The optimistic change to the person's view that goes with a queue change. The store applies the
 /// effects of a [`Batch`], in order, in the same transaction as the queue rows.
+///
+/// Three effects carry server state rather than a local change ([`LocalEffect::ClearFolder`],
+/// [`LocalEffect::PutHeader`], [`LocalEffect::SetFolderValidity`]): they are only used by
+/// [`PersistentQueue::reset_folder`], where the folder's rows and status must change in the same
+/// transaction as the operations that point into it.
 ///
 /// A message is addressed by account, folder path and UID. An effect on a message that has no
 /// local row (not synced yet, or already gone) does nothing.
@@ -97,6 +103,36 @@ pub enum LocalEffect {
         /// UID in the folder.
         uid: Uid,
     },
+    /// Delete every message row of a folder (its UIDVALIDITY changed). The folder itself stays.
+    ClearFolder {
+        /// Owning account.
+        account: AccountId,
+        /// Folder path.
+        folder: String,
+    },
+    /// Insert or update the row for a header from the server (as a folder sync does: local
+    /// `is_seen` and `is_flagged` are kept while the row has pending operations).
+    PutHeader {
+        /// Owning account.
+        account: AccountId,
+        /// Folder path.
+        folder: String,
+        /// The header.
+        header: RemoteHeader,
+    },
+    /// Store only the folder's new UIDVALIDITY, and set its UIDNEXT and HIGHESTMODSEQ to NULL
+    /// (and leave the sync time alone). A UIDVALIDITY reset does not make the folder synced: its
+    /// messages are fetched afterwards, and until the sync that does that has finished, the folder
+    /// must never look "unchanged" to a later sync. The full status is stored by the sync itself,
+    /// at its end.
+    SetFolderValidity {
+        /// Owning account.
+        account: AccountId,
+        /// Folder path.
+        folder: String,
+        /// The UIDVALIDITY the server reported.
+        uid_validity: u32,
+    },
     /// After a confirmed move with a known new UID: copy the row to its new address (visible,
     /// keeping its pending count, flags, cached body and attachments list). Does nothing when
     /// there is no row at the old address.
@@ -134,6 +170,44 @@ impl Batch {
             && self.awaiting_removed.is_empty()
             && self.effects.is_empty()
     }
+}
+
+/// A message whose move was confirmed without a new UID (an awaiting-UID entry) and whose source
+/// folder is the one being reset. Part of a [`FolderReset`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedOut {
+    /// The old UID in the reset folder (the awaiting entry's address).
+    pub old_uid: Uid,
+    /// Where the engine found the message by Message-ID, with its header, or `None` if it did not.
+    pub found: Option<(Location, RemoteHeader)>,
+}
+
+/// What a UIDVALIDITY change of one folder does, as worked out by the sync engine (which did the
+/// Message-ID lookups and fetched the headers). Applied by [`PersistentQueue::reset_folder`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderReset {
+    /// The folder whose UIDVALIDITY changed.
+    pub folder: String,
+    /// Its new UIDVALIDITY, stored in the same transaction **alone**: UIDNEXT and HIGHESTMODSEQ
+    /// become NULL until a completed sync stores the full status (see
+    /// [`LocalEffect::SetFolderValidity`]).
+    pub uid_validity: u32,
+    /// Fresh headers for the folder: at least the rows the re-pointed operations need.
+    pub headers: Vec<RemoteHeader>,
+    /// Old UID in the folder to new UID, for messages with unfinished operations that were found
+    /// again by Message-ID.
+    pub matched: Vec<(Uid, Uid)>,
+    /// Old UIDs in the folder whose messages were not found: their operations fail with `reason`.
+    pub unmatched: Vec<Uid>,
+    /// Awaiting-UID entries whose **source** is this folder. Their old row went with the folder,
+    /// and the old address may belong to another message now, so they are resolved here and
+    /// never left waiting: found means re-pointed to the destination, not found means failed.
+    pub moved_out: Vec<MovedOut>,
+    /// Awaiting-UID entries whose **destination** is this folder and that were found here: old
+    /// location (in another folder) to new UID in this folder. Their old hidden row is removed.
+    pub moved_in: Vec<(Location, Uid)>,
+    /// Shown for operations that fail.
+    pub reason: String,
 }
 
 /// A stored operation that could not be read back (a newer app wrote it, or the row is damaged).
@@ -250,6 +324,13 @@ impl<S: OpStore> PersistentQueue<S> {
         &self.store
     }
 
+    /// The store, mutably. For writes that are not queue rows and must not go through the queue,
+    /// such as the sync engine applying a folder sync to the same database. Never use it to commit
+    /// a [`Batch`] by hand: the queue in memory would no longer match the disk.
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
     /// Gives the store back (for example to reopen it in a test).
     pub fn into_store(self) -> S {
         self.store
@@ -344,6 +425,20 @@ impl<S: OpStore> PersistentQueue<S> {
         self.run(
             Finish::Restore,
             |q| q.take_due(now_ms, limit),
+            |_, _, _| Vec::new(),
+        )
+    }
+
+    /// Like [`PersistentQueue::take_due`], for one account only (see [`OpQueue::take_due_for`]).
+    pub fn take_due_for(
+        &mut self,
+        account: AccountId,
+        now_ms: i64,
+        limit: usize,
+    ) -> Result<Vec<Op>, S::Error> {
+        self.run(
+            Finish::Restore,
+            |q| q.take_due_for(account, now_ms, limit),
             |_, _, _| Vec::new(),
         )
     }
@@ -482,6 +577,108 @@ impl<S: OpStore> PersistentQueue<S> {
         )
     }
 
+    /// Applies a UIDVALIDITY change of one folder in **one** batch: the folder's rows are
+    /// replaced, its new UIDVALIDITY is stored (and nothing else of its status), and every operation
+    /// that pointed into it is re-pointed or failed, all in the same transaction.
+    ///
+    /// The engine may delete most of the folder's rows in chunks **before** this call, to keep each
+    /// lock hold short: that is safe because the UIDVALIDITY is stored only here, so a sync that is
+    /// cut short between the chunks sees the old UIDVALIDITY and starts the reset again. The rows
+    /// of messages that have unfinished operations must be kept until this call (their Message-ID
+    /// is read from them), and [`LocalEffect::ClearFolder`] then removes what is left.
+    ///
+    /// It has to be one transaction. Operations are addressed by UID, and the folder's stored
+    /// UIDVALIDITY says which numbering a UID belongs to. If a kill could land between re-pointing
+    /// the operations and storing the new UIDVALIDITY, the next start would read operations in the
+    /// new numbering as if they were in the old one (or the reverse) and act on the wrong message.
+    ///
+    /// The effects, in order: [`LocalEffect::ClearFolder`]; the headers of messages found in other
+    /// folders ([`FolderReset::moved_out`]); the folder's fresh headers; the pending count and local
+    /// value (or hidden state) of every re-pointed operation on its new row; the removal of the
+    /// old hidden row of each [`FolderReset::moved_in`] entry; [`LocalEffect::SetFolderValidity`].
+    /// Failed operations change no row (the folder's rows are gone and the server's values come
+    /// back with the fresh headers). Returns the ids of the failed operations.
+    pub fn reset_folder(
+        &mut self,
+        account: AccountId,
+        reset: &FolderReset,
+    ) -> Result<Vec<OpId>, S::Error> {
+        let folder = reset.folder.as_str();
+        let mut moves: Vec<(Location, Location)> = Vec::new();
+        for moved in &reset.moved_out {
+            if let Some((to, _)) = &moved.found {
+                moves.push(((folder.to_owned(), moved.old_uid), to.clone()));
+            }
+        }
+        for (old, new) in &reset.matched {
+            moves.push(((folder.to_owned(), *old), (folder.to_owned(), *new)));
+        }
+        for (from, new) in &reset.moved_in {
+            moves.push((from.clone(), (folder.to_owned(), *new)));
+        }
+        let moves_ref = &moves;
+        self.run(
+            Finish::Nothing,
+            |q| {
+                let mut failed = Vec::new();
+                for moved in reset.moved_out.iter().filter(|m| m.found.is_none()) {
+                    failed.extend(q.abandon(account, (folder, moved.old_uid), &reset.reason));
+                }
+                for old in &reset.unmatched {
+                    failed.extend(q.abandon(account, (folder, *old), &reset.reason));
+                }
+                q.repoint_many(account, moves_ref);
+                failed
+            },
+            |before, after, _| {
+                let mut effects = vec![LocalEffect::ClearFolder {
+                    account,
+                    folder: folder.to_owned(),
+                }];
+                for moved in &reset.moved_out {
+                    if let Some((to, header)) = &moved.found {
+                        effects.push(LocalEffect::PutHeader {
+                            account,
+                            folder: to.0.clone(),
+                            header: header.clone(),
+                        });
+                    }
+                }
+                for header in &reset.headers {
+                    effects.push(LocalEffect::PutHeader {
+                        account,
+                        folder: folder.to_owned(),
+                        header: header.clone(),
+                    });
+                }
+                let map: BTreeMap<(&str, Uid), &Location> = moves_ref
+                    .iter()
+                    .map(|(from, to)| ((from.0.as_str(), from.1), to))
+                    .collect();
+                for op in after.iter().filter(|op| !op.state.is_finished()) {
+                    let Some(old) = before.get(op.id).filter(|old| !old.state.is_finished()) else {
+                        continue;
+                    };
+                    if let Some(to) = map.get(&old.kind.target()) {
+                        effects.extend(created_effects(op.account, &op.kind, (&to.0, to.1)));
+                    }
+                }
+                for (from, _) in &reset.moved_in {
+                    if from.0 != folder && before.awaiting_for(account, (&from.0, from.1)).is_some()
+                    {
+                        effects.push(remove_row(account, (&from.0, from.1)));
+                    }
+                }
+                effects.push(LocalEffect::SetFolderValidity {
+                    account,
+                    folder: folder.to_owned(),
+                    uid_validity: reset.uid_validity,
+                });
+                effects
+            },
+        )
+    }
+
     /// Gives up on the unfinished operations on a message that was moved and could not be found
     /// again. They fail with `reason`, and the old (hidden) row is removed. Returns their ids.
     pub fn abandon(
@@ -564,6 +761,28 @@ impl<S: OpStore> PersistentQueue<S> {
         self.run(Finish::Restore, OpQueue::purge_finished, |_, _, _| {
             Vec::new()
         })
+    }
+
+    /// Puts the account's operations that are marked applying back in the queue, in one batch
+    /// ([`OpQueue::recover_applying`]). Call it when nothing of the account is being sent any more:
+    /// its task was stopped or aborted in the middle of a call, or a step failed after an
+    /// operation was handed out. Returns how many were put back.
+    pub fn recover_applying(&mut self, account: AccountId) -> Result<usize, S::Error> {
+        self.run(
+            Finish::Restore,
+            |q| q.recover_applying(account),
+            |_, _, _| Vec::new(),
+        )
+    }
+
+    /// Ends the account's back-off ([`OpQueue::clear_hold`]) and stores the operations' new retry
+    /// times.
+    pub fn clear_hold(&mut self, account: AccountId, now_ms: i64) -> Result<(), S::Error> {
+        self.run(
+            Finish::Restore,
+            |q| q.clear_hold(account, now_ms),
+            |_, _, _| Vec::new(),
+        )
     }
 
     /// Records whether the account has a connection. Not stored.

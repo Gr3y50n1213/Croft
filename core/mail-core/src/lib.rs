@@ -1,7 +1,7 @@
 //! Croft core logic: what to fetch, what to send, in what order, and what to do when it fails.
 //!
 //! Everything here is pure and synchronous so it can be tested without a network or a database.
-//! The async sync engine (added next) drives these pieces:
+//! The async sync engine (`croft-engine`, in `core/engine`) drives these pieces:
 //!
 //! 1. [`sync_plan::plan`] compares the server's folder with the local copy and says what changed.
 //! 2. [`ops::OpQueue`] holds the person's actions (mark read, delete, move) until the server
@@ -17,7 +17,10 @@ pub mod outbox_store;
 pub mod persist;
 pub mod sync_plan;
 
-pub use ops::{AwaitingUid, Enqueued, Op, OpId, OpKind, OpQueue, OpState, Rejection};
+pub use ops::{
+    AccountId, AwaitingUid, CancelError, Enqueued, Location, Op, OpId, OpKind, OpQueue, OpState,
+    Rejection,
+};
 pub use outbox::{
     ActionError, FilingRejection, NewMessage, Outbox, OutboxEntry, OutboxId, OutboxState,
     SendRejection, UndoError,
@@ -27,6 +30,7 @@ pub use outbox_store::{
     StoredOutbox,
 };
 pub use persist::{
-    Batch, LocalEffect, OpStore, PersistentQueue, QueueError, StoredQueue, UnreadableOp,
+    Batch, FolderReset, LocalEffect, MovedOut, OpStore, PersistentQueue, QueueError, StoredQueue,
+    UnreadableOp,
 };
 pub use sync_plan::{plan, LocalFolder, SyncPlan};

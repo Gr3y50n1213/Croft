@@ -13,8 +13,11 @@ mod db;
 mod error;
 pub mod folders;
 pub mod messages;
+pub mod op_store;
 pub mod settings;
 
+#[cfg(test)]
+mod op_store_tests;
 #[cfg(test)]
 mod repo_tests;
 #[cfg(test)]
@@ -22,6 +25,7 @@ mod schema_checks;
 
 pub use db::Db;
 pub use error::{Result, StorageError};
+pub use op_store::SqliteOpStore;
 
 /// One forward-only schema change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,11 +39,18 @@ pub struct Migration {
 }
 
 /// Every migration, in order. Add new ones at the end; never edit a released migration.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "queue_persistence",
+        sql: include_str!("../migrations/0002_queue_persistence.sql"),
+    },
+];
 
 /// The version a fully migrated database reports in `PRAGMA user_version`.
 pub fn latest_version() -> u32 {
@@ -132,18 +143,29 @@ mod tests {
             "setting",
             "message_fts",
         ];
-        let sql = MIGRATIONS[0].sql;
-        for chunk in sql
-            .split("CREATE TABLE ")
-            .skip(1)
-            .chain(sql.split("CREATE VIRTUAL TABLE ").skip(1))
-        {
-            let name = chunk.split_whitespace().next().unwrap_or_default();
-            let body = chunk.split(");").next().unwrap_or_default();
-            assert!(
-                global.contains(&name) || body.contains("account_id") || body.contains("folder_id"),
-                "table {name} has no account_id; add it or list it as global on purpose"
-            );
+        let mut seen_tables = 0;
+        for migration in MIGRATIONS {
+            let sql = migration.sql;
+            for chunk in sql
+                .split("CREATE TABLE ")
+                .skip(1)
+                .chain(sql.split("CREATE VIRTUAL TABLE ").skip(1))
+            {
+                let name = chunk.split_whitespace().next().unwrap_or_default();
+                let body = chunk.split(");").next().unwrap_or_default();
+                assert!(
+                    global.contains(&name)
+                        || body.contains("account_id")
+                        || body.contains("folder_id"),
+                    "table {name} (migration {}) has no account_id; add it or list it as global on purpose",
+                    migration.version
+                );
+                seen_tables += 1;
+            }
         }
+        assert!(
+            seen_tables > 10,
+            "the check must look at every migration's tables"
+        );
     }
 }

@@ -253,6 +253,94 @@ fn cancelled_op_is_never_due() {
     assert_eq!(due(c, 99999), 0);
 }
 
+#[test]
+fn local_hidden_exists_and_defaults_to_0() {
+    let db = fixture();
+    let c = db.connection();
+    assert_eq!(
+        one::<i64>(c, "SELECT count(*) FROM message WHERE local_hidden = 0"),
+        one::<i64>(c, "SELECT count(*) FROM message")
+    );
+}
+
+#[test]
+fn a_hidden_row_is_left_out_of_the_visible_list() {
+    let db = fixture();
+    let c = db.connection();
+    c.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1", [])
+        .unwrap();
+    let mut stmt = c
+        .prepare(
+            "SELECT uid FROM message WHERE folder_id=1 AND local_hidden = 0 ORDER BY date_ts DESC",
+        )
+        .unwrap();
+    let uids: Vec<i64> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(uids, vec![2, 3]);
+}
+
+fn add_awaiting(c: &Connection) {
+    c.execute(
+        "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,message_id_hdr,created_at) VALUES (1,'INBOX',1,'Archive','<a@example.org>',5)",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
+fn op_awaiting_uid_keeps_destination_and_message_id_and_starts_lookups_at_0() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    let row: (String, String, i64) = c
+        .query_row(
+            "SELECT dest_folder, message_id_hdr, lookups FROM op_awaiting_uid",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("Archive".to_owned(), "<a@example.org>".to_owned(), 0));
+}
+
+#[test]
+fn op_awaiting_uid_has_one_row_per_old_address() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    let err = c
+        .execute(
+            "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (1,'INBOX',1,'Trash',6)",
+            [],
+        )
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn op_awaiting_uid_foreign_key_rejects_a_missing_account() {
+    let db = fixture();
+    let err = db
+        .connection()
+        .execute(
+            "INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (99,'INBOX',2,'Trash',6)",
+            [],
+        )
+        .unwrap_err();
+    assert!(is_constraint(&err), "{err}");
+}
+
+#[test]
+fn removing_an_account_removes_its_awaiting_marks() {
+    let db = fixture();
+    let c = db.connection();
+    add_awaiting(c);
+    c.execute("DELETE FROM account WHERE id = 1", []).unwrap();
+    assert_eq!(one::<i64>(c, "SELECT count(*) FROM op_awaiting_uid"), 0);
+}
+
 fn is_constraint(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::ConstraintViolation)
 }

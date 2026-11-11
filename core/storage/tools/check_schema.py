@@ -58,6 +58,27 @@ check("op becomes due at not_before", due(6000) == 1)
 db.execute("UPDATE op_queue SET state='cancelled' WHERE id=1")
 check("cancelled op is never due", due(99999) == 0)
 
+# Migration 0002: hidden rows and the awaiting-UID table.
+check("message.local_hidden exists and defaults to 0",
+      one("SELECT count(*) FROM message WHERE local_hidden = 0") == one("SELECT count(*) FROM message"))
+db.execute("UPDATE message SET local_hidden = 1 WHERE uid = 1")
+check("a hidden row is left out of the visible list",
+      [r[0] for r in db.execute("SELECT uid FROM message WHERE folder_id=1 AND local_hidden = 0")] == [])
+db.execute("UPDATE message SET local_hidden = 0 WHERE uid = 1")
+db.execute("INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,message_id_hdr,created_at) VALUES (1,'INBOX',1,'Archive','<a@example.org>',5)")
+check("op_awaiting_uid keeps destination and Message-ID, lookups start at 0",
+      db.execute("SELECT dest_folder, message_id_hdr, lookups FROM op_awaiting_uid").fetchone() == ("Archive", "<a@example.org>", 0))
+try:
+    db.execute("INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (1,'INBOX',1,'Trash',6)")
+    check("op_awaiting_uid has one row per old address", False)
+except sqlite3.IntegrityError:
+    check("op_awaiting_uid has one row per old address", True)
+try:
+    db.execute("INSERT INTO op_awaiting_uid (account_id,folder,uid,dest_folder,created_at) VALUES (99,'INBOX',2,'Trash',6)")
+    check("op_awaiting_uid foreign key rejects a missing account", False)
+except sqlite3.IntegrityError:
+    check("op_awaiting_uid foreign key rejects a missing account", True)
+
 try:
     db.execute("INSERT INTO message (account_id,folder_id,uid,thread_key,date_ts,category) VALUES (1,1,9,'t9',0,'spam')")
     check("category check rejects unknown values", False)
@@ -69,7 +90,8 @@ try:
 except sqlite3.IntegrityError:
     check("foreign key rejects a missing account", True)
 db.execute("DELETE FROM account WHERE id = 1")
-check("removing an account removes its folders, messages and queue",
-      one("SELECT count(*) FROM folder") + one("SELECT count(*) FROM message") + one("SELECT count(*) FROM op_queue") == 0)
+check("removing an account removes its folders, messages, queue and awaiting marks",
+      one("SELECT count(*) FROM folder") + one("SELECT count(*) FROM message") + one("SELECT count(*) FROM op_queue")
+      + one("SELECT count(*) FROM op_awaiting_uid") == 0)
 
 sys.exit(1 if check.failed else 0)

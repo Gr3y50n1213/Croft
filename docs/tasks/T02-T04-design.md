@@ -103,3 +103,27 @@ to four messages at once per account; that is a later speed-up and does not chan
 The UI never waits for the network. A person's action calls the engine handle, which in one SQLite transaction
 applies the `LocalEffect`s and stores the op, then wakes the account's task (`tokio::sync::Notify`). Screens
 observe a `tokio::sync::broadcast` of changed folder ids and re-run their queries.
+
+## 6. What T02 changed from this note (recorded by the T02 build)
+
+- **No separate `Restore` effect.** A cancelled or failed flag op is `SetSeen` / `SetFlagged` with the value to put back,
+  and a cancelled or failed move or delete is `Unhide`. The value is the one of the latest unfinished op on the same
+  flag of the same message if there is one, otherwise the opposite of what the finished op set. (The note's plain
+  "previous value" is wrong when a second change is made while the first is in flight.)
+- **Batch and load.** `Batch` also has `purged` (finished rows to delete). `load()` returns `StoredQueue` with `max_id`
+  (the largest id ever stored, so an id is never reused after finished rows are discarded) and `unreadable` rows. It
+  loads unfinished rows only and deletes finished ones, because nothing reads them after a restart.
+- **JSON lives in storage** (`core/storage/src/op_store.rs`), so mail-core has no serde. A row whose `v` is not 1, or
+  that cannot be read, is marked `failed` with a plain reason, its `pending_ops` is released and a hidden message is
+  shown again (using `target_key`, which is `<uid>@<folder path>` whatever the payload version). It is reported by
+  `PersistentQueue::unreadable()`.
+- **Awaiting entry.** `AwaitingUid` (dest, Message-ID, lookups, created time) is stored in `op_awaiting_uid`.
+  `confirm_moved_with(id, loc, message_id, now_ms)` is the call the engine should use; `confirm_moved(id, loc)` keeps
+  working and stores no Message-ID. `record_lookup` counts the lookups from section 4.
+- **UIDVALIDITY reset (section 4, case 3).** After a reset the old address may belong to a different message, so
+  `abandon` (which removes the old row) must not be used there. Use `repoint_after_reset` (puts `pending_ops` and the
+  local flag or hidden state on the new row) and `abandon_after_reset` (fails the ops, touches no row).
+- **Plain `confirm` of a move** removes the old row and nothing follows it. The engine should use `confirm_moved*`.
+- **Known gap.** The folder counters (`unread_count`, `total_count`) are kept by the 0001 triggers and still count a
+  hidden row until it is removed, so the unread badge of a folder drops when the server confirms an archive, not at once.
+  Fixing that needs a new migration with triggers; left for the orchestrator to decide.

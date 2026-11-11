@@ -6,6 +6,7 @@
 //! **Never a secret**: the password or token lives in the platform keystore and comes back
 //! through the `CredentialProvider`.
 
+use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::{CertFingerprint, ImapConfig, Security};
 use serde::{Deserialize, Serialize};
 
@@ -68,8 +69,13 @@ pub(crate) enum SettingsError {
 }
 
 impl StoredSettings {
-    /// Reads a stored record.
+    /// Reads a stored record. A record with a `kind` key is not a server record (the sample
+    /// mailbox's marker has one, see [`demo_config`]) and is refused, so no record can be read as
+    /// both.
     pub(crate) fn from_json(value: &serde_json::Value) -> Result<Self, SettingsError> {
+        if value.get("kind").is_some() {
+            return Err(SettingsError::Unreadable);
+        }
         let s: Self =
             serde_json::from_value(value.clone()).map_err(|_| SettingsError::Unreadable)?;
         if s.version > SETTINGS_VERSION {
@@ -108,9 +114,20 @@ pub(crate) fn demo_config() -> serde_json::Value {
     serde_json::json!({ "version": SETTINGS_VERSION, "kind": DEMO_KIND })
 }
 
-/// True for the settings record of the sample mailbox ([`demo_config`]).
-pub(crate) fn is_demo(config: &serde_json::Value) -> bool {
-    config.get("kind").and_then(serde_json::Value::as_str) == Some(DEMO_KIND)
+/// True for the account row of the sample mailbox: its settings record has exactly the shape of
+/// [`demo_config`] (the keys `version` and `kind` and nothing else: no `imap`, no `jmap`), and its
+/// address is the sample address. Anything else is not the sample mailbox.
+pub(crate) fn is_demo(config: &serde_json::Value, email: &str) -> bool {
+    let Some(map) = config.as_object() else {
+        return false;
+    };
+    email == DEMO_ADDRESS
+        && map.len() == 2
+        && map.get("kind").and_then(serde_json::Value::as_str) == Some(DEMO_KIND)
+        && map
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|v| v <= u64::from(SETTINGS_VERSION))
 }
 
 #[cfg(test)]
@@ -119,10 +136,40 @@ mod tests {
 
     #[test]
     fn the_demo_marker_is_not_a_server_record() {
-        assert!(is_demo(&demo_config()));
+        assert!(is_demo(&demo_config(), DEMO_ADDRESS));
         assert!(StoredSettings::from_json(&demo_config()).is_err());
-        assert!(!is_demo(&sample().to_json().unwrap()));
-        assert!(!is_demo(&serde_json::json!({})));
+        assert!(!is_demo(&sample().to_json().unwrap(), DEMO_ADDRESS));
+        assert!(!is_demo(&serde_json::json!({}), DEMO_ADDRESS));
+        assert!(!is_demo(&serde_json::json!("demo"), DEMO_ADDRESS));
+    }
+
+    /// The marker must have the exact shape and the sample address: a server record with a `kind`
+    /// key added, or a marker on another address, is not the sample mailbox.
+    #[test]
+    fn only_the_exact_demo_shape_is_the_sample_mailbox() {
+        let mut both = sample().to_json().unwrap();
+        both["kind"] = serde_json::json!("demo");
+        assert!(!is_demo(&both, DEMO_ADDRESS));
+        let mut jmap = demo_config();
+        jmap["jmap"] = serde_json::json!({});
+        assert!(!is_demo(&jmap, DEMO_ADDRESS));
+        let mut newer = demo_config();
+        newer["version"] = serde_json::json!(SETTINGS_VERSION + 1);
+        assert!(!is_demo(&newer, DEMO_ADDRESS));
+        assert!(!is_demo(&demo_config(), "someone@example.org"));
+    }
+
+    /// A record with a `kind` key is never read as server settings, even with a valid `imap`.
+    #[test]
+    fn a_record_with_a_kind_is_not_server_settings() {
+        let mut both = sample().to_json().unwrap();
+        both["kind"] = serde_json::json!("demo");
+        assert_eq!(
+            StoredSettings::from_json(&both).unwrap_err(),
+            SettingsError::Unreadable
+        );
+        both["kind"] = serde_json::json!("anything");
+        assert!(StoredSettings::from_json(&both).is_err());
     }
 
     fn sample() -> StoredSettings {

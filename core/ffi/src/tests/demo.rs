@@ -3,29 +3,56 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! The sample mailbox through the exported surface: add it (once), list it, act on it, sync, close
-//! and reopen, remove it. The credential provider panics if it is ever asked: the sample mailbox
-//! has no credential and no server adapter, and every step here runs with the device offline.
+//! and reopen, remove it. The credential provider records every call and each test checks at the
+//! end that there was none: the sample mailbox has no credential and no server adapter. (A panic
+//! in the provider would not do: a callback on a blocking thread of the core is caught there.)
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use croft_storage::Db;
 
 use super::*;
 
 /// A provider that must never be called: asking for a credential is the first step of building a
-/// server adapter for an account.
-struct NeverAsked;
+/// server adapter for an account, and a sign-in request means the core thinks there is a server.
+#[derive(Default)]
+struct NeverAsked {
+    credential: AtomicBool,
+    sign_in: AtomicBool,
+}
 
-impl CredentialProvider for NeverAsked {
-    fn credential(&self, _: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
-        panic!("the sample mailbox asked for a credential");
+impl NeverAsked {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
     }
 
-    fn sign_in_needed(&self, _: i64) -> Result<(), ProviderError> {
-        panic!("the sample mailbox asked for a sign-in");
+    /// Fails the test if the core called the provider at all.
+    fn check(&self) {
+        assert!(
+            !self.credential.load(Ordering::SeqCst),
+            "the sample mailbox asked for a credential"
+        );
+        assert!(
+            !self.sign_in.load(Ordering::SeqCst),
+            "the sample mailbox asked for a sign-in"
+        );
     }
 }
 
-fn open(db: &TempDb) -> Arc<Core> {
-    Core::open(db.path.display().to_string(), None, Arc::new(NeverAsked)).unwrap()
+impl CredentialProvider for NeverAsked {
+    fn credential(&self, _: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
+        self.credential.store(true, Ordering::SeqCst);
+        Err(ProviderError::Failed)
+    }
+
+    fn sign_in_needed(&self, _: i64) -> Result<(), ProviderError> {
+        self.sign_in.store(true, Ordering::SeqCst);
+        Err(ProviderError::Failed)
+    }
+}
+
+fn open(db: &TempDb, asked: &Arc<NeverAsked>) -> Arc<Core> {
+    Core::open(db.path.display().to_string(), None, asked.clone()).unwrap()
 }
 
 fn folder_id(core: &Core, account: i64, path: &str) -> i64 {
@@ -78,7 +105,8 @@ fn wait_for_sample_inbox(core: &Core, account: i64) {
 #[test]
 fn the_sample_mailbox_is_added_once_without_a_credential() {
     let db = TempDb::new();
-    let core = open(&db);
+    let asked = NeverAsked::new();
+    let core = open(&db, &asked);
     core.set_network_available(false).unwrap();
     let info = block(core.add_demo_account()).unwrap();
     assert!(info.is_demo);
@@ -99,6 +127,7 @@ fn the_sample_mailbox_is_added_once_without_a_credential() {
     // Nothing to sign in to.
     block(core.signed_in(info.id)).unwrap();
     core.sync_now(info.id).unwrap();
+    asked.check();
 }
 
 #[test]
@@ -118,7 +147,8 @@ fn a_real_account_is_not_marked_demo() {
 #[test]
 fn folders_and_messages_are_listed() {
     let db = TempDb::new();
-    let core = open(&db);
+    let asked = NeverAsked::new();
+    let core = open(&db, &asked);
     let account = block(core.add_demo_account()).unwrap().id;
     wait_for_sample_inbox(&core, account);
     let mut paths: Vec<String> = core
@@ -159,13 +189,15 @@ fn folders_and_messages_are_listed() {
         .list_messages(MessageScope::UnifiedInbox, None, 500)
         .unwrap();
     assert_eq!(unified.rows.len(), 10);
+    asked.check();
 }
 
 #[test]
 fn star_and_move_stay_after_a_sync_and_after_a_restart() {
     let db = TempDb::new();
+    let asked = NeverAsked::new();
     let account = {
-        let core = open(&db);
+        let core = open(&db, &asked);
         core.set_network_available(false).unwrap();
         core.set_undo_window_ms(0);
         let account = block(core.add_demo_account()).unwrap().id;
@@ -204,7 +236,7 @@ fn star_and_move_stay_after_a_sync_and_after_a_restart() {
 
     // The app restarts: the sample mailbox is rebuilt from the device, and its first sync
     // (which runs at start) undoes nothing.
-    let core = open(&db);
+    let core = open(&db, &asked);
     core.set_network_available(false).unwrap();
     let info = &core.list_accounts().unwrap()[0];
     assert!(info.is_demo);
@@ -220,13 +252,15 @@ fn star_and_move_stay_after_a_sync_and_after_a_restart() {
         assert_eq!(rows(&core, account, "INBOX").len(), 8);
         std::thread::sleep(Duration::from_millis(50));
     }
+    asked.check();
 }
 
 #[test]
 fn removing_the_sample_mailbox_deletes_all_its_rows() {
     let db = TempDb::new();
+    let asked = NeverAsked::new();
     let account = {
-        let core = open(&db);
+        let core = open(&db, &asked);
         let account = block(core.add_demo_account()).unwrap().id;
         wait_for_sample_inbox(&core, account);
         // One change still waiting in the queue when it is removed.
@@ -274,4 +308,77 @@ fn removing_the_sample_mailbox_deletes_all_its_rows() {
         .query_row("SELECT COUNT(*) FROM account", [], |r| r.get(0))
         .unwrap();
     assert_eq!(accounts, 0);
+    asked.check();
+}
+
+/// A sample mailbox that is stored but not running (its start failed at `open`, or a rollback
+/// failed) is started by `add_demo_account`, not returned as it is. Here the row is written behind
+/// the running core's back, which leaves it in exactly that state.
+#[test]
+fn a_stored_sample_mailbox_that_is_not_running_is_started() {
+    let db = TempDb::new();
+    let asked = NeverAsked::new();
+    let core = open(&db, &asked);
+    let id = {
+        let d = Db::open(&db.path, None).unwrap();
+        croft_storage::accounts::insert(
+            d.connection(),
+            &croft_storage::accounts::NewAccount {
+                label: "Sample mail".into(),
+                email: croft_protocols::demo::DEMO_ADDRESS.into(),
+                protocol: croft_storage::accounts::Protocol::Imap,
+                provider: "generic".into(),
+                config: crate::settings::demo_config(),
+                color: None,
+                position: 0,
+            },
+            0,
+        )
+        .unwrap()
+    };
+    assert_eq!(core.sync_now(id).unwrap_err(), CoreError::NoSuchAccount);
+    let info = block(core.add_demo_account()).unwrap();
+    assert_eq!(info.id, id, "the stored one, not a second one");
+    assert!(info.is_demo);
+    core.sync_now(id).unwrap();
+    wait_for_sample_inbox(&core, id);
+    assert_eq!(core.list_accounts().unwrap().len(), 1);
+    asked.check();
+}
+
+/// A row that only looks like the sample mailbox (the marker on another address) is not one:
+/// `add_demo_account` adds the real one beside it.
+#[test]
+fn a_marker_on_another_address_is_not_the_sample_mailbox() {
+    let db = TempDb::new();
+    {
+        let d = Db::open(&db.path, None).unwrap();
+        croft_storage::accounts::insert(
+            d.connection(),
+            &croft_storage::accounts::NewAccount {
+                label: "Not the sample".into(),
+                email: "someone@example.org".into(),
+                protocol: croft_storage::accounts::Protocol::Imap,
+                provider: "generic".into(),
+                config: crate::settings::demo_config(),
+                color: None,
+                position: 0,
+            },
+            0,
+        )
+        .unwrap();
+    }
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    let before = core.list_accounts().unwrap();
+    assert_eq!(before.len(), 1);
+    assert!(!before[0].is_demo);
+    assert_eq!(
+        before[0].status,
+        AccountStatus::Error,
+        "unreadable settings"
+    );
+    let info = block(core.add_demo_account()).unwrap();
+    assert_ne!(info.id, before[0].id);
+    assert_eq!(core.list_accounts().unwrap().len(), 2);
 }

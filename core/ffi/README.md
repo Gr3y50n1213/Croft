@@ -28,9 +28,11 @@ the app shows "Not saved to server" on its rows from that flag (rows have no fla
 
 Read, star, move, archive, trash and delete forever work and are confirmed at once by the in-memory copy, so a sync agrees with
 them. At `Core.open` the copy is rebuilt from what the device stored, so a sync after a restart undoes nothing either. The account
-row stores only `{"version":1,"kind":"demo"}` in `config_json` (no migration). Sending, once the app's engine has an Outbox, files
-the message in the sample Sent folder and sends nothing. `remove_account` removes it and all its rows like any other account;
-`signed_in` returns at once for it. Tests: `src/tests/demo.rs` (with a provider that panics if asked), the backend's own tests,
+row stores only `{"version":1,"kind":"demo"}` in `config_json` (no migration); only that exact shape on the sample address counts,
+and server settings refuse any record with a `kind` key. Sending, once the app's engine has an Outbox, sends nothing: the engine's
+sample-mailbox submitter files the copy in the sample Sent folder and stores its row on the device before the Outbox lets go, so
+a restart cannot lose it. `add_demo_account` also starts a stored sample mailbox that is not running. `remove_account` removes it
+and all its rows like any other account (it waits for an `add_demo_account` in progress); `signed_in` returns at once for it. Tests: `src/tests/demo.rs` (with a provider that records any call, checked at the end of each test), the backend's own tests,
 and `core/engine/tests/demo.rs` (sync, every action and a send on a runtime with no I/O driver).
 
 ## The test server (feature `test-server`, test only)

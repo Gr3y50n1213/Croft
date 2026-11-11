@@ -12,13 +12,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use croft_engine::{ActionError, Engine, EngineConfig, EngineHandle, OpId, SystemClock};
+use croft_engine::{
+    resume_demo, ActionError, Engine, EngineConfig, EngineHandle, OpId, SystemClock,
+};
 use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions};
-use croft_protocols::{CertFingerprint, DemoBackend, DemoFolderState, RemoteHeader};
+use croft_protocols::{CertFingerprint, DemoBackend};
 use croft_storage::accounts::{self, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
-use croft_storage::{folders, Db, StorageError};
+use croft_storage::{folders, Db};
 use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
@@ -102,9 +104,11 @@ pub(crate) struct Inner {
     /// The sample mailbox, when it is running (at most one), by account id. It has no entry in
     /// `backends`: no server adapter is ever built for it.
     demos: Mutex<HashMap<i64, Arc<DemoBackend>>>,
-    /// Held while `add_demo_account` looks for the sample mailbox and adds it, so that two calls
-    /// at once still add only one.
-    demo_adding: Mutex<()>,
+    /// Held while `add_demo_account` looks for the sample mailbox and adds or starts it, and while
+    /// `remove_account` removes an account: two adds at once add only one, and a remove never
+    /// runs between an add's row insert and the start of its task (which would leave a task
+    /// running for a deleted account). A tokio lock: it is held across the awaits of both calls.
+    demo_adding: tokio::sync::Mutex<()>,
 }
 
 fn now_ms() -> i64 {
@@ -159,13 +163,18 @@ impl Inner {
     /// at once even in airplane mode. Needs a runtime context (the engine spawns the task).
     fn start_demo_account(&self, id: i64, backend: DemoBackend) -> Result<(), CoreError> {
         let backend = Arc::new(backend);
-        self.engine.add_account_with_submitter(
-            id,
-            backend.clone(),
-            Arc::new(backend.submitter()),
-        )?;
+        let submitter = self.handle.demo_submitter(id, backend.clone());
+        self.engine
+            .add_account_with_submitter(id, backend.clone(), submitter)?;
         self.demos().insert(id, backend);
         Ok(())
+    }
+
+    /// Starts the sample mailbox stored earlier, rebuilt from what the device stored (so a sync
+    /// changes nothing the person did). Needs a runtime context.
+    fn start_stored_demo(&self, id: i64) -> Result<(), CoreError> {
+        let backend = self.handle.read(|db| resume_demo(db, id, now_ms()))?;
+        self.start_demo_account(id, backend)
     }
 
     /// True when the account is the running sample mailbox.
@@ -191,7 +200,7 @@ impl Inner {
         Ok(stored
             .into_iter()
             .map(|(a, last_synced_ms)| {
-                let is_demo = is_demo(&a.config);
+                let is_demo = is_demo(&a.config, &a.email);
                 let status = match self.hub.status(a.id) {
                     // The sample mailbox needs no connection: the device being offline does not
                     // concern it.
@@ -412,20 +421,14 @@ impl Core {
             provider: credentials,
             backends: Mutex::new(HashMap::new()),
             demos: Mutex::new(HashMap::new()),
-            demo_adding: Mutex::new(()),
+            demo_adding: tokio::sync::Mutex::new(()),
         });
 
         let stored = inner.handle.read(|db| accounts::list(db.connection()))?;
         for account in stored {
-            if is_demo(&account.config) {
+            if is_demo(&account.config, &account.email) {
                 // Rebuilt from what the device stored, so a sync changes nothing the person did.
-                let started = inner
-                    .handle
-                    .read(|db| demo_state(db, account.id))
-                    .map_err(CoreError::from)
-                    .and_then(|saved| {
-                        inner.start_demo_account(account.id, DemoBackend::resume(now_ms(), saved))
-                    });
+                let started = inner.start_stored_demo(account.id);
                 if started.is_err() {
                     inner.hub.set_broken(account.id, true);
                 }
@@ -609,60 +612,13 @@ impl Core {
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
+                // Held until the account is started (see `Inner::demo_adding`).
+                let _adding = inner.demo_adding.lock().await;
+                let blocking = inner.clone();
                 // Starting an account does blocking work: not on a runtime worker.
-                tokio::task::spawn_blocking(move || {
-                    let _adding = inner
-                        .demo_adding
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    let existing = inner.handle.read(|db| {
-                        Ok::<_, CoreError>(
-                            accounts::list(db.connection())?
-                                .into_iter()
-                                .find(|a| is_demo(&a.config))
-                                .map(|a| a.id),
-                        )
-                    })?;
-                    let id = match existing {
-                        Some(id) => id,
-                        None => {
-                            let id = inner.handle.read(|db| {
-                                let conn = db.connection();
-                                let position =
-                                    i64::try_from(accounts::list(conn)?.len()).unwrap_or(0);
-                                Ok::<_, CoreError>(accounts::insert(
-                                    conn,
-                                    &NewAccount {
-                                        label: DEMO_LABEL.to_owned(),
-                                        email: DEMO_ADDRESS.to_owned(),
-                                        protocol: Protocol::Imap,
-                                        provider: "generic".to_owned(),
-                                        config: demo_config(),
-                                        color: None,
-                                        position,
-                                    },
-                                    now_ms(),
-                                )?)
-                            })?;
-                            if let Err(e) = inner.start_demo_account(id, DemoBackend::new(now_ms()))
-                            {
-                                let _ = inner
-                                    .handle
-                                    .read(|db| accounts::delete(db.connection(), id));
-                                return Err(e);
-                            }
-                            inner.hub.accounts_changed([id]);
-                            id
-                        }
-                    };
-                    inner
-                        .account_infos()?
-                        .into_iter()
-                        .find(|a| a.id == id)
-                        .ok_or(CoreError::Internal)
-                })
-                .await
-                .map_err(|_| CoreError::Internal)?
+                tokio::task::spawn_blocking(move || add_demo(&blocking))
+                    .await
+                    .map_err(|_| CoreError::Internal)?
             },
             false,
         );
@@ -684,6 +640,8 @@ impl Core {
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
+                // Never between an `add_demo_account`'s insert and its start.
+                let _adding = inner.demo_adding.lock().await;
                 inner.engine.remove_account(id).await;
                 inner.backends().remove(&id);
                 inner.demos().remove(&id);
@@ -905,36 +863,59 @@ impl Core {
 /// The name of the sample mailbox in the account list (the app may show its own translated text).
 const DEMO_LABEL: &str = "Sample mail";
 
-/// What the device has stored for each folder of the sample mailbox (rows hidden while a move or
-/// delete waits included), to rebuild its in-memory copy after a restart.
-fn demo_state(db: &Db, account: i64) -> Result<Vec<DemoFolderState>, StorageError> {
-    let conn = db.connection();
-    let mut out = Vec::new();
-    for f in folders::list(conn, account)? {
-        let mut headers = Vec::new();
-        for (uid, flags) in messages::folder_flags(conn, account, f.id)? {
-            if let Some(m) = messages::find_by_uid(conn, account, f.id, uid)? {
-                headers.push(RemoteHeader {
-                    uid,
-                    message_id: m.message_id_hdr,
-                    references: Vec::new(),
-                    subject: m.subject,
-                    from_name: m.from_name,
-                    from_addr: m.from_addr,
-                    date_ms: m.date_ts,
-                    size: u32::try_from(m.size).unwrap_or(0),
-                    flags,
-                });
-            }
+/// The body of `add_demo_account`, on a blocking thread with `Inner::demo_adding` held: returns
+/// the sample mailbox, adding it if there is none and starting it if it is not running (its start
+/// failed at `open`, say).
+fn add_demo(inner: &Inner) -> Result<AccountInfo, CoreError> {
+    let existing = inner.handle.read(|db| {
+        Ok::<_, CoreError>(
+            accounts::list(db.connection())?
+                .into_iter()
+                .find(|a| is_demo(&a.config, &a.email))
+                .map(|a| a.id),
+        )
+    })?;
+    let id = match existing {
+        Some(id) if inner.is_demo_running(id) => id,
+        Some(id) => {
+            inner.start_stored_demo(id)?;
+            inner.hub.set_broken(id, false);
+            inner.hub.accounts_changed([id]);
+            id
         }
-        out.push(DemoFolderState {
-            path: f.path,
-            synced: f.uid_validity.is_some(),
-            uid_next: f.uid_next.and_then(|n| u32::try_from(n).ok()),
-            messages: headers,
-        });
-    }
-    Ok(out)
+        None => {
+            let id = inner.handle.read(|db| {
+                let conn = db.connection();
+                let position = i64::try_from(accounts::list(conn)?.len()).unwrap_or(0);
+                Ok::<_, CoreError>(accounts::insert(
+                    conn,
+                    &NewAccount {
+                        label: DEMO_LABEL.to_owned(),
+                        email: DEMO_ADDRESS.to_owned(),
+                        protocol: Protocol::Imap,
+                        provider: "generic".to_owned(),
+                        config: demo_config(),
+                        color: None,
+                        position,
+                    },
+                    now_ms(),
+                )?)
+            })?;
+            if let Err(e) = inner.start_demo_account(id, DemoBackend::new(now_ms())) {
+                let _ = inner
+                    .handle
+                    .read(|db| accounts::delete(db.connection(), id));
+                return Err(e);
+            }
+            inner.hub.accounts_changed([id]);
+            id
+        }
+    };
+    inner
+        .account_infos()?
+        .into_iter()
+        .find(|a| a.id == id)
+        .ok_or(CoreError::Internal)
 }
 
 fn stored_server(s: &ServerSettings) -> StoredServer {

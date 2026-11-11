@@ -60,3 +60,21 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
   run `gradle wrapper --gradle-version X --gradle-distribution-sha256-sum <official sha256>` with that Gradle version and
   compare the checksum with `https://services.gradle.org/distributions/gradle-X-bin.zip.sha256`.
 - Gradle calls cargo, cargo-ndk and the bindings generator with `--locked`, so `core/Cargo.lock` is used as committed.
+
+## Components, gallery and haptics (T13)
+- Controls live in `app/src/main/kotlin/com/example/croft/ui/components/` (buttons, extended FAB, Send, chips, text fields,
+  switch, radio and checkbox rows, message row, attachment chip, banner, snackbar, destructive dialog, bottom sheet, menu,
+  icon button). Every control takes an `interactionSource`, which is how the gallery shows pressed, focused and hovered
+  controls next to each other, and how the 3 dp focus ring (2 dp gap) follows keyboard focus.
+- The component gallery is in `app/src/debug/` and is not part of a release build (`src/release/` has a stub with the same
+  API). In a debug build open Settings, then Component gallery. A row of chips at the top overrides the animation level for the
+  gallery alone; a line at the bottom shows the haptic events the controls asked for.
+- Haptics: `com.example.croft.haptics.Haptics` (semantic events). `CroftTheme` provides the real one: `AndroidHaptics`
+  (`HapticFeedbackConstantsCompat`) behind `LevelFilteredHaptics` (level from S53, 40 ms guard). Compose's own platform haptic
+  feedback is switched off in `CroftTheme`, so nothing vibrates around the interface. Tests use `RecordingHaptics`
+  (`app/src/test/.../haptics/`).
+- Animation level Off: `MaterialTheme.motionScheme` is `OffMotionScheme` (every spring a jump), so Material's own components are
+  instant too. Ripples and state layers are press feedback and keep the platform's behaviour.
+- Navigation: `ui/nav/CroftNavHost` (Home, Settings, Appearance, gallery in debug builds). Back is `BackHandler`, the system
+  back-callback API.
+- Debug-only source sets: `src/testDebug/` holds the tests that need the gallery.

@@ -23,6 +23,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -65,11 +67,13 @@ fun CroftExtendedFab(
         MotionLevel.OFF -> ExitTransition.None
     }
     AnimatedVisibility(visible = state != FabState.HIDDEN, enter = enter, exit = exit) {
-        val ring = modifier.croftFocusRing(interactionSource, shape)
+        // The button's own name, whatever the layout shows: the label of the expanded Material button is not merged into its node
+        // (a screen reader found a button without a name), and a collapsed one has only an icon. The icons below stay silent.
+        val ring = modifier.croftFocusRing(interactionSource, shape).semantics { contentDescription = label }
         if (level == MotionLevel.FULL) {
             ExtendedFloatingActionButton(
                 text = { Text(label, maxLines = 1) },
-                icon = { Icon(icon, contentDescription = if (expanded) null else label) },
+                icon = { Icon(icon, contentDescription = null) },
                 onClick = onClick,
                 modifier = ring,
                 expanded = expanded,
@@ -83,7 +87,7 @@ fun CroftExtendedFab(
             }
         } else {
             FloatingActionButton(onClick = onClick, modifier = ring, interactionSource = interactionSource) {
-                Icon(icon, contentDescription = label)
+                Icon(icon, contentDescription = null)
             }
         }
     }

@@ -17,6 +17,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.example.croft.RustInfo
+import com.example.croft.ui.mail.InboxFixture
+import com.example.croft.ui.mail.InboxTags
 import com.example.croft.ui.nav.CroftApp
 import com.example.croft.debug.DebugGallery
 import com.example.croft.design.CroftPreset
@@ -65,9 +67,20 @@ class NavigationTest {
         return ThemeStore.onFile(file, scope)
     }
 
+    private val mail = InboxFixture(60)
+
+    /** The app starts on the Inbox (S10): the first row is on screen. */
     private fun showApp(store: ThemeStore = store()) {
-        rule.setContent { CroftApp(store, RustInfo("9.8.7", 1u)) }
-        rule.waitUntil(5_000) { rule.onAllNodes(hasTestTag("open-settings")).fetchSemanticsNodes().isNotEmpty() }
+        rule.setContent { CroftApp(store, RustInfo("9.8.7", 1u), mail.session) }
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(InboxTags.row(mail.topId))).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    /** Settings stay reachable: from the drawer of the Inbox. */
+    private fun openSettings() {
+        tag(InboxTags.MENU_BUTTON).performClick()
+        rule.waitForIdle()
+        tag("drawer-settings").performScrollTo().performClick()
+        rule.waitUntil(5_000) { rule.onAllNodes(hasTestTag(SettingsTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
     }
 
     private fun back() {
@@ -78,18 +91,20 @@ class NavigationTest {
     private fun tag(t: String) = rule.onNodeWithTag(t)
 
     @Test
-    fun theStartScreenHasASettingsEntry_thatOpensTheSettingsList() {
+    fun theStartScreenIsTheInbox_andSettingsStayReachableFromItsDrawer() {
         showApp()
-        rule.onNodeWithText("Core version 9.8.7").assertIsDisplayed()
-        tag("open-settings").performClick()
+        tag(InboxTags.SCREEN).assertIsDisplayed()
+        openSettings()
         tag(SettingsTags.SCREEN).assertIsDisplayed()
         tag(SettingsTags.APPEARANCE).assertIsDisplayed()
+        // The core version moved from the start screen to Settings, About.
+        rule.onNodeWithText("Core version 9.8.7. FFI API version 1").assertIsDisplayed()
     }
 
     @Test
     fun appearanceIsReachableFromSettings_andBackWalksOutOneStepAtATime() {
         showApp()
-        tag("open-settings").performClick()
+        openSettings()
         tag(SettingsTags.APPEARANCE).performClick()
         tag(AppearanceTags.SCREEN).assertIsDisplayed()
 
@@ -101,8 +116,8 @@ class NavigationTest {
         tag(AppearanceTags.SCREEN).assertIsDisplayed()
         back() // S50 to Settings
         tag(SettingsTags.SCREEN).assertIsDisplayed()
-        back() // Settings to Home
-        tag("open-settings").assertIsDisplayed()
+        back() // Settings to Home (the Inbox)
+        tag(InboxTags.SCREEN).assertIsDisplayed()
         assertTrue("on Home Back is left to the system", !rule.activity.isFinishing)
         back()
         assertTrue("and the system closes the app", rule.activity.isFinishing)
@@ -111,16 +126,16 @@ class NavigationTest {
     @Test
     fun theBackArrowOnTheSettingsListGoesHome() {
         showApp()
-        tag("open-settings").performClick()
+        openSettings()
         rule.onNodeWithContentDescription("Back").performClick()
         rule.waitForIdle()
-        tag("open-settings").assertIsDisplayed()
+        tag(InboxTags.SCREEN).assertIsDisplayed()
     }
 
     @Test
     fun theGalleryIsListedInSettingsOnlyWhereItExists() {
         showApp()
-        tag("open-settings").performClick()
+        openSettings()
         val listed = rule.onAllNodes(hasTestTag(SettingsTags.GALLERY)).fetchSemanticsNodes().isNotEmpty()
         assertEquals("debug builds list it, release builds do not", DebugGallery.available, listed)
     }
@@ -129,7 +144,7 @@ class NavigationTest {
     fun aChangeInAppearanceIsAppliedAndWrittenToTheStore() {
         val store = store(instant.withPreset(CroftPreset.WAX))
         showApp(store)
-        tag("open-settings").performClick()
+        openSettings()
         tag(SettingsTags.APPEARANCE).performClick()
         tag(AppearanceTags.PALETTE_PREFIX + "tide").performScrollTo().performClick()
         rule.waitForIdle()
@@ -141,7 +156,7 @@ class NavigationTest {
     fun theStoredSettingsAreAppliedAtStart() {
         val store = store(instant.withPreset(CroftPreset.ROWAN))
         showApp(store)
-        tag("open-settings").performClick()
+        openSettings()
         tag(SettingsTags.APPEARANCE).performClick()
         // The palette the person chose last time is the one S50 shows as selected.
         tag(AppearanceTags.PALETTE_PREFIX + "rowan").performScrollTo().assert(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))

@@ -14,6 +14,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.example.croft.CroftTheme
 import com.example.croft.RustInfo
+import com.example.croft.mail.MailSession
 import com.example.croft.theme.ThemeSettings
 import com.example.croft.theme.ThemeStore
 import kotlinx.coroutines.flow.first
@@ -26,7 +27,7 @@ import kotlinx.coroutines.launch
  * keeps the writes in order, so the last one wins.
  */
 @Composable
-fun CroftApp(store: ThemeStore, info: RustInfo?, modifier: Modifier = Modifier, startAt: Route = Route.HOME) {
+fun CroftApp(store: ThemeStore, info: RustInfo?, session: MailSession, modifier: Modifier = Modifier, startAt: Route = Route.HOME) {
     var settings by remember { mutableStateOf<ThemeSettings?>(null) }
     LaunchedEffect(store) { settings = store.settings.first() }
     val scope = rememberCoroutineScope()
@@ -34,6 +35,7 @@ fun CroftApp(store: ThemeStore, info: RustInfo?, modifier: Modifier = Modifier, 
         CroftTheme(current) {
             CroftNavHost(
                 info = info,
+                session = session,
                 settings = current,
                 modifier = modifier,
                 startAt = startAt,

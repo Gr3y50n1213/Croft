@@ -75,6 +75,22 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
   (`app/src/test/.../haptics/`).
 - Animation level Off: `MaterialTheme.motionScheme` is `OffMotionScheme` (every spring a jump), so Material's own components are
   instant too. Ripples and state layers are press feedback and keep the platform's behaviour.
-- Navigation: `ui/nav/CroftNavHost` (Home, Settings, Appearance, gallery in debug builds). Back is `BackHandler`, the system
-  back-callback API.
+- Navigation: `ui/nav/CroftNavHost` (Home, which is the Inbox since T14, Settings, Appearance, gallery in debug builds). Back is
+  `BackHandler`, the system back-callback API.
 - Debug-only source sets: `src/testDebug/` holds the tests that need the gallery.
+
+## Message list on fake data (T14)
+- Screens S10 to S19 are `ui/mail/` (`InboxScreen`; the state and logic are in `InboxController`, which only talks to a
+  `MessageRepository`). Settings is reached from the drawer.
+- `mail/MessageRepository` is the interface the screens use, shaped like the T10 surface (`list_messages` with `RowCursor`
+  keyset paging, `next_change`, the actions). `mail/FakeMessageRepository` implements it in memory (5,000 rows by default in the
+  app, any number in tests; `injectNewMail`, `setOffline`, `setAccountStatus`, `holdQueries` for tests and the debug app). T16
+  swaps in the core by building a `MailSession` with its own repository (`MainActivity`); nothing in `ui/mail/` changes. The fields
+  the T10 row does not have yet are listed in the KDoc of `MessageRowData` and `AccountInfo`.
+- The place in a list is a `ListAnchor` (message id, date, dp offset), saved by `rememberSaveable` and, per folder, in
+  `noBackupFilesDir/croft-list-anchors.json` (`FileAnchorStore`). Never a pixel position.
+- Tests: `app/src/test/.../ui/mail/` (`InboxScreenTest`, `InboxRestorationTest`, `ListMotionTest`, `ListPartsTest`, screenshots
+  `InboxScreenshotTest` for S10 to S19) and `.../mail/` (the fake repository). Test names start with the screen ID.
+- Macrobenchmark (device only): the `:macrobenchmark` module and the app's `benchmark` build type (release-like, debug-signed,
+  profileable). With a device attached: `./gradlew :macrobenchmark:connectedBenchmarkAndroidTest`. It scrolls the 5,000-row Inbox
+  and records frame timing; there is no result yet.

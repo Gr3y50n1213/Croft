@@ -106,6 +106,17 @@ android {
 
     buildFeatures { compose = true }
 
+    buildTypes {
+        // For the macrobenchmark module (T14): the release build, signed with the debug key so it installs, and profileable
+        // (app/src/benchmark/AndroidManifest.xml) so that the benchmark can measure it. Not for distribution.
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            isDebuggable = false
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -141,6 +152,13 @@ tasks.withType<Test>().configureEach {
     systemProperty("croft.screenshots", providers.gradleProperty("croft.screenshots").getOrElse("verify"))
     // Screenshot tests draw many large pictures on native graphics.
     maxHeapSize = "3g"
+    // A failing test prints its whole stack trace in the log: the HTML report is not kept by CI, and the short form
+    // ("AssertionError at File.kt:12") says too little to fix a test that was never run on the machine it was written on.
+    testLogging {
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showCauses = true
+        showStackTraces = true
+    }
     System.getenv("ROBOLECTRIC_REPO_URL")?.let { systemProperty("robolectric.dependency.repo.url", it) }
 }
 

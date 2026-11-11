@@ -14,9 +14,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
-import com.example.croft.HelloScreen
 import com.example.croft.RustInfo
 import com.example.croft.debug.DebugGallery
+import com.example.croft.mail.MailSession
+import com.example.croft.ui.mail.InboxScreen
 import com.example.croft.theme.LocalMotionLevel
 import com.example.croft.theme.ThemeSettings
 import com.example.croft.ui.appearance.AppearanceFlow
@@ -24,7 +25,7 @@ import com.example.croft.ui.components.sharedAxisX
 
 /** The screens reachable today. S50 and its drill-down live inside [APPEARANCE] (see `AppearanceFlow`). */
 enum class Route(val parent: Route?) {
-    /** The start screen. */
+    /** The start screen: the Inbox (S10), with selection mode, the drawer and the account switcher on top of it. */
     HOME(null),
 
     /** The settings list. */
@@ -42,7 +43,8 @@ enum class Route(val parent: Route?) {
 }
 
 /**
- * The app's simple navigation: Home, Settings, Appearance, and (in debug builds) the component gallery. Back goes to the
+ * The app's simple navigation: Home (the Inbox, S10 to S19), Settings (from the drawer), Appearance, and (in debug builds) the
+ * component gallery. Back inside the Inbox (selection mode, the drawer, the account switcher) is handled by the Inbox first. Back goes to the
  * parent screen through the system back-callback API (`BackHandler` registers an `OnBackPressedCallback`); on Home it is
  * left to the system. Moving between screens uses the shared axis X transition at the animation level in force. The
  * route survives rotation and process death.
@@ -50,6 +52,7 @@ enum class Route(val parent: Route?) {
 @Composable
 fun CroftNavHost(
     info: RustInfo?,
+    session: MailSession,
     settings: ThemeSettings,
     onSettingsChange: (ThemeSettings) -> Unit,
     modifier: Modifier = Modifier,
@@ -68,8 +71,9 @@ fun CroftNavHost(
         transitionSpec = { sharedAxisX(level, forward = targetState.depth > initialState.depth, rtl = rtl) },
     ) { current ->
         when (current) {
-            Route.HOME -> HelloScreen(info, onOpenSettings = { route = Route.SETTINGS })
+            Route.HOME -> InboxScreen(session, onOpenSettings = { route = Route.SETTINGS })
             Route.SETTINGS -> SettingsHomeScreen(
+                info = info,
                 onOpenAppearance = { route = Route.APPEARANCE },
                 onOpenGallery = if (DebugGallery.available) ({ route = Route.GALLERY }) else null,
                 onBack = { route = Route.HOME },

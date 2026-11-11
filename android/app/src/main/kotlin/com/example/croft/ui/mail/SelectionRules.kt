@@ -1,0 +1,73 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+package com.example.croft.ui.mail
+
+import com.example.croft.mail.FolderRole
+import com.example.croft.mail.MessageRowData
+
+/** What the selection bar can do (docs/ux/controls.md, "Toolbar enablement rules"; docs/ux/message-list.md, "Folder rules"). */
+enum class SelectionAction {
+    /** Move to the Archive folder. */
+    ARCHIVE,
+
+    /** Move to Trash. */
+    DELETE,
+
+    /** Delete for good (Trash and Spam), after a confirmation. */
+    DELETE_FOREVER,
+
+    /** Mark everything selected as read. */
+    MARK_READ,
+
+    /** Mark everything selected as unread. */
+    MARK_UNREAD,
+
+    /** Star everything selected. */
+    STAR,
+
+    /** Remove the star from everything selected. */
+    UNSTAR,
+
+    /** Move back to the Inbox: "Move to inbox" from Archive, "Not spam" from Spam, "Restore" from Trash. */
+    RESTORE,
+}
+
+/** The bar's buttons in order, and what goes in the overflow menu. */
+data class SelectionToolbar(val primary: List<SelectionAction>, val overflow: List<SelectionAction>)
+
+/** The rules of the selection bar, as a pure function so the table in the docs and the tests can be compared line by line. */
+object SelectionRules {
+    /**
+     * The toolbar for [selected] rows shown in a folder of [role] (the unified Inbox counts as [FolderRole.INBOX]).
+     * [archiveAvailable] is true when every account involved has an Archive folder.
+     *
+     * - Mark as read appears if at least one selected message is unread; otherwise Mark as unread.
+     * - Archive is not offered in Archive, Sent, Drafts, Spam and Trash, nor when an account has no Archive folder; in
+     *   Archive, Spam and Trash the Restore action (Move to inbox, Not spam, Restore) takes its place.
+     * - Delete is always there; in Trash and Spam it is Delete forever.
+     */
+    fun toolbar(selected: List<MessageRowData>, role: FolderRole, archiveAvailable: Boolean): SelectionToolbar {
+        val primary = ArrayList<SelectionAction>()
+        when (role) {
+            FolderRole.ARCHIVE, FolderRole.SPAM, FolderRole.TRASH -> primary += SelectionAction.RESTORE
+            FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX -> Unit
+            else -> if (archiveAvailable) primary += SelectionAction.ARCHIVE
+        }
+        primary += if (role == FolderRole.TRASH || role == FolderRole.SPAM) SelectionAction.DELETE_FOREVER else SelectionAction.DELETE
+        primary += if (selected.any { !it.seen }) SelectionAction.MARK_READ else SelectionAction.MARK_UNREAD
+        val overflow = listOf(if (selected.all { it.flagged } && selected.isNotEmpty()) SelectionAction.UNSTAR else SelectionAction.STAR)
+        return SelectionToolbar(primary, overflow)
+    }
+
+    /** More than this many messages in a bulk Archive or Delete ask first (docs/ux/message-list.md). */
+    const val CONFIRM_ABOVE = 50
+
+    /** Whether running [action] on [count] messages asks first: Delete forever always does, Archive and Delete above [CONFIRM_ABOVE]. */
+    fun needsConfirmation(action: SelectionAction, count: Int): Boolean = when (action) {
+        SelectionAction.DELETE_FOREVER -> true
+        SelectionAction.ARCHIVE, SelectionAction.DELETE -> count > CONFIRM_ABOVE
+        else -> false
+    }
+}

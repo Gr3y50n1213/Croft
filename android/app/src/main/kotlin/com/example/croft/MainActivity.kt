@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.example.croft.mail.MailSession
 import com.example.croft.theme.ThemeStore
 import com.example.croft.ui.nav.CroftApp
 
@@ -23,6 +24,7 @@ class MainActivity : ComponentActivity() {
         // A missing library or a version mismatch shows the error line instead of crashing.
         val info = runCatching { loadRustInfo() }.getOrNull()
         val store = ThemeStore.shared(applicationContext)
-        setContent { CroftApp(store, info) }
+        val session = MailSession.shared(applicationContext)
+        setContent { CroftApp(store, info, session) }
     }
 }

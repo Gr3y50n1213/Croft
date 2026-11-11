@@ -5,7 +5,10 @@
 package com.example.croft.theme
 
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.InfiniteRepeatableSpec
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 
 /**
@@ -28,7 +31,20 @@ object CroftTimings {
 
     /** The red edge on a row the server refused fades after this long. */
     const val FAILED_EDGE_MS = 2_000L
+
+    /** One loop of the skeleton rows' shimmer on a first load (docs/ux/motion.md: slow shimmer, 1.2 s, linear). */
+    const val SKELETON_SHIMMER_MS = 1_200L
+
+    /** The fast scroller's thumb stays this long after the list stops moving. */
+    const val FAST_SCROLLER_LINGER_MS = 1_500L
+
+    /** A row that arrived keeps its "new" mark this long (the tint fade plus a margin), then the mark is dropped. */
+    const val NEW_ROW_MARK_MS = NEW_ROW_TINT_MS + 100L
 }
+
+/** The skeleton shimmer: a linear loop of [CroftTimings.SKELETON_SHIMMER_MS]. */
+fun shimmerSpec(): InfiniteRepeatableSpec<Float> =
+    infiniteRepeatable(tween(CroftTimings.SKELETON_SHIMMER_MS.toInt(), easing = LinearEasing), RepeatMode.Restart)
 
 /** A linear fade of [ms], for the waits above (a tint that fades over 1.2 s). Durations are only ever typed in this package. */
 fun <T> linearFadeSpec(ms: Long): FiniteAnimationSpec<T> = tween(ms.toInt(), easing = LinearEasing)

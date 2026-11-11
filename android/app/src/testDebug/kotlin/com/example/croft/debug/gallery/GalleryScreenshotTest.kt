@@ -26,7 +26,7 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * Screenshot tests (Roborazzi, JVM) of every section of the gallery, so every control is drawn in every state it has: light and
- * dark, font scale 1.0 and 2.0, left-to-right and right-to-left. 16 sections x 2 x 2 x 2 = 128 pictures in
+ * dark, font scale 1.0 and 2.0, left-to-right and right-to-left. 17 sections x 2 x 2 x 2 = 136 pictures in
  * `app/build/outputs/screenshots/`, named `gallery-<section>-<light|dark>-font<scale>-<ltr|rtl>`. Two are committed and compared
  * (see `ScreenshotKit.Golden`). Animations are off, so a picture does not depend on when it was taken.
  */

@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T17a: sample mailbox in the core (11 November 2026)
+
+**Status:** in a draft pull request for CI (not merged). The screens are T17b's.
+
+**What was built:** `DemoBackend` and `DemoSubmitter` in `core/protocols/src/demo/`: 20 fictional messages (people and addresses at `example.org` / `example.com` only) in Inbox (a four-message thread across Inbox and Sent, an attachment, an HTML newsletter with a remote image), Sent, Drafts, Trash and Archive, dated relative to the time the mailbox is added. Read, star, move, archive and delete are confirmed by the in-memory copy and stay on the device; after a restart the copy is rebuilt from the stored rows. Sending files the copy in the sample Sent folder and sends nothing. FFI API version 6: `add_demo_account()` (at most one) and `AccountInfo.is_demo`; the marker lives in `config_json` (no migration); `remove_account` deletes all its rows. Kotlin: expected version 6, test records updated.
+
+**Checks:** `cargo fmt`, both clippy runs, `cargo test` (whole workspace), the SQLCipher tests and `check_schema.py` in the container. New tests: 15 backend tests (folders, snapshot, headers, flag change stays local, moves, resume, filing a copy once, every address at an example domain, `Debug` without content, every call on a runtime without an I/O driver, a source scan for socket and lookup APIs, and the control that a tokio socket call does panic there), 3 engine tests (full sync, every action and a send on a runtime without an I/O driver, later syncs keep the changes; a sent message survives a restart before any sync, also before the first sync), 7 FFI tests (with a credential provider that records any call, checked at the end: add once, list, star and move survive a sync and a restart, remove deletes every row, a stored sample mailbox that is not running is started, a look-alike marker is not the sample mailbox), plus settings tests for the exact marker shape; a mutation check confirmed the restart test fails if the copy is rebuilt from the built-in set. Android tests not run here (Maven Central refuses this container); GitHub CI runs them.
+
+**Review:** an independent review found 1 medium and 6 low issues, all fixed: a message sent from the sample mailbox is now stored in the local Sent folder before the Outbox lets go of it (it could vanish if the app was killed before the next sync); the no-network claims are narrower and the source check stricter (`std::net` and name lookups are not caught by the runtime check, so the source check covers them; `data_lines` moved out of `smtp`); the demo marker must have the exact shape and the sample address; `add_demo_account` and `remove_account` share a lock; a stored sample mailbox that is not running is started; `Debug` prints counts only; the FFI test's provider records calls instead of panicking. New tests for each; mutation checks confirmed the restart-after-send and not-running tests fail without the fixes.
+
+**Known gaps:** no body fetch exists in `MailBackend` yet, so the attachment and the remote image are in the message sources (`DemoBackend::message_source`) but not yet shown; T18 will need them. The app's engine has no Outbox yet, so sending from the sample mailbox is tested in the engine only. A message written in the sample mailbox keeps only its header after a restart.
+
+---
+
 ## T15 and T16: swipe engine; Inbox on the real core (11 November 2026)
 
 **Status:** T15 merged (pull request #8). T16 in pull request #9.

@@ -132,8 +132,8 @@ class CoreFixture(
     archiveFor: Set<Long> = setOf(1L, 2L),
 ) {
     val accounts = mutableListOf(
-        CoreAccount(1, "Sam", "sam@example.org", statusOf(1), NOW - 4 * 60_000),
-        CoreAccount(2, "Work", "sam@acme.test", statusOf(2), NOW - 4 * 60_000),
+        CoreAccount(1, "Sam", "sam@example.org", statusOf(1), NOW - 4 * 60_000, false),
+        CoreAccount(2, "Work", "sam@acme.test", statusOf(2), NOW - 4 * 60_000, false),
     )
 
     // Folder ids are `account * 100 + position`: 1 Inbox, 2 Sent, 3 Archive, 4 Trash, 5 Junk.

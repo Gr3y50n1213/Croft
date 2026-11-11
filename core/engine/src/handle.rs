@@ -174,6 +174,11 @@ impl EngineHandle {
         Self { shared }
     }
 
+    /// The shared state, for the sample mailbox's submitter (`demo.rs`).
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
     /// Marks a message read or unread. No snackbar: the change is sent after 1.5 s, and a second
     /// swipe inside that time cancels both. Doing nothing is not an error (already in that state).
     pub fn mark_seen(

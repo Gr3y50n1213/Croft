@@ -301,32 +301,9 @@ pub(crate) fn is_8bit(bytes: &[u8]) -> bool {
     bytes.iter().any(|b| *b >= 0x80)
 }
 
-/// Splits a message into lines exactly as [`encode_for_data`] does: a line ends at `CRLF`, at a
-/// bare `LF` or at a bare `CR` (a `CR` followed by `LF` is one terminator, not two). The
-/// terminators are not part of the lines. A text that ends in a terminator has no extra empty
-/// line at the end, and a last line with no terminator is yielded as it is.
-///
-/// This is the one definition of "where a line ends" for what goes to the server. Code that
-/// inspects the header section of a message before it is sent (for example to refuse a `Bcc:`
-/// header) must split with this function: a different rule (only `LF`, say) would read as one line
-/// what the server receives as two.
-pub fn data_lines(mime: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut rest = mime;
-    std::iter::from_fn(move || {
-        if rest.is_empty() {
-            return None;
-        }
-        match rest.iter().position(|b| matches!(b, b'\r' | b'\n')) {
-            None => Some(std::mem::take(&mut rest)),
-            Some(i) => {
-                let line = &rest[..i];
-                let crlf = rest[i] == b'\r' && rest.get(i + 1) == Some(&b'\n');
-                rest = &rest[i + if crlf { 2 } else { 1 }..];
-                Some(line)
-            }
-        }
-    })
-}
+/// Where a line of a message ends: the one definition, kept in [`crate::lines`] (it has no I/O, so
+/// code that only reads a message, such as the sample mailbox, can use it without this module).
+pub use crate::lines::data_lines;
 
 /// Prepares a message for `DATA`: every line ends in `CRLF` (a bare `LF` or `CR` is turned into
 /// one, so a server cannot be confused about where the message ends; see [`data_lines`]), a line

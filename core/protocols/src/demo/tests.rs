@@ -460,3 +460,16 @@ fn the_demo_module_uses_no_network_api() {
         assert!(!text.contains(token), "imap/text.rs mentions {token}");
     }
 }
+
+/// The control for the test above: on such a runtime a socket call through tokio really panics
+/// (so a demo call that opened one could not pass unnoticed). Nothing is sent: the panic comes
+/// before any connection attempt.
+#[test]
+fn a_socket_call_panics_on_the_runtime_without_a_network_driver() {
+    let attempt = std::panic::catch_unwind(|| {
+        run(async {
+            let _ = tokio::net::TcpStream::connect(("127.0.0.1", 9)).await;
+        })
+    });
+    assert!(attempt.is_err());
+}

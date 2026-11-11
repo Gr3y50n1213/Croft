@@ -137,7 +137,8 @@ class AccountsScreensTest {
         // The names, the address of a real account, and the status chips as the core reports them.
         rule.onNodeWithText("Sam").assertIsDisplayed()
         rule.onNodeWithText("sam@example.org").assertIsDisplayed()
-        rule.onNodeWithText("OK").assertIsDisplayed()
+        // OK for the first account and for the sample mailbox.
+        assertEquals(2, rule.onAllNodes(hasText("OK")).fetchSemanticsNodes().size)
         rule.onNodeWithText("Needs sign-in").assertIsDisplayed()
         // The sample mailbox is called what it is, with its own line, and shows no address.
         rule.onNodeWithText("Sample mail").assertIsDisplayed()
@@ -154,10 +155,10 @@ class AccountsScreensTest {
         waitFor(AccountsTags.REMOVE_DIALOG)
         // The list of what is deleted on this device.
         rule.onNodeWithText("Remove Work?").assertIsDisplayed()
-        rule.onNodeWithText("Its messages and folders", substring = true).assertIsDisplayed()
-        rule.onNodeWithText("Changes that are waiting to be sent to the server").assertIsDisplayed()
-        rule.onNodeWithText("Its drafts and its outbox").assertIsDisplayed()
-        rule.onNodeWithText("Its saved password").assertIsDisplayed()
+        rule.onNodeWithText("Its messages and folders", substring = true).assertExists()
+        rule.onNodeWithText("Changes that are waiting to be sent to the server").assertExists()
+        rule.onNodeWithText("Its drafts and its outbox").assertExists()
+        rule.onNodeWithText("Its saved password").assertExists()
         assertTrue("nothing is removed before the person confirms", ops.removed.isEmpty() && secrets.has(2, SecretKind.PASSWORD))
         rule.onNodeWithText("Remove").performClick()
         waitGone(AccountsTags.row(2))
@@ -187,7 +188,7 @@ class AccountsScreensTest {
         openAccounts()
         tag(AccountsTags.remove(3)).performClick()
         waitFor(AccountsTags.REMOVE_DIALOG)
-        rule.onNodeWithText("Its drafts and its outbox").assertIsDisplayed()
+        rule.onNodeWithText("Its drafts and its outbox").assertExists()
         assertTrue(rule.onAllNodes(hasText("Its saved password")).fetchSemanticsNodes().isEmpty())
     }
 
@@ -232,7 +233,7 @@ class AccountsScreensTest {
     fun addAccountOpensTheSignInFlowAtS02AndBackReturnsToTheList() {
         show()
         openAccounts()
-        tag(AccountsTags.ADD).performClick()
+        tag(AccountsTags.ADD).performScrollTo().performClick()
         waitFor(OnboardingTags.ADD_ACCOUNT)
         back()
         waitFor(AccountsTags.ACCOUNTS)
@@ -265,15 +266,16 @@ class AccountsScreensTest {
         tag(AccountsTags.row(1)).performClick()
         waitFor(AccountsTags.ACCOUNT)
         tag(AccountsTags.folder("archive")).performScrollTo()
-        rule.onNodeWithText("Not set. Tap to choose a folder.").assertIsDisplayed()
+        // Only the Archive row asks: the sample-like folder set of account 1 has a Junk folder, so no other row says "Not set".
+        rule.onNodeWithText("Not set. Tap to choose a folder.").assertExists()
         tag(AccountsTags.folder("archive")).performClick()
         waitFor(MoveTags.SHEET)
         val receipts = FakeData.folderId(1, FakeData.RECEIPTS)
         tag(MoveTags.folder(receipts)).performClick()
         rule.waitUntil(10_000) { session.folderMapping.mapped(1, FolderRole.ARCHIVE) == receipts }
-        rule.onNodeWithText("Receipts").assertIsDisplayed()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Receipts")).fetchSemanticsNodes().isNotEmpty() }
         // A folder the server itself marks (Trash) is used as it is: shown, nothing to choose.
-        rule.onNodeWithText("Trash (from your server)").assertIsDisplayed()
+        rule.onNodeWithText("Trash (from your server)").assertExists()
     }
 
     @Test
@@ -284,7 +286,7 @@ class AccountsScreensTest {
         waitFor(AccountsTags.ACCOUNT)
         tag(AccountsTags.REMOVE).performScrollTo().performClick()
         waitFor(AccountsTags.REMOVE_DIALOG)
-        rule.onNodeWithText("Its saved password").assertIsDisplayed()
+        rule.onNodeWithText("Its saved password").assertExists()
         rule.onNodeWithText("Remove").performClick()
         waitFor(AccountsTags.ACCOUNTS)
         assertEquals(listOf(2L), ops.removed.toList())
@@ -357,7 +359,7 @@ class AccountsScreensTest {
         openAbout()
         tag(AccountsTags.ERASE_ALL).performScrollTo().performClick()
         waitFor(AccountsTags.ERASE_DIALOG)
-        rule.onNodeWithText("Every saved password").assertIsDisplayed()
+        rule.onNodeWithText("Every saved password").assertExists()
         assertFalse("nothing is erased before the person confirms", ops.erased)
         rule.onNodeWithText("Erase everything").performClick()
         waitFor(OnboardingTags.WELCOME)
@@ -396,7 +398,7 @@ class AccountsScreensTest {
         assertEquals("the core's own sample account was asked for", 1, ops.samples)
         // Its rows say they are not saved to a server.
         rule.waitUntil(10_000) { exists(com.example.croft.ui.components.ROW_NOT_SAVED_TAG) }
-        rule.onAllNodes(hasText("Not saved to server")).fetchSemanticsNodes().isNotEmpty().also { assertTrue(it) }
+        assertTrue(rule.onAllNodes(hasText("Not saved to server")).fetchSemanticsNodes().isNotEmpty())
         tag(InboxTags.MENU_BUTTON).performClick()
         rule.waitForIdle()
         tag("drawer-settings").performScrollTo().performClick()

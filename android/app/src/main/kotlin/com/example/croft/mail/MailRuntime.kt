@@ -36,6 +36,19 @@ object MailRuntime {
     @Volatile private var opened: OpenedCore? = null
     @Volatile private var current: MailSession? = null
 
+    /** Tests only: makes the app's secrets in place of the Keystore ones (a simulated device has no usable AndroidKeyStore). Null in the app. */
+    @Volatile internal var secretsFactory: ((Context, File) -> AppSecrets)? = null
+
+    /** Tests only: closes the core and forgets everything, so the next test starts a fresh process-like state. */
+    internal fun resetForTests() {
+        synchronized(this) {
+            try { opened?.core?.close() } catch (e: Exception) { /* already closed */ }
+            opened = null
+            current = null
+            secretsFactory = null
+        }
+    }
+
     /** The open core, or null before [session] ran, or when it could not be opened. */
     val core: OpenedCore? get() = opened
 
@@ -99,7 +112,7 @@ object MailRuntime {
     private fun openOnce(context: Context): OpenedCore {
         opened?.let { return it }
         val dbFile = databaseFile(context)
-        val secrets = createAppSecrets(context, dbFile)
+        val secrets = secretsFactory?.invoke(context, dbFile) ?: createAppSecrets(context, dbFile)
         val signIn = SignInNeeded()
         val core = openCore(dbFile.path, secrets, SecretStoreCredentials(secrets.secrets, signIn))
         return OpenedCore(core, secrets, AccountSecrets(secrets.secrets, signIn), signIn).also { opened = it }

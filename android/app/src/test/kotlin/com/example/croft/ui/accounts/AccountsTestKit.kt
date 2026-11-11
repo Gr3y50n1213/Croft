@@ -47,9 +47,12 @@ fun testAccounts(count: Int = 3): MutableList<AccountInfo> {
     return three.take(count).toMutableList()
 }
 
-/** A session over [accounts]; the sample account's rows carry `localOnly` like the real repository gives them. */
+/**
+ * A session over [accounts]. Every row is the sample account's (account 3) and carries `localOnly`, as the real repository gives the
+ * rows of the sample mailbox, so the unified Inbox shows nothing else.
+ */
 fun accountsSession(accounts: MutableList<AccountInfo> = testAccounts(), rows: Int = 30): Pair<MailSession, AccountsRepo> {
-    val data = FakeData.rows(rows, NOW).map { if (it.account == 3L) it.copy(localOnly = true) else it }
+    val data = FakeData.rows(rows, NOW).map { it.copy(account = 3, folder = FakeData.folderId(3, it.folder % 100), localOnly = true) }
     val base = FakeMessageRepository(data, { NOW }, FakeData.accounts(NOW))
     val repo = AccountsRepo(base, accounts)
     return MailSession(repo, clock = { NOW }, zone = java.time.ZoneId.of("UTC")) to repo

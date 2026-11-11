@@ -9,13 +9,16 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import com.example.croft.mail.MailRuntime
 import com.example.croft.ui.mail.InboxTags
 import com.example.croft.ui.nav.SettingsTags
 import com.example.croft.ui.onboarding.OnboardingTags
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,13 +53,16 @@ class HelloScreenTest {
 @RunWith(CroftRobolectricRunner::class)
 @Config(sdk = [35])
 class MainActivityTest {
-    @get:Rule
+    @get:Rule(order = 0)
+    val secrets = InMemorySecretsRule()
+
+    @get:Rule(order = 1)
     val rule = createAndroidComposeRule<MainActivity>()
 
     /**
      * The stored theme is read before anything is drawn, so the first screen appears a moment after the activity starts. With no
-     * account (as in a fresh install) that screen is S01 Welcome (T17b); "Try with sample mail" opens the sample Inbox that
-     * these tests go on from.
+     * account (as in a fresh install) that screen is S01 Welcome (T17b); "Try with sample mail" adds the core's own sample account
+     * (T17c: the real core, with an in-memory wrapping key, see [InMemorySecretsRule]) and opens the Inbox that these tests go on from.
      */
     private fun waitForStart() {
         rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
@@ -88,5 +94,45 @@ class MainActivityTest {
         rule.activityRule.scenario.recreate()
         rule.waitUntil(10_000) { rule.onAllNodesWithTag(SettingsTags.SCREEN).fetchSemanticsNodes().isNotEmpty() }
         rule.onNodeWithTag(SettingsTags.SCREEN).assertIsDisplayed()
+    }
+
+    @Test
+    fun trySampleMailOnTheRealCoreWithoutNetworkReachesTheInboxThenSettingsAndAccounts() {
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
+        // Airplane mode, the app's own flag: the sample mailbox needs no network.
+        kotlinx.coroutines.runBlocking { MailRuntime.openedCore(rule.activity.applicationContext).core.setNetworkAvailable(false) }
+        rule.onNodeWithTag(OnboardingTags.SAMPLE_BUTTON).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+        // The sample messages come from the core and each row says it is not saved to a server.
+        rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(com.example.croft.ui.components.ROW_NOT_SAVED_TAG)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(InboxTags.MENU_BUTTON).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("drawer-settings").performScrollTo().performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(SettingsTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(SettingsTags.ACCOUNTS).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Sample mail")).fetchSemanticsNodes().isNotEmpty() }
+    }
+}
+
+/**
+ * A restart with the sample mailbox already added: the app opens the Inbox, not S01 (an account, the sample one, exists).
+ */
+@RunWith(CroftRobolectricRunner::class)
+@Config(sdk = [35])
+class SampleMailRestartTest {
+    @get:Rule(order = 0)
+    val secrets = InMemorySecretsRule()
+
+    @get:Rule(order = 1)
+    val rule = androidx.compose.ui.test.junit4.createEmptyComposeRule()
+
+    @Test
+    fun afterARestartTheAppOpensTheInboxBecauseTheSampleAccountExists() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        kotlinx.coroutines.runBlocking { MailRuntime.openedCore(app).core.addDemoAccount() }
+        androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use {
+            rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+            assertTrue(rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isEmpty())
+        }
     }
 }

@@ -20,7 +20,7 @@
 //! failure after the message body as one undifferentiated I/O error, which the duplicate-send rule
 //! below needs to tell apart. SMTP submission is a small protocol, so this module speaks it
 //! directly over `tokio` and `tokio-rustls`, which the IMAP adapter already uses: no new
-//! dependency, the same TLS policy ([`tls`]), bounded replies, and every failure mapped by hand.
+//! dependency, the same TLS policy as IMAP, bounded replies, and every failure mapped by hand.
 //!
 //! # Errors
 //!

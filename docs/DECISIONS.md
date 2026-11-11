@@ -57,3 +57,6 @@ One line per choice made without the owner: the decision, the reason, the date. 
 | 2026-11-11 | JMAP: own small HTTP/1.1 client on tokio-rustls + serde_json, not `jmap-client` 0.4.3 | jmap-client sits on reqwest with only a "danger accept invalid certs" switch: no fingerprint pinning, its own TLS provider, follows redirects |
 | 2026-11-11 | JMAP credential goes only to the session URL's origin; `apiUrl`/`uploadUrl` from the session are used for their path only | A hijacked session document must not redirect the password |
 | 2026-11-11 | Stalwart test image pinned to `stalwartlabs/stalwart:v1.1.0`, set up by `test-servers/stalwart/setup.sh` through its management API | v1.x starts empty in bootstrap mode |
+| 2026-11-11 | FFI credential is a UniFFI object built from bytes (`FfiCredential.password(bytes)`), not a record with a string | A Kotlin data class prints its fields, even a `ByteArray`'s contents; the object wipes the secret when released |
+| 2026-11-11 | FFI change notifications: `next_change(after)` with a 512-entry ring and an "everything changed" flag | Matches the engine's broadcast; no callbacks or re-entrancy for list updates |
+| 2026-11-11 | FFI `mark_seen`/`set_flagged` return no op ids (the engine returns none); Undo for them is the opposite action within 1.5 s | Flag changes show no snackbar in the UX docs |

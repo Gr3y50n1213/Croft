@@ -5,6 +5,20 @@ unverified, the next step.
 
 ---
 
+## T10: FFI mail surface, API version 3 (11 November 2026)
+
+**Status:** done except: the Kotlin tests were not run through Gradle (Maven Central rate-limits this container). They were compiled by Gradle offline and run with plain JUnit against the real Rust library: 21 of 21 passed (agent's run; not repeated by the orchestrator). Sending is not on the surface yet.
+
+**What was built:** `core/ffi`: `Core.open(path, key, credentials)` owning a 2-thread runtime and the engine; discovery with progress, sign-in check, accounts (add, list with status, remove), folders, a paged message list (one folder or the unified inbox), change notifications (`next_change`), actions with Undo (archive, trash, move, delete forever, mark read, star), sync now, network on/off, signed in again. Credentials come from the app through a callback each time a connection signs in and are never stored; a credential is an opaque object that wipes its secret when released and never prints it. Errors are fixed enums.
+
+**Checks run and seen passing (by the orchestrator):** after merging with T06 part B, fmt, clippy (both), `cargo test` **601 passed, 0 failed**, `check_schema.py` ok. The merge needed a small fix (the FFI layer now maps the outbox change kinds part B added).
+
+**Review:** Opus, one round: 3 medium (the credential printed its secret in Kotlin; a discovery callback ran on a core worker thread and could freeze syncing; documentation overstated how secrets are wiped), 3 low; all fixed. The fix changed the credential into an object (not re-reviewed).
+
+**Next:** T11 (keystore), needs Gradle with new libraries.
+
+---
+
 ## T06 part B: the outbox in the engine (11 November 2026)
 
 **Status:** done. T06 is now complete. Not done: refreshing an OAuth token for sending (with T21); creating a missing Sent folder is only unit-tested (the test server always has one); a non-UTF-8 message cannot be saved in Sent (documented limit).

@@ -13,11 +13,12 @@ use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use croft_engine::{ActionError, Engine, EngineConfig, EngineHandle, OpId, SystemClock};
+use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{verify, Discoverer, EmailAddress, ProbeUpdate, VerifyOptions};
-use croft_protocols::CertFingerprint;
+use croft_protocols::{CertFingerprint, DemoBackend, DemoFolderState, RemoteHeader};
 use croft_storage::accounts::{self, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
-use croft_storage::{folders, Db};
+use croft_storage::{folders, Db, StorageError};
 use tokio::runtime::{Builder, Handle, Runtime};
 use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
@@ -28,10 +29,12 @@ use crate::credentials::{
 };
 use crate::error::{CoreError, DiscoverError, VerifyFailure};
 use crate::list;
-use crate::settings::{StoredSecurity, StoredServer, StoredSettings, SETTINGS_VERSION};
+use crate::settings::{
+    demo_config, is_demo, StoredSecurity, StoredServer, StoredSettings, SETTINGS_VERSION,
+};
 use crate::types::{
-    AccountInfo, ChangeBatch, DiscoveryProbe, FfiDiscovered, FolderInfo, MessagePage, MessageScope,
-    ProbeProgress, RowCursor, ServerSettings,
+    AccountInfo, AccountStatus, ChangeBatch, DiscoveryProbe, FfiDiscovered, FolderInfo,
+    MessagePage, MessageScope, ProbeProgress, RowCursor, ServerSettings,
 };
 
 /// Called by `discover` while it runs, for the "Finding your server" screen (S03). Callbacks come
@@ -96,6 +99,12 @@ pub(crate) struct Inner {
     hub: Arc<Hub>,
     provider: Arc<dyn CredentialProvider>,
     backends: Mutex<HashMap<i64, Arc<AccountBackend>>>,
+    /// The sample mailbox, when it is running (at most one), by account id. It has no entry in
+    /// `backends`: no server adapter is ever built for it.
+    demos: Mutex<HashMap<i64, Arc<DemoBackend>>>,
+    /// Held while `add_demo_account` looks for the sample mailbox and adds it, so that two calls
+    /// at once still add only one.
+    demo_adding: Mutex<()>,
 }
 
 fn now_ms() -> i64 {
@@ -138,6 +147,67 @@ impl Inner {
             self.handle.set_online(id, false);
         }
         Ok(())
+    }
+
+    fn demos(&self) -> MutexGuard<'_, HashMap<i64, Arc<DemoBackend>>> {
+        self.demos.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Starts the sample mailbox's task on `backend`, with a submitter that sends nothing (it files
+    /// the copy in the sample Sent folder). No credential is asked for and no server adapter is
+    /// built. The account is never set offline: it needs no network, so its actions are confirmed
+    /// at once even in airplane mode. Needs a runtime context (the engine spawns the task).
+    fn start_demo_account(&self, id: i64, backend: DemoBackend) -> Result<(), CoreError> {
+        let backend = Arc::new(backend);
+        self.engine.add_account_with_submitter(
+            id,
+            backend.clone(),
+            Arc::new(backend.submitter()),
+        )?;
+        self.demos().insert(id, backend);
+        Ok(())
+    }
+
+    /// True when the account is the running sample mailbox.
+    fn is_demo_running(&self, id: i64) -> bool {
+        self.demos().contains_key(&id)
+    }
+
+    /// The account list rows, in list order.
+    fn account_infos(&self) -> Result<Vec<AccountInfo>, CoreError> {
+        let stored = self.handle.read(|db| {
+            let conn = db.connection();
+            accounts::list(conn)?
+                .into_iter()
+                .map(|a| {
+                    let last_synced_ms = folders::list(conn, a.id)?
+                        .iter()
+                        .filter_map(|f| f.last_synced_at)
+                        .max();
+                    Ok::<_, CoreError>((a, last_synced_ms))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        Ok(stored
+            .into_iter()
+            .map(|(a, last_synced_ms)| {
+                let is_demo = is_demo(&a.config);
+                let status = match self.hub.status(a.id) {
+                    // The sample mailbox needs no connection: the device being offline does not
+                    // concern it.
+                    AccountStatus::Offline if is_demo => AccountStatus::Ok,
+                    other => other,
+                };
+                AccountInfo {
+                    status,
+                    id: a.id,
+                    label: a.label,
+                    email: a.email,
+                    last_synced_ms,
+                    is_demo,
+                }
+            })
+            .collect())
     }
 
     /// Starts an account the app stored earlier: asks the provider for its credential. Blocks
@@ -341,10 +411,26 @@ impl Core {
             hub,
             provider: credentials,
             backends: Mutex::new(HashMap::new()),
+            demos: Mutex::new(HashMap::new()),
+            demo_adding: Mutex::new(()),
         });
 
         let stored = inner.handle.read(|db| accounts::list(db.connection()))?;
         for account in stored {
+            if is_demo(&account.config) {
+                // Rebuilt from what the device stored, so a sync changes nothing the person did.
+                let started = inner
+                    .handle
+                    .read(|db| demo_state(db, account.id))
+                    .map_err(CoreError::from)
+                    .and_then(|saved| {
+                        inner.start_demo_account(account.id, DemoBackend::resume(now_ms(), saved))
+                    });
+                if started.is_err() {
+                    inner.hub.set_broken(account.id, true);
+                }
+                continue;
+            }
             let usable = (account.protocol == Protocol::Imap)
                 .then(|| StoredSettings::from_json(&account.config).ok())
                 .flatten();
@@ -510,29 +596,77 @@ impl Core {
 
     /// Every account, in list order.
     pub fn list_accounts(&self) -> Result<Vec<AccountInfo>, CoreError> {
-        let stored = self.inner.handle.read(|db| {
-            let conn = db.connection();
-            accounts::list(conn)?
-                .into_iter()
-                .map(|a| {
-                    let last_synced_ms = folders::list(conn, a.id)?
-                        .iter()
-                        .filter_map(|f| f.last_synced_at)
-                        .max();
-                    Ok::<_, CoreError>((a, last_synced_ms))
+        self.inner.account_infos()
+    }
+
+    /// Adds the sample mailbox ("Try with sample mail") and starts it, or returns the one that is
+    /// already there: there is never more than one. It needs no credential, no secret and no
+    /// network, and never opens a connection. Its fictional messages (people and addresses at
+    /// `example.org` and `example.com` only) come from the app itself; read, star, move, archive
+    /// and delete work and stay on this device (the account has `is_demo`, and its rows show "Not
+    /// saved to server"). The app stores no credential for it. Remove it with `remove_account`.
+    pub async fn add_demo_account(&self) -> Result<AccountInfo, CoreError> {
+        let inner = self.inner.clone();
+        let task = self.spawn(
+            async move {
+                // Starting an account does blocking work: not on a runtime worker.
+                tokio::task::spawn_blocking(move || {
+                    let _adding = inner
+                        .demo_adding
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    let existing = inner.handle.read(|db| {
+                        Ok::<_, CoreError>(
+                            accounts::list(db.connection())?
+                                .into_iter()
+                                .find(|a| is_demo(&a.config))
+                                .map(|a| a.id),
+                        )
+                    })?;
+                    let id = match existing {
+                        Some(id) => id,
+                        None => {
+                            let id = inner.handle.read(|db| {
+                                let conn = db.connection();
+                                let position =
+                                    i64::try_from(accounts::list(conn)?.len()).unwrap_or(0);
+                                Ok::<_, CoreError>(accounts::insert(
+                                    conn,
+                                    &NewAccount {
+                                        label: DEMO_LABEL.to_owned(),
+                                        email: DEMO_ADDRESS.to_owned(),
+                                        protocol: Protocol::Imap,
+                                        provider: "generic".to_owned(),
+                                        config: demo_config(),
+                                        color: None,
+                                        position,
+                                    },
+                                    now_ms(),
+                                )?)
+                            })?;
+                            if let Err(e) = inner.start_demo_account(id, DemoBackend::new(now_ms()))
+                            {
+                                let _ = inner
+                                    .handle
+                                    .read(|db| accounts::delete(db.connection(), id));
+                                return Err(e);
+                            }
+                            inner.hub.accounts_changed([id]);
+                            id
+                        }
+                    };
+                    inner
+                        .account_infos()?
+                        .into_iter()
+                        .find(|a| a.id == id)
+                        .ok_or(CoreError::Internal)
                 })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
-        Ok(stored
-            .into_iter()
-            .map(|(a, last_synced_ms)| AccountInfo {
-                status: self.inner.hub.status(a.id),
-                id: a.id,
-                label: a.label,
-                email: a.email,
-                last_synced_ms,
-            })
-            .collect())
+                .await
+                .map_err(|_| CoreError::Internal)?
+            },
+            false,
+        );
+        task.await?
     }
 
     /// Removes the account: stops its task and deletes its folders, messages and queued changes
@@ -552,6 +686,7 @@ impl Core {
             async move {
                 inner.engine.remove_account(id).await;
                 inner.backends().remove(&id);
+                inner.demos().remove(&id);
                 inner.hub.forget(id);
                 inner
                     .handle
@@ -690,7 +825,9 @@ impl Core {
 
     /// Syncs every folder of the account now (pull to refresh). Returns at once.
     pub fn sync_now(&self, account_id: i64) -> Result<(), CoreError> {
-        if !self.inner.backends().contains_key(&account_id) {
+        let known = self.inner.backends().contains_key(&account_id)
+            || self.inner.is_demo_running(account_id);
+        if !known {
             return Err(CoreError::NoSuchAccount);
         }
         self.inner.handle.sync_now(account_id);
@@ -698,8 +835,9 @@ impl Core {
     }
 
     /// Reports whether the device has a connection (from the platform's connectivity callback).
-    /// Applies to every account. While offline nothing is sent and actions still work locally;
-    /// going online sends what waited and syncs.
+    /// Applies to every account except the sample mailbox, which needs no connection. While
+    /// offline nothing is sent and actions still work locally; going online sends what waited and
+    /// syncs.
     pub fn set_network_available(&self, available: bool) -> Result<(), CoreError> {
         let changed = self.inner.hub.set_offline(!available);
         let ids: Vec<i64> = self.inner.backends().keys().copied().collect();
@@ -714,8 +852,12 @@ impl Core {
 
     /// The person fixed the sign-in (a new password, a new token): asks the credential provider
     /// for the credential again and resumes the account. Fails with `NoCredential` when the
-    /// provider still has none (the account stays in the needs-sign-in state).
+    /// provider still has none (the account stays in the needs-sign-in state). For the sample
+    /// mailbox there is nothing to sign in to: it returns at once.
     pub async fn signed_in(&self, account_id: i64) -> Result<(), CoreError> {
+        if self.inner.is_demo_running(account_id) {
+            return Ok(());
+        }
         let backend = self
             .inner
             .backends()
@@ -758,6 +900,41 @@ impl Core {
         );
         task.await?
     }
+}
+
+/// The name of the sample mailbox in the account list (the app may show its own translated text).
+const DEMO_LABEL: &str = "Sample mail";
+
+/// What the device has stored for each folder of the sample mailbox (rows hidden while a move or
+/// delete waits included), to rebuild its in-memory copy after a restart.
+fn demo_state(db: &Db, account: i64) -> Result<Vec<DemoFolderState>, StorageError> {
+    let conn = db.connection();
+    let mut out = Vec::new();
+    for f in folders::list(conn, account)? {
+        let mut headers = Vec::new();
+        for (uid, flags) in messages::folder_flags(conn, account, f.id)? {
+            if let Some(m) = messages::find_by_uid(conn, account, f.id, uid)? {
+                headers.push(RemoteHeader {
+                    uid,
+                    message_id: m.message_id_hdr,
+                    references: Vec::new(),
+                    subject: m.subject,
+                    from_name: m.from_name,
+                    from_addr: m.from_addr,
+                    date_ms: m.date_ts,
+                    size: u32::try_from(m.size).unwrap_or(0),
+                    flags,
+                });
+            }
+        }
+        out.push(DemoFolderState {
+            path: f.path,
+            synced: f.uid_validity.is_some(),
+            uid_next: f.uid_next.and_then(|n| u32::try_from(n).ok()),
+            messages: headers,
+        });
+    }
+    Ok(out)
 }
 
 fn stored_server(s: &ServerSettings) -> StoredServer {

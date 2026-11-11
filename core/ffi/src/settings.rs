@@ -99,9 +99,31 @@ impl StoredSettings {
     }
 }
 
+/// The `kind` of the sample mailbox's settings record.
+const DEMO_KIND: &str = "demo";
+
+/// The settings record of the sample mailbox: no server, no secret, just the marker. It is not a
+/// [`StoredSettings`] (it has no `imap`), so code that reads server settings refuses it.
+pub(crate) fn demo_config() -> serde_json::Value {
+    serde_json::json!({ "version": SETTINGS_VERSION, "kind": DEMO_KIND })
+}
+
+/// True for the settings record of the sample mailbox ([`demo_config`]).
+pub(crate) fn is_demo(config: &serde_json::Value) -> bool {
+    config.get("kind").and_then(serde_json::Value::as_str) == Some(DEMO_KIND)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_demo_marker_is_not_a_server_record() {
+        assert!(is_demo(&demo_config()));
+        assert!(StoredSettings::from_json(&demo_config()).is_err());
+        assert!(!is_demo(&sample().to_json().unwrap()));
+        assert!(!is_demo(&serde_json::json!({})));
+    }
 
     fn sample() -> StoredSettings {
         StoredSettings {

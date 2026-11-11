@@ -25,7 +25,7 @@ kotlin {
             kotlin.srcDir(rootProject.layout.projectDirectory.dir("app/src/main/kotlin/com/example/croft/mail"))
             kotlin.srcDir(rootProject.layout.projectDirectory.dir("app/build/generated/uniffi-host/kotlin"))
             // The files of that folder that need Android (a Context, DataStore, the platform's connectivity service, the Keystore).
-            kotlin.exclude("**/MailSession.kt", "**/MailSettings.kt", "**/ConnectivityMonitor.kt", "**/MailRuntime.kt")
+            kotlin.exclude("**/MailSession.kt", "**/MailSettings.kt", "**/ConnectivityMonitor.kt", "**/MailRuntime.kt", "**/AccountPrefsStore.kt")
         }
     }
 }

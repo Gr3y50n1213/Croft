@@ -94,8 +94,10 @@ class OnboardingFlow(
     private val backend: OnboardingBackend,
     private val scope: CoroutineScope,
     saved: List<String>? = null,
+    /** The first screen: S01, or S02 when the person comes from Accounts (S44) to add another account (Back on it then leaves the flow). */
+    startAt: Step = Step.WELCOME,
 ) {
-    private val mutable = MutableStateFlow(OnboardingState())
+    private val mutable = MutableStateFlow(OnboardingState(stack = listOf(startAt)))
 
     /** What to draw. */
     val state: StateFlow<OnboardingState> = mutable.asStateFlow()

@@ -62,6 +62,8 @@ object OnboardingTags {
     const val ADD_BUTTON = "S01-add-account"
     const val SAMPLE_BUTTON = "S01-try-sample"
     const val COMPANION_BUTTON = "S01-companion"
+    const val SAMPLE_PROBLEM = "S01-sample-problem"
+    const val PRIVACY_LINK = "S01-privacy-policy"
 
     const val EMAIL = "S02-email"
     const val CONTINUE = "S02-continue"

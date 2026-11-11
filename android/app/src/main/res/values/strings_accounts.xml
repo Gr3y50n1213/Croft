@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- Settings entries -->
+    <string name="settings_accounts">Accounts</string>
+    <string name="settings_accounts_hint">Add, remove and set up your mail accounts</string>
+    <string name="settings_about_open">About and diagnostics</string>
+
+    <!-- S44 Accounts -->
+    <string name="accounts_title">Accounts</string>
+    <string name="accounts_back">Back</string>
+    <string name="accounts_add">Add account</string>
+    <string name="accounts_sample_name">Sample mail</string>
+    <string name="accounts_sample_hint">Made-up messages. Nothing is sent or saved to a server.</string>
+    <string name="accounts_status_ok">OK</string>
+    <string name="accounts_status_ok_description">Account %1$s, OK</string>
+    <string name="accounts_row_open">Open settings of %1$s</string>
+    <string name="accounts_move_up">Move %1$s up</string>
+    <string name="accounts_move_down">Move %1$s down</string>
+    <string name="accounts_remove_row">Remove %1$s</string>
+    <string name="accounts_loading">Loading accounts</string>
+    <string name="accounts_remove_title">Remove %1$s?</string>
+    <string name="accounts_remove_intro">This deletes the following from this device. Your mail on the server is not touched.</string>
+    <string name="accounts_remove_stored">Its messages and folders (%1$s in %2$s)</string>
+    <plurals name="accounts_remove_messages">
+        <item quantity="one">%d message</item>
+        <item quantity="other">%d messages</item>
+    </plurals>
+    <plurals name="accounts_remove_folders">
+        <item quantity="one">%d folder</item>
+        <item quantity="other">%d folders</item>
+    </plurals>
+    <string name="accounts_remove_queue">Changes that are waiting to be sent to the server</string>
+    <string name="accounts_remove_drafts">Its drafts and its outbox</string>
+    <string name="accounts_remove_password">Its saved password</string>
+    <string name="accounts_remove_sample_intro">This removes the sample mail from this device. Nothing else is affected.</string>
+    <string name="accounts_remove_confirm">Remove</string>
+    <string name="accounts_remove_failed">Croft couldn\'t remove the account. Try again.</string>
+
+    <!-- S45 Account -->
+    <string name="account_title">Account</string>
+    <string name="account_name">Name</string>
+    <string name="account_name_hint">Only shown in Croft.</string>
+    <string name="account_status">Status</string>
+    <string name="account_colour">Colour</string>
+    <string name="account_colour_primary">Primary</string>
+    <string name="account_colour_secondary">Secondary</string>
+    <string name="account_colour_tertiary">Tertiary</string>
+    <string name="account_colour_amber">Amber</string>
+    <string name="account_colour_error">Red</string>
+    <string name="account_colour_neutral">Grey</string>
+    <string name="account_colour_selected">%1$s, selected</string>
+    <string name="account_folders">Special folders</string>
+    <string name="account_folders_hint">Where Croft files mail when your server has no folder of its own for it.</string>
+    <string name="account_folder_trash">Trash</string>
+    <string name="account_folder_archive">Archive</string>
+    <string name="account_folder_junk">Junk</string>
+    <string name="account_folder_sent">Sent</string>
+    <string name="account_folder_drafts">Drafts</string>
+    <string name="account_folder_from_server">%1$s (from your server)</string>
+    <string name="account_folder_not_set">Not set. Tap to choose a folder.</string>
+    <string name="account_folder_choose">Choose the %1$s folder</string>
+    <string name="account_folder_clear">Don\'t use a folder</string>
+    <string name="account_remove">Remove this account</string>
+    <string name="account_remove_hint">Deletes it from this device. Your mail on the server stays.</string>
+
+    <!-- S60 About and diagnostics -->
+    <string name="about_title">About and diagnostics</string>
+    <string name="about_version">Version</string>
+    <string name="about_version_value">Croft %1$s</string>
+    <string name="about_version_unknown">Croft (version unknown)</string>
+    <string name="about_privacy_policy">Privacy policy</string>
+    <string name="about_privacy_hint">Opens in your browser</string>
+    <string name="about_licences">Open-source licences</string>
+    <string name="about_licences_hint">The libraries Croft is built with</string>
+    <string name="about_source">Source code</string>
+    <string name="about_source_hint">Croft is open source. Opens in your browser.</string>
+    <string name="about_copy_diagnostics">Copy diagnostics</string>
+    <string name="about_copy_hint">Versions and account states only. No addresses, servers or mail.</string>
+    <string name="about_copied">Diagnostics copied</string>
+    <string name="about_link_failed">No app on this phone can open the link.</string>
+    <string name="about_erase">Erase all Croft data on this device</string>
+    <string name="about_erase_hint">Removes every account, message and setting from this device</string>
+    <string name="about_erase_title">Erase all Croft data?</string>
+    <string name="about_erase_intro">This deletes the following from this device. Your mail on the servers is not touched.</string>
+    <string name="about_erase_accounts">Every account, with its messages, folders, drafts and queued changes</string>
+    <string name="about_erase_passwords">Every saved password</string>
+    <string name="about_erase_settings">Your settings, such as the look of the app</string>
+    <string name="about_erase_confirm">Erase everything</string>
+    <string name="about_erase_failed">Croft couldn\'t erase everything. Try again.</string>
+    <string name="about_not_affiliated">Croft is not affiliated with Google, Microsoft or Apple. Gmail, Outlook and iCloud are trademarks of their owners.</string>
+
+    <!-- Open-source licences -->
+    <string name="licences_title">Open-source licences</string>
+    <string name="licences_intro">Croft is free software under the Mozilla Public License 2.0. It is built with the open-source libraries below, each under the licence shown.</string>
+    <string name="licences_group_android">Android libraries</string>
+    <string name="licences_group_rust">Rust libraries</string>
+    <string name="licences_group_native">Bundled native code</string>
+    <string name="licences_group_font">Fonts</string>
+    <string name="licences_group_other">Other</string>
+    <string name="licences_entry_description">%1$s %2$s, licence %3$s</string>
+    <string name="licences_unavailable">The list could not be loaded.</string>
+</resources>

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -50,6 +51,8 @@ fun DestructiveDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    /** More content under [message], for a dialog that lists what will be deleted (Remove account, Erase all data). */
+    body: (@Composable () -> Unit)? = null,
 ) {
     val haptics = LocalHaptics.current
     val level = LocalMotionLevel.current
@@ -71,7 +74,16 @@ fun DestructiveDialog(
                 }
             },
         title = { Text(title) },
-        text = { Text(message) },
+        text = {
+            if (body == null) Text(message)
+            else androidx.compose.foundation.layout.Column(
+                Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+            ) {
+                Text(message)
+                body()
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.control_cancel)) } },
         confirmButton = {
             TextButton(onClick = { haptics.perform(HapticEvent.Success); onConfirm() }) {

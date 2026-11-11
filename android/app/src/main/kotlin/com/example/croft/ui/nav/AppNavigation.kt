@@ -9,10 +9,13 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.example.croft.RustInfo
@@ -27,11 +30,22 @@ import com.example.croft.theme.LocalMotionLevel
 import com.example.croft.theme.ThemeSettings
 import com.example.croft.ui.appearance.AppearanceFlow
 import com.example.croft.ui.components.sharedAxisX
+import com.example.croft.mail.accounts.AccountOps
+import com.example.croft.mail.accounts.AccountPrefs
+import com.example.croft.mail.onboarding.Step
+import com.example.croft.ui.accounts.AboutLinks
+import com.example.croft.ui.accounts.AboutScreen
+import com.example.croft.ui.accounts.AccountScreen
+import com.example.croft.ui.accounts.AccountsScreen
+import com.example.croft.ui.accounts.LicencesScreen
+import com.example.croft.ui.accounts.openInBrowser
 import com.example.croft.ui.onboarding.OnboardingEnvironment
 import com.example.croft.ui.onboarding.OnboardingHost
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-/** The screens reachable today. S50 and its drill-down live inside [APPEARANCE] (see `AppearanceFlow`). */
+/** The screens reachable today. S50 and its drill-down live inside [APPEARANCE] (see `AppearanceFlow`). S02 to S05 and S09 live inside [ONBOARDING] and [ADD_ACCOUNT]. */
 enum class Route(val parent: Route?) {
     /** The sign-in flow (S01 to S05, S09). The first screen on a fresh install, while no account exists. It handles its own Back. */
     ONBOARDING(null),
@@ -53,18 +67,26 @@ enum class Route(val parent: Route?) {
 
     /** The component gallery (debug builds only). */
     GALLERY(SETTINGS),
+
+    /** S44 Accounts. */
+    ACCOUNTS(SETTINGS),
+
+    /** S45 Account (the account is [CroftNavHost]'s `accountId`). */
+    ACCOUNT(ACCOUNTS),
+
+    /** S02 and on, to add another account from S44 or from the account switcher. It handles its own Back. */
+    ADD_ACCOUNT(ACCOUNTS),
+
+    /** S60 About and diagnostics. */
+    ABOUT(SETTINGS),
+
+    /** The open-source licences list, from S60. */
+    LICENCES(ABOUT),
     ;
 
     /** How deep the screen is; going to a larger depth is "forward". */
     val depth: Int get() = generateSequence(this) { it.parent }.count() - 1
 }
-
-/**
- * The one place "Try with sample mail" (S01) goes through. For now it opens the existing fake-data Inbox: while no account exists the
- * app's session is already the sample mailbox ([com.example.croft.mail.MailSession.usesFakeData]), so this just goes Home. A follow-up task
- * points it at the core's own sample account instead; only this function changes then.
- */
-internal fun onTrySampleMail(goHome: () -> Unit) = goHome()
 
 /**
  * The app's simple navigation: Home (the Inbox, S10 to S19), Settings (from the drawer), Appearance, and (in debug builds) the
@@ -87,16 +109,79 @@ fun CroftNavHost(
     onMailSettingsChange: (MailSettings) -> Unit = {},
     /** The sign-in screens' parts. Without them (tests of the other screens) the route [Route.ONBOARDING] is not reachable. */
     onboarding: OnboardingEnvironment? = null,
-    /** Called when an account was added, before the Inbox shows: the app swaps the sample session for the one over the core. */
+    /** Called when accounts were added or removed, before the screens use them: the app builds a fresh session over the core. */
     onAccountReady: suspend () -> Unit = {},
+    /** What S44, S45 and S60 change in the core and the secret store, and "Try with sample mail" (the core's own sample account). Without it the sample button just opens the Inbox (tests of other screens). */
+    accountOps: AccountOps? = null,
+    /** The app's own account order, names and colours (S44, S45). */
+    accountPrefs: AccountPrefs = AccountPrefs(),
+    onAccountPrefsChange: (AccountPrefs) -> Unit = {},
+    /** After everything was erased in the core and the secret store: the app clears its settings stores and shows S01. */
+    onErased: suspend () -> Unit = {},
 ) {
     var route by rememberSaveable { mutableStateOf(startAt) }
+    var accountId by rememberSaveable { mutableStateOf(0L) }
+    // Where Add account (S02) returns to: S44, or the Inbox when it was started from the account switcher.
+    var addReturn by rememberSaveable { mutableStateOf(Route.ACCOUNTS) }
+    var sampleProblem by remember { mutableStateOf(false) }
+    var sampleBusy by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val prefsNow by rememberUpdatedState(accountPrefs)
+    val sessionNow by rememberUpdatedState(session)
     if (route == Route.ONBOARDING && onboarding == null) route = Route.HOME
     val scope = rememberCoroutineScope()
     // A debug-only route can never be reached from a release build, even from saved state.
     if (route == Route.GALLERY && !DebugGallery.available) route = Route.SETTINGS
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
-    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING) { route = route.parent ?: Route.HOME }
+    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT) { route = route.parent ?: Route.HOME }
+
+    // Removing an account: its saved password and its rows in the core, then its entries in the app's own prefs, then a fresh session.
+    // It runs to its end even if the screen goes away (a half removal would be worse than a late one). Returns how many accounts are
+    // left, or null when it failed.
+    val removeAccount: suspend (Long) -> Int? = remove@{ id ->
+        val ops = accountOps ?: return@remove null
+        withContext(NonCancellable) {
+            try {
+                ops.remove(id)
+                onAccountPrefsChange(prefsNow.without(id))
+                onAccountReady()
+                sessionNow.repository.listAccounts().size
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+    val eraseAll: suspend () -> Boolean = erase@{
+        val ops = accountOps ?: return@erase false
+        withContext(NonCancellable) {
+            try {
+                ops.eraseEverything()
+                onErased()
+                route = Route.ONBOARDING
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+    val trySample: () -> Unit = {
+        val ops = accountOps
+        if (ops == null) route = Route.HOME
+        else if (!sampleBusy) {
+            sampleBusy = true
+            sampleProblem = false
+            scope.launch {
+                try {
+                    withContext(NonCancellable) { ops.addSample(); onAccountReady() }
+                    route = Route.HOME
+                } catch (e: Exception) {
+                    sampleProblem = true
+                } finally {
+                    sampleBusy = false
+                }
+            }
+        }
+    }
     val level = LocalMotionLevel.current
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     AnimatedContent(
@@ -108,18 +193,50 @@ fun CroftNavHost(
         when (current) {
             Route.ONBOARDING -> if (onboarding != null) OnboardingHost(
                 environment = onboarding,
-                onTrySampleMail = { onTrySampleMail { route = Route.HOME } },
+                onTrySampleMail = trySample,
                 onFinished = { scope.launch { onAccountReady(); route = Route.HOME } },
+                sampleProblem = sampleProblem,
+                onPrivacyPolicy = { context.openInBrowser(AboutLinks.PRIVACY_POLICY_URL) },
             )
-            Route.HOME -> InboxScreen(session, onOpenSettings = { route = Route.SETTINGS })
+            Route.ADD_ACCOUNT -> if (onboarding != null) OnboardingHost(
+                environment = onboarding,
+                onTrySampleMail = {},
+                onFinished = { scope.launch { onAccountReady(); route = addReturn } },
+                startAt = Step.ADD_ACCOUNT,
+                onExit = { route = addReturn },
+            )
+            Route.HOME -> InboxScreen(
+                session, onOpenSettings = { route = Route.SETTINGS },
+                onAddAccount = if (onboarding != null) ({ addReturn = Route.HOME; route = Route.ADD_ACCOUNT }) else null,
+                onManageAccounts = { route = Route.ACCOUNTS },
+            )
             Route.SETTINGS -> SettingsHomeScreen(
                 info = info,
                 onOpenAppearance = { route = Route.APPEARANCE },
                 onOpenSwipeActions = { route = Route.SWIPE_ACTIONS },
                 onOpenInbox = { route = Route.INBOX_SETTINGS },
                 onOpenGallery = if (DebugGallery.available) ({ route = Route.GALLERY }) else null,
+                onOpenAccounts = { route = Route.ACCOUNTS },
+                onOpenAbout = { route = Route.ABOUT },
                 onBack = { route = Route.HOME },
             )
+            Route.ACCOUNTS -> AccountsScreen(
+                session = session, prefs = accountPrefs, onPrefsChange = onAccountPrefsChange,
+                onAdd = { if (onboarding != null) { addReturn = Route.ACCOUNTS; route = Route.ADD_ACCOUNT } },
+                onOpenAccount = { id -> accountId = id; route = Route.ACCOUNT },
+                removeAccount = removeAccount, onNoAccounts = { route = Route.ONBOARDING },
+                onBack = { route = Route.SETTINGS },
+            )
+            Route.ACCOUNT -> AccountScreen(
+                session = session, accountId = accountId, prefs = accountPrefs, onPrefsChange = onAccountPrefsChange,
+                removeAccount = removeAccount, onRemoved = { left -> route = if (left == 0) Route.ONBOARDING else Route.ACCOUNTS },
+                eraseAll = eraseAll, onBack = { route = Route.ACCOUNTS },
+            )
+            Route.ABOUT -> AboutScreen(
+                info = info, session = session, onOpenLicences = { route = Route.LICENCES }, eraseAll = eraseAll,
+                onBack = { route = Route.SETTINGS },
+            )
+            Route.LICENCES -> LicencesScreen(onBack = { route = Route.ABOUT })
             Route.APPEARANCE -> AppearanceFlow(settings = settings, onChange = onSettingsChange, onBack = { route = Route.SETTINGS })
             Route.SWIPE_ACTIONS -> SwipeSettingsFlow(settings = swipeSettings, onChange = onSwipeSettingsChange, onBack = { route = Route.SETTINGS })
             Route.INBOX_SETTINGS -> InboxSettingsScreen(settings = mailSettings, onChange = onMailSettingsChange, onBack = { route = Route.SETTINGS })

@@ -101,9 +101,8 @@ fn add_list_and_remove_an_account_then_list_its_folders_after_the_first_sync() {
     assert_eq!(accounts[0].id, rig.account);
     assert_eq!(accounts[0].label, "Alice");
     assert_eq!(accounts[0].email, "alice@example.org");
-    // The provider was asked for the new account's credential, with the new id, before
-    // `add_account` returned.
-    assert_eq!(rig.provider.asked(), vec![rig.account]);
+    // The credential came with `add_account`: the provider was not asked about the new account.
+    assert!(rig.provider.asked().is_empty());
 
     // The first sync brings the folders and the messages.
     rig.wait_for_inbox(3);
@@ -165,7 +164,7 @@ fn a_reopened_core_restarts_the_account_with_the_stored_pin_and_credential() {
 
     server.add_message("INBOX", &raw("m4@example.org", "Hello 4"));
     let core = db.open(&provider);
-    assert_eq!(provider.asked(), vec![account, account]);
+    assert_eq!(provider.asked(), vec![account]);
     // The cache is there at once, before any network.
     assert_eq!(core.list_accounts().unwrap().len(), 1);
     let inbox = core
@@ -297,14 +296,17 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
     let server = start_server();
     three_messages(&server);
     let db = TempDb::new();
-    let provider = MemProvider::with_pending("the wrong password");
+    let provider = MemProvider::new();
     let core = db.open(&provider);
     let account = block(core.add_account(
         discovered_for(&server),
         "Alice".into(),
         Some(fingerprint_of(&server)),
+        password_cred("the wrong password"),
     ))
     .unwrap();
+    // The app stores what the person typed under the returned id.
+    provider.store(account, password_cred("the wrong password"));
 
     block(wait_for(&core, "needs sign-in", || {
         core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn
@@ -326,6 +328,33 @@ fn a_wrong_password_pauses_the_account_and_calls_sign_in_needed_until_it_is_fixe
         !core.list_folders(account).unwrap().is_empty()
     }));
     assert_eq!(provider.sign_ins(), vec![account], "no further calls");
+}
+
+/// The provider is never consulted for a new account: a secret that happens to be stored under the
+/// id the new account will get (a leftover of another account) is not used, only the credential
+/// `add_account` was given.
+#[test]
+fn a_new_account_uses_the_credential_it_was_given_not_the_providers() {
+    let server = start_server();
+    three_messages(&server);
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    // The id the first account will get is 1.
+    provider.store(1, password_cred(PASSWORD));
+    let core = db.open(&provider);
+    let account = block(core.add_account(
+        discovered_for(&server),
+        "Alice".into(),
+        Some(fingerprint_of(&server)),
+        password_cred("not the password"),
+    ))
+    .unwrap();
+    assert_eq!(account, 1);
+    block(wait_for(&core, "needs sign-in", || {
+        core.list_accounts().unwrap()[0].status == AccountStatus::NeedsSignIn
+    }));
+    assert!(provider.asked().is_empty(), "the provider was not asked");
+    assert!(core.list_folders(account).unwrap().is_empty());
 }
 
 #[test]

@@ -2,13 +2,13 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 3)
+## The surface (API version 4)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
 
 `Core` (one object; `Core.open(db_path, db_key, credentials)`):
-- accounts: `discover` (async), `verify` (async), `add_account` (async), `list_accounts`, `remove_account` (async), `signed_in` (async)
+- accounts: `discover` (async), `verify` (async), `add_account(discovered, display_name, pinned, credential)` (async; the credential is the new account's, see "Credentials"), `list_accounts`, `remove_account` (async), `signed_in` (async)
 - reading: `list_folders`, `list_messages(scope, before, limit)` (keyset paging; `MessageScope` is a folder or the unified Inbox)
 - observing: `next_change(after)` (async; a numbered change log, see `src/changes.rs`)
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`
@@ -32,9 +32,12 @@ happens inside an async context. In Kotlin, close on a background dispatcher, ne
 
 ## Credentials
 The core never stores a secret. `account.config_json` holds server settings and the pinned certificate fingerprint
-(`src/settings.rs`, with a version field). When an account's adapter is built (at `open`, `add_account`, `signed_in`) the core
+(`src/settings.rs`, with a version field). When the adapter of a stored account is built (at `open`, `signed_in`) the core
 asks the `CredentialProvider` and passes the answer to `ImapBackend::new`. No answer: the account starts paused and
-`sign_in_needed` is called once. For a new account the provider is asked with the new row id before `add_account` returns.
+`sign_in_needed` is called once. A **new** account's credential is an argument of `add_account`: the core builds the first
+connection from it and never asks the provider about a new account. The app stores that credential under the returned id right
+after the call returns (and nothing when it fails), so the provider can answer for that id from then on. Account ids are never
+reused (`core/storage/src/accounts.rs`), so an id carries no secrets of an earlier account.
 
 ### Callbacks
 `DiscoveryObserver.on_probe` runs on a blocking thread of the core (not on a runtime worker), one call at a time and in order,

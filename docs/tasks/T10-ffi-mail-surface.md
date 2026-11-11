@@ -4,7 +4,7 @@ Crate / folder: `core/ffi` (calls `core/engine`, `core/storage`, `core/protocols
 
 Depends on: T04 (`EngineHandle`), T05 (discovery), T06 (send), T07 (the first surface). Blocks: T11, T14 to T21 (everything in the app that talks to the core).
 
-**Status: built (API version 3), on branch `task/t10`.** The "Final surface" section at the end is what was built; the "Proposed surface" above it is kept for the reasoning. See "As built" at the very end for where the code differs from the decision.
+**Status: built (API version 4 after the T11 review; version 3 on branch `task/t10`).** The "Final surface" section at the end is what was built; the "Proposed surface" above it is kept for the reasoning. See "As built" at the very end for where the code differs from the decision.
 
 ## Read first
 `CLAUDE.md` (architecture and security rules), `core/ffi/README.md`, `core/ffi/src/lib.rs`, `docs/tasks/T02-T04-design.md`, `docs/ux/server-contract.md`, `docs/ux/state-machines.md` (account connection, outgoing message), `android/README.md` (how the host library is loaded in JVM tests).
@@ -50,7 +50,7 @@ This replaces the "Proposed surface" above where they differ. Build exactly this
 - **Sync and network.** `sync_now(account)`, `set_network_available(bool)` (applies to every account), `signed_in(account)` after the person fixes a password.
 - **Send.** Not in T10. Added by T06 part B / T18 with its own version bump.
 - **Errors.** Fieldless enums only (as `StorageReason` in API version 2). No `String` that could carry data crosses the boundary in an error.
-- **Version.** This surface is `FFI_API_VERSION = 3`.
+- **Version.** This surface was `FFI_API_VERSION = 3`; `add_account` changed in version 4 (see "As built", "API version 4").
 
 ## As built (T10 implementation notes)
 
@@ -76,3 +76,22 @@ Security review follow-up (still API version 3, which is unmerged):
 - **Dropping `Core` can block up to 2 s** (bounded on purpose, so the database is free for a reopen): close it off the main thread (README, `RustBridge.kt`).
 - The README lists the copies of secrets the core cannot wipe (UniFFI's lifting buffer, the Kotlin side's copies, `db_key`).
 - `rustSources` in `android/app/build.gradle.kts` now lists `ffi`, `engine`, `mail-core`, `protocols`, `storage` and `vendor` (the patched async-imap) plus `Cargo.toml` and `Cargo.lock`; `test-support` is a dev-dependency and is not needed for the library builds.
+
+### API version 4 (T11 security review): `add_account` takes the new account's credential
+`Core.add_account(discovered, display_name, pinned_fingerprint, credential: Arc<FfiCredential>) -> Result<i64, CoreError>`.
+`FFI_API_VERSION` and `EXPECTED_FFI_API_VERSION` are both 4.
+- **Why.** Version 3 asked the `CredentialProvider` for the new account's credential before `add_account` returned, so the app had to
+  guess which "unknown id" the question was about. The T11 implementation staged the typed password and handed it to the first account
+  with no stored secret, which could be a different account (a stored account whose secret had just been lost): that account's
+  server would have received the new account's password.
+- **What it does now.** The core builds the new account's first connection(s) from `credential` (the one the person just verified)
+  and keeps it only in the protocol layer's wiping string. It never asks the provider about a new account. The app stores the
+  credential under the returned id right after the call returns, and stores nothing when the call fails. From then on the provider
+  answers for that id (at `open`, at `signed_in`). The provider is consulted only for accounts the app already stored.
+- **Errors.** A credential that is not valid UTF-8 fails with `CoreError::NoCredential` before anything is written.
+- **Ids.** Account ids are never reused (`core/storage/src/accounts.rs`: the largest id ever used is kept in the `setting` table,
+  key `account.max_id`, like `op_queue.max_id`), so an id has no stored secrets of an earlier account. The app deletes an account's
+  secrets *before* `remove_account` and clears any entry under the new id before storing a new account's secret.
+- **Tests.** Rust: `a_new_account_uses_the_credential_it_was_given_not_the_providers`, `a_removed_accounts_id_is_not_given_to_the_next_account`,
+  `add_account_refuses_unusable_input_before_touching_the_database` (now includes a non-UTF-8 credential), the version test
+  `the_version_is_4`; Kotlin: `SecretStoreCredentialsTest`, `MailSurfaceTest`, `RustBridgeTest`.

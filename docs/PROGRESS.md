@@ -5,9 +5,42 @@ unverified, the next step.
 
 ---
 
+## T21: bring-your-own OAuth for Gmail and Outlook (12 November 2026)
+
+**Status:** draft pull request #32 on `task/t21` (CI); independent review done, fixes included. **FFI API version 12.**
+
+**What was built.** (1) *Core* (`croft_protocols::oauth`): the provider table (Google: `accounts.google.com`, `oauth2.googleapis.com`, scope
+`https://mail.google.com/`; Microsoft: the v2.0 endpoints of `login.microsoftonline.com/common`, `IMAP.AccessAsUser.All`, `SMTP.Send`,
+`offline_access`), PKCE `S256`, a random `state`, the authorisation URL, the check of the redirect (another flow's `state`, a missing
+code and `access_denied` are typed errors), the token requests and the reading of their answers (`invalid_grant` is `Auth`, a slow or
+failing endpoint is `Transient`), and a loopback listener on `127.0.0.1` that receives the redirect itself. Token requests go only to
+the provider's token host (or, for tests, loopback). (2) *FFI*: `oauth_begin`, `oauth_finish`, `oauth_cancel`, `oauth_client_id`;
+`FfiCredential.oauth_stored`; `CredentialProvider.save_tokens`. An OAuth account gets a token session shared by IMAP and SMTP: the
+access token is refreshed a minute before it expires and once more when the server refuses it, then the account needs a sign-in.
+(3) *Android*: S04 "Or sign in with your own Google/Microsoft client" for Gmail and Outlook: client ID (and the Desktop client's secret
+for Google), the help (where to register, which client type, the redirect to copy for Microsoft, Google's 7-day limit for projects
+left in Testing), the provider's page in a Custom Tab, a waiting line with Cancel, plain messages for each failure. The secret is kept
+like a password (`AccountSecrets.addOAuthAccount`, `SecretKind.OAUTH_REFRESH`). *Signing in again*: the Needs sign-in banner and a new Sign in
+button on S45 open the sign-in flow for that account's address (it did nothing before T21, for password accounts too); finishing it
+there is the core's "sign in again" (same id, mail kept, paused changes go on).
+
+**Decisions that depart from the task** (DECISIONS): loopback redirect for both providers instead of a redirect activity; Google
+needs a "Desktop app" client with its own secret; a pending sign-in does not survive the process being stopped.
+
+**Checks so far.** Rust: 16 unit tests (RFC 7636 vector, URLs, redirects, token answers, loopback), 5 in-process tests (code exchange,
+rotation, `invalid_grant`, slow endpoint, XOAUTH2 with a good and an expired token), 9 FFI tests (servers that are not the provider's refused; the whole sign-in with a simulated
+browser, sync over XOAUTH2, no token in the database file, refresh on a refused token with the rotated secret handed back, refresh before
+expiry, revoked sign-in to needs-sign-in, cancel, access denied, bad client id).
+
+**Not verified (needs real accounts and a phone):** the real Google and Microsoft consent pages, whether Google's token endpoint
+accepts a Desktop client's code without the secret, Microsoft accepting any loopback port, the browser hand-off and the return to
+Croft on real phones, refresh-token lifetime.
+
+---
+
 ## T20: background check and notifications (12 November 2026)
 
-**Status:** draft pull request #30 on `task/t20` (CI). **FFI API version 11.**
+**Status:** pull request #31 to `main` (all CI jobs green on the task branch; review done). **FFI API version 11.**
 
 **What was built.** (1) *What counts as new* (`croft_mail_core::notify`, pure): unread, in the Inbox, above the account's "notified up to"
 marker under the Inbox's UIDVALIDITY. The first check (or one after the Inbox was renumbered) only sets a baseline, so the mail already

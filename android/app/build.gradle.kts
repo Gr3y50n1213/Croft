@@ -305,6 +305,7 @@ dependencies {
     implementation(libs.material.components)
     implementation(libs.androidx.datastore)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.browser)
     implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.jna)
 

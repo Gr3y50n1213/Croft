@@ -158,4 +158,29 @@
     <!-- The technical lines behind "Details" (never raw codes). -->
     <string name="onb_details_server">Server: %1$s, port %2$d, %3$s</string>
     <string name="onb_details_none">No more detail is available.</string>
+    <!-- T21: S04 "Use your own client" (bring-your-own OAuth). Gmail and Outlook are plain words: no logos. -->
+    <string name="onb_own_client_title_google">Or sign in with your own Google client</string>
+    <string name="onb_own_client_title_microsoft">Or sign in with your own Microsoft client</string>
+    <string name="onb_own_client_intro">Croft has no shared Google or Microsoft sign-in. If you register your own free client with Google or Microsoft, you can sign in through their page instead of using an app password.</string>
+    <string name="onb_own_client_id">Client ID</string>
+    <string name="onb_own_client_secret">Client secret (from the same page)</string>
+    <string name="onb_own_client_sign_in_google">Sign in with Google</string>
+    <string name="onb_own_client_sign_in_microsoft">Sign in with Microsoft</string>
+    <string name="onb_own_client_waiting">Finish signing in on the page that opened. Croft is waiting for it.</string>
+    <string name="onb_own_client_cancel">Cancel</string>
+    <string name="onb_own_client_done_page">You\'re signed in. You can go back to Croft.</string>
+    <string name="onb_own_client_help_show">How to set up your own client</string>
+    <string name="onb_own_client_help_hide">Hide the steps</string>
+    <string name="onb_own_client_help_google">1. In the Google Cloud console, create a project and turn on the Gmail API.\n2. Set up the consent screen, then publish it. A project left in Testing gives sign-ins that stop working after 7 days.\n3. Create an OAuth client of type \"Desktop app\". It needs no redirect address: it accepts Croft\'s.\n4. Copy its client ID and client secret here. They belong to your project and stay on this device.</string>
+    <string name="onb_own_client_help_microsoft">1. In the Microsoft Entra admin center, register an app for \"Accounts in any organizational directory and personal Microsoft accounts\".\n2. Add the platform \"Mobile and desktop applications\" with this redirect address:\n3. Under API permissions, add IMAP.AccessAsUser.All, SMTP.Send and offline_access (Office 365 Exchange Online).\n4. Copy the application (client) ID here. No client secret is needed.</string>
+    <string name="onb_own_client_redirect">http://localhost</string>
+    <string name="onb_own_client_copy">Copy the redirect address</string>
+    <string name="onb_own_client_copied">Copied</string>
+    <string name="onb_oauth_denied">You declined on the sign-in page. Nothing was added.</string>
+    <string name="onb_oauth_stale">That sign-in page was from an earlier attempt. Start again.</string>
+    <string name="onb_oauth_expired">The sign-in took too long, or Croft was closed meanwhile. Start again.</string>
+    <string name="onb_oauth_refused">The provider refused this client (%1$s). Check the client ID, the client type and the redirect address.</string>
+    <string name="onb_oauth_network">Couldn\'t reach the sign-in service. Check your connection and try again.</string>
+    <string name="onb_oauth_bad_client">That doesn\'t look like a client ID. Copy it again from the provider\'s page.</string>
+    <string name="onb_oauth_failed">The sign-in didn\'t finish. Try again.</string>
 </resources>

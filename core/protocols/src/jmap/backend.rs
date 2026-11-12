@@ -717,6 +717,42 @@ impl JmapBackend {
         Ok(uids.first().copied())
     }
 
+    async fn search_inner(
+        &self,
+        folder: &str,
+        query: &ServerQuery,
+    ) -> Result<SearchOutcome, BackendError> {
+        if query.is_empty() {
+            return Ok(SearchOutcome::Found(Vec::new()));
+        }
+        let mut st = self.state.lock().await;
+        let mb = self.mailbox(&mut st, folder).await?;
+        let session = self.session(&mut st).await?;
+        let args = json!({"accountId": session.account_id,
+            "filter": search_filter(&mb.id, query),
+            "sort": [{"property": "receivedAt", "isAscending": false}],
+            "limit": MAX_SEARCH_UIDS});
+        let mut r = self.call(&mut st, vec![("Email/query", args)]).await?;
+        let ids = match r.take(0, "Email/query") {
+            Ok(a) => parse_query(&a)?.ids,
+            // The server cannot run this filter: say so, it is not a failure.
+            Err(ApiError::Method(k))
+                if k == "unsupportedFilter"
+                    || k == "invalidArguments"
+                    || k == "cannotCalculateChanges" =>
+            {
+                return Ok(SearchOutcome::Unsupported);
+            }
+            Err(e) => return Err(e.into_backend()),
+        };
+        let mut uids = self.store(&mut st, &mb.id, self.ids.assign(&mb.id, &ids))?;
+        // The ids came newest first; keep that order, without repeats.
+        let mut seen = HashSet::new();
+        uids.retain(|u| seen.insert(*u));
+        uids.truncate(MAX_SEARCH_UIDS);
+        Ok(SearchOutcome::Found(uids))
+    }
+
     /// Of these emails, those in the mailbox whose Message-ID is exactly `wanted`.
     async fn with_message_id(
         &self,
@@ -977,6 +1013,14 @@ impl MailBackend for JmapBackend {
     /// Differs from the IMAP adapter in one case: when more than one different message in the
     /// folder has this Message-ID, the answer is `None` and not the newest of them, so the engine
     /// stops a destructive action instead of guessing which copy was meant.
+    fn search<'a>(
+        &'a self,
+        folder: &'a str,
+        query: &'a ServerQuery,
+    ) -> BackendFuture<'a, SearchOutcome> {
+        Box::pin(self.search_inner(folder, query))
+    }
+
     fn find_by_message_id<'a>(
         &'a self,
         folder: &'a str,
@@ -1011,5 +1055,77 @@ impl MailBackend for JmapBackend {
     /// changes `$seen`.
     fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
         Box::pin(self.fetch_body_inner(folder, uid))
+    }
+}
+
+/// The `Email/query` filter for a search in one mailbox: every condition must hold.
+fn search_filter(mailbox: &str, q: &ServerQuery) -> Value {
+    let mut conditions = vec![json!({"inMailbox": mailbox})];
+    for t in &q.text {
+        conditions.push(json!({"text": t}));
+    }
+    for t in &q.from {
+        conditions.push(json!({"from": t}));
+    }
+    for t in &q.subject {
+        conditions.push(json!({"subject": t}));
+    }
+    for t in &q.to {
+        conditions.push(json!({"operator": "OR", "conditions": [{"to": t}, {"cc": t}]}));
+    }
+    if q.unread {
+        conditions.push(json!({"notKeyword": "$seen"}));
+    }
+    if q.starred {
+        conditions.push(json!({"hasKeyword": "$flagged"}));
+    }
+    if let Some(ms) = q.before_ms {
+        conditions.push(json!({"before": utc_date(ms)}));
+    }
+    if let Some(ms) = q.since_ms {
+        conditions.push(json!({"after": utc_date(ms)}));
+    }
+    json!({"operator": "AND", "conditions": conditions})
+}
+
+/// A JMAP `UTCDate` for midnight UTC of the day of `ms` (search dates are whole days).
+fn utc_date(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T00:00:00Z")
+}
+
+#[cfg(test)]
+mod search_filter_tests {
+    use super::*;
+
+    #[test]
+    fn the_filter_has_every_condition() {
+        let q = ServerQuery {
+            text: vec!["lunch".into()],
+            from: vec!["ann".into()],
+            to: vec!["dee".into()],
+            subject: vec!["plan".into()],
+            unread: true,
+            starred: true,
+            before_ms: Some(1_794_441_600_000),
+            since_ms: Some(0),
+        };
+        assert_eq!(
+            search_filter("mb1", &q),
+            json!({"operator": "AND", "conditions": [
+                {"inMailbox": "mb1"}, {"text": "lunch"}, {"from": "ann"}, {"subject": "plan"},
+                {"operator": "OR", "conditions": [{"to": "dee"}, {"cc": "dee"}]},
+                {"notKeyword": "$seen"}, {"hasKeyword": "$flagged"},
+                {"before": "2026-11-12T00:00:00Z"}, {"after": "1970-01-01T00:00:00Z"}]})
+        );
     }
 }

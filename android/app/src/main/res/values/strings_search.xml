@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
+<!-- S27 Search and S28 Search results (T19). -->
+<resources>
+    <string name="search_hint">Search in mail</string>
+    <string name="search_back">Back</string>
+    <string name="search_clear">Clear search</string>
+    <string name="search_recent">Recent searches</string>
+    <string name="search_no_history">Your recent searches show here. They stay on this device.</string>
+    <string name="search_history_remove">Remove %1$s from recent searches</string>
+    <string name="search_history_removed">Removed from recent searches</string>
+    <string name="search_undo">Undo</string>
+    <string name="search_menu">More options</string>
+    <string name="search_clear_history">Clear history</string>
+    <string name="search_chip_unread">Unread</string>
+    <string name="search_chip_starred">Starred</string>
+    <string name="search_chip_attachment">Has attachment</string>
+    <string name="search_scope_all">All accounts</string>
+    <string name="search_no_results">No results for “%1$s”</string>
+    <string name="search_server_button">Search server</string>
+    <string name="search_partial">Searched headers and downloaded mail</string>
+    <string name="search_searching_server">Searching server…</string>
+    <string name="search_device_only">Showing results from this device only</string>
+    <string name="search_offline">Can\'t reach the server. Showing results from this device.</string>
+    <string name="search_sign_in">Sign in again to search this account\'s server.</string>
+    <string name="search_failed">The server didn\'t answer. Showing results from this device.</string>
+    <string name="search_retry">Retry</string>
+    <string name="search_bad_date">Use a date like 2026-11-12 after before: or after:.</string>
+</resources>

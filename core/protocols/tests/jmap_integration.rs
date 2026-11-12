@@ -348,3 +348,74 @@ async fn a_message_sent_with_email_submission_reaches_the_second_user() {
     assert!(matches!(e, BackendError::Permanent(_)));
     assert!(alices.snapshot("Drafts").await.unwrap().messages.is_empty());
 }
+
+/// T19: server search on Stalwart (JMAP `Email/query`) finds the expected messages by sender,
+/// subject and body text. Stalwart indexes in the background, so the search is retried for a while.
+#[tokio::test]
+async fn stalwart_server_search_by_from_subject_and_body() {
+    let _turn = TURN.lock().await;
+    let alice = RawJmap::connect(http_port(), ALICE, ALICE_PW).await;
+    alice.empty().await;
+    let word = unique("zq");
+    let raw = |from: &str, subject: &str, body: &str| {
+        format!(
+            "From: {from}\r\nTo: {ALICE}\r\nSubject: {subject}\r\nMessage-ID: <{}@x>\r\n\
+             Date: Mon, 02 Mar 2026 09:30:00 +0000\r\nContent-Type: text/plain\r\n\r\n{body}\r\n",
+            unique("s")
+        )
+    };
+    alice
+        .import(
+            "inbox",
+            &raw("Ann <ann@example.org>", &format!("Plan {word}"), "x"),
+            &[],
+        )
+        .await;
+    alice
+        .import(
+            "inbox",
+            &raw(
+                "Ben <ben@example.org>",
+                "Other",
+                &format!("about {word} here"),
+            ),
+            &[],
+        )
+        .await;
+    let b = backend(ALICE, ALICE_PW, Arc::new(MemoryIdStore::new()));
+    let inbox = b
+        .list_folders()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|f| f.special_use == SpecialUse::Inbox)
+        .unwrap()
+        .path;
+    let count = |o: SearchOutcome| match o {
+        SearchOutcome::Found(u) => u.len(),
+        SearchOutcome::Unsupported => panic!("Stalwart can search"),
+    };
+    let text = ServerQuery {
+        text: vec![word.clone()],
+        ..ServerQuery::default()
+    };
+    let subject = ServerQuery {
+        subject: vec![word.clone()],
+        ..ServerQuery::default()
+    };
+    let from = ServerQuery {
+        from: vec!["ben@example.org".into()],
+        ..ServerQuery::default()
+    };
+    let end = Instant::now() + Duration::from_secs(15);
+    loop {
+        let n = count(b.search(&inbox, &text).await.unwrap());
+        if n == 2 || Instant::now() > end {
+            assert_eq!(n, 2, "subject and body");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert_eq!(count(b.search(&inbox, &subject).await.unwrap()), 1);
+    assert_eq!(count(b.search(&inbox, &from).await.unwrap()), 1);
+}

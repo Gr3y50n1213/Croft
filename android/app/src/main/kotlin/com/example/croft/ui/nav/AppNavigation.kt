@@ -105,6 +105,9 @@ enum class Route(val parent: Route?) {
 
     /** S20 Conversation and S21 Message (the message is [CroftNavHost]'s `conversationId`): a tap on a row of any folder. Back returns to the list. */
     CONVERSATION(HOME),
+
+    /** S27 Search and S28 results (T19), from the Inbox's search pill. It handles its own Back (results first, then the Inbox). */
+    SEARCH(HOME),
     ;
 
     /** How deep the screen is; going to a larger depth is "forward". */
@@ -156,6 +159,8 @@ fun CroftNavHost(
     var composeReturn by rememberSaveable { mutableStateOf(Route.HOME) }
     // S20: the message that was opened, and what its actions leave for the Inbox to show once ("Archived", with Undo).
     var conversationId by rememberSaveable { mutableStateOf(0L) }
+    // Where Back from a conversation goes: the Inbox, or the search results it was opened from.
+    var conversationReturn by rememberSaveable { mutableStateOf(Route.HOME) }
     var conversationNotice by remember { mutableStateOf<ConversationNotice?>(null) }
     var notice by remember { mutableStateOf<InboxNotice?>(null) }
     val openCompose: (ComposeStart) -> Unit = { start ->
@@ -174,6 +179,18 @@ fun CroftNavHost(
     val sessionNow by rememberUpdatedState(session)
     if (route == Route.ONBOARDING && onboarding == null) route = Route.HOME
     val scope = rememberCoroutineScope()
+    // S27 and S28 (T19): one controller per session, kept while the person opens a result and comes back.
+    val searchController = remember(session) {
+        session.search?.let { backend ->
+            com.example.croft.mail.search.SearchController(
+                backend,
+                scope,
+                com.example.croft.mail.search.StoredSearchHistory(java.io.File(context.noBackupFilesDir, com.example.croft.mail.search.StoredSearchHistory.FILE_NAME)),
+            )
+        }
+    }
+    // After a process restart the search controller is new: start from the Inbox.
+    if (route == Route.SEARCH && searchController == null) route = Route.HOME
     // A debug-only route can never be reached from a release build, even from saved state.
     if (route == Route.GALLERY && !DebugGallery.available) route = Route.SETTINGS
     LaunchedEffect(composeRequest, route) {
@@ -191,7 +208,7 @@ fun CroftNavHost(
     }
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
     // Compose and the Outbox handle their own Back (compose saves first).
-    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION) { route = route.parent ?: Route.HOME }
+    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION && route != Route.SEARCH) { route = route.parent ?: Route.HOME }
 
     // Removing an account: the account in the core first (its task stops, nothing new is sent), then its saved secret (`AccountOps.remove`),
     // then the app's own entries for it (folder choices, order, name, colour: the prefs are written and waited for), then a fresh session.
@@ -283,16 +300,28 @@ fun CroftNavHost(
                 onUndoSend = { openCompose(it) },
                 onOpenOutbox = if (session.compose != null) ({ route = Route.OUTBOX }) else null,
                 onOpenDraft = { account, draft -> openCompose(ComposeStart.Draft(account, draft)) },
-                onOpenMessage = { id -> conversationId = id; route = Route.CONVERSATION },
+                onOpenMessage = { id -> conversationId = id; conversationReturn = Route.HOME; route = Route.CONVERSATION },
+                onOpenSearch = if (searchController != null) ({ route = Route.SEARCH }) else null,
                 conversationNotice = conversationNotice,
                 onConversationNoticeShown = { conversationNotice = null },
             )
+            Route.SEARCH -> if (searchController != null) {
+                var searchAccounts by remember { mutableStateOf<List<com.example.croft.mail.AccountInfo>>(emptyList()) }
+                LaunchedEffect(session) { searchAccounts = runCatching { session.repository.listAccounts() }.getOrDefault(emptyList()) }
+                com.example.croft.ui.search.SearchScreen(
+                    controller = searchController,
+                    accounts = searchAccounts,
+                    onOpenMessage = { id -> conversationId = id; conversationReturn = Route.SEARCH; route = Route.CONVERSATION },
+                    onBack = { searchController.clear(); route = Route.HOME },
+                    zone = session.zone,
+                )
+            }
             Route.CONVERSATION -> ConversationHost(
                 session = session,
                 messageId = conversationId,
                 settings = mailSettings,
-                onBack = { route = Route.HOME },
-                onClosed = { notice -> conversationNotice = notice; route = Route.HOME },
+                onBack = { route = conversationReturn },
+                onClosed = { notice -> if (conversationReturn == Route.HOME) conversationNotice = notice; route = conversationReturn },
                 onCompose = { openCompose(it) },
             )
             Route.COMPOSE -> retained.start?.let { start ->

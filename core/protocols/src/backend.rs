@@ -104,4 +104,19 @@ pub trait MailBackend: Send + Sync {
             ))
         })
     }
+
+    /// Searches one folder on the server. Errors keep the usual split; a server that cannot run
+    /// the search answers [`SearchOutcome::Unsupported`] instead of an error, so the screen can
+    /// say so in plain words. The query is sent only to this account's own server and never
+    /// logged.
+    ///
+    /// The default answers `Unsupported`: the sample mailbox searches on the device only.
+    fn search<'a>(
+        &'a self,
+        folder: &'a str,
+        query: &'a ServerQuery,
+    ) -> BackendFuture<'a, SearchOutcome> {
+        let _ = (folder, query);
+        Box::pin(async { Ok(SearchOutcome::Unsupported) })
+    }
 }

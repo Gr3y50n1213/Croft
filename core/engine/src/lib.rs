@@ -123,6 +123,7 @@ mod engine;
 mod handle;
 mod mime;
 mod outbox;
+mod search;
 mod sync;
 mod worker;
 
@@ -136,6 +137,7 @@ pub use croft_mail_core::{
 pub use demo::{resume_demo, REASON_COPY_NOT_STORED};
 pub use engine::{Change, Engine, EngineConfig, EngineError};
 pub use handle::{ActionError, EngineHandle, OutboxActionError, SendError};
+pub use search::SearchError;
 pub use worker::{
     MAX_LOOKUPS, REASON_AMBIGUOUS_COPY, REASON_LOST_AFTER_MOVE, REASON_LOST_AFTER_RESET,
 };

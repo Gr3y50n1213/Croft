@@ -51,6 +51,8 @@ class MailSession(
     val cursors: CursorMemory = CursorMemory(),
     /** The reading calls (S20, S21): conversations, bodies, remote content, attachments, known senders. Null where there is no core (tests of other screens): the conversation screen then says the message cannot be shown. */
     val reading: ReadingRepository? = null,
+    /** S27 and S28 (T19): search on the device and on the servers. Null where search is not available (the fake inbox). */
+    val search: com.example.croft.mail.search.SearchBackend? = null,
 ) {
     private val cache = HashMap<String, CachedList>()
 

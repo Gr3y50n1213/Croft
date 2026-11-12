@@ -10,13 +10,16 @@
 
 pub mod accounts;
 mod db;
+pub mod drafts;
 mod error;
 pub mod folders;
+pub mod identities;
 pub mod jmap_ids;
 pub mod messages;
 pub mod op_store;
 pub mod outbox_store;
 pub mod reading;
+pub mod recipients;
 pub mod settings;
 
 #[cfg(test)]
@@ -78,8 +81,13 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 6,
+        name: "compose",
+        sql: include_str!("../migrations/0006_compose.sql"),
+    },
+    Migration {
+        version: 7,
         name: "reading",
-        sql: include_str!("../migrations/0006_reading.sql"),
+        sql: include_str!("../migrations/0007_reading.sql"),
     },
 ];
 

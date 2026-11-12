@@ -633,6 +633,7 @@ mod tests {
         NewMessage {
             account: A,
             identity: None,
+            draft: None,
             envelope_from: "me@example.org".into(),
             recipients: vec!["you@example.org".into()],
         }
@@ -871,6 +872,7 @@ mod tests {
                 id: 1,
                 account: A,
                 identity: None,
+                draft: None,
                 envelope_from: "me@example.org".into(),
                 recipients: vec![],
                 state: OutboxState::Sending,
@@ -897,6 +899,7 @@ mod tests {
         let msg = NewMessage {
             account: A,
             identity: Some(3),
+            draft: None,
             envelope_from: MARK_ADDR.into(),
             recipients: vec![MARK_ADDR.into()],
         };

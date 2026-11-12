@@ -728,7 +728,12 @@ mod tests {
             Err(ReadError::AttachmentBlocked)
         );
         assert_eq!(
-            write_into(dir.path(), "setup.exe\u{2800}", "application/octet-stream", b"x"),
+            write_into(
+                dir.path(),
+                "setup.exe\u{2800}",
+                "application/octet-stream",
+                b"x"
+            ),
             Err(ReadError::AttachmentBlocked)
         );
         assert_eq!(

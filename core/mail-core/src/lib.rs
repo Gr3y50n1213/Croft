@@ -11,6 +11,7 @@
 //! 4. [`outbox::Outbox`] holds sent-but-not-yet-delivered mail (Undo send, retry, never twice), and
 //!    [`outbox_store::PersistentOutbox`] keeps it in an [`outbox_store::OutboxStore`].
 
+pub mod compose;
 pub mod ops;
 pub mod outbox;
 pub mod outbox_store;

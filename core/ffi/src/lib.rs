@@ -9,7 +9,7 @@
 //! surface is pre-1.0 additions count too). The apps check the version at start-up and refuse to
 //! run against one they do not know.
 //!
-//! # What it offers (API version 8)
+//! # What it offers (API version 9)
 //!
 //! - [`Core::open`] with the database key and a [`CredentialProvider`] the app implements.
 //! - Accounts: `discover`, `verify`, `add_account`, `add_demo_account` (the sample mailbox),
@@ -18,7 +18,9 @@
 //! - Observing: `next_change(after)`, a numbered change log the app waits on.
 //! - Actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`.
 //! - Sync and network: `sync_now`, `set_network_available`, `set_undo_window_ms`.
-//! - Reading (S20, S21): `open_conversation`, `load_body` (sanitised HTML, remote images blocked
+//! - Composing and sending (version 8, `compose.rs`): drafts, `send`, `undo_send`, the Outbox
+//!   actions, recipient suggestions, reply and forward fields, identities. Errors: [`ComposeError`].
+//! - Reading (version 9, `reading.rs`, S20, S21): `open_conversation`, `load_body` (sanitised HTML, remote images blocked
 //!   unless allowed), `save_attachment`, `allow_remote_content`, `trust_sender`,
 //!   `untrust_sender`, `trusted_senders`. Their errors are [`ReadError`].
 //!
@@ -41,12 +43,14 @@
 compile_error!("the test-server feature is host-only and must never be enabled for Android");
 
 mod changes;
+mod compose;
 mod core;
 mod credentials;
 mod error;
 mod list;
 mod reading;
 mod settings;
+mod submit;
 #[cfg(feature = "test-server")]
 mod test_server;
 #[cfg(test)]
@@ -54,6 +58,14 @@ mod tests;
 mod types;
 
 pub use crate::core::{Core, DiscoveryObserver};
+pub use compose::{
+    compose_limits, is_valid_address, outbox_reason_default_message, outbox_reason_key,
+    parse_recipient, parse_recipients, ComposeError, ComposeLimits, DraftAttachment, DraftCheck,
+    DraftContent, DraftProblem, DraftSummary, DraftSyncOutcome, FfiAddress, FfiDraft, FfiIdentity,
+    OutboxItem, OutboxItemState, OutboxReason, ReplyDraft, SavedDraft, SendStarted, ServerCopy,
+    ATTACHMENT_WARN_BYTES, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, MAX_BODY_BYTES,
+    MAX_DRAFT_ATTACHMENT_BYTES, MAX_RECIPIENTS, MAX_SUBJECT_CHARS, MAX_SUGGESTIONS,
+};
 pub use credentials::{CredentialProvider, FfiCredential, ProviderError};
 pub use error::{
     discover_error_default_message, discover_error_message_key, verify_failure_default_message,
@@ -83,7 +95,13 @@ uniffi::setup_scaffolding!();
 /// `verify` returns the pin it checked against (and checks against the stored pin of the same
 /// account, and reports a self-signed certificate for an account stored without a pin as changed);
 /// `commit_account_update` and `rollback_account_update` finish an update, each with its token.
-/// Version 8: reading (T18a): `open_conversation`, `load_body`, `save_attachment`,
+/// Version 8 (T18c) is composing and sending: real accounts can send (the engine has an Outbox and an
+/// SMTP submitter); drafts (`save_draft`, `load_draft`, `list_drafts`, `discard_draft`,
+/// `sync_draft_to_server`, attachments), `check_draft`, `send`, `undo_send`, the Outbox actions
+/// (`list_outbox`, `retry_outbox_item`, `edit_outbox_item`, `discard_outbox_item`),
+/// `suggest_recipients`, `reply_draft`, `reply_all_draft`, `forward_draft`, `identities`, and the
+/// helpers `parse_recipient`, `is_valid_address`, `compose_limits`; the new error `ComposeError`.
+/// Version 9: reading (T18a): `open_conversation`, `load_body`, `save_attachment`,
 /// `allow_remote_content`, `trust_sender`, `untrust_sender`, `trusted_senders`, with the records
 /// `Conversation`, `ConversationMessage`, `MailAddress`, `MessageBody`, `AttachmentInfo`, the enums
 /// `BodyState` and `RemoteImagesSetting`, and the error `ReadError`.
@@ -91,7 +109,7 @@ uniffi::setup_scaffolding!();
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 8;
+pub const FFI_API_VERSION: u32 = 9;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

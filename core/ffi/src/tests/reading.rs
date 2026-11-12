@@ -241,3 +241,35 @@ fn over_imap_a_body_is_fetched_without_marking_it_read_and_then_read_offline() {
         ReadError::Offline
     );
 }
+
+#[test]
+fn a_loaded_body_gives_reply_all_its_to_and_cc_and_its_quote() {
+    // The sync stores no recipients; loading the body fills `to_json` and `cc_json`, which the
+    // compose calls (T18c) read.
+    let rig = Rig::new(|s| {
+        s.add_message(
+            "INBOX",
+            "From: Ann Example <ann@example.org>\r\nTo: alice@example.org, Ben <ben@example.org>\r\n\
+             Cc: Cat <cat@example.org>\r\nSubject: Plans\r\nDate: Mon, 02 Mar 2026 09:30:00 +0000\r\n\
+             Message-ID: <plans@example.org>\r\n\r\nShall we meet on Friday?\r\n",
+        );
+    });
+    rig.wait_for_inbox(1);
+    let id = rig.core.list_messages(rig.inbox(), None, 10).unwrap().rows[0].id;
+    let before = rig.core.reply_all_draft(rig.account, id).unwrap();
+    assert!(!before.quote_included);
+    load(&rig.core, id, RemoteImagesSetting::Ask);
+    let after = rig.core.reply_all_draft(rig.account, id).unwrap();
+    let all: Vec<String> = after
+        .content
+        .to
+        .iter()
+        .chain(after.content.cc.iter())
+        .map(|a| a.address.to_lowercase())
+        .collect();
+    assert!(all.contains(&"ann@example.org".to_owned()), "{all:?}");
+    assert!(all.contains(&"ben@example.org".to_owned()), "{all:?}");
+    assert!(all.contains(&"cat@example.org".to_owned()), "{all:?}");
+    assert!(after.quote_included);
+    assert!(after.content.body.contains("Shall we meet on Friday?"));
+}

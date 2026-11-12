@@ -28,6 +28,7 @@ use tokio::task::JoinHandle;
 use zeroize::Zeroizing;
 
 use crate::changes::{listen, Hub};
+use crate::compose::{watch_outbox, Compose};
 use crate::credentials::{
     ask, AccountBackend, Asked, CredentialProvider, FfiCredential, ProviderError, Readiness,
 };
@@ -36,6 +37,7 @@ use crate::list;
 use crate::settings::{
     demo_config, is_demo, StoredSecurity, StoredServer, StoredSettings, SETTINGS_VERSION,
 };
+use crate::submit::AccountSubmitter;
 use crate::types::{
     AccountInfo, AccountStatus, AddedAccount, ChangeBatch, DiscoveryProbe, FfiDiscovered,
     FolderInfo, MessagePage, MessageScope, ProbeProgress, RowCursor, ServerSettings,
@@ -100,8 +102,10 @@ impl<T> Drop for Task<T> {
 pub(crate) struct Inner {
     engine: Engine,
     pub(crate) handle: EngineHandle,
-    hub: Arc<Hub>,
-    provider: Arc<dyn CredentialProvider>,
+    pub(crate) hub: Arc<Hub>,
+    pub(crate) provider: Arc<dyn CredentialProvider>,
+    /// Composing and sending: drafts, their copies on the server (`compose.rs`).
+    pub(crate) compose: Compose,
     backends: Mutex<HashMap<i64, Arc<AccountBackend>>>,
     /// The sample mailbox, when it is running (at most one), by account id. It has no entry in
     /// `backends`: no server adapter is ever built for it.
@@ -173,7 +177,7 @@ fn same_address(a: &str, b: &str) -> bool {
     a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -182,7 +186,7 @@ fn now_ms() -> i64 {
 }
 
 impl Inner {
-    fn backends(&self) -> MutexGuard<'_, HashMap<i64, Arc<AccountBackend>>> {
+    pub(crate) fn backends(&self) -> MutexGuard<'_, HashMap<i64, Arc<AccountBackend>>> {
         self.backends.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -207,7 +211,27 @@ impl Inner {
             Readiness::NotReady => {}
             Readiness::Broken => return Err(CoreError::BadSettings),
         }
-        self.engine.add_account(id, backend.clone())?;
+        // The account can send when it has an SMTP server it can use. The submitter asks the app's
+        // credential provider for the credential at each send (see `submit.rs`); the pin rule is
+        // in `StoredSettings::smtp_config`.
+        let smtp = settings
+            .smtp_config()
+            .map_err(|_| CoreError::BadSettings)?
+            .filter(|config| config.validate().is_ok());
+        match smtp {
+            Some(config) => {
+                let submitter = Arc::new(AccountSubmitter::new(
+                    id,
+                    config,
+                    settings.smtp_files_sent_itself(),
+                    self.provider.clone(),
+                    backend.clone(),
+                ));
+                self.engine
+                    .add_account_with_submitter(id, backend.clone(), submitter)?;
+            }
+            None => self.engine.add_account(id, backend.clone())?,
+        }
         self.backends().insert(id, backend);
         if self.hub.is_offline() {
             self.handle.set_online(id, false);
@@ -428,7 +452,7 @@ impl Inner {
     }
 
     /// True when the account is the running sample mailbox.
-    fn is_demo_running(&self, id: i64) -> bool {
+    pub(crate) fn is_demo_running(&self, id: i64) -> bool {
         self.demos().contains_key(&id)
     }
 
@@ -478,7 +502,7 @@ impl Inner {
     }
 
     /// Every account id.
-    fn account_ids(&self) -> Result<Vec<i64>, CoreError> {
+    pub(crate) fn account_ids(&self) -> Result<Vec<i64>, CoreError> {
         self.handle.read(|db| {
             Ok(accounts::list(db.connection())?
                 .into_iter()
@@ -653,10 +677,13 @@ impl Core {
         credentials: Arc<dyn CredentialProvider>,
     ) -> Result<Arc<Self>, CoreError> {
         let key = db_key.map(Zeroizing::new);
-        let db = Db::open(
-            std::path::Path::new(&db_path),
-            key.as_deref().map(Vec::as_slice),
-        )?;
+        let path = std::path::Path::new(&db_path);
+        let key_bytes = key.as_deref().map(Vec::as_slice);
+        let db = Db::open(path, key_bytes)?;
+        // The Outbox and the compose code each have a connection of their own to the same file
+        // (WAL lets them write in turn); see `Engine::open_with_outbox` and `compose.rs`.
+        let outbox_db = Db::open(path, key_bytes)?;
+        let compose_db = Db::open(path, key_bytes)?;
         drop(key);
 
         let runtime = Builder::new_multi_thread()
@@ -668,17 +695,24 @@ impl Core {
         let rt = runtime.handle().clone();
         let _enter = rt.enter();
 
-        let engine = Engine::open(db, Arc::new(SystemClock), EngineConfig::default())?;
+        let engine = Engine::open_with_outbox(
+            db,
+            outbox_db,
+            Arc::new(SystemClock),
+            EngineConfig::default(),
+        )?;
         let handle = engine.handle();
         let hub = Hub::new(credentials.clone());
         hub.attach_engine(handle.clone());
         // Subscribe before any account starts, so no change is missed.
         rt.spawn(listen(hub.clone(), handle.subscribe()));
+        let outbox_changes = handle.subscribe();
         let inner = Arc::new(Inner {
             engine,
             handle,
             hub,
             provider: credentials,
+            compose: Compose::new(compose_db, rt.clone(), path.to_path_buf()),
             backends: Mutex::new(HashMap::new()),
             demos: Mutex::new(HashMap::new()),
             account_changes: tokio::sync::Mutex::new(()),
@@ -686,6 +720,15 @@ impl Core {
             update_tokens: std::sync::atomic::AtomicU64::new(0),
         });
 
+        watch_outbox(&inner, outbox_changes);
+        // Before any account runs: a message that was queued with its draft and whose draft was not
+        // marked (a crash in between) must find its draft locked first. Once an account's task
+        // runs, such a message can be sent and gone, and its draft would look like an unsent one.
+        for account in inner.account_ids()? {
+            if inner.reconcile(account).is_err() {
+                log::warn!("account {account}: could not settle drafts at start");
+            }
+        }
         let stored = inner.handle.read(|db| accounts::list(db.connection()))?;
         for account in stored {
             if is_demo(&account.config, &account.email) {
@@ -706,6 +749,12 @@ impl Core {
             if started.is_err() {
                 inner.hub.set_broken(account.id, true);
             }
+        }
+
+        // Settle what the last run left: messages that were sent but whose drafts were not finished,
+        // copies of drafts the server does not have yet.
+        for account in inner.account_ids().unwrap_or_default() {
+            inner.kick_compose(account, true);
         }
 
         Ok(Arc::new(Self {
@@ -1203,6 +1252,12 @@ impl Core {
         }
         if changed {
             self.inner.hub.accounts_changed(self.inner.account_ids()?);
+        }
+        if available {
+            // Drafts written offline are copied to the server now.
+            for &id in &ids {
+                self.inner.kick_compose(id, true);
+            }
         }
         Ok(())
     }

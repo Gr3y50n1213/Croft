@@ -115,6 +115,10 @@ pub struct NewMessage {
     pub account: AccountId,
     /// The identity it is sent as (`identity.id`), if any.
     pub identity: Option<i64>,
+    /// The draft this message is made from (`draft.id`), if any. It is stored with the row in one
+    /// statement, so the core can always tell which draft a queued, sending or sent message
+    /// belongs to, even after a crash.
+    pub draft: Option<i64>,
     /// The envelope sender: a bare address.
     pub envelope_from: String,
     /// The envelope recipients: bare addresses, To, Cc and Bcc together. Bcc recipients are here
@@ -128,6 +132,7 @@ impl fmt::Debug for NewMessage {
         f.debug_struct("NewMessage")
             .field("account", &self.account)
             .field("identity", &self.identity)
+            .field("draft", &self.draft)
             .field("recipients", &self.recipients.len())
             .finish()
     }
@@ -142,6 +147,8 @@ pub struct OutboxEntry {
     pub account: AccountId,
     /// The identity it is sent as.
     pub identity: Option<i64>,
+    /// The draft it was made from, if any (see [`NewMessage::draft`]).
+    pub draft: Option<i64>,
     /// Envelope sender.
     pub envelope_from: String,
     /// Envelope recipients.
@@ -319,6 +326,7 @@ impl Outbox {
                 id,
                 account: message.account,
                 identity: message.identity,
+                draft: message.draft,
                 envelope_from: message.envelope_from,
                 recipients: message.recipients,
                 state: OutboxState::Queued,
@@ -803,6 +811,7 @@ mod tests {
         NewMessage {
             account,
             identity: Some(7),
+            draft: None,
             envelope_from: "me@example.org".into(),
             recipients: vec!["you@example.org".into()],
         }

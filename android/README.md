@@ -131,6 +131,12 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
 - The application ID is defined once, in `gradle.properties` (`croft.applicationId`); the Kotlin `package` lines and
   `design/generated/kotlin/CroftTokens.kt` carry the same name and move in one commit when it changes.
 
+## Open-source licence list (S60)
+The list S60 shows is the checked-in `app/src/main/assets/licenses/open-source-licences.json`. After any change to `core/Cargo.lock` or
+`gradle/libs.versions.toml`, regenerate it from the repository root with `python3 android/tools/gen_licences.py` (needs `cargo` and a warm
+Gradle cache; it runs `./gradlew --offline`). `python3 android/tools/gen_licences.py --check` and `tools/test_gen_licences.py` (CI job
+`android-release`) fail when the file no longer matches those two inputs.
+
 ## Swipe engine (T15)
 `:swipe` is a plain Kotlin JVM module (no Android or Compose types): the swipe state machine, the settings types and the pill
 geometry, with property tests (kotest-property) that run as ordinary JVM tests: `./gradlew :swipe:test` (also a dependency of

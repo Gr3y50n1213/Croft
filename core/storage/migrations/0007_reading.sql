@@ -1,4 +1,4 @@
--- Reading messages (T18a): the fetched message itself, what the sanitiser counted, more about each
+-- Reading messages (T18a, migration 7): the fetched message itself, what the sanitiser counted, more about each
 -- attachment, and the person's remote-content choices. Every new table carries account_id and goes
 -- with its account; message_body and attachment stay keyed by message (scoped through it).
 

@@ -30,6 +30,11 @@ sqlcipher-vendored-openssl = ["sqlcipher", "rusqlite/bundled-sqlcipher-vendored-
 # fails if the release `.so` holds the test symbols); only the host library the JVM tests load has it.
 test-server = ["dep:croft-test-support"]
 
+# Compose tests against real servers in containers (GreenMail): `cargo test -p croft-ffi --features
+# integration compose::tests::integration`. See test-servers/docker-compose.yml. Needs the containers
+# running; not part of a plain `cargo test`.
+integration = []
+
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
@@ -40,6 +45,7 @@ croft-engine = { path = "../engine" }
 croft-protocols = { path = "../protocols" }
 croft-reader = { path = "../reader" }
 croft-storage = { path = "../storage" }
+getrandom = "0.4.3"
 log = "0.4.29"
 # Only for the keyset message query and its row type; the bundled SQLite comes from croft-storage.
 rusqlite = "0.41.1"
@@ -52,6 +58,11 @@ uniffi = "0.32.2"
 zeroize = "1.9.1"
 # Only with the `test-server` feature (test builds of the host library); see that feature.
 croft-test-support = { path = "../test-support", optional = true }
+
+# Only for the flag values of `open(2)` (O_NOFOLLOW, O_NONBLOCK) when a file is read for an attachment;
+# no `unsafe` is used.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
 
 [dev-dependencies]
 # `test-fakes`: recording stand-ins for DNS and HTTPS, so discovery is tested without a network.

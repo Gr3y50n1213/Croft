@@ -479,6 +479,7 @@ mod tests {
         NewMessage {
             account,
             identity: None,
+            draft: None,
             envelope_from: "a@example.org".into(),
             recipients: vec!["b@example.org".into()],
         }
@@ -580,5 +581,23 @@ mod tests {
         assert_eq!(t.second_submitter.copies.load(Ordering::SeqCst), 0);
         let ob = shared.outbox().unwrap();
         assert_eq!(ob.outbox().get(id).unwrap().state, OutboxState::Submitted);
+    }
+
+    /// An engine with no Outbox cannot say which messages are left, and says so: "no answer" is
+    /// not "no message".
+    #[test]
+    fn outbox_entries_is_none_without_an_outbox_and_a_list_with_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("croft.db");
+        let plain = Engine::open(
+            Db::open(&path, None).unwrap(),
+            Arc::new(ManualClock::new(0)),
+            EngineConfig::default(),
+        )
+        .unwrap();
+        assert!(plain.handle().outbox_entries(1).is_none());
+        drop(plain);
+        let t = two_accounts();
+        assert_eq!(t.engine.handle().outbox_entries(t.first), Some(vec![]));
     }
 }

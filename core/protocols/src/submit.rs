@@ -94,16 +94,41 @@ impl SmtpImapSubmitter {
             files_sent_itself,
         }
     }
+}
 
-    /// The path of the Sent folder, created if there is none.
-    async fn sent_folder(&self) -> Result<String, BackendError> {
-        let folders = self.imap.list_folders().await?;
-        if let Some(found) = pick_sent(&folders) {
-            return Ok(found.path.clone());
-        }
-        self.imap.create_folder(DEFAULT_SENT_FOLDER).await?;
-        Ok(DEFAULT_SENT_FOLDER.to_owned())
+/// The path of the Sent folder, created if there is none.
+async fn sent_folder(imap: &ImapBackend) -> Result<String, BackendError> {
+    let folders = imap.list_folders().await?;
+    if let Some(found) = pick_sent(&folders) {
+        return Ok(found.path.clone());
     }
+    imap.create_folder(DEFAULT_SENT_FOLDER).await?;
+    Ok(DEFAULT_SENT_FOLDER.to_owned())
+}
+
+/// Saves a copy of a sent message in the account's Sent folder, **once**: when `message_id` is
+/// given the folder is searched for it first, and nothing is added if it is there (a crash in the
+/// middle of an earlier attempt may already have saved it). Creates the folder if there is none.
+/// The copy is flagged `\Seen`. `mime` must be 7-bit or UTF-8 text ([`REASON_COPY_NOT_TEXT`]).
+///
+/// [`SmtpImapSubmitter`] uses it, and so can any other submitter that sends over SMTP and keeps its
+/// mail over IMAP.
+pub async fn file_copy_in_sent(
+    imap: &ImapBackend,
+    message_id: Option<&str>,
+    mime: &[u8],
+) -> Result<(), BackendError> {
+    let text = std::str::from_utf8(mime)
+        .map_err(|_| BackendError::Permanent(REASON_COPY_NOT_TEXT.to_owned()))?;
+    let folder = sent_folder(imap).await?;
+    if let Some(id) = message_id {
+        if imap.find_by_message_id(&folder, id).await?.is_some() {
+            return Ok(());
+        }
+    }
+    imap.append_message(&folder, &["\\Seen"], text)
+        .await
+        .map(|_| ())
 }
 
 /// The folder to file sent mail in: the one the server marks `\Sent` (or, failing that, one whose
@@ -138,20 +163,7 @@ impl MailSubmitter for SmtpImapSubmitter {
         message_id: Option<&'a str>,
         mime: &'a [u8],
     ) -> BackendFuture<'a, ()> {
-        Box::pin(async move {
-            let text = std::str::from_utf8(mime)
-                .map_err(|_| BackendError::Permanent(REASON_COPY_NOT_TEXT.to_owned()))?;
-            let folder = self.sent_folder().await?;
-            if let Some(id) = message_id {
-                if self.imap.find_by_message_id(&folder, id).await?.is_some() {
-                    return Ok(());
-                }
-            }
-            self.imap
-                .append_message(&folder, &["\\Seen"], text)
-                .await
-                .map(|_| ())
-        })
+        Box::pin(async move { file_copy_in_sent(&self.imap, message_id, mime).await })
     }
 }
 

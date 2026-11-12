@@ -10,7 +10,8 @@
 //! `POST /jmap/` with `Mailbox/get`, `Email/query` (filters `inMailbox` and `header`), `Email/get`,
 //! `Email/changes` with real state strings, `Email/set` (keyword and mailbox patches, destroy),
 //! `Email/import`, `Identity/get` and `EmailSubmission/set` (with `onSuccessUpdateEmail`, which
-//! produces the implied extra `Email/set` answer), and `POST /jmap/upload/{accountId}/`. One user,
+//! produces the implied extra `Email/set` answer), `POST /jmap/upload/{accountId}/` and
+//! `GET /jmap/download/{accountId}/{blobId}/{name}` (an email's `blobId` is `eblob-<id>`). One user,
 //! checked with HTTP Basic (name and password) or Bearer (a token).
 //!
 //! What tests can do to it: add, change, move and destroy mail as "another client" would; make
@@ -743,6 +744,30 @@ fn route(
             }
             api(s, body)
         }
+        ("GET", p) if p.starts_with("/jmap/download/") => {
+            // /jmap/download/{accountId}/{blobId}/{name}?type=...
+            let path = p.split('?').next().unwrap_or(p);
+            let mut segments = path.trim_start_matches("/jmap/download/").split('/');
+            let (Some(account), Some(blob)) = (segments.next(), segments.next()) else {
+                return Reply::status(404);
+            };
+            if account != s.account {
+                return Reply::status(404);
+            }
+            let raw = match blob.strip_prefix("eblob-") {
+                Some(id) => s.emails.get(id).map(|e| e.raw.clone()),
+                None => s.blobs.get(blob).cloned(),
+            };
+            match raw {
+                Some(raw) => Reply {
+                    status: 200,
+                    headers: vec![("Content-Type".into(), "message/rfc822".into())],
+                    body: raw.into_bytes(),
+                    drop_connection: false,
+                },
+                None => Reply::status(404),
+            }
+        }
         ("POST", p) if p.starts_with("/jmap/upload/") => {
             let id = format!("blob{}", s.next_id);
             s.next_id += 1;
@@ -777,6 +802,7 @@ fn session_json(s: &State, addr: SocketAddr) -> Value {
         "username": s.user,
         "apiUrl": format!("{base}/jmap/"),
         "uploadUrl": format!("{base}/jmap/upload/{{accountId}}/"),
+        "downloadUrl": format!("{base}/jmap/download/{{accountId}}/{{blobId}}/{{name}}?type={{type}}"),
         "state": "session-1",
     })
 }
@@ -1000,6 +1026,7 @@ fn email_json(id: &str, e: &Email, props: &[String]) -> Value {
             "receivedAt" => json!(received_at(e.received)),
             "sentAt" => sent_at(&e.raw),
             "size" => json!(e.raw.len()),
+            "blobId" => json!(format!("eblob-{id}")),
             "subject" => header_value(&e.raw, "Subject").map_or(Value::Null, |v| json!(decode_words(&v))),
             "messageId" => header_value(&e.raw, "Message-ID").map_or(Value::Null, |v| json!(angle_ids(&v))),
             "inReplyTo" => header_value(&e.raw, "In-Reply-To").map_or(Value::Null, |v| json!(angle_ids(&v))),

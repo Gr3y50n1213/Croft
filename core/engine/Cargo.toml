@@ -4,14 +4,18 @@ description = "Croft sync engine: joins the mail server adapter, the sync planne
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-# Same as croft-storage (rusqlite 0.41 needs Rust 1.89).
-rust-version = "1.89"
+# croft-reader's mail-parser needs Rust 1.98.
+rust-version = "1.98"
 
 [dependencies]
 croft-mail-core = { path = "../mail-core" }
 croft-protocols = { path = "../protocols" }
+croft-reader = { path = "../reader" }
 croft-storage = { path = "../storage" }
 log = "0.4.29"
+serde_json = "1.0.154"
+# The hash of a fetched message (the same version croft-protocols uses).
+sha2 = "0.11.1"
 tokio = { version = "1.54", features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]

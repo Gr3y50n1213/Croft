@@ -9,7 +9,7 @@
 //! surface is pre-1.0 additions count too). The apps check the version at start-up and refuse to
 //! run against one they do not know.
 //!
-//! # What it offers (API version 8)
+//! # What it offers (API version 9)
 //!
 //! - [`Core::open`] with the database key and a [`CredentialProvider`] the app implements.
 //! - Accounts: `discover`, `verify`, `add_account`, `add_demo_account` (the sample mailbox),
@@ -20,6 +20,9 @@
 //! - Sync and network: `sync_now`, `set_network_available`, `set_undo_window_ms`.
 //! - Composing and sending (version 8, `compose.rs`): drafts, `send`, `undo_send`, the Outbox
 //!   actions, recipient suggestions, reply and forward fields, identities. Errors: [`ComposeError`].
+//! - Reading (version 9, `reading.rs`, S20, S21): `open_conversation`, `load_body` (sanitised HTML, remote images blocked
+//!   unless allowed), `save_attachment`, `allow_remote_content`, `trust_sender`,
+//!   `untrust_sender`, `trusted_senders`. Their errors are [`ReadError`].
 //!
 //! # Errors
 //!
@@ -45,6 +48,7 @@ mod core;
 mod credentials;
 mod error;
 mod list;
+mod reading;
 mod settings;
 mod submit;
 #[cfg(feature = "test-server")]
@@ -66,6 +70,10 @@ pub use credentials::{CredentialProvider, FfiCredential, ProviderError};
 pub use error::{
     discover_error_default_message, discover_error_message_key, verify_failure_default_message,
     verify_failure_message_key, CoreError, DiscoverError, StorageReason, VerifyFailure,
+};
+pub use reading::{
+    AttachmentInfo, BodyState, Conversation, ConversationMessage, MailAddress, MessageBody,
+    ReadError, RemoteImagesSetting,
 };
 #[cfg(feature = "test-server")]
 pub use test_server::TestImapServer;
@@ -93,13 +101,15 @@ uniffi::setup_scaffolding!();
 /// (`list_outbox`, `retry_outbox_item`, `edit_outbox_item`, `discard_outbox_item`),
 /// `suggest_recipients`, `reply_draft`, `reply_all_draft`, `forward_draft`, `identities`, and the
 /// helpers `parse_recipient`, `is_valid_address`, `compose_limits`; the new error `ComposeError`.
-/// Another branch that also bumps the version (the reading calls, T18a) takes the next number when
-/// it merges after this one.
+/// Version 9: reading (T18a): `open_conversation`, `load_body`, `save_attachment`,
+/// `allow_remote_content`, `trust_sender`, `untrust_sender`, `trusted_senders`, with the records
+/// `Conversation`, `ConversationMessage`, `MailAddress`, `MessageBody`, `AttachmentInfo`, the enums
+/// `BodyState` and `RemoteImagesSetting`, and the error `ReadError`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 8;
+pub const FFI_API_VERSION: u32 = 9;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

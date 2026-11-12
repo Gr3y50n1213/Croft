@@ -258,7 +258,10 @@ class ComposeFlowTest {
         c2.onBody("Written before the crash, and a bit more", BodyCursor(40, 40))
         await("the draft on the server", 30_000) { r.server.subjects("Drafts").takeIf { it == listOf("Crash test subject") } }
         assertEquals(1, r.server.subjects("Drafts").size)
-        await("the quiet status") { c2.state.value.saveStatus.takeIf { it == SaveStatus.SAVED } }
+        // The reopened core copies the device draft to the server at start by itself, and the core paces copies of one draft
+        // to one per 20 s: the screen's own copy can be deferred until that interval ends, so "Saved" may take up to ~20 s
+        // after the server already has the draft. The wait covers that interval with room for a slow CI machine.
+        await("the quiet status", 45_000) { c2.state.value.saveStatus.takeIf { it == SaveStatus.SAVED } }
     }
 
     @Test(timeout = 60_000)

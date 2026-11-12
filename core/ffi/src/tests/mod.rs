@@ -11,6 +11,7 @@ mod demo;
 mod encrypted;
 mod local;
 mod readd;
+mod reading;
 mod secrets;
 mod server;
 

@@ -199,6 +199,38 @@ pub struct Capabilities {
     pub qresync: bool,
 }
 
+/// Largest message [`crate::MailBackend::fetch_body`] downloads, in bytes (50 MiB). A bigger one is
+/// answered with [`RawMessage::TooLarge`] before its content is fetched (IMAP and JMAP both report
+/// the size first), so a hostile or broken server cannot make the device hold more than this. The
+/// patched IMAP library's own read buffer stops at 64 MiB, above this limit.
+pub const MAX_MESSAGE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// What [`crate::MailBackend::fetch_body`] found.
+///
+/// `Debug` prints the size only, never the content.
+#[derive(Clone, PartialEq, Eq)]
+pub enum RawMessage {
+    /// The whole message as the server stores it (RFC 5322 bytes, headers and body).
+    Found(Vec<u8>),
+    /// The message is not on the server (any more): it was moved or deleted elsewhere.
+    Gone,
+    /// The message is larger than [`MAX_MESSAGE_BYTES`]; nothing of it was downloaded.
+    TooLarge {
+        /// The size the server reported, in bytes.
+        size: u64,
+    },
+}
+
+impl fmt::Debug for RawMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Found(bytes) => write!(f, "Found({} bytes)", bytes.len()),
+            Self::Gone => f.write_str("Gone"),
+            Self::TooLarge { size } => write!(f, "TooLarge({size} bytes)"),
+        }
+    }
+}
+
 /// Server-side picture of a folder: every UID with its flags.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RemoteSnapshot {

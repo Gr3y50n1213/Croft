@@ -1,0 +1,30 @@
+[package]
+name = "croft-reader"
+description = "Croft reader: parses fetched messages, sanitises their HTML and names attachments safely"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# mail-parser 1.0 needs Rust 1.98.
+rust-version = "1.98"
+
+# Pure and synchronous, like croft-mail-core: bytes in, text and sanitised HTML out. No I/O, no
+# clock, no logging (the input is message content).
+[dependencies]
+# HTML sanitiser (allow-list, built on html5ever). MIT OR Apache-2.0. See docs/DECISIONS.md.
+ammonia = "4.2.4"
+# Builds the `data:` URIs of inline (`cid:`) images.
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+# The CSS tokenizer ammonia already uses (same version, so no new crate): finds `url()` and the
+# other image functions in `style` attributes. MPL-2.0.
+cssparser = { version = "0.38.0", default-features = false }
+# The HTML parser under ammonia (the vendored copy, see core/vendor/html5ever): its work budget
+# (`html5ever::budget`) bounds every parse. Same version as ammonia's, so no new crate.
+html5ever = "0.40.1"
+# The random value of the sanitiser's tokens and marker (the version croft-ffi already uses).
+getrandom = "0.4.3"
+# MIME parser. Apache-2.0 OR MIT. `full_encoding` adds the multi-byte charsets (Shift_JIS,
+# GB18030, EUC-KR, ...) through encoding_rs, which croft-protocols already uses.
+mail-parser = { version = "1.0.1", features = ["full_encoding"] }
+
+[lints]
+workspace = true

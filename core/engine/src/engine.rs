@@ -219,6 +219,9 @@ impl AccountSlot {
 }
 
 /// Everything the account tasks and the handles share.
+/// A weak handle on one message's body lock (see `Shared::body_lock`).
+type BodyLock = std::sync::Weak<tokio::sync::Mutex<()>>;
+
 pub(crate) struct Shared {
     queue: Mutex<Queue>,
     /// The Outbox, on its own connection and behind its own lock; `None` when the engine was
@@ -233,6 +236,10 @@ pub(crate) struct Shared {
     /// The per-account turns, kept for the life of the engine (one small value per account id) so
     /// that they survive `remove_account` and a later `add_account`.
     turns: Mutex<BTreeMap<AccountId, Arc<tokio::sync::Mutex<()>>>>,
+    /// One lock per message whose body is being fetched or rendered (round 3 review L3: two
+    /// opens of one message fetch and sanitise it once). Entries whose lock nobody holds are
+    /// dropped as new ones come.
+    bodies: Mutex<BTreeMap<(AccountId, i64), BodyLock>>,
     undo_window_ms: AtomicI64,
     pub(crate) config: EngineConfig,
 }
@@ -293,6 +300,25 @@ impl Shared {
             .entry(account)
             .or_default()
             .clone()
+    }
+
+    /// The lock for fetching and rendering one message's body (see `bodies`).
+    pub(crate) fn body_lock(
+        &self,
+        account: AccountId,
+        message: i64,
+    ) -> Arc<tokio::sync::Mutex<()>> {
+        let mut bodies = self.bodies.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(lock) = bodies
+            .get(&(account, message))
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return lock;
+        }
+        bodies.retain(|_, weak| weak.strong_count() > 0);
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        bodies.insert((account, message), Arc::downgrade(&lock));
+        lock
     }
 
     pub(crate) fn slot(&self, account: AccountId) -> Option<Arc<AccountSlot>> {
@@ -447,6 +473,7 @@ impl Engine {
             changes,
             accounts: Mutex::new(BTreeMap::new()),
             turns: Mutex::new(BTreeMap::new()),
+            bodies: Mutex::new(BTreeMap::new()),
             undo_window_ms: AtomicI64::new(config.undo_window_ms.max(0)),
             config,
         });

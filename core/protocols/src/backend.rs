@@ -82,4 +82,26 @@ pub trait MailBackend: Send + Sync {
     /// adapter first checks that the folder has none and otherwise returns
     /// [`BackendError::Permanent`] without changing anything.
     fn delete_forever<'a>(&'a self, folder: &'a str, uids: &'a [Uid]) -> BackendFuture<'a, ()>;
+
+    /// The whole message at `uid` in `folder`, as the server stores it (RFC 5322 bytes), for
+    /// reading it and for its attachments: Croft fetches a message once and keeps every part from
+    /// that copy, so there is no separate attachment download.
+    ///
+    /// **Never marks the message read**: IMAP uses `BODY.PEEK[]` on a folder opened read-only
+    /// (`EXAMINE`), JMAP downloads the message's blob. A message the server no longer has is
+    /// [`RawMessage::Gone`], not an error. One larger than [`MAX_MESSAGE_BYTES`] is
+    /// [`RawMessage::TooLarge`] and nothing of it is downloaded. Errors keep the usual split
+    /// (`Transient`, `Auth`, `Permanent`) and never contain message content.
+    ///
+    /// The default answers `Permanent`: an adapter (or a test stand-in) that cannot fetch bodies
+    /// says so instead of failing to compile. Every real adapter (IMAP, JMAP, the sample mailbox)
+    /// implements it.
+    fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
+        let _ = (folder, uid);
+        Box::pin(async {
+            Err(BackendError::Permanent(
+                "this server adapter cannot fetch messages".into(),
+            ))
+        })
+    }
 }

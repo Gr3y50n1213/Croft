@@ -1,0 +1,59 @@
+From: Ann <ann@example.org>
+To: ben@example.com
+Subject: Files
+Date: Thu, 05 Mar 2026 12:00:00 +0000
+Message-ID: <nested-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="MIX"
+
+--MIX
+Content-Type: multipart/alternative; boundary="ALT2"
+
+--ALT2
+Content-Type: text/plain; charset=utf-8
+
+Here are the files.
+--ALT2
+Content-Type: text/html; charset=utf-8
+
+<p>Here are the <b>files</b>.</p>
+--ALT2--
+--MIX
+Content-Type: application/pdf; name="report.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="report.pdf"
+
+JVBERi0xLjQgQ3JvZnQgdGVzdCBhdHRhY2htZW50LCBtYWRlIHVwLgo=
+--MIX
+Content-Type: application/octet-stream
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="../../../data/evil.sh"
+
+IyEvYmluL3NoCmVjaG8gaGkK
+--MIX
+Content-Type: application/x-msdownload
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="invoice.pdf.exe"
+
+TVqQAAMAAAAEAAAA
+--MIX
+Content-Type: message/rfc822
+
+From: Carla <carla@example.com>
+To: ann@example.org
+Subject: Forwarded inner
+Message-ID: <inner-1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="INNER"
+
+--INNER
+Content-Type: text/plain
+
+Inner text.
+--INNER
+Content-Type: text/plain; name="inner.txt"
+Content-Disposition: attachment; filename="inner.txt"
+
+Inner attachment.
+--INNER--
+--MIX--

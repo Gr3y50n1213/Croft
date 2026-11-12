@@ -70,6 +70,7 @@ enum Op<'a> {
     SetFlag(&'a str, &'a [Uid], FlagChange),
     MoveTo(&'a str, &'a [Uid], &'a str),
     DeleteForever(&'a str, &'a [Uid]),
+    FetchBody(&'a str, Uid),
     Append(&'a str, &'a [&'a str], &'a str),
     CreateFolder(&'a str),
 }
@@ -83,6 +84,7 @@ enum Out {
     Headers(Vec<RemoteHeader>),
     Uid(Option<Uid>),
     Moved(MoveOutcome),
+    Raw(RawMessage),
     Done,
 }
 
@@ -105,6 +107,7 @@ impl Op<'_> {
                 c.delete_forever(f, uids).await?;
                 Out::Done
             }
+            Op::FetchBody(f, uid) => Out::Raw(c.fetch_body(f, uid).await?),
             Op::Append(f, flags, msg) => Out::Uid(c.append(f, flags, msg).await?),
             Op::CreateFolder(f) => {
                 c.create_folder(f).await?;
@@ -358,6 +361,17 @@ impl MailBackend for ImapBackend {
         Box::pin(async move {
             match self.run(Op::DeleteForever(folder, uids)).await? {
                 Out::Done => Ok(()),
+                _ => Err(unexpected()),
+            }
+        })
+    }
+
+    /// `EXAMINE` (read-only), `UID FETCH <uid> (RFC822.SIZE)`, then `UID FETCH <uid>
+    /// (BODY.PEEK[])` with a deadline that grows with the size. Never sets `\Seen`.
+    fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
+        Box::pin(async move {
+            match self.run(Op::FetchBody(folder, uid)).await? {
+                Out::Raw(m) => Ok(m),
                 _ => Err(unexpected()),
             }
         })

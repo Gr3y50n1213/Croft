@@ -1,0 +1,2 @@
+# Fixtures are raw messages with CRLF line ends and some invalid bytes: keep them byte for byte.
+*.eml -text

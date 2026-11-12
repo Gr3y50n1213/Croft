@@ -1,0 +1,28 @@
+From: News <news@example.org>
+To: ben@example.com
+Subject: Weekly news
+Date: Tue, 03 Mar 2026 10:00:00 +0000
+Message-ID: <alt-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="ALT"
+
+--ALT
+Content-Type: text/plain; charset=utf-8
+
+Weekly news in plain text.
+--ALT
+Content-Type: text/html; charset=utf-8
+
+<html><head><title>News</title><style>body{background:url(https://t.example/bg.png)}</style>
+<meta http-equiv="refresh" content="0;url=https://evil.example/"><base href="https://evil.example/"></head>
+<body onload="alert(1)">
+<h1 style="color:#336699;background:url(https://t.example/h.png)">Weekly news</h1>
+<p>Read <a href="https://example.org/story?id=7" target="_blank" onclick="steal()">the story</a>.</p>
+<img src="https://cdn.example.org/photo.jpg" alt="A photo" width="600" height="300">
+<img src="http://cdn.example.org/old.jpg" alt="Old photo">
+<img src="https://t.example/open/abc123" width="1" height="1" alt="">
+<script>alert('x')</script>
+<iframe src="https://evil.example/frame"></iframe>
+<table background="https://t.example/table.png"><tr><td>Cell</td></tr></table>
+</body></html>
+--ALT--

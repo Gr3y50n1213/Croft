@@ -10,12 +10,15 @@
 
 pub mod accounts;
 mod db;
+pub mod drafts;
 mod error;
 pub mod folders;
+pub mod identities;
 pub mod jmap_ids;
 pub mod messages;
 pub mod op_store;
 pub mod outbox_store;
+pub mod recipients;
 pub mod settings;
 
 #[cfg(test)]
@@ -72,6 +75,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "jmap_ids",
         sql: include_str!("../migrations/0005_jmap_ids.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "compose",
+        sql: include_str!("../migrations/0006_compose.sql"),
     },
 ];
 

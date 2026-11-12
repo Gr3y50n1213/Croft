@@ -77,6 +77,7 @@ fn msg(account: i64) -> NewMessage {
     NewMessage {
         account,
         identity: Some(account * 10),
+        draft: None,
         envelope_from: "one@example.org".into(),
         recipients: vec!["you@example.org".into(), "bcc@example.org".into()],
     }
@@ -569,6 +570,7 @@ fn entries_loaded_from_sqlite_equal_the_ones_written() {
             id,
             account: f.a2,
             identity: Some(f.a2 * 10),
+            draft: None,
             envelope_from: "one@example.org".into(),
             recipients: vec!["you@example.org".into(), "bcc@example.org".into()],
             state: OutboxState::Queued,
@@ -577,4 +579,27 @@ fn entries_loaded_from_sqlite_equal_the_ones_written() {
             last_error: None,
         }]
     );
+}
+
+#[test]
+fn the_draft_link_is_written_with_the_row_and_survives_a_restart() {
+    let f = fixture();
+    let mut o = open(&f.path);
+    let mut m = msg(f.a1);
+    m.draft = Some(77);
+    let id = o.queue(m, b"MIME".to_vec(), 0, WINDOW).unwrap();
+    let plain = o.queue(msg(f.a1), b"MIME".to_vec(), 0, WINDOW).unwrap();
+    drop(o);
+    let o = open(&f.path);
+    assert_eq!(o.outbox().get(id).unwrap().draft, Some(77));
+    assert_eq!(o.outbox().get(plain).unwrap().draft, None);
+    let c = raw(&f.path);
+    let stored: Option<i64> = c
+        .query_row(
+            "SELECT draft_id FROM outbox WHERE id = ?1",
+            [id as i64],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, Some(77));
 }

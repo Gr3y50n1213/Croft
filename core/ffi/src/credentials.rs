@@ -354,6 +354,13 @@ impl AccountBackend {
         self.ready()
     }
 
+    /// The account's IMAP adapter, for what the [`MailBackend`] trait does not offer (saving a
+    /// draft or a sent copy). Answers like every other call while the account has no credential
+    /// (`Auth`) or the app's storage is not ready (`Transient`).
+    pub(crate) async fn imap(&self) -> Result<Arc<ImapBackend>, BackendError> {
+        self.current().await
+    }
+
     fn ready(&self) -> Result<Arc<ImapBackend>, BackendError> {
         match &*self.lock() {
             State::Ready(b) => Ok(b.clone()),

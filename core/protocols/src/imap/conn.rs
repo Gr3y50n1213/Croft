@@ -807,6 +807,25 @@ impl Conn {
         Ok(search_results(&reply).into_iter().max())
     }
 
+    /// Like [`Conn::find_by_message_id`], but only messages flagged `\Draft`.
+    pub(crate) async fn find_draft_by_message_id(
+        &mut self,
+        folder: &str,
+        message_id: &str,
+    ) -> Result<Option<Uid>, OpError> {
+        let Some(arg) = quote(&bracketed_message_id(message_id)) else {
+            return Ok(None);
+        };
+        self.select(folder, false, None).await?;
+        let reply = self
+            .exec(
+                &format!("UID SEARCH DRAFT HEADER Message-ID {arg}"),
+                "search for a draft",
+            )
+            .await?;
+        Ok(search_results(&reply).into_iter().max())
+    }
+
     pub(crate) async fn set_flag(
         &mut self,
         folder: &str,

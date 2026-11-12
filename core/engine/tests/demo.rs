@@ -174,6 +174,7 @@ fn a_full_sync_every_action_and_a_send_need_no_network_and_stay_after_later_sync
             NewMessage {
                 account: r.account,
                 identity: None,
+                draft: None,
                 envelope_from: "robin@example.org".into(),
                 recipients: vec!["lena@example.org".into()],
             },
@@ -236,6 +237,7 @@ fn envelope(account: AccountId) -> NewMessage {
     NewMessage {
         account,
         identity: None,
+        draft: None,
         envelope_from: "robin@example.org".into(),
         recipients: vec!["maya@example.org".into()],
     }

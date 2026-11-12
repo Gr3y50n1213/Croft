@@ -7,8 +7,10 @@
 //! through the `CredentialProvider`.
 
 use croft_protocols::demo::DEMO_ADDRESS;
-use croft_protocols::discovery::provider_for_host;
-use croft_protocols::{CertFingerprint, ImapConfig, Security};
+use croft_protocols::discovery::{provider_for_host, Provider};
+use croft_protocols::{
+    clean_host, CertFingerprint, ImapConfig, Security, SmtpConfig, SmtpSecurity,
+};
 use serde::{Deserialize, Serialize};
 
 /// The version this build writes. A record with a higher version was written by a newer app and
@@ -58,12 +60,18 @@ pub(crate) struct StoredSettings {
     /// trusted a self-signed one.
     ///
     /// **There is one pin per account, and it belongs to the IMAP server.** It is never applied to
-    /// a well-known provider's server (see [`StoredSettings::imap_config`]). When sending is
-    /// connected to the SMTP server in [`StoredSettings::smtp`], the same rule must hold there:
-    /// the pin must not be applied to a provider's SMTP host (`smtp.gmail.com`), checked with
-    /// `provider_for_host` on the SMTP host itself, because the IMAP host and the SMTP host of
-    /// one account need not belong to the same provider (or to any). A pin the person trusted for
-    /// their own IMAP server says nothing about the certificate of another host.
+    /// a well-known provider's server (see [`StoredSettings::imap_config`]).
+    ///
+    /// **The SMTP pin rule** ([`StoredSettings::smtp_config`]): the pin also applies to the SMTP
+    /// server, and only when the cleaned SMTP host equals the cleaned IMAP host (`clean_host`, the
+    /// function the connections use) **and** that host is not a provider's (`provider_for_host`).
+    /// In every other case SMTP uses normal certificate verification. A pin the person trusted for
+    /// their own IMAP server says nothing about the certificate of another host, so a pin is never
+    /// carried over to a different SMTP host (the person's own `smtp.example.org` next to
+    /// `imap.example.org`, say), and a provider's SMTP host (`smtp.gmail.com`) never takes one,
+    /// even when a stored record was written with a pin or names the provider's host on both
+    /// sides. (The cost: an account whose SMTP server is another host with a self-signed
+    /// certificate cannot send until that server has a certificate that verifies.)
     #[serde(default)]
     pub(crate) pinned_fingerprint: Option<String>,
 }
@@ -119,6 +127,66 @@ impl StoredSettings {
             config = config.with_pinned_cert(pin);
         }
         Ok(config)
+    }
+}
+
+impl StoredSettings {
+    /// True when the account's pin applies to its SMTP server. See the field's note on
+    /// [`StoredSettings::pinned_fingerprint`]: the same cleaned host as IMAP, and not a provider's.
+    pub(crate) fn smtp_pin_applies(&self) -> bool {
+        let Some(smtp) = &self.smtp else {
+            return false;
+        };
+        clean_host(&smtp.host) == clean_host(&self.imap.host)
+            && provider_for_host(&smtp.host).is_none()
+            && provider_for_host(&self.imap.host).is_none()
+    }
+
+    /// The SMTP settings for sending, or `None` when the account has no SMTP server. Applies the
+    /// pin only by the rule in [`StoredSettings::smtp_pin_applies`]. A pin that applies but is not
+    /// valid hex is [`SettingsError::BadFingerprint`] (as for IMAP: the account does not send
+    /// with a certificate check that silently became weaker).
+    pub(crate) fn smtp_config(&self) -> Result<Option<SmtpConfig>, SettingsError> {
+        let Some(smtp) = &self.smtp else {
+            return Ok(None);
+        };
+        let security = match smtp.security {
+            StoredSecurity::Tls => SmtpSecurity::Tls,
+            StoredSecurity::StartTls => SmtpSecurity::StartTls,
+            StoredSecurity::PlaintextForTestsOnly => SmtpSecurity::PlaintextForTestsOnly,
+        };
+        let mut config = SmtpConfig::new(
+            smtp.host.clone(),
+            smtp.port,
+            security,
+            smtp.username.clone(),
+        );
+        if self.smtp_pin_applies() {
+            if let Some(pin) = &self.pinned_fingerprint {
+                let pin =
+                    CertFingerprint::from_hex(pin).map_err(|_| SettingsError::BadFingerprint)?;
+                config = config.with_pinned_cert(pin);
+            }
+        }
+        Ok(Some(config))
+    }
+
+    /// True when the SMTP server saves the copy in Sent by itself (Gmail), so the core must not
+    /// add a second one. Only Gmail's own submission servers do, and only for a Gmail account: the
+    /// SMTP host is exactly `smtp.gmail.com` or `smtp.googlemail.com` (cleaned like a connection's
+    /// host) **and** the IMAP host is Gmail's too. Another host under `gmail.com`
+    /// (`smtp-relay.gmail.com`, a relay that files nothing), or Gmail's SMTP next to another IMAP
+    /// server, is treated as a server that files nothing, so the copy is appended. A duplicate in
+    /// Sent is a smaller harm than none. Microsoft's, iCloud's and Fastmail's SMTP servers leave the
+    /// copy to the client.
+    pub(crate) fn smtp_files_sent_itself(&self) -> bool {
+        let Some(smtp) = &self.smtp else {
+            return false;
+        };
+        matches!(
+            clean_host(&smtp.host).as_str(),
+            "smtp.gmail.com" | "smtp.googlemail.com"
+        ) && provider_for_host(&self.imap.host) == Some(Provider::Gmail)
     }
 }
 
@@ -251,6 +319,128 @@ mod tests {
         let mut own = sample();
         own.pinned_fingerprint = Some(pin.to_string());
         assert_eq!(own.imap_config().unwrap().pinned_cert, Some(pin));
+    }
+
+    fn with_smtp(imap_host: &str, smtp_host: &str, pin: Option<&str>) -> StoredSettings {
+        let mut s = sample();
+        s.imap.host = imap_host.into();
+        s.smtp = Some(StoredServer {
+            host: smtp_host.into(),
+            port: 465,
+            security: StoredSecurity::Tls,
+            username: "alice@example.org".into(),
+        });
+        s.pinned_fingerprint = pin.map(str::to_owned);
+        s
+    }
+
+    /// The SMTP pin rule: the pin applies to SMTP only for the same cleaned host as IMAP that is
+    /// not a provider's; in every other case SMTP uses normal certificate verification.
+    #[test]
+    fn the_pin_applies_to_smtp_only_for_the_same_host_that_is_not_a_providers() {
+        let pin = CertFingerprint::from_bytes([9; 32]).to_string();
+        let pin = Some(pin.as_str());
+        let pinned = |s: &StoredSettings| s.smtp_config().unwrap().unwrap().pinned_cert;
+        let expected = Some(CertFingerprint::from_bytes([9; 32]));
+
+        // The person's own server, one host for both: pinned, whatever the spelling.
+        for (imap, smtp) in [
+            ("mail.example.org", "mail.example.org"),
+            ("mail.example.org", "MAIL.Example.ORG."),
+            ("[mail.example.org]", " mail.example.org "),
+        ] {
+            let s = with_smtp(imap, smtp, pin);
+            assert!(s.smtp_pin_applies(), "{imap} {smtp}");
+            assert_eq!(pinned(&s), expected, "{imap} {smtp}");
+        }
+        // Another host, even a sibling of the same domain: normal verification.
+        for (imap, smtp) in [
+            ("imap.example.org", "smtp.example.org"),
+            ("mail.example.org", "mail.example.net"),
+            ("example.org", "mail.example.org"),
+            ("127.0.0.1", "localhost"),
+        ] {
+            let s = with_smtp(imap, smtp, pin);
+            assert!(!s.smtp_pin_applies(), "{imap} {smtp}");
+            assert_eq!(pinned(&s), None, "{imap} {smtp}");
+        }
+        // A provider's SMTP host never takes the pin: not next to the person's own IMAP host, and
+        // not when both sides name the provider (a record somebody wrote with a pin).
+        for (imap, smtp) in [
+            ("mail.example.org", "smtp.gmail.com"),
+            ("imap.gmail.com", "smtp.gmail.com"),
+            ("smtp.gmail.com", "smtp.gmail.com"),
+            ("outlook.office365.com", "outlook.office365.com"),
+            ("imap.fastmail.com", "SMTP.Fastmail.COM."),
+            ("mail.example.org", "[smtp.office365.com]"),
+            ("imap.mail.me.com", "smtp.mail.me.com"),
+        ] {
+            let s = with_smtp(imap, smtp, pin);
+            assert!(!s.smtp_pin_applies(), "{imap} {smtp}");
+            assert_eq!(pinned(&s), None, "{imap} {smtp}");
+        }
+        // No pin stored: nothing to apply. No SMTP server: nothing to send with.
+        assert_eq!(
+            pinned(&with_smtp("mail.example.org", "mail.example.org", None)),
+            None
+        );
+        assert!(sample().smtp_config().unwrap().is_none());
+        assert!(!sample().smtp_pin_applies());
+    }
+
+    /// A pin that applies but cannot be read is refused; one that does not apply is not looked at.
+    #[test]
+    fn a_bad_pin_refuses_smtp_only_where_it_would_apply() {
+        let s = with_smtp("mail.example.org", "mail.example.org", Some("not hex"));
+        assert_eq!(s.smtp_config().unwrap_err(), SettingsError::BadFingerprint);
+        let s = with_smtp("imap.example.org", "smtp.example.org", Some("not hex"));
+        assert!(s.smtp_config().unwrap().unwrap().pinned_cert.is_none());
+    }
+
+    #[test]
+    fn the_smtp_settings_are_carried_over_as_stored() {
+        let mut s = with_smtp("mail.example.org", "smtp.example.org", None);
+        let smtp = s.smtp.as_mut().unwrap();
+        smtp.port = 587;
+        smtp.security = StoredSecurity::StartTls;
+        let c = s.smtp_config().unwrap().unwrap();
+        assert_eq!((c.host.as_str(), c.port), ("smtp.example.org", 587));
+        assert_eq!(c.security, SmtpSecurity::StartTls);
+        assert_eq!(c.username, "alice@example.org");
+    }
+
+    #[test]
+    fn only_gmails_smtp_server_of_a_gmail_account_saves_the_sent_copy_itself() {
+        assert!(with_smtp("imap.gmail.com", "smtp.gmail.com", None).smtp_files_sent_itself());
+        assert!(with_smtp("IMAP.Gmail.COM.", "SMTP.GMAIL.COM.", None).smtp_files_sent_itself());
+        assert!(with_smtp("imap.gmail.com", "smtp.googlemail.com", None).smtp_files_sent_itself());
+        // Another host under gmail.com, a relay: it files nothing.
+        for host in [
+            "smtp-relay.gmail.com",
+            "aspmx.l.google.com",
+            "smtp.gmail.com.evil.example",
+            "evil-smtp.gmail.com",
+            "gmail.com",
+        ] {
+            assert!(
+                !with_smtp("imap.gmail.com", host, None).smtp_files_sent_itself(),
+                "{host}"
+            );
+        }
+        // Gmail's SMTP next to another IMAP server (a hand-made record): not trusted to file.
+        assert!(!with_smtp("x.example.org", "smtp.gmail.com", None).smtp_files_sent_itself());
+        for host in [
+            "smtp.office365.com",
+            "smtp.mail.me.com",
+            "smtp.fastmail.com",
+            "smtp.example.org",
+        ] {
+            assert!(
+                !with_smtp("imap.gmail.com", host, None).smtp_files_sent_itself(),
+                "{host}"
+            );
+        }
+        assert!(!sample().smtp_files_sent_itself());
     }
 
     #[test]

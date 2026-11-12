@@ -386,6 +386,23 @@ impl EngineHandle {
             .unwrap_or_default()
     }
 
+    /// Every Outbox message of the account in any state, including Submitted and Filing (the
+    /// server has the message and the copy in Sent is still to be saved). Unlike
+    /// [`EngineHandle::outbox`], which is the screen's list. For the checks that must know whether
+    /// a message is still the Outbox's, for example which draft it was made from.
+    ///
+    /// `None` when the engine has **no Outbox**: the answer then says nothing about any message, and
+    /// a caller must not read it as "no message is left" (which would mean "all sent").
+    pub fn outbox_entries(&self, account: AccountId) -> Option<Vec<OutboxEntry>> {
+        self.shared.outbox().map(|ob| {
+            ob.outbox()
+                .iter()
+                .filter(|e| e.account == account)
+                .cloned()
+                .collect()
+        })
+    }
+
     /// Retry on a Failed message: it is queued again, due now. The attempts start afresh.
     pub fn retry_send(&self, account: AccountId, id: OutboxId) -> Result<(), OutboxActionError> {
         let now = self.shared.now();

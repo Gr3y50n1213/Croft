@@ -81,6 +81,7 @@ fn envelope(account: AccountId) -> NewMessage {
     NewMessage {
         account,
         identity: None,
+        draft: None,
         envelope_from: ENVELOPE_FROM.into(),
         recipients: vec![ENVELOPE_TO.into()],
     }

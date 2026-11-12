@@ -5,6 +5,22 @@ unverified, the next step.
 
 ---
 
+## T30b: The swipe machine in TypeScript (12 November 2026)
+
+**Status:** its own pull request after T30a. Not security-sensitive (pure UI logic), so no independent review.
+
+**What was built.** `android/swipe` ported one for one to `web/src/lib/swipe`: the settings types (actions, sensitivities,
+directions, presets), the pure reducer (`reduce`, `SwipeMachine`) and the pill geometry. Kotlin enums became string unions and
+frozen objects (Node's TypeScript stripping allows no `enum`). On the web it will drive trackpad two-finger swipes the same way it
+drives touch on Android (T31), so both apps keep the same rules.
+
+**Checks.** The Kotlin tests ported case for case (48 tests): every row of the transition table, the 40 ms guard, unavailable and
+parking actions, right-to-left mirroring, the settings types; the property tests on 2,000 random gestures each (a seeded generator
+of their own; kotest's sequence cannot be reproduced) including "every state is reachable"; the geometry golden rows at every
+roundness. With the client's 13: 61 web unit tests pass; `svelte-check` is clean.
+
+---
+
 ## T30a: The web app's foundation (12 November 2026)
 
 **Status:** draft pull request #52 on `task/t30` (CI green before the review fixes, run 43320232806); independent review done, every

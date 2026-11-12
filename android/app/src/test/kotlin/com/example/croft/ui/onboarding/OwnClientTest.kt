@@ -19,6 +19,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.verticalScroll
 import com.example.croft.CroftRobolectricRunner
 import com.example.croft.CroftTheme
 import com.example.croft.haptics.LocalHaptics
@@ -77,11 +79,14 @@ class OwnClientTest {
             CroftTheme {
                 CompositionLocalProvider(LocalHaptics provides NoHaptics) {
                     val phase by oauth.phase.collectAsState()
+                    // On S04 the section sits in the screen's scrolling column.
+                    androidx.compose.foundation.layout.Column(Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                     OwnClientSection(
                         provider = provider, phase = phase, rememberedClientId = remembered,
                         onStart = { id, secret -> oauth.start(provider, id, secret, "sam@example.org", "Done") },
                         onCancel = oauth::cancel, onEdited = oauth::clearFailure,
                     )
+                    }
                 }
             }
         }
@@ -162,10 +167,10 @@ class OwnClientTest {
         val fake = FakeOAuth()
         val oauth = controller(fake, mutableListOf(), mutableListOf())
         oauth.start(OAuthProviderChoice.GOOGLE, "a", null, "x@example.org", "Done")
-        rule.waitUntil(5_000) { fake.begun.size == 1 }
+        rule.waitUntil(5_000) { rule.waitForIdle(); fake.begun.size == 1 }
         fake.finish = CompletableDeferred()
         oauth.start(OAuthProviderChoice.GOOGLE, "b", null, "x@example.org", "Done")
-        rule.waitUntil(5_000) { fake.begun.size == 2 }
+        rule.waitUntil(5_000) { rule.waitForIdle(); fake.begun.size == 2 }
         assertEquals(listOf("flow-1"), fake.cancelled)
     }
 
@@ -175,7 +180,7 @@ class OwnClientTest {
         val oauth = controller(fake, mutableListOf(), mutableListOf())
         val secret = "made-up-secret".toByteArray()
         oauth.start(OAuthProviderChoice.GOOGLE, "a", secret, "x@example.org", "Done")
-        rule.waitUntil(5_000) { fake.begun.size == 1 }
+        rule.waitUntil(5_000) { rule.waitForIdle(); fake.begun.size == 1 }
         assertArrayEquals(ByteArray(secret.size), secret)
     }
 
@@ -204,7 +209,10 @@ class OwnClientTest {
         for (f in files) {
             val text = File(f).readText()
             assertTrue("$f must exist", text.isNotEmpty())
-            assertTrue("$f uses a WebView", !Regex("""\bWebView\b|android\.webkit""").containsMatchIn(text))
+            // The code, not the comments (they say "never a WebView").
+            val code = text.lines().filterNot { it.trimStart().startsWith("*") || it.trimStart().startsWith("//") || it.trimStart().startsWith("/**") }
+                .joinToString("\n") { it.substringBefore("//") }
+            assertTrue("$f uses a WebView", !Regex("""\bWebView\b|android\.webkit""").containsMatchIn(code))
         }
     }
 }

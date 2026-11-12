@@ -9,7 +9,7 @@
     "${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "The declaration paired with the uses-permission above; must stay protectionLevel=signature."
   },
   "exported": {
-    "activity:${applicationId}.MainActivity": {
+    "activity:${namespace}.MainActivity": {
       "why": "The launcher activity, and the entry for mailto: links and shares (T18d, S23): VIEW and SENDTO with a mailto: URI, SEND and SEND_MULTIPLE with text and content: streams. They only fill the compose screen; nothing is sent without Send.",
       "permission": null,
       "actions": [

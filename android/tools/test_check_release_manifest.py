@@ -146,6 +146,23 @@ class ManifestCheck(unittest.TestCase):
             p.write_text((BASE % ("", "")).replace("<application>", '<application android:debuggable="true">'))
             self.assertEqual(len(crm.check(p, ALLOW)), 1)
 
+    def test_preview_suffix_keeps_the_activity_in_the_namespace(self):
+        # The preview build's package is "<namespace>.preview"; its classes and its signature permission differ accordingly.
+        import os
+        text = BASE.replace('package="com.example.croft"', 'package="com.example.croft.preview"').replace(
+            "com.example.croft.DYNAMIC", "com.example.croft.preview.DYNAMIC"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "m.xml"
+            p.write_text(text % ("", ""))
+            os.environ["CROFT_NAMESPACE"] = "com.example.croft"
+            try:
+                self.assertEqual(crm.check(p, ALLOW), [])
+            finally:
+                del os.environ["CROFT_NAMESPACE"]
+            # Without the namespace the activity is not the allowlisted one.
+            self.assertEqual(len(crm.check(p, ALLOW)), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -82,7 +82,9 @@ jobs:
 
   # The unsigned release build (R8 and resource shrinking on) and its gates: the keep rules for UniFFI and JNA (Gradle,
   # during the build), the manifest allowlist, no dependency-info block, not debuggable, 16 KB alignment of the APK and
-  # the AAB. Uploads nothing: signing is the owner's, outside the repository (android/README.md, "Release build").
+  # the AAB. The release uploads nothing: signing is the owner's, outside the repository (android/README.md, "Release build").
+  # The preview APK (release code paths, debug key, ".preview" id suffix) is built here too, gated the same way and uploaded as
+  # croft-preview-apk for phone testing (docs/TESTING-ON-A-PHONE.md).
   android-release:
     runs-on: ubuntu-latest
     env:
@@ -121,6 +123,20 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
           echo "$BUNDLETOOL_SHA256  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
           tools/check-release-outputs.sh "$RUNNER_TEMP/bundletool.jar"
+      - name: Build the preview APK (release code, debug key, .preview suffix)
+        working-directory: android
+        run: ./gradlew :app:assemblePreview
+      - name: Check the preview output (debug key, not debuggable, manifest allowlist, 16 KB alignment, no test server or test hooks)
+        working-directory: android
+        env:
+          CROFT_VARIANT: preview
+        run: tools/check-release-outputs.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: croft-preview-apk
+          path: android/app/build/outputs/apk/preview/app-preview.apk
+          if-no-files-found: error
+          retention-days: 30
 
   # Runs the protocol adapters against real mail servers in containers (GreenMail, Dovecot).
   integration:

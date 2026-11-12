@@ -26,9 +26,11 @@ same Web Push messages); the FCM gateway of T29 will relay the same ping for the
   Companion's public URL) and `TTL: 3600`, `Urgency: normal`.
 - **When**: each user's core reports changes (`next_change`); a change starts a ping to all that user's live subscriptions, at most one per
   30 seconds per user (later changes in the window fold into one ping at its end).
-- **Delivery**: through the core's HTTPS client **with the address policy** (T26: an endpoint is chosen by a client, so it must not
-  reach the Companion's own network); https only; no redirects; answers `201`/`2xx` ok, `404`/`410` remove the subscription, other
-  failures counted and the subscription removed after 10 in a row.
+- **Delivery**: through the core's HTTPS client to **public addresses only** (an endpoint is chosen by a client, so it must not reach
+  the Companion's own network, even where `mail_allowed_networks` lets mail servers do so); https only; no redirects; to all the user's
+  devices at once; answers `2xx` ok, `404`/`410` remove the subscription, other refusals counted and the subscription removed after 10 in a
+  row over at least 3 days; an unreachable service, `5xx`, `408` or `429` counts nothing. A device that signs out (however it is signed
+  out) loses its subscriptions.
 - **The VAPID key**: an ES256 key made at first use, kept in the Companion's database sealed with the master key.
 - **Left out**: the Android flavours registering a UnifiedPush distributor and the phones subscribing (T34, where phones connect to the
   Companion); the FCM gateway (T29).
@@ -40,5 +42,5 @@ same Web Push messages); the FCM gateway of T29 will relay the same ping for the
   decrypts to the fixed content-free body; changes within the window give one ping; `410` removes the subscription; signing the device
   out stops its pings.
 - Isolation: one user's subscriptions never receive another user's pings and cannot be listed or deleted by another user.
-- An endpoint on the Companion's own network is refused by the address policy (with the Companion's policy set).
+- An endpoint on the Companion's own network is refused, even with every address allowed for mail.
 - Not checkable here: real push services (Mozilla, Google, Apple for browsers; ntfy and other UnifiedPush distributors).

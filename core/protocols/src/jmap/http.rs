@@ -115,6 +115,9 @@ pub(crate) struct Http {
     /// Skips the process's address policy: only for the Companion's OIDC provider, which its admin
     /// configures (no user chooses where it connects).
     admin_configured: bool,
+    /// Refuses every internal address whatever the process's policy allows (T28: push endpoints
+    /// never reach networks an admin opened for mail servers).
+    internet_only: bool,
 }
 
 impl Http {
@@ -126,7 +129,14 @@ impl Http {
             timeout,
             deadline,
             admin_configured: false,
+            internet_only: false,
         }
+    }
+
+    /// The same, reaching public addresses only (see `internet_only`).
+    pub fn internet_only(mut self) -> Self {
+        self.internet_only = true;
+        self
     }
 
     /// The same for an address the server's admin configured, which the address policy (meant for
@@ -218,7 +228,12 @@ impl Http {
             return Err(unreachable());
         }
         // T26: the process's address policy (the Companion refuses its own network).
-        let addrs = if self.admin_configured {
+        let addrs = if self.internet_only {
+            addrs
+                .into_iter()
+                .filter(|a| !crate::netpolicy::is_internal(a.ip()))
+                .collect()
+        } else if self.admin_configured {
             addrs
         } else {
             crate::netpolicy::filter(addrs)

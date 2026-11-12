@@ -97,7 +97,15 @@ pub async fn remove(
 ) -> Result<Response, ApiError> {
     let axum::extract::Path(id) = id.map_err(|_| ApiError::NotFound)?;
     let user_id = c.user_id;
-    if with_store(&app, move |s| s.delete_push(user_id, id)).await?? {
+    let removed = with_store(&app, move |s| {
+        let removed = s.delete_push(user_id, id)?;
+        if removed {
+            s.audit(Some(user_id), "push.unsubscribe", "ok")?;
+        }
+        Ok::<_, StoreError>(removed)
+    })
+    .await??;
+    if removed {
         Ok(Json(json!({ "ok": true })).into_response())
     } else {
         Err(ApiError::NotFound)

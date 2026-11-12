@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::State as AxState;
+use axum::extract::{Path as AxPath, State as AxState};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::post;
 use axum::Router;
@@ -33,16 +33,20 @@ const WINDOW_MS: i64 = 800;
 #[derive(Default)]
 struct PushService {
     received: Mutex<Vec<(HeaderMap, Vec<u8>)>>,
+    /// Which endpoint (`/push/{n}`) each message went to.
+    to: Mutex<Vec<u32>>,
     arrived_ms: Mutex<Vec<i64>>,
     status: AtomicU16,
 }
 
 async fn receive(
     AxState(svc): AxState<Arc<PushService>>,
+    AxPath(n): AxPath<u32>,
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
     svc.received.lock().unwrap().push((headers, body.to_vec()));
+    svc.to.lock().unwrap().push(n);
     svc.arrived_ms.lock().unwrap().push(crate::store::now_ms());
     StatusCode::from_u16(svc.status.load(Ordering::SeqCst)).unwrap()
 }
@@ -171,14 +175,31 @@ impl H {
         )
     }
 
+    /// Another device (session) of the user: its access token.
+    fn second_device(&self, user: i64) -> String {
+        self.app
+            .store
+            .lock()
+            .unwrap()
+            .start_session(user, "second", false, crate::store::now_ms())
+            .unwrap()
+            .access
+            .to_string()
+    }
+
     async fn subscribe(&self, token: &str, device: &Device, n: u32) -> i64 {
+        self.subscribe_to(token, device, &format!("{}/{n}", self.push_url))
+            .await
+    }
+
+    async fn subscribe_to(&self, token: &str, device: &Device, endpoint: &str) -> i64 {
         let b64 = |b: &[u8]| crate::webpush::b64_public(b);
         let (s, v) = self
             .call(
                 Method::POST,
                 "/api/push/subscriptions",
                 token,
-                Some(json!({"endpoint": format!("{}/{n}", self.push_url),
+                Some(json!({"endpoint": endpoint,
                             "keys": {"p256dh": b64(&device.public), "auth": b64(&device.auth)}})),
             )
             .await;
@@ -194,6 +215,16 @@ impl H {
                   Some(json!({"discovered": d, "password": PW, "pin": server.certificate_fingerprint()})))
             .await;
         assert_eq!(s, StatusCode::OK, "{v}");
+    }
+
+    fn sent_to(&self, n: u32) -> usize {
+        self.svc
+            .to
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&m| m == n)
+            .count()
     }
 
     fn received(&self) -> Vec<(HeaderMap, Vec<u8>)> {
@@ -316,6 +347,24 @@ async fn a_change_sends_one_encrypted_content_free_ping() {
             pair[1] - pair[0]
         );
     }
+    // A burst of changes after a quiet window: the first ping goes at once; the rest of the burst
+    // folds into one at the window's end, and the server's confirmation of it (read flags wait
+    // 1.5 s) into one more. Never one per change.
+    let before = h.settle().await;
+    let start = crate::store::now_ms();
+    changes(&h, ann, 4).await;
+    let after = h.settle().await;
+    assert!(
+        (1..=3).contains(&(after - before)),
+        "{} pings for one burst",
+        after - before
+    );
+    let first = h.svc.arrived_ms.lock().unwrap()[before];
+    assert!(
+        first - start < WINDOW_MS,
+        "the first ping waited {} ms",
+        first - start
+    );
     let (headers, body) = h.received().last().cloned().unwrap();
     assert_eq!(device.decrypt(&body), PAYLOAD);
     assert_eq!(headers["content-encoding"], "aes128gcm");
@@ -354,14 +403,24 @@ async fn a_gone_subscription_is_removed_and_a_signed_out_device_gets_nothing() {
         .push_list(ann)
         .unwrap()
         .is_empty());
-    // A new subscription, then the device signs out: no more pings.
+    // A new subscription and a second device's; then the first device signs out: it gets no more
+    // pings (and its subscription is gone), the second still does.
     h.svc.status.store(201, Ordering::SeqCst);
     h.subscribe(&t, &device, 2).await;
+    let t2 = h.second_device(ann);
+    let device2 = Device::new();
+    h.subscribe(&t2, &device2, 3).await;
     let (s, _) = h.call(Method::POST, "/api/sign-out", &t, None).await;
     assert_eq!(s, StatusCode::OK);
-    let before = h.settle().await;
+    assert_eq!(h.app.store.lock().unwrap().push_list(ann).unwrap().len(), 1);
+    h.settle().await;
+    let (first, second) = (h.sent_to(2), h.sent_to(3));
     changes(&h, ann, 3).await;
-    assert_eq!(h.settle().await, before, "a signed-out device was pinged");
+    h.settle().await;
+    assert_eq!(h.sent_to(2), first, "a signed-out device was pinged");
+    assert!(h.sent_to(3) > second, "the other device was not pinged");
+    let (_, body) = h.received().last().cloned().unwrap();
+    assert_eq!(device2.decrypt(&body), PAYLOAD);
     stop(server).await;
 }
 
@@ -454,4 +513,79 @@ async fn bad_subscriptions_are_refused() {
             .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{endpoint}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_core_is_let_go_by_its_watcher_and_a_reopened_one_is_watched() {
+    let h = h().await;
+    let (ann, t) = h.user("ann");
+    let server = start_server(2).await;
+    h.account(&t, &server).await;
+    let device = Device::new();
+    h.subscribe(&t, &device, 1).await;
+    wait_for_inbox(&h, ann).await;
+    h.settle().await;
+    let (core, old_epoch) = h.app.user_core(ann).await.unwrap();
+    let old = Arc::downgrade(&core);
+    drop(core);
+    // Closing waits for the watcher to let go: no second engine may open the same database
+    // while the first still runs.
+    let mail = h.app.mail.clone().unwrap();
+    tokio::task::spawn_blocking(move || mail.close(ann))
+        .await
+        .unwrap();
+    assert!(old.upgrade().is_none(), "the closed core is still alive");
+    let (_, epoch) = h.app.user_core(ann).await.unwrap();
+    assert_ne!(epoch, old_epoch, "not a new opening");
+    wait_for_inbox(&h, ann).await;
+    let before = h.settle().await;
+    changes(&h, ann, 1).await;
+    assert!(
+        h.settle().await > before,
+        "the reopened core is not watched"
+    );
+    stop(server).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_push_endpoint_never_reaches_an_internal_address_whatever_mail_may_reach() {
+    // No address policy is set in tests: mail may reach anything, as with the widest
+    // `mail_allowed_networks`. A push endpoint on this machine is still refused before connecting
+    // (counted as a refusal; an endpoint that could be connected to but failed TLS would count
+    // nothing).
+    let h = h().await;
+    let (ann, t) = h.user("ann");
+    let server = start_server(2).await;
+    h.account(&t, &server).await;
+    let port = h
+        .push_url
+        .split(':')
+        .nth(2)
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned();
+    let device = Device::new();
+    let id = h
+        .subscribe_to(&t, &device, &format!("https://127.0.0.1:{port}/push/4"))
+        .await;
+    wait_for_inbox(&h, ann).await;
+    changes(&h, ann, 1).await;
+    h.settle().await;
+    let failures: i64 = h
+        .app
+        .store
+        .lock()
+        .unwrap()
+        .conn
+        .query_row(
+            "SELECT failures FROM push_subscription WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(failures >= 1, "the internal endpoint was not refused");
+    assert!(h.received().is_empty());
+    stop(server).await;
 }

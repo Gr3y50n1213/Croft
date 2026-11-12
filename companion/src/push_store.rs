@@ -7,14 +7,15 @@
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use zeroize::Zeroizing;
 
-use crate::auth::token_hash;
 use crate::crypto::{self, Key};
 use crate::store::{now_ms, Store, StoreError};
 
 /// Most subscriptions one user may have.
 pub const MAX_SUBSCRIPTIONS: i64 = 10;
-/// Failed deliveries in a row after which a subscription is dropped.
+/// A subscription is dropped once its deliveries have failed this many times in a row...
 pub const MAX_FAILURES: i64 = 10;
+/// ...over at least this long (a push service's outage of a day or two drops nothing).
+pub const FAILING_FOR_MS: i64 = 3 * 24 * 60 * 60 * 1000;
 const CONTEXT: &str = "push-subscription";
 const VAPID_AAD: &[u8] = b"croft-companion/vapid/v1";
 
@@ -71,7 +72,7 @@ impl Store {
             .map_err(|_| StoreError::Damaged)?,
         );
         let sealed = crypto::seal_value(&data_key, user_id, CONTEXT, &plain)?;
-        let hash = token_hash(endpoint);
+        let hash = endpoint_key(&data_key, endpoint);
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -87,11 +88,16 @@ impl Store {
         if count >= MAX_SUBSCRIPTIONS {
             return Err(StoreError::Conflict);
         }
-        tx.execute(
+        // Only for a live session of the user (one signed out meanwhile gets none: `NoSuchUser`).
+        let added = tx.execute(
             "INSERT INTO push_subscription(user_id, session_id, sealed, endpoint_hash, created_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             SELECT ?1, ?2, ?3, ?4, ?5 FROM session
+             WHERE id = ?2 AND user_id = ?1 AND revoked_ms IS NULL",
             params![user_id, session_id, sealed, &hash[..], now_ms()],
         )?;
+        if added != 1 {
+            return Err(StoreError::NoSuchUser);
+        }
         let id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(id)
@@ -171,30 +177,36 @@ impl Store {
         Ok(out)
     }
 
-    /// Records a delivery's outcome: a success clears the failure count; a failure counts, and the
-    /// subscription goes after [`MAX_FAILURES`] in a row (or at once when `gone`).
+    /// Records a delivery's outcome at `now`: a success clears the failures; a failure counts, and
+    /// the subscription goes once it has failed [`MAX_FAILURES`] times in a row over at least
+    /// [`FAILING_FOR_MS`] (or at once when `gone`).
     pub fn push_result(
         &mut self,
         user_id: i64,
         id: i64,
         ok: bool,
         gone: bool,
+        now: i64,
     ) -> Result<(), StoreError> {
         if gone {
             self.delete_push(user_id, id)?;
         } else if ok {
             self.conn.execute(
-                "UPDATE push_subscription SET failures = 0 WHERE id = ?1 AND user_id = ?2",
+                "UPDATE push_subscription SET failures = 0, failing_since_ms = NULL
+                 WHERE id = ?1 AND user_id = ?2",
                 params![id, user_id],
             )?;
         } else {
             self.conn.execute(
-                "UPDATE push_subscription SET failures = failures + 1 WHERE id = ?1 AND user_id = ?2",
-                params![id, user_id],
+                "UPDATE push_subscription
+                 SET failures = failures + 1, failing_since_ms = COALESCE(failing_since_ms, ?3)
+                 WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id, now],
             )?;
             self.conn.execute(
-                "DELETE FROM push_subscription WHERE id = ?1 AND user_id = ?2 AND failures >= ?3",
-                params![id, user_id, MAX_FAILURES],
+                "DELETE FROM push_subscription
+                 WHERE id = ?1 AND user_id = ?2 AND failures >= ?3 AND failing_since_ms <= ?4",
+                params![id, user_id, MAX_FAILURES, now - FAILING_FOR_MS],
             )?;
         }
         Ok(())
@@ -226,6 +238,16 @@ impl Store {
                 })?;
         Ok(master.open(VAPID_AAD, &stored)?)
     }
+}
+
+/// The key that finds a user's subscription by endpoint: an HMAC under the user's data key, so the
+/// database alone does not tell whether two users share a push service endpoint, or which it is.
+fn endpoint_key(data_key: &Key, endpoint: &str) -> Vec<u8> {
+    let key = data_key.derive(b"croft-companion/push-endpoint/v1");
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key[..]);
+    ring::hmac::sign(&key, endpoint.as_bytes())
+        .as_ref()
+        .to_vec()
 }
 
 #[cfg(test)]
@@ -307,9 +329,59 @@ mod tests {
             ),
             Err(StoreError::Conflict)
         ));
-        // Signing the device out stops its subscriptions.
+        // Signing the device out removes its subscriptions (they no longer fill the cap), and a
+        // signed-out device cannot add one.
         s.revoke_session(ann, ann_session, now_ms()).unwrap();
         assert!(s.push_targets(&master, ann).unwrap().is_empty());
+        assert!(s.push_list(ann).unwrap().is_empty());
+        assert!(matches!(
+            s.add_push(
+                &master,
+                ann,
+                ann_session,
+                "https://push.example/late",
+                &key,
+                &[1; 16]
+            ),
+            Err(StoreError::NoSuchUser)
+        ));
+        s.start_session(ann, "laptop", false, now_ms()).unwrap();
+        let laptop = s.sessions(ann).unwrap()[0].id;
+        for i in 1..=MAX_SUBSCRIPTIONS {
+            s.add_push(
+                &master,
+                ann,
+                laptop,
+                &format!("https://push.example/{i}"),
+                &key,
+                &[1; 16],
+            )
+            .unwrap();
+        }
+        // Signing out everywhere (or a refresh token's reuse) removes them too.
+        s.conn
+            .execute(
+                "UPDATE session SET revoked_ms = ?2 WHERE user_id = ?1 AND revoked_ms IS NULL",
+                params![ann, now_ms()],
+            )
+            .unwrap();
+        assert!(s.push_list(ann).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_endpoint_key_is_per_user_and_not_a_plain_hash() {
+        let master = Key::generate().unwrap();
+        let mut s = Store::in_memory().unwrap();
+        s.check_master_key(&master).unwrap();
+        let ann = s.add_user(&master, "ann", Role::User).unwrap().id;
+        let bob = s.add_user(&master, "bob", Role::User).unwrap().id;
+        let a = endpoint_key(&s.data_key(&master, ann).unwrap(), "https://push.example/x");
+        let b = endpoint_key(&s.data_key(&master, bob).unwrap(), "https://push.example/x");
+        assert_ne!(a, b);
+        assert_ne!(
+            a,
+            crate::auth::token_hash("https://push.example/x").to_vec()
+        );
     }
 
     #[test]
@@ -330,19 +402,31 @@ mod tests {
                 &[1; 16],
             )
             .unwrap();
+        let t0 = now_ms();
         for _ in 0..MAX_FAILURES - 1 {
-            s.push_result(ann, id, false, false).unwrap();
+            s.push_result(ann, id, false, false, t0).unwrap();
         }
-        s.push_result(ann, id, true, false).unwrap();
-        for _ in 0..MAX_FAILURES - 1 {
-            s.push_result(ann, id, false, false).unwrap();
+        s.push_result(ann, id, true, false, t0).unwrap();
+        for _ in 0..MAX_FAILURES * 3 {
+            s.push_result(ann, id, false, false, t0).unwrap();
         }
-        assert_eq!(
-            s.push_list(ann).unwrap().len(),
-            1,
-            "a success reset the count"
-        );
-        s.push_result(ann, id, false, false).unwrap();
+        // Many failures in a short outage drop nothing.
+        assert_eq!(s.push_list(ann).unwrap().len(), 1);
+        s.push_result(ann, id, false, false, t0 + FAILING_FOR_MS - 1)
+            .unwrap();
+        assert_eq!(s.push_list(ann).unwrap().len(), 1);
+        // A success resets the clock.
+        s.push_result(ann, id, true, false, t0 + FAILING_FOR_MS)
+            .unwrap();
+        s.push_result(ann, id, false, false, t0 + FAILING_FOR_MS + 1)
+            .unwrap();
+        s.push_result(ann, id, false, false, t0 + 2 * FAILING_FOR_MS)
+            .unwrap();
+        assert_eq!(s.push_list(ann).unwrap().len(), 1, "too few failures");
+        for _ in 0..MAX_FAILURES {
+            s.push_result(ann, id, false, false, t0 + 2 * FAILING_FOR_MS + 1)
+                .unwrap();
+        }
         assert!(s.push_list(ann).unwrap().is_empty());
         let a = s.vapid_key(&master).unwrap();
         assert_eq!(*a, *s.vapid_key(&master).unwrap());

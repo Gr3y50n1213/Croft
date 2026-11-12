@@ -141,7 +141,9 @@ When a user's mail changes, the Companion wakes their apps with a Web Push messa
 distributors such as ntfy take for Android). The message says only "something changed" (`{"v":1,"type":"changed"}`), encrypted for the
 device; the app then syncs. At most one per 30 seconds per user. An app subscribes with `POST /api/push/subscriptions` (the
 `PushSubscription` JSON a browser or UnifiedPush gives it) after reading the Companion's key from `GET /api/push/vapid`; a subscription
-ends when its device signs out. Push services are reached through the same address policy as mail servers.
+ends when its device signs out. Push services are reached at public addresses only, whatever `mail_allowed_networks` allows (a
+self-hosted ntfy needs an address on the internet, which phones need anyway). A subscription whose push service keeps refusing goes
+after 10 refusals over 3 days or more; an outage of the push service drops nothing.
 
 ## Commands
 

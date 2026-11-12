@@ -5,9 +5,11 @@
 //! content-free ping (`{"v":1,"type":"changed"}`, Web Push encrypted, with VAPID) to every live
 //! subscription of that user, at most one per window (30 seconds) per user. The app then syncs.
 //!
-//! Delivery goes through the core's HTTPS client with the address policy (an endpoint is a
-//! client's choice). `404`/`410` drop a subscription; other failures are counted
-//! (`push_store::MAX_FAILURES`).
+//! Delivery goes through the core's HTTPS client to public addresses only (an endpoint is a
+//! client's choice; `mail_allowed_networks` does not apply). `404`/`410` drop a subscription; other
+//! refusals (and an endpoint that now leads to an internal address) count
+//! (`push_store::MAX_FAILURES` over `FAILING_FOR_MS`); an unreachable service, a
+//! `5xx` or a `429` counts nothing (an outage of the push service is not the subscription's fault).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -55,18 +57,20 @@ impl Relay {
         }
     }
 
-    /// Whether an endpoint may be used: `https` (plain `http` on this machine only in tests), no
-    /// user name, at most 2048 characters. The address policy is applied again at delivery.
+    /// Whether an endpoint may be used: `https` as the delivering client reads it (plain `http` on
+    /// this machine only in tests), no user name, at most 2048 characters. Where it may connect is
+    /// checked again at delivery.
     pub fn endpoint_ok(&self, endpoint: &str) -> bool {
+        use croft_protocols::oauth::fetch;
+        // Both parsers must agree: the standard one for the user name, the delivering one for what
+        // is sent.
         let Ok(url) = url::Url::parse(endpoint) else {
             return false;
         };
-        let scheme_ok = url.scheme() == "https"
-            || (self.allow_loopback_http
-                && url.scheme() == "http"
-                && croft_protocols::oauth::fetch::is_loopback_http(endpoint));
+        let reachable = fetch::is_push_url(endpoint)
+            || (self.allow_loopback_http && fetch::is_loopback_http(endpoint));
         endpoint.len() <= 2048
-            && scheme_ok
+            && reachable
             && url.username().is_empty()
             && url.password().is_none()
             && url.host_str().is_some()
@@ -82,12 +86,16 @@ impl Relay {
             w.insert(user_id, epoch);
         }
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            self.forget(user_id, epoch);
             return;
         };
+        // Changes from here on are watched (read now, not when the task first runs).
+        let after = core.change_seq();
         handle.spawn(watch_loop(
             app.clone(),
             user_id,
             epoch,
+            after,
             Arc::downgrade(core),
         ));
     }
@@ -100,8 +108,7 @@ impl Relay {
     }
 }
 
-async fn watch_loop(app: App, user_id: i64, epoch: u64, weak: Weak<Core>) {
-    let mut after = weak.upgrade().map_or(0, |c| c.change_seq());
+async fn watch_loop(app: App, user_id: i64, epoch: u64, mut after: u64, weak: Weak<Core>) {
     let mut last_sent = i64::MIN / 2;
     loop {
         let Some(core) = weak.upgrade() else {
@@ -150,7 +157,37 @@ async fn watch_loop(app: App, user_id: i64, epoch: u64, weak: Weak<Core>) {
     app.relay.forget(user_id, epoch);
 }
 
-/// Sends the ping to every live subscription of the user.
+/// What a delivery's answer means for the subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Delivered,
+    /// The push service says the subscription is no more (`404`, `410`).
+    Gone,
+    /// The push service refused this message (another `4xx`).
+    Refused,
+    /// Nothing is learnt about the subscription: unreachable, `5xx`, `429`, `408`.
+    Unknown,
+}
+
+fn outcome(
+    answer: &Result<
+        croft_protocols::oauth::fetch::Answer,
+        croft_protocols::oauth::fetch::FetchError,
+    >,
+) -> Outcome {
+    match answer {
+        Ok(a) if (200..300).contains(&a.status) => Outcome::Delivered,
+        Ok(a) if a.status == 404 || a.status == 410 => Outcome::Gone,
+        Ok(a) if a.status == 408 || a.status == 429 => Outcome::Unknown,
+        Ok(a) if (400..500).contains(&a.status) => Outcome::Refused,
+        // Never a push URL, or one that now leads somewhere it may not go.
+        Err(croft_protocols::oauth::fetch::FetchError::BadUrl) => Outcome::Gone,
+        Err(croft_protocols::oauth::fetch::FetchError::Refused) => Outcome::Refused,
+        _ => Outcome::Unknown,
+    }
+}
+
+/// Sends the ping to every live subscription of the user, to all of them at once.
 pub async fn ping(app: &App, user_id: i64) {
     let auth = app.auth.clone();
     let store = app.store.clone();
@@ -170,44 +207,91 @@ pub async fn ping(app: &App, user_id: i64) {
     let Ok(vapid) = Vapid::from_pkcs8(&vapid) else {
         return;
     };
+    let vapid = Arc::new(vapid);
     let now_s = crate::store::now_ms() / 1000;
-    let subject = app.auth.public_url().to_owned();
+    let subject: Arc<str> = Arc::from(app.auth.public_url());
+    let mut sends = tokio::task::JoinSet::new();
     for t in targets {
-        if !app.relay.endpoint_ok(&t.endpoint) {
-            record(app, user_id, t.id, false, true).await;
-            continue;
-        }
-        let (Ok(body), Ok(authorization)) = (
-            webpush::encrypt(&t.p256dh, &t.auth, PAYLOAD),
-            vapid.authorization(&t.endpoint, &subject, now_s),
-        ) else {
-            record(app, user_id, t.id, false, true).await;
-            continue;
-        };
-        let headers = [
-            ("TTL", "3600"),
-            ("Urgency", "normal"),
-            ("Content-Encoding", "aes128gcm"),
-        ];
-        let answer =
-            croft_protocols::oauth::fetch::post_push(&t.endpoint, &authorization, &headers, &body)
-                .await;
-        let (ok, gone) = match answer {
-            Ok(a) if (200..300).contains(&a.status) => (true, false),
-            Ok(a) if a.status == 404 || a.status == 410 => (false, true),
-            _ => (false, false),
-        };
-        record(app, user_id, t.id, ok, gone).await;
+        let (app, vapid, subject) = (app.clone(), vapid.clone(), subject.clone());
+        sends.spawn(async move {
+            let result = deliver(&app, &vapid, &subject, now_s, &t).await;
+            (t.id, result)
+        });
     }
-}
-
-async fn record(app: &App, user_id: i64, id: i64, ok: bool, gone: bool) {
+    let mut results = Vec::new();
+    while let Some(r) = sends.join_next().await {
+        if let Ok(r) = r {
+            results.push(r);
+        }
+    }
     let store = app.store.clone();
+    let now = crate::store::now_ms();
     let _ = tokio::task::spawn_blocking(move || {
-        store
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push_result(user_id, id, ok, gone)
+        let mut s = store.lock().unwrap_or_else(PoisonError::into_inner);
+        for (id, result) in results {
+            let _ = match result {
+                Outcome::Delivered => s.push_result(user_id, id, true, false, now),
+                Outcome::Gone => s.push_result(user_id, id, false, true, now),
+                Outcome::Refused => s.push_result(user_id, id, false, false, now),
+                Outcome::Unknown => Ok(()),
+            };
+        }
     })
     .await;
+}
+
+async fn deliver(
+    app: &App,
+    vapid: &Vapid,
+    subject: &str,
+    now_s: i64,
+    t: &crate::push_store::Subscription,
+) -> Outcome {
+    use croft_protocols::oauth::fetch;
+    if !app.relay.endpoint_ok(&t.endpoint) {
+        return Outcome::Gone;
+    }
+    let (Ok(body), Ok(authorization)) = (
+        webpush::encrypt(&t.p256dh, &t.auth, PAYLOAD),
+        vapid.authorization(&t.endpoint, subject, now_s),
+    ) else {
+        return Outcome::Gone;
+    };
+    let headers = [
+        ("TTL", "3600"),
+        ("Urgency", "normal"),
+        ("Content-Encoding", "aes128gcm"),
+    ];
+    let answer = if app.relay.allow_loopback_http && fetch::is_loopback_http(&t.endpoint) {
+        fetch::post_push_to_loopback_for_tests(&t.endpoint, &authorization, &headers, &body).await
+    } else {
+        fetch::post_push(&t.endpoint, &authorization, &headers, &body).await
+    };
+    outcome(&answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use croft_protocols::oauth::fetch::{Answer, FetchError};
+
+    #[test]
+    fn only_a_refusal_counts_against_a_subscription() {
+        let status = |status| {
+            Ok::<_, FetchError>(Answer {
+                status,
+                body: Vec::new().into(),
+            })
+        };
+        assert_eq!(outcome(&status(201)), Outcome::Delivered);
+        assert_eq!(outcome(&status(410)), Outcome::Gone);
+        assert_eq!(outcome(&status(404)), Outcome::Gone);
+        assert_eq!(outcome(&status(403)), Outcome::Refused);
+        assert_eq!(outcome(&status(413)), Outcome::Refused);
+        assert_eq!(outcome(&status(429)), Outcome::Unknown);
+        assert_eq!(outcome(&status(503)), Outcome::Unknown);
+        assert_eq!(outcome(&Err(FetchError::Unreachable)), Outcome::Unknown);
+        assert_eq!(outcome(&Err(FetchError::Refused)), Outcome::Refused);
+        assert_eq!(outcome(&Err(FetchError::BadUrl)), Outcome::Gone);
+    }
 }

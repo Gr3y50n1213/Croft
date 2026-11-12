@@ -5,6 +5,43 @@ unverified, the next step.
 
 ---
 
+## T28: The Companion's push relay (12 November 2026)
+
+**Status:** draft pull request #46 on `task/t28` (CI green on the shutdown fix, run 43308057266); independent review done, every finding
+fixed (DECISIONS). Merged with the pull request that carries this entry.
+
+**What was built.** Content-free push for the apps, by the standard browsers and UnifiedPush use:
+- **Web Push on `ring`.** RFC 8291 encryption (`aes128gcm`) and RFC 8292 VAPID (ES256), no web-push crate. The ping is
+  `{"v":1,"type":"changed"}` and nothing else.
+- **Subscriptions.** `GET /api/push/vapid`, `POST`/`GET /api/push/subscriptions`, `DELETE /api/push/subscriptions/{id}`. Each is sealed
+  with the user's data key and tied to the device that made it (at most 10 per user); a device that signs out loses them.
+- **The relay.** Each user's open core is watched (`next_change`); a change pings all that user's devices at once, at most once per
+  30 seconds per user. `404`/`410` remove a subscription; repeated refusals over 3 days remove it; an outage removes nothing.
+- **Delivery.** Through the core's HTTPS client, which gained extra request headers and an internet-only mode: a push endpoint never
+  reaches the Companion's own network, even where `mail_allowed_networks` lets mail servers.
+- **Closing a core.** The watcher lets go and closing waits for it, so no closed core outlives its close (this also fixed a crash at the
+  test process's exit seen once on CI).
+- **Moved to T34.** The Android flavours registering a UnifiedPush distributor (phones first connect to the Companion there).
+
+**Checks.** 140 companion tests, among them:
+- RFC 8291's Appendix A reproduced; a round trip; VAPID verified with the published key;
+- against a fake push service on this machine and the core's IMAP test server: a burst of changes gives a prompt first ping and never
+  more than one per window, decrypted by the device's key to the fixed body, with the right headers;
+- `410` removes; a signed-out device gets nothing while the user's other device still does;
+- one user's changes never ping another's devices, who cannot list or remove them;
+- bad subscriptions refused;
+- a closed core is let go by its watcher and a reopened one is watched;
+- an endpoint on this machine is refused even with every address allowed for mail.
+
+Plus the store's tests (sealing, the cap, the sign-out trigger, the HMAC key, failures over time) and the core's address-policy test for
+`post_push`. Clippy is clean in both workspaces.
+
+**Review** (one independent agent, opus, high effort): no high, 2 medium, lows. All fixed with regression tests; not re-reviewed.
+
+**Not verified here:** real push services (Mozilla, Google and Apple for browsers; ntfy and other UnifiedPush distributors).
+
+---
+
 ## T27: The Companion's JMAP API for clients (12 November 2026)
 
 **Status:** draft pull request #44 on `task/t27` (CI green before the review fixes, run 43298272597); independent review done, every

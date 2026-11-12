@@ -91,9 +91,20 @@ async fn send(
         body,
         &[],
         max_answer,
-        true,
+        Reach::Admin,
     )
     .await
+}
+
+/// Which addresses a request may reach.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// An address the server's admin configured: the process's policy does not apply.
+    Admin,
+    /// Public addresses only, whatever the process's policy allows (push endpoints).
+    Internet,
+    /// Plain http on this machine (tests of push only).
+    Loopback,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -105,19 +116,30 @@ async fn send_with(
     body: &[u8],
     extra_headers: &[(&str, &str)],
     max_answer: usize,
-    admin_configured: bool,
+    reach: Reach,
 ) -> Result<Answer, FetchError> {
     let url = Url::parse(url).ok_or(FetchError::BadUrl)?;
     if !url.is_allowed() {
         return Err(FetchError::BadUrl);
     }
     // The OIDC provider is the admin's own choice, so the address policy (for what users choose)
-    // does not apply: a provider on the same LAN or Docker network keeps working.
+    // does not apply: a provider on the same LAN or Docker network keeps working. A push endpoint
+    // is a client's: https to public addresses only.
     let http = Http::new(Trust::Roots, TIMEOUT, DEADLINE);
-    let http = if admin_configured {
-        http.admin_configured()
-    } else {
-        http
+    let http = match reach {
+        Reach::Admin => http.admin_configured(),
+        Reach::Internet => {
+            if !url.secure {
+                return Err(FetchError::BadUrl);
+            }
+            http.internet_only()
+        }
+        Reach::Loopback => {
+            if url.secure || !is_loopback_name(&url.host) {
+                return Err(FetchError::BadUrl);
+            }
+            http.admin_configured()
+        }
     };
     let req = HttpRequest {
         method,
@@ -168,9 +190,16 @@ pub async fn post_form(
     .await
 }
 
+/// Whether `url` can be delivered to as a push endpoint: an absolute `https` URL this client
+/// reads (the same parser that sends).
+pub fn is_push_url(url: &str) -> bool {
+    Url::parse(url).is_some_and(|u| u.secure)
+}
+
 /// `POST`s a Web Push message (T28) to a push service's endpoint: `body` is the encrypted
-/// message, `headers` its `TTL`, `Urgency` and `Content-Encoding`. The endpoint is a client's
-/// choice, so unlike [`get`] and [`post_form`] the process's address policy applies.
+/// message, `headers` its `TTL`, `Urgency` and `Content-Encoding`. An endpoint is a client's
+/// choice: only public addresses are reached, whatever the process's address policy allows (an
+/// admin who opens a LAN for mail servers does not open it to push endpoints).
 pub async fn post_push(
     url: &str,
     authorization: &str,
@@ -185,7 +214,27 @@ pub async fn post_push(
         body,
         headers,
         4096,
-        false,
+        Reach::Internet,
+    )
+    .await
+}
+
+/// [`post_push`] to plain http on this machine: for tests of push only (a fake push service).
+pub async fn post_push_to_loopback_for_tests(
+    url: &str,
+    authorization: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<Answer, FetchError> {
+    send_with(
+        "POST",
+        url,
+        Some(authorization),
+        Some("application/octet-stream"),
+        body,
+        headers,
+        4096,
+        Reach::Loopback,
     )
     .await
 }

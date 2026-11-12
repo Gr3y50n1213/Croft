@@ -25,6 +25,9 @@ mod util {
 pub(crate) mod encoding;
 pub(crate) mod macros;
 
+// CROFT-PATCH: the work budget (see CROFT-PATCHES.md, change 3).
+pub mod budget;
+
 pub mod driver;
 pub mod serialize;
 pub mod tokenizer;

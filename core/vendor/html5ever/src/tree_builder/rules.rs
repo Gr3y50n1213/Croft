@@ -19,6 +19,7 @@ use crate::tree_builder::{
     html_elem, ElemName, NodeOrText::AppendNode, StrTendril, Tag, TreeBuilder, TreeSink,
 };
 use crate::QualName;
+use crate::budget; // CROFT-PATCH: the work budget (CROFT-PATCHES.md, change 3).
 use markup5ever::interface::tree_builder::create_element_with_flags;
 use markup5ever::{expanded_name, local_name, ns};
 use std::borrow::Cow::Borrowed;
@@ -232,6 +233,7 @@ where
                     },
 
                     Token::Tag(tag @ tag!(<script>)) => {
+                        self.charge_node(&tag.attrs, false); // CROFT-PATCH: a new node.
                         let elem = create_element_with_flags(
                             &self.sink,
                             QualName::new(None, ns!(html), local_name!("script")),
@@ -569,7 +571,7 @@ where
 
                     let mut to_close = None;
                     for node in self.open_elems.borrow().iter().rev() {
-                        let elem_name = self.sink.elem_name(node);
+                        let elem_name = self.charged_elem_name(node);
                         let name = elem_name.expanded();
                         let can_close = if list {
                             close_list(name)
@@ -636,7 +638,7 @@ where
                                 .parse_error(Borrowed("Null form element pointer on </form>"));
                             return ProcessResult::Done;
                         };
-                        if !self.in_scope(default_scope, |n| self.sink.same_node(&node, &n)) {
+                        if !self.in_scope(default_scope, |n| self.charged_same_node(&node, &n)) {
                             self.sink
                                 .parse_error(Borrowed("Form element not in scope on </form>"));
                             return ProcessResult::Done;
@@ -644,7 +646,7 @@ where
                         self.generate_implied_end_tags(cursory_implied_end);
                         let current = self.current_node().clone();
                         self.remove_from_stack(&node);
-                        if !self.sink.same_node(&current, &node) {
+                        if !self.charged_same_node(&current, &node) {
                             self.sink
                                 .parse_error(Borrowed("Bad open element on </form>"));
                         }
@@ -680,7 +682,7 @@ where
                             .open_elems
                             .borrow()
                             .iter()
-                            .any(|elem| self.sink.same_node(elem, &option))
+                            .any(|elem| self.charged_same_node(elem, &option))
                         {
                             self.sink
                                 .maybe_clone_an_option_into_selectedcontent(&option);
@@ -1138,6 +1140,8 @@ where
                 Token::NullCharacter => self.unexpected(&token),
 
                 Token::Characters(split, text) => {
+                    // CROFT-PATCH: a kept piece of table text holds memory until it is flushed.
+                    budget::charge(1);
                     self.pending_table_text.borrow_mut().push((split, text));
                     ProcessResult::Done
                 },
@@ -1153,6 +1157,11 @@ where
                     if contains_nonspace {
                         self.sink.parse_error(Borrowed("Non-space table text"));
                         for (split, text) in pending.into_iter() {
+                            // CROFT-PATCH: each piece is foster parented (a walk of the stack
+                            // and of the table's siblings): stop once the budget is spent.
+                            if !budget::charge(1) {
+                                break;
+                            }
                             match self.foster_parent_in_body(Token::Characters(split, text)) {
                                 ProcessResult::Done => (),
                                 _ => panic!("not prepared to handle this!"),
@@ -1160,6 +1169,10 @@ where
                         }
                     } else {
                         for (_, text) in pending.into_iter() {
+                            // CROFT-PATCH: stop once the budget is spent.
+                            if !budget::charge(1) {
+                                break;
+                            }
                             self.append_text(text);
                         }
                     }
@@ -1661,7 +1674,7 @@ where
                     let eq;
                     {
                         let open_elems = self.open_elems.borrow();
-                        let node_name = self.sink.elem_name(&open_elems[stack_idx]);
+                        let node_name = self.charged_elem_name(&open_elems[stack_idx]);
                         html = *node_name.ns() == ns!(html);
                         eq = node_name.local_name().eq_ignore_ascii_case(&tag.name);
                     }

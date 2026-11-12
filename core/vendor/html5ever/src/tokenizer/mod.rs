@@ -356,6 +356,12 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
 
     /// Run the state machine for as long as we can.
     fn run(&self, input: &BufferQueue) -> TokenizerResult<Sink::Handle> {
+        // CROFT-PATCH: once the work budget is spent (or cancelled; see `crate::budget`), the
+        // rest of the input is dropped instead of tokenized: the tree builder ignores it anyway.
+        if crate::budget::spent() {
+            while input.pop_front().is_some() {}
+            return TokenizerResult::Done;
+        }
         if self.opts.profile {
             loop {
                 let state = self.state.get();
@@ -384,6 +390,11 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
             }
         } else {
             loop {
+                // CROFT-PATCH: see the top of this function.
+                if crate::budget::spent() {
+                    while input.pop_front().is_some() {}
+                    break;
+                }
                 match self.step(input) {
                     ProcessResult::Continue => (),
                     ProcessResult::Suspend => break,
@@ -545,6 +556,9 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
         self.current_attr_name.borrow_mut().clear();
         // Check for a duplicate attribute.
         // FIXME: the spec says we should error as soon as the name is finished.
+        // CROFT-PATCH: the check walks the tag's attributes so far (time quadratic in the
+        // attributes of one tag): charged per attribute compared.
+        crate::budget::charge(1 + self.current_tag_attrs.borrow().len() as u64);
         let dup = {
             self.current_tag_attrs
                 .borrow()
@@ -594,6 +608,9 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
         );
 
         let is_in_attribute = matches!(self.state.get(), states::AttributeValue(_));
+        // CROFT-PATCH: a character reference (and every bare `&`) runs a sub-tokenizer that
+        // allocates and may push characters back: charged as a fixed amount of work.
+        crate::budget::charge(crate::budget::CHAR_REF_UNITS);
         *self.char_ref_tokenizer.borrow_mut() = Some(CharRefTokenizer::new(is_in_attribute));
     }
 
@@ -623,6 +640,8 @@ impl<Sink: TokenSink> Tokenizer<Sink> {
     }
 
     fn emit_error(&self, error: Cow<'static, str>) {
+        // CROFT-PATCH: every error report formats a message: charged (see `crate::budget`).
+        crate::budget::charge(crate::budget::ERROR_UNITS);
         self.process_token_and_continue(ParseError(error));
     }
 }

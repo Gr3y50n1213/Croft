@@ -195,6 +195,11 @@ impl Http {
         if addrs.is_empty() {
             return Err(unreachable());
         }
+        // T26: the process's address policy (the Companion refuses its own network).
+        let addrs = crate::netpolicy::filter(addrs);
+        if addrs.is_empty() {
+            return Err(BackendError::Permanent(crate::netpolicy::REFUSED.into()));
+        }
         // Plain `http` is for a test server on this machine: every address the name resolves to
         // must be loopback, or the credential could go out in the clear.
         if !url.secure && addrs.iter().any(|a| !a.ip().is_loopback()) {

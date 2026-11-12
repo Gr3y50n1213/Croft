@@ -159,6 +159,11 @@ pub(crate) async fn connect_client(
     if addrs.is_empty() {
         return Err(OpError::dropped("could not look up the server"));
     }
+    // T26: the process's address policy (the Companion refuses its own network).
+    let addrs = crate::netpolicy::filter(addrs);
+    if addrs.is_empty() {
+        return Err(OpError::permanent(crate::netpolicy::REFUSED));
+    }
     if config.security == Security::PlaintextForTestsOnly
         && !addrs.iter().all(|a| a.ip().is_loopback())
     {

@@ -140,6 +140,53 @@ class ManifestCheck(unittest.TestCase):
             p.write_text((BASE % ("", "")).replace(' android:permission="android.permission.DUMP"', ""))
             self.assertEqual(len(crm.check(p, ALLOW)), 1)
 
+    def test_the_notification_and_workmanager_entries_of_t20_pass(self):
+        top = (
+            '<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />'
+            '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />'
+            '<uses-permission android:name="android.permission.WAKE_LOCK" />'
+        )
+        app = (
+            '<service android:name="androidx.work.impl.background.systemjob.SystemJobService" android:exported="true"'
+            ' android:permission="android.permission.BIND_JOB_SERVICE" />'
+            '<receiver android:name="androidx.work.impl.diagnostics.DiagnosticsReceiver" android:exported="true"'
+            ' android:permission="android.permission.DUMP" />'
+            '<activity-alias android:name=".OpenFromNotification" android:exported="false" android:targetActivity=".MainActivity" />'
+            '<receiver android:name=".notify.NotificationActionReceiver" android:exported="false" />'
+        )
+        self.assertEqual(run(extra_top=top, extra_app=app), [])
+
+    def test_the_job_service_must_keep_its_guard(self):
+        errs = run(extra_app='<service android:name="androidx.work.impl.background.systemjob.SystemJobService" android:exported="true" />')
+        self.assertEqual(len(errs), 1)
+
+    def test_store_forbidden_permissions_fail_even_if_allowlisted(self):
+        import json
+        for name in (
+            "android.permission.SCHEDULE_EXACT_ALARM",
+            "android.permission.USE_EXACT_ALARM",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+            "android.permission.READ_CONTACTS",
+            "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        ):
+            with tempfile.TemporaryDirectory() as d:
+                allow = json.loads(ALLOW.read_text())
+                allow["uses-permission"][name] = "a mistake"
+                a = Path(d) / "allow.json"
+                a.write_text(json.dumps(allow))
+                p = Path(d) / "m.xml"
+                p.write_text(BASE % (f'<uses-permission android:name="{name}" />', ""))
+                errs = crm.check(p, a)
+                self.assertEqual(len(errs), 1, name)
+                self.assertIn("forbidden", errs[0])
+
+    def test_a_foreground_service_type_fails_even_unexported(self):
+        errs = run(extra_app='<service android:name="androidx.work.impl.foreground.SystemForegroundService" android:exported="false"'
+                   ' android:foregroundServiceType="dataSync" />')
+        self.assertEqual(len(errs), 1)
+        self.assertIn("foreground service type", errs[0])
+
     def test_debuggable_fails(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "m.xml"

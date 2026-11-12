@@ -1097,6 +1097,13 @@ impl Core {
                 inner
                     .handle
                     .read(|db| accounts::delete(db.connection(), id))?;
+                // The notification marker lives in the setting table, outside the account's rows.
+                // After the delete, so a background check that was still running cannot write a
+                // baseline back for an id that a later account may get again.
+                inner
+                    .handle
+                    .forget_notified(id)
+                    .map_err(|_| CoreError::Internal)?;
                 inner.hub.accounts_changed([id]);
                 Ok::<(), CoreError>(())
             },

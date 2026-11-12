@@ -87,7 +87,8 @@ class MainActivityTest {
         openSettings()
         val expected = System.getProperty("croft.cargoVersion")
         // The app refuses a library with another version, so the screen shows the one it expects.
-        rule.onNodeWithText("Core version $expected. FFI API version $EXPECTED_FFI_API_VERSION").assertIsDisplayed()
+        // The About row is below the fold since S46 Notifications joined the list: scroll to it first.
+        rule.onNodeWithText("Core version $expected. FFI API version $EXPECTED_FFI_API_VERSION").performScrollTo().assertIsDisplayed()
     }
 
     @Test

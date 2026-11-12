@@ -304,10 +304,12 @@ dependencies {
     // AndroidX Views libraries for the build to link, and R8 removes what the app does not call.
     implementation(libs.material.components)
     implementation(libs.androidx.datastore)
+    implementation(libs.androidx.work.runtime)
     implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.jna)
 
     testImplementation(libs.junit)
+    testImplementation(libs.androidx.work.testing)
     testImplementation(libs.robolectric)
     testImplementation(libs.roborazzi)
     testImplementation(libs.roborazzi.compose)

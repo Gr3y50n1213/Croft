@@ -3,6 +3,9 @@
   "uses-permission": {
     "android.permission.INTERNET": "Mail sync: the Rust core opens its own TLS connections to the person's IMAP and SMTP servers (docs/store/READINESS.md, permissions table; T16).",
     "android.permission.ACCESS_NETWORK_STATE": "The connectivity callback (ConnectivityManager.registerDefaultNetworkCallback) that tells the core whether the device has a network, so that the Offline banner is true and nothing is sent while offline (T16). Normal permission, no data leaves the device.",
+    "android.permission.POST_NOTIFICATIONS": "T20, S32: new-mail notifications. Runtime permission on Android 13 and later, asked only from S07 after the first account; the app works fully without it (docs/store/READINESS.md, permissions table).",
+    "android.permission.RECEIVE_BOOT_COMPLETED": "Merged by WorkManager (T20): it restores the periodic check's schedule after a restart (its RescheduleReceiver). Croft has no boot receiver of its own. Normal permission (docs/store/READINESS.md, permissions table).",
+    "android.permission.WAKE_LOCK": "Merged by WorkManager (T20): held by WorkManager while the periodic check runs. Normal permission, no data leaves the device.",
     "${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "AndroidX core adds this signature-level permission (declared by the app itself, protectionLevel signature) so that dynamically registered receivers are not exported; not grantable to other apps."
   },
   "permission": {
@@ -25,6 +28,14 @@
     },
     "receiver:androidx.profileinstaller.ProfileInstallReceiver": {
       "why": "AndroidX profileinstaller (baseline profiles): lets the shell trigger profile installation. Only the system or adb can hold android.permission.DUMP, so other apps cannot call it.",
+      "permission": "android.permission.DUMP"
+    },
+    "service:androidx.work.impl.background.systemjob.SystemJobService": {
+      "why": "WorkManager (T20): the JobScheduler service that runs the periodic check. Only the system can bind it (android.permission.BIND_JOB_SERVICE).",
+      "permission": "android.permission.BIND_JOB_SERVICE"
+    },
+    "receiver:androidx.work.impl.diagnostics.DiagnosticsReceiver": {
+      "why": "WorkManager (T20): lets the shell ask for WorkManager's diagnostics in the log. Only the system or adb can hold android.permission.DUMP, so other apps cannot call it.",
       "permission": "android.permission.DUMP"
     }
   },

@@ -12,6 +12,7 @@
 //!    [`outbox_store::PersistentOutbox`] keeps it in an [`outbox_store::OutboxStore`].
 
 pub mod compose;
+pub mod notify;
 pub mod ops;
 pub mod outbox;
 pub mod outbox_store;

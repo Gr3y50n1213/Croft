@@ -24,6 +24,10 @@ FFI, one sends to the other, the message arrives. JVM: the app's onboarding back
 Robolectric: a JMAP-only lookup reaches S04 saying JMAP. Two older tests that used a JMAP-only server as "refused input" now use
 input that is still refused (no server at all).
 
+**Review** (one independent agent): six findings, all fixed (REVIEW-QUEUE), with tests: no request before the trust question, a
+changed pin is `CertificateChanged`, an IMAP account on a JMAP-publishing server signs in again over IMAP, S05 settings stay IMAP, a raw
+OAuth token is refused for JMAP.
+
 **Not verified:** a real Fastmail or self-hosted Stalwart account on a phone.
 
 ---

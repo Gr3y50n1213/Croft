@@ -32,8 +32,8 @@ pub use imap::{
     ImapBackend, ImapConfig, Security,
 };
 pub use jmap::{
-    probe_certificate as probe_jmap_certificate, IdStoreError, JmapBackend, JmapConfig,
-    JmapIdStore, JmapSubmitter, MemoryIdStore,
+    check_certificate as check_jmap_certificate, probe_certificate as probe_jmap_certificate,
+    IdStoreError, JmapBackend, JmapConfig, JmapIdStore, JmapSubmitter, MemoryIdStore,
 };
 pub use smtp::{
     probe_certificate as probe_smtp_certificate, SendReceipt, SmtpConfig, SmtpSecurity, SmtpSender,

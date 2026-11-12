@@ -84,7 +84,8 @@ fun SignInScreen(
         // The server the account will use (T22: a server that offers JMAP is used over JMAP, unless it is a well-known provider's).
         val jmapHost = state.discovered?.takeIf { it.provider == null }?.jmap?.let { android.net.Uri.parse(it).host }
         AccountCard(state.email, jmapHost ?: imap?.host, jmap = jmapHost != null)
-        CroftTextField(
+        // A JMAP-only server (T22) signs in with the address: no user name to edit.
+        if (imap != null) CroftTextField(
             value = username, onValueChange = { username = it },
             label = stringResource(R.string.onb_username_label),
             modifier = Modifier.testTag(OnboardingTags.USERNAME),

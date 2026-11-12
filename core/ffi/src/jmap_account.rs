@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use croft_protocols::jmap::{IdStoreError, JmapIdStore};
 use croft_protocols::{
-    probe_jmap_certificate, BackendError, BackendFuture, CertFingerprint, Credential, JmapBackend,
+    check_jmap_certificate, BackendError, BackendFuture, CertFingerprint, Credential, JmapBackend,
     JmapConfig, JmapSubmitter, MailBackend, MailSubmitter, MemoryIdStore, Uid,
 };
 use croft_storage::jmap_ids::SqliteJmapIdStore;
@@ -175,55 +175,55 @@ pub(crate) fn backend(
     )
 }
 
-/// Signs in to a JMAP server once to check the settings and the password (nothing is stored; the
-/// id map is a throwaway one). With no pin, a failure that is not the password is looked at again:
-/// when the server answers with the certificate pinned, the certificate was the problem and the
-/// person is asked to trust it (`UntrustedCertificate`, or `CertificateChanged` when the stored
-/// account of this address used to reach it without a pin). Returns the pin the check used.
+/// Checks a JMAP account's settings and password (nothing is stored; the id map is a throwaway
+/// one). **The certificate is checked first, without the credential**, exactly as for IMAP: the
+/// password is only ever sent to a server whose certificate chains to a trusted root or is the
+/// one pinned (`pin`: the person confirmed it, or the stored account's). A self-signed one that is
+/// not pinned yet is the trust question (`UntrustedCertificate`, or `CertificateChanged` when the
+/// stored account of this address used to reach the server without a pin); one that differs from
+/// the pin is `CertificateChanged`; an expired one or one for another name is
+/// `CertificateInvalid`. Returns the pin the check used.
 pub(crate) async fn verify(
     config: JmapConfig,
     credential: &FfiCredential,
     pin: Option<CertFingerprint>,
     had_no_pin: bool,
 ) -> Result<Option<String>, VerifyFailure> {
-    let attempt = |config: JmapConfig| async move {
-        let c: Credential = credential
-            .to_credential()
-            .ok_or(VerifyFailure::WrongPassword)?;
-        let backend = JmapBackend::new(config, c, Arc::new(MemoryIdStore::new()))
-            .map_err(|_| VerifyFailure::BadSettings)?;
-        Ok::<_, VerifyFailure>(backend.list_folders().await.map(|_| ()))
+    use croft_protocols::CertificateProblem as P;
+    let config = match pin {
+        Some(p) => config.with_pinned_cert(p),
+        None => config,
     };
-    let pinned = |p: CertFingerprint| config.clone().with_pinned_cert(p);
-    let first = match pin {
-        Some(p) => attempt(pinned(p)).await?,
-        None => attempt(config.clone()).await?,
-    };
-    match first {
-        Ok(()) => Ok(pin.map(|p| p.to_string())),
-        Err(BackendError::Auth(_)) if pin.is_some() => Err(VerifyFailure::WrongPassword),
-        Err(e) if pin.is_some() => Err(failure_of(&e)),
-        Err(e) => {
-            // The JMAP client reports a certificate it cannot verify as `Auth` too (a captive
-            // portal fails every certificate). Was it the certificate? Only a server that works
-            // once pinned to its own certificate says so; one that still refuses the sign-in
-            // pinned has a wrong password.
-            let Ok(fingerprint) = probe_jmap_certificate(&config).await else {
-                return Err(failure_of(&e));
-            };
-            match attempt(pinned(fingerprint)).await? {
-                Ok(()) => {
-                    let fingerprint = fingerprint.to_string();
-                    Err(if had_no_pin {
-                        VerifyFailure::CertificateChanged { fingerprint }
-                    } else {
-                        VerifyFailure::UntrustedCertificate { fingerprint }
-                    })
-                }
-                Err(BackendError::Auth(_)) => Err(VerifyFailure::WrongPassword),
-                Err(_) => Err(failure_of(&e)),
-            }
+    match check_jmap_certificate(&config).await {
+        Ok(()) => {}
+        Err(P::UnknownIssuer { fingerprint }) if pin.is_none() => {
+            let fingerprint = fingerprint.to_string();
+            return Err(if had_no_pin {
+                VerifyFailure::CertificateChanged { fingerprint }
+            } else {
+                VerifyFailure::UntrustedCertificate { fingerprint }
+            });
         }
+        Err(P::PinMismatch { fingerprint }) => {
+            return Err(VerifyFailure::CertificateChanged {
+                fingerprint: fingerprint.to_string(),
+            })
+        }
+        Err(P::CannotConnect) => return Err(VerifyFailure::CannotConnect),
+        Err(P::NoSecureConnection) => return Err(VerifyFailure::NoSecureConnection),
+        Err(_) => return Err(VerifyFailure::CertificateInvalid),
+    }
+    // A JMAP account signs in with a password only (OAuth is for Gmail and Outlook over IMAP).
+    let c: Credential = match credential.to_asked() {
+        Asked::Credential(c @ Credential::Password(_)) => c,
+        _ => return Err(VerifyFailure::WrongPassword),
+    };
+    let backend = JmapBackend::new(config, c, Arc::new(MemoryIdStore::new()))
+        .map_err(|_| VerifyFailure::BadSettings)?;
+    match backend.list_folders().await {
+        Ok(_) => Ok(pin.map(|p| p.to_string())),
+        Err(BackendError::Auth(_)) => Err(VerifyFailure::WrongPassword),
+        Err(e) => Err(failure_of(&e)),
     }
 }
 

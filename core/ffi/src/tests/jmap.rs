@@ -213,14 +213,19 @@ fn a_jmap_accounts_drafts_stay_on_the_device() {
 }
 
 #[test]
-fn a_self_signed_server_with_a_wrong_password_says_wrong_password_not_trust() {
+fn a_self_signed_server_asks_for_trust_first_and_only_then_says_wrong_password() {
+    // The password is only sent once the certificate is trusted, so a wrong one shows after that.
     let server = block(JmapServer::start_with(JmapOptions { tls: true }));
     let db = TempDb::new();
     let provider = MemProvider::new();
     let core = db.open(&provider);
-    let wrong = FfiCredential::password(b"not-the-password".to_vec());
+    let wrong = || FfiCredential::password(b"not-the-password".to_vec());
+    let fp = match block(core.verify(jmap_discovered(&server), wrong(), None)) {
+        Err(VerifyFailure::UntrustedCertificate { fingerprint }) => fingerprint,
+        other => panic!("expected the trust question, got {other:?}"),
+    };
     assert_eq!(
-        block(core.verify(jmap_discovered(&server), wrong, None)).err(),
+        block(core.verify(jmap_discovered(&server), wrong(), Some(fp))).err(),
         Some(VerifyFailure::WrongPassword)
     );
 }
@@ -249,4 +254,81 @@ fn settings_tell_imap_and_jmap_apart_and_an_older_reader_refuses_jmap() {
         "mail.example.org"
     );
     assert_eq!(crate::settings::url_host("http://[::1]:80/x"), "::1");
+}
+
+#[test]
+fn the_trust_question_comes_before_any_credential_is_sent() {
+    // Review finding: the password must never reach a certificate the person did not confirm.
+    let server = block(JmapServer::start_with(JmapOptions { tls: true }));
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    server.clear_logs();
+    assert!(matches!(
+        block(core.verify(jmap_discovered(&server), pw(), None)),
+        Err(VerifyFailure::UntrustedCertificate { .. })
+    ));
+    assert!(
+        server.requests().is_empty(),
+        "no HTTP request (so no password) before the trust question"
+    );
+}
+
+#[test]
+fn a_pinned_account_whose_certificate_changed_is_asked_again_not_told_wrong_password() {
+    let server = block(JmapServer::start_with(JmapOptions { tls: true }));
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    server.clear_logs();
+    // A pin that is not the server's (as after the server renewed its self-signed certificate).
+    let old_pin = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89";
+    match block(core.verify(jmap_discovered(&server), pw(), Some(old_pin.into()))) {
+        Err(VerifyFailure::CertificateChanged { fingerprint }) => assert_ne!(fingerprint, old_pin),
+        other => panic!("expected CertificateChanged, got {other:?}"),
+    }
+    assert!(
+        server.requests().is_empty(),
+        "nothing sent to the changed certificate"
+    );
+}
+
+#[test]
+fn an_imap_account_whose_server_also_offers_jmap_signs_in_again_over_imap() {
+    // Review finding: signing in again keeps the account's protocol.
+    let rig = Rig::new(|_| {});
+    let jmap = block(JmapServer::start());
+    let mut again = discovered_for(&rig.server);
+    again.jmap = Some(jmap.session_url());
+    let added = block(rig.core.add_account(
+        again,
+        "Alice".into(),
+        Some(rig.fingerprint.clone()),
+        None,
+        password_cred(PASSWORD),
+    ))
+    .unwrap();
+    assert!(added.updated, "the same IMAP account, signed in again");
+    assert_eq!(added.id, rig.account);
+    let row = rig
+        .core
+        .inner
+        .handle
+        .read(|db| croft_storage::accounts::get(db.connection(), rig.account))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.protocol, croft_storage::accounts::Protocol::Imap);
+}
+
+#[test]
+fn a_jmap_account_refuses_a_raw_oauth_token() {
+    let server = block(JmapServer::start());
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    let token = FfiCredential::oauth2(JMAP_USER.into(), b"made-up-token".to_vec());
+    assert_eq!(
+        block(core.add_account(jmap_discovered(&server), "Alice".into(), None, None, token)).err(),
+        Some(CoreError::BadSettings)
+    );
 }

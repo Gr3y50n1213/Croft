@@ -19,7 +19,7 @@ use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{
     provider_for_host, verify, Discoverer, EmailAddress, ProbeUpdate, VerifyError, VerifyOptions,
 };
-use croft_protocols::{clean_host, CertFingerprint, DemoBackend};
+use croft_protocols::{clean_host, CertFingerprint, Credential, DemoBackend};
 use croft_storage::accounts::{self, Account, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
 use croft_storage::{folders, Db};
@@ -870,7 +870,7 @@ impl Core {
             .transpose()
             .map_err(|_| VerifyFailure::BadSettings)?;
         // T22: a JMAP account is checked by opening its JMAP session.
-        if let Some(url) = jmap_url_of(&discovered) {
+        if let Some(url) = self.jmap_url_for(&discovered) {
             let jmap = StoredJmapSettings {
                 version: SETTINGS_VERSION,
                 jmap: StoredJmap {
@@ -968,6 +968,18 @@ impl Core {
         task.await?
     }
 
+    /// The JMAP session URL when this sign-in is for a JMAP account (T22): the server offers JMAP,
+    /// is not a well-known provider's, and the address is not already an IMAP account (signing in
+    /// again keeps the protocol the account has; only a new account is made a JMAP one).
+    fn jmap_url_for(&self, d: &FfiDiscovered) -> Option<String> {
+        let url = jmap_url_of(d)?;
+        let existing = self.inner.account_with_address(&d.email).ok().flatten();
+        match existing {
+            Some(a) if a.protocol == Protocol::Imap => None,
+            _ => Some(url),
+        }
+    }
+
     /// Adds the account and starts syncing it. Stores the settings (no secret) in the account
     /// row and builds the account's connection from `credential`, the one the person just
     /// verified. The core keeps it only in the protocol layer's wiping string and never asks the
@@ -1026,7 +1038,7 @@ impl Core {
             .map_or("generic", |p| p.db_name())
             .to_owned();
         // T22: a server that offers JMAP (and is not a well-known provider's) is a JMAP account.
-        let settings = if let Some(url) = jmap_url_of(&discovered) {
+        let settings = if let Some(url) = self.jmap_url_for(&discovered) {
             let pin = match (&pinned_fingerprint, provider_for_host(&url_host(&url))) {
                 (Some(text), None) => Some(Self::pin_from_text(text)?.to_string()),
                 (Some(_), Some(_)) => return Err(CoreError::BadSettings),
@@ -1071,6 +1083,12 @@ impl Core {
         // Not valid UTF-8 (the bytes are wiped), or an OAuth secret this version cannot read.
         let credential = match credential.to_asked() {
             Asked::NoCredential | Asked::NotReady => return Err(CoreError::NoCredential),
+            // A JMAP account signs in with a password only.
+            Asked::Credential(Credential::OAuth2 { .. })
+                if matches!(&settings, AccountSettings::Jmap(_)) =>
+            {
+                return Err(CoreError::BadSettings)
+            }
             // The token only ever goes to the provider's own servers (IMAP and SMTP); OAuth is
             // never for a JMAP account.
             Asked::OAuth(stored)

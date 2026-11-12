@@ -47,6 +47,15 @@ pub(crate) enum Trust {
 #[derive(Debug)]
 struct PinMismatch;
 
+/// Whether a handshake failed because the certificate is not the pinned one (T22).
+pub(crate) fn is_pin_mismatch(e: &TlsError) -> bool {
+    matches!(
+        e,
+        TlsError::InvalidCertificate(CertificateError::Other(tokio_rustls::rustls::OtherError(inner)))
+            if inner.downcast_ref::<PinMismatch>().is_some()
+    )
+}
+
 impl std::fmt::Display for PinMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("certificate fingerprint mismatch")

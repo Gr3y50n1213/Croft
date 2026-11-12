@@ -22,7 +22,13 @@ import com.example.croft.mail.MailSettingsStore
 import com.example.croft.mail.accounts.AccountPrefsStore
 import com.example.croft.theme.ThemeStore
 import com.example.croft.ui.compose.ComposeIntents
+import com.example.croft.notify.CheckSchedule
+import com.example.croft.notify.NotificationIntents
+import com.example.croft.notify.NotificationOpen
+import com.example.croft.notify.NotifySettingsStore
 import com.example.croft.ui.nav.ComposeRequest
+import com.example.croft.ui.nav.NotifiedMessage
+import com.example.croft.ui.nav.OpenMessageRequest
 import com.example.croft.ui.nav.CroftApp
 import com.example.croft.ui.nav.Route
 import com.example.croft.ui.nav.StartProblemScreen
@@ -40,17 +46,30 @@ class MainActivity : ComponentActivity() {
     /** A `mailto:` link or a share that opened (or reached) the app, until the navigation has taken it. */
     private var composeRequest by mutableStateOf<ComposeRequest?>(null)
 
+    /** A tap on a new-mail notification (S32), until the navigation has taken it. */
+    private var openRequest by mutableStateOf<OpenMessageRequest?>(null)
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
+        take(intent)
+    }
+
+    /** What [intent] asks for: compose (a link, a share, a notification's Reply) or a message (a notification's tap). */
+    private fun take(intent: Intent?) {
+        when (val open = NotificationIntents.parse(intent, this)) {
+            is NotificationOpen.Message -> openRequest = OpenMessageRequest(NotifiedMessage(open.account, open.messageId, open.uid), reply = false)
+            is NotificationOpen.Reply -> openRequest = OpenMessageRequest(NotifiedMessage(open.account, open.messageId, open.uid), reply = true)
+            NotificationOpen.Inbox -> openRequest = OpenMessageRequest(null, reply = false)
+            null -> ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // Only on a first start: after a rotation the intent is still the old one and the request was already used.
-        if (savedInstanceState == null) ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
+        if (savedInstanceState == null) take(intent)
         // A missing library or a version mismatch shows the error line instead of crashing.
         val info = runCatching { loadRustInfo() }.getOrNull()
         val store = ThemeStore.shared(applicationContext)
@@ -58,6 +77,7 @@ class MainActivity : ComponentActivity() {
         val connectivity = AndroidConnectivity(applicationContext)
         val onboarding = appOnboardingEnvironment(applicationContext, mailStore)
         val accountOps = appAccountOps(applicationContext)
+        val notifyStore = NotifySettingsStore.shared(applicationContext)
         setContent {
             var session by remember { mutableStateOf<MailSession?>(null) }
             var startAt by remember { mutableStateOf<Route?>(null) }
@@ -72,6 +92,10 @@ class MainActivity : ComponentActivity() {
                 if (count == null) { problem = true; return@LaunchedEffect }
                 startAt = if (count > 0) Route.HOME else Route.ONBOARDING
                 session = ready
+                // The periodic check (T20): kept as it is when it already runs (KEEP), and only while an account can notify (the sample
+                // mailbox never does): otherwise it is stopped, so it never creates Croft files on its own.
+                val real = !ready.coreUnavailable && runCatching { ready.repository.listAccounts().any { !it.isDemo } }.getOrDefault(false)
+                CheckSchedule.forAccounts(applicationContext, notifyStore.current(), real)
             }
             val ready = session
             val start = startAt
@@ -89,6 +113,9 @@ class MainActivity : ComponentActivity() {
                     connectivity = connectivity,
                     composeRequest = composeRequest,
                     onComposeRequestHandled = { composeRequest = null },
+                    notifyStore = notifyStore,
+                    openRequest = openRequest,
+                    onOpenRequestHandled = { openRequest = null },
                 )
             }
         }

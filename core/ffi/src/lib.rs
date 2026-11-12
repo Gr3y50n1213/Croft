@@ -42,6 +42,7 @@
 #[cfg(all(feature = "test-server", target_os = "android"))]
 compile_error!("the test-server feature is host-only and must never be enabled for Android");
 
+mod background;
 mod changes;
 mod compose;
 mod core;
@@ -59,6 +60,7 @@ mod tests;
 mod types;
 
 pub use crate::core::{Core, DiscoveryObserver};
+pub use background::{BackgroundCheck, NewMailInfo};
 pub use compose::{
     compose_limits, is_valid_address, outbox_reason_default_message, outbox_reason_key,
     parse_recipient, parse_recipients, ComposeError, ComposeLimits, DraftAttachment, DraftCheck,
@@ -111,7 +113,7 @@ uniffi::setup_scaffolding!();
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 10;
+pub const FFI_API_VERSION: u32 = 11;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

@@ -3,15 +3,17 @@
 Things only the owner can decide or do. Newest first within each section.
 
 ## Urgent
-- **No git remote.** The project arrived as a zip, so this container has nowhere to push. Work is
-  committed locally on branch `claude/croft-build` and is lost if the container is reclaimed. Create an
-  empty GitHub repository and attach it to the next session (or give its name) so every task can be pushed.
-
 - **Read by hand:** the security-sensitive changes listed in `docs/REVIEW-QUEUE.md` (sign-in, TLS and pinning, SQLCipher key, account isolation, the FFI surface, the patched IMAP library).
 
 - **Maven Central rate-limits this container** (429 Too Many Requests on full Gradle builds). Nothing to allow in
   settings: it is Maven Central's limit on the container's address. If it persists in later sessions, the Android
   build can only be confirmed on GitHub CI or your own machine. See `docs/ENVIRONMENT.md`.
+
+## To check on a phone (T20, not checkable here)
+- That the periodic check really runs under Doze and app standby, and how late it is with battery saver on.
+- How notifications group, and how the lock screen looks ("N new messages" only), on real phones from several makers.
+- That sound and vibration follow the account's channel in system settings.
+- Archive, Delete and Mark read from a notification while Croft is closed (the core opens in the background), and Undo within the window.
 
 ## Placeholders to replace
 - Android application ID / package name: `com.example.croft` (Google Play refuses `com.example`, and the ID can never change after the first Play upload: pick it before then, usually a reversed domain you own such as `org.yourdomain.croft`) (defined once, in `android/gradle.properties` as `croft.applicationId` once the Android project exists).

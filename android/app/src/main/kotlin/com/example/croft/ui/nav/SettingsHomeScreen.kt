@@ -29,6 +29,7 @@ import com.example.croft.R
 
 /** Test tags of the settings list. */
 object SettingsTags {
+    const val NOTIFICATIONS = "settings-notifications"
     const val SCREEN = "settings"
     const val APPEARANCE = "settings-appearance"
     const val SWIPE_ACTIONS = "settings-swipe-actions"
@@ -58,6 +59,8 @@ fun SettingsHomeScreen(
     onOpenAccounts: (() -> Unit)? = null,
     /** S60 About and diagnostics; the About line is plain text when null. */
     onOpenAbout: (() -> Unit)? = null,
+    /** S46 Notifications (T20). */
+    onOpenNotifications: (() -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.testTag(SettingsTags.SCREEN),
@@ -89,6 +92,13 @@ fun SettingsHomeScreen(
                     headlineContent = { Text(stringResource(R.string.settings_swipe_actions)) },
                     supportingContent = { Text(stringResource(R.string.settings_swipe_actions_hint)) },
                     modifier = Modifier.testTag(SettingsTags.SWIPE_ACTIONS).clickable(role = Role.Button, onClick = onOpenSwipeActions),
+                )
+            }
+            if (onOpenNotifications != null) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_notifications)) },
+                    supportingContent = { Text(stringResource(R.string.settings_notifications_hint)) },
+                    modifier = Modifier.testTag(SettingsTags.NOTIFICATIONS).clickable(role = Role.Button, onClick = onOpenNotifications),
                 )
             }
             if (onOpenInbox != null) {

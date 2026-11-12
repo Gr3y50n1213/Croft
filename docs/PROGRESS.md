@@ -5,9 +5,47 @@ unverified, the next step.
 
 ---
 
+## T20: background check and notifications (12 November 2026)
+
+**Status:** draft pull request #30 on `task/t20` (CI). **FFI API version 11.**
+
+**What was built.** (1) *What counts as new* (`croft_mail_core::notify`, pure): unread, in the Inbox, above the account's "notified up to"
+marker under the Inbox's UIDVALIDITY. The first check (or one after the Inbox was renumbered) only sets a baseline, so the mail already
+there never notifies; the sample mailbox never notifies; the marker moves only after the app says it posted. The marker lives in the
+`setting` table (`notify.marker.<account>`) and goes with the account. (2) *Engine and FFI*: `sync_once(account, deadline)` runs due
+changes and a full sync within the deadline (a timeout is a flag, not an error) and returns sender, subject and date of each new
+message; `mark_notified(account, uids)`. Problems are flags (`transient_failure`, `needs_sign_in`). (3) *Android*: one WorkManager
+periodic work (`croft-mail-check`, every 30 minutes by default; 15 min, 1 h, 2 h or manual; network required; optional battery-not-low;
+no expedited work, no foreground service, no exact alarm, no boot receiver of our own). The worker opens the process's core when cold
+and checks each account in turn within 8 minutes; it retries only on a transient failure. S32 notifications: one channel per account,
+a group with a summary, sender and subject only, lock screen private with a public "N new messages", up to three buttons (Archive,
+Delete, Mark read, Reply). Archive and Delete leave a quiet notice with Undo for the Undo window. A tap opens the message with the
+Inbox under it, through a non-exported activity-alias. One "Sign in again" notification per account, not one per run. S07 after the
+first real account (the system prompt only on Android 13 and later, only there; a calm banner with a Settings link if refused; Send
+test; Not now). S46: master switch, per-account switches, frequency, battery option, lock-screen option, buttons, Send test, a link
+to the system's battery settings (never `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`). Erase and account removal clear the settings,
+notifications and channels. (4) *Manifest*: `POST_NOTIFICATIONS`; WorkManager's `FOREGROUND_SERVICE` and `SystemForegroundService`
+removed; the allowlist names the WorkManager job service and diagnostics receiver; the release check now refuses store-forbidden
+permissions and foreground service types outright.
+
+**Checks.** Rust: the decision table (first sync, already read, other numbering, below the marker, advance only after posting,
+duplicate delivery, sample mailbox), `sync_once` against the in-process IMAP server (baseline, exactly the new unread mail, offered
+until marked, deadline with a hanging server), FFI (flags, removal forgets the marker, version 11). Android (on CI): the runner (two
+accounts, a paused one notified once, retry only on transient, nothing posted twice, deadline, muted accounts, refused permission),
+the worker through `TestListenableWorkerBuilder`, the periodic request (unique name, interval, constraints, not expedited; KEEP,
+UPDATE, cancel for manual), notifications through `ShadowNotificationManager` (channels, summary, no body text, public version, actions
+and their intents, tap URL, refused permission), the action handler (fake action layer, Undo), the intent gate, S07 (no prompt below
+API 33, one prompt and the banner on 33+, skip) and S46 behaviour, screenshots of S07, S07 refused and S46 (three widths, light and
+dark, font 1.0 and 2.0, RTL). The release manifest check and its tests pass locally.
+
+**Not verified (needs a phone):** Doze and app standby, the real delay under battery saver, grouping and the lock screen on several
+makers' skins, channel vibration (OPEN-ITEMS). The READINESS item "confirm with a pre-launch review" stays open.
+
+---
+
 ## T19: search (12 November 2026)
 
-**Status:** draft pull request `task/t19` (CI). **FFI API version 10.**
+**Status:** merged to `main` through pull request #29 (all CI jobs green; review done, see REVIEW-QUEUE). **FFI API version 10.**
 
 **What was built:** (1) *Query language* (`croft_mail_core::search`): words (prefix), `"phrases"`, `from:`, `to:`, `subject:`, `is:unread`, `is:starred`, `has:attachment`, `in:`, `before:`, `after:`; the FTS5 text is only quoted strings, so no input raises an FTS error; the only error is a typed bad date. (2) *Local search* (`croft_storage::search`): bm25 with the subject first, then date, then id; scoped by account; Trash and Junk only with `in:`; matches marked for highlighting; a note when bodies were not all downloaded. (3) *Server search*: `MailBackend::search` for IMAP (`UID SEARCH` with quoted criteria; a refusal is "unsupported") and JMAP (`Email/query` AND filter); the engine stores headers of hits the device lacked, so every hit is a normal row. (4) *FFI*: `search_local`, `search_server` (flags for unsupported, offline, sign-in, failed), ranges in UTF-16 units; the sample mailbox searches on the device only. (5) *Android* S27 and S28: 150 ms pause, local results then the servers' merged by id, typing again cancels the server request, notes at the end of the list, recent searches with Undo and Clear (on the device only), filter and account chips, Back from results to S27 to the Inbox, highlighted matches in the row component.
 

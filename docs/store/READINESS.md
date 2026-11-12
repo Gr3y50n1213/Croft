@@ -84,9 +84,10 @@ These are conservative drafts from the plan as written. The stores hold the deve
 | --- | --- | --- |
 | Android | INTERNET | Mail, calendar and contacts sync. Declared since T16 (11 November 2026). |
 | Android | `ACCESS_NETWORK_STATE` | Knowing when the device is offline, so actions wait instead of failing (T16). Normal permission, no prompt. |
-| Android | `POST_NOTIFICATIONS` | Asked after the first account is added and the person opts into notifications. |
+| Android | `POST_NOTIFICATIONS` | Asked from S07, after the first real account is added, when the person taps "Turn on notifications"; Android 13 and later only. The app works fully without it (T20, declared 12 November 2026). |
 | Android | `USE_BIOMETRIC` | App lock. |
-| Android | `RECEIVE_BOOT_COMPLETED` | Restores snooze alarms after a restart. |
+| Android | `RECEIVE_BOOT_COMPLETED` | Merged in by WorkManager (T20), which restores the periodic check's schedule after a restart; later also restores snooze alarms. Croft has no boot receiver of its own. |
+| Android | `WAKE_LOCK` | Merged in by WorkManager (T20) and held only while a check runs. Normal permission, no prompt. |
 | Android | CAMERA | Only when scanning a QR code for settings or key import. Asked at that moment. |
 | Android | Not requested | `READ_CONTACTS`, exact alarms, foreground-service permissions in the Play build, storage access. |
 | iOS | Face ID usage string | App lock. |

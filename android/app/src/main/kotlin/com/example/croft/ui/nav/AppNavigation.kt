@@ -23,6 +23,13 @@ import com.example.croft.debug.DebugGallery
 import com.example.croft.mail.MailSession
 import com.example.croft.mail.MailSettings
 import com.example.croft.ui.mail.InboxSettingsScreen
+import com.example.croft.ui.mail.InboxNotice
+import com.example.croft.mail.compose.ComposeClosed
+import com.example.croft.mail.compose.ComposeStart
+import com.example.croft.ui.compose.ComposeHost
+import com.example.croft.ui.compose.OutboxHost
+import com.example.croft.ui.compose.rememberComposeRetained
+import androidx.compose.runtime.LaunchedEffect
 import com.example.croft.swipe.SwipeSettings
 import com.example.croft.ui.swipe.SwipeSettingsFlow
 import com.example.croft.ui.mail.InboxScreen
@@ -46,6 +53,9 @@ import com.example.croft.ui.onboarding.OnboardingHost
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** A request from outside to open compose ([ComposeIntents]). Compared by identity, so the same link opened twice is two requests. */
+class ComposeRequest(val start: ComposeStart)
 
 /** The screens reachable today. S50 and its drill-down live inside [APPEARANCE] (see `AppearanceFlow`). S02 to S05 and S09 live inside [ONBOARDING] and [ADD_ACCOUNT]. */
 enum class Route(val parent: Route?) {
@@ -84,6 +94,12 @@ enum class Route(val parent: Route?) {
 
     /** The open-source licences list, from S60. */
     LICENCES(ABOUT),
+
+    /** S23 Compose (what it opens is [CroftNavHost]'s `composeStart`). Back, Send and Discard return to where it was opened. */
+    COMPOSE(HOME),
+
+    /** S26 Outbox, from the drawer. */
+    OUTBOX(HOME),
     ;
 
     /** How deep the screen is; going to a larger depth is "forward". */
@@ -122,9 +138,25 @@ fun CroftNavHost(
     removeAccountPrefs: suspend (Long) -> Unit = {},
     /** After everything was erased in the core and the secret store: the app clears its settings stores and shows S01. */
     onErased: suspend () -> Unit = {},
+    /** A request from outside the app (a `mailto:` link, a share): compose opens on it once, as soon as the app is past sign-in. */
+    composeRequest: ComposeRequest? = null,
+    onComposeRequestHandled: () -> Unit = {},
 ) {
     var route by rememberSaveable { mutableStateOf(startAt) }
     var accountId by rememberSaveable { mutableStateOf(0L) }
+    // Compose (T18d). What it opens is kept in memory only: after process death the route falls back to the Inbox, and the draft that
+    // was open is in the Drafts folder (it was autosaved).
+    // The compose screen's start and controller are kept by the activity's retained holder, so a rotation keeps compose open with its content.
+    val retained = rememberComposeRetained()
+    var composeReturn by rememberSaveable { mutableStateOf(Route.HOME) }
+    var notice by remember { mutableStateOf<InboxNotice?>(null) }
+    val openCompose: (ComposeStart) -> Unit = { start ->
+        composeReturn = if (route == Route.OUTBOX) Route.OUTBOX else Route.HOME
+        retained.begin(start)
+        route = Route.COMPOSE
+    }
+    // After a process restart nothing of compose is kept in memory: the Inbox (the draft was saved by autosave).
+    if (route == Route.COMPOSE && retained.start == null) route = Route.HOME
     // Where Add account (S02) returns to: S44, or the Inbox when it was started from the account switcher.
     var addReturn by rememberSaveable { mutableStateOf(Route.ACCOUNTS) }
     var sampleProblem by remember { mutableStateOf(false) }
@@ -135,8 +167,22 @@ fun CroftNavHost(
     val scope = rememberCoroutineScope()
     // A debug-only route can never be reached from a release build, even from saved state.
     if (route == Route.GALLERY && !DebugGallery.available) route = Route.SETTINGS
+    LaunchedEffect(composeRequest, route) {
+        if (composeRequest != null && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT) {
+            if (route == Route.COMPOSE && retained.start != null) {
+                // A link or a share while compose is open: what is being written is saved first (a "Draft saved" shows), then the new one opens.
+                retained.replaceWith(composeRequest.start)
+            } else {
+                composeReturn = Route.HOME
+                retained.begin(composeRequest.start)
+                route = Route.COMPOSE
+            }
+            onComposeRequestHandled()
+        }
+    }
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
-    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT) { route = route.parent ?: Route.HOME }
+    // Compose and the Outbox handle their own Back (compose saves first).
+    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX) { route = route.parent ?: Route.HOME }
 
     // Removing an account: the account in the core first (its task stops, nothing new is sent), then its saved secret (`AccountOps.remove`),
     // then the app's own entries for it (folder choices, order, name, colour: the prefs are written and waited for), then a fresh session.
@@ -221,7 +267,29 @@ fun CroftNavHost(
                 session, onOpenSettings = { route = Route.SETTINGS },
                 onAddAccount = if (onboarding != null) ({ addReturn = Route.HOME; route = Route.ADD_ACCOUNT }) else null,
                 onManageAccounts = { route = Route.ACCOUNTS },
+                onCompose = { openCompose(ComposeStart.New()) },
+                onReply = { account, message -> openCompose(ComposeStart.Reply(account, message)) },
+                notice = notice,
+                onNoticeShown = { notice = null },
+                onUndoSend = { openCompose(it) },
+                onOpenOutbox = if (session.compose != null) ({ route = Route.OUTBOX }) else null,
+                onOpenDraft = { account, draft -> openCompose(ComposeStart.Draft(account, draft)) },
             )
+            Route.COMPOSE -> retained.start?.let { start ->
+                ComposeHost(
+                    session = session,
+                    start = start,
+                    onClosed = { closed ->
+                        when (closed) {
+                            // Nothing was kept, or it was thrown away: back to where compose was opened from.
+                            ComposeClosed.Nothing, ComposeClosed.Discarded -> route = composeReturn
+                            // A kept draft or a send: the Inbox says so ("Draft saved", "Sending..." with Undo).
+                            else -> { notice = InboxNotice(closed); route = Route.HOME }
+                        }
+                    },
+                )
+            }
+            Route.OUTBOX -> OutboxHost(session, onBack = { route = Route.HOME }, onEdit = { openCompose(it) })
             Route.SETTINGS -> SettingsHomeScreen(
                 info = info,
                 onOpenAppearance = { route = Route.APPEARANCE },

@@ -67,6 +67,32 @@ def check(manifest_path, allowlist_path):
                 errors.append(
                     f"exported component {key} is guarded by {el.get(A + 'permission')!r}, allowlist says {entry.get('permission')!r}"
                 )
+            else:
+                errors.extend(check_filters(key, el, entry))
+    return errors
+
+
+def check_filters(key, component, entry):
+    """Intent filters of an exported component: only the actions the allowlist names (`actions`), and a BROWSABLE filter (reachable from
+    any web page) only for the URI schemes in `browsable-schemes`. A component whose entry has no `actions` is not checked."""
+    errors = []
+    actions = entry.get("actions")
+    schemes = entry.get("browsable-schemes", [])
+    if actions is None:
+        return errors
+    for f in component.findall("intent-filter"):
+        for a in f.findall("action"):
+            name = a.get(A + "name")
+            if name not in actions:
+                errors.append(f"exported component {key} has an intent filter action not on the allowlist: {name}")
+        browsable = any(c.get(A + "name") == "android.intent.category.BROWSABLE" for c in f.findall("category"))
+        if browsable:
+            for d in f.findall("data"):
+                scheme = d.get(A + "scheme")
+                if scheme not in schemes:
+                    errors.append(f"exported component {key} has a BROWSABLE filter for a scheme not on the allowlist: {scheme}")
+            if not f.findall("data"):
+                errors.append(f"exported component {key} has a BROWSABLE filter with no data")
     return errors
 
 

@@ -61,6 +61,7 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import com.example.croft.R
 import com.example.croft.haptics.LocalHaptics
+import com.example.croft.mail.AccountId
 import com.example.croft.mail.AccountInfo
 import com.example.croft.mail.AccountState
 import com.example.croft.mail.FolderRole
@@ -68,6 +69,8 @@ import com.example.croft.mail.MailSession
 import com.example.croft.mail.MessageId
 import com.example.croft.mail.MessageRowData
 import com.example.croft.mail.MessageScope
+import com.example.croft.mail.compose.ComposeStart
+import com.example.croft.mail.compose.LocalDraftMatch
 import com.example.croft.swipe.SwipeAction
 import com.example.croft.swipe.SwipeDirection
 import com.example.croft.theme.ListStyle
@@ -120,12 +123,28 @@ fun InboxScreen(
     onAddAccount: (() -> Unit)? = null,
     /** "Manage accounts" of the switcher (S44); a note shows when null. */
     onManageAccounts: (() -> Unit)? = null,
+    /** Reply on a row opens compose as a reply (T18d). Null: the row says that Reply comes later (tests of the list alone). */
+    onReply: ((AccountId, MessageId) -> Unit)? = null,
+    /** How compose ended, to show its snackbar once ("Draft saved", "Sending..." with Undo) and move focus to the first row after a send. */
+    notice: InboxNotice? = null,
+    onNoticeShown: () -> Unit = {},
+    /** Undo of a send took the message back: reopen compose on its draft with the cursor where it was. */
+    onUndoSend: (ComposeStart.Draft) -> Unit = {},
+    /** The Outbox (S26), from the drawer. Null hides the entry. */
+    onOpenOutbox: (() -> Unit)? = null,
+    /** A draft of this device was tapped in the Drafts folder. */
+    onOpenDraft: ((AccountId, Long) -> Unit)? = null,
 ) {
     val controller = rememberInboxController(session, startScope)
     controller.haptics = LocalHaptics.current
     controller.swipeSettings = LocalSwipeSettings.current
     controller.density = LocalDensity.current.density
+    controller.replyHandler = onReply?.let { open -> { row -> open(row.account, row.id) } }
     LaunchedEffect(controller) { controller.run() }
+    val onUndoNow by rememberUpdatedState(onUndoSend)
+    LaunchedEffect(notice) {
+        if (notice != null) { controller.showNotice(notice.closed) { onUndoNow(it) }; onNoticeShown() }
+    }
 
     val scope = rememberCoroutineScope()
     val drawerState = androidx.compose.material3.rememberDrawerState(if (startDrawerOpen) DrawerValue.Open else DrawerValue.Closed)
@@ -149,6 +168,7 @@ fun InboxScreen(
                 openScope(target)
             },
             onSettings = { closeDrawer(); onOpenSettings() },
+            onOutbox = onOpenOutbox?.let { open -> { closeDrawer(); open() } },
             // The answer (with its Undo) is a snackbar on the list: the drawer closes so that its scrim does not cover the button.
             onMarkAllRead = { f ->
                 closeDrawer()
@@ -165,7 +185,7 @@ fun InboxScreen(
         if (expanded) {
             Row(Modifier.fillMaxSize()) {
                 PermanentDrawerSheet(Modifier.width(DRAWER_WIDTH)) { drawerContent() }
-                InboxBody(controller, session, showMenu = false, showBottomBar = false, onMenu = {}, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, Modifier.weight(1f))
+                InboxBody(controller, session, showMenu = false, showBottomBar = false, onMenu = {}, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, Modifier.weight(1f))
             }
         } else {
             ModalNavigationDrawer(
@@ -173,7 +193,7 @@ fun InboxScreen(
                 drawerState = drawerState,
                 gesturesEnabled = drawerState.isOpen || !controller.isSelecting,
             ) {
-                InboxBody(controller, session, showMenu = true, showBottomBar = true, onMenu = { scope.launch { drawerState.open() } }, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, Modifier.fillMaxSize())
+                InboxBody(controller, session, showMenu = true, showBottomBar = true, onMenu = { scope.launch { drawerState.open() } }, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, Modifier.fillMaxSize())
             }
             BackHandler(enabled = drawerState.isOpen) { closeDrawer() }
         }
@@ -220,6 +240,7 @@ private fun InboxBody(
     onAccount: () -> Unit,
     onOpenMessage: (MessageId) -> Unit,
     onCompose: () -> Unit,
+    onOpenDraft: ((AccountId, Long) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -232,8 +253,10 @@ private fun InboxBody(
     val selecting = controller.isSelecting
     val laterMessage = stringResource(R.string.mail_snack_account_screens)
 
-    // The items: headers and rows, rebuilt when the rows change.
-    val rows = controller.rows
+    // The items: headers and rows, rebuilt when the rows change. In a Drafts folder the server's copy of a draft of this device is hidden
+    // (the device's own draft is shown above the list).
+    val localDrafts = controller.localDrafts
+    val rows = remember(controller.rows, localDrafts) { LocalDraftMatch.withoutCopies(controller.rows, localDrafts) } // = controller.shownRows
     val nowMs = remember(rows) { session.clock() }
     val items = remember(rows) { buildListItems(rows, nowMs, session.zone) }
     val rowsUpTo = remember(items) {
@@ -300,6 +323,12 @@ private fun InboxBody(
         }
     }
 
+    // After Send: focus goes to the first row of the list.
+    LaunchedEffect(controller.focusFirstPending, rows.firstOrNull()?.id) {
+        val first = rows.firstOrNull()
+        if (controller.focusFirstPending && first != null) { controller.focusFirstPending = false; controller.focusTarget = first.id }
+    }
+
     val role = controller.scopeRole
     val outgoing = role == FolderRole.SENT || role == FolderRole.DRAFTS || role == FolderRole.OUTBOX
     val avatarAccount = (controller.messageScope as? MessageScope.Folder)?.let { s -> controller.accounts.firstOrNull { it.id == s.account } } ?: controller.accounts.firstOrNull()
@@ -347,6 +376,7 @@ private fun InboxBody(
             accountName = banner?.second?.label ?: "",
         )
         if (!selecting) CategoryChipsRow(Modifier.padding(bottom = 8.dp))
+        if (localDrafts.isNotEmpty() && !selecting) LocalDraftsSection(localDrafts, onOpen = { d -> onOpenDraft?.invoke(d.accountId, d.id) }, Modifier.padding(horizontal = 12.dp))
 
         // The list area: pull to refresh, the list or its skeleton or empty state, the pill, the FAB and the snackbar.
         val pullState = rememberPullToRefreshState()

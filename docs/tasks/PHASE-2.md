@@ -15,12 +15,12 @@ the task files as they are written.
 | T26 | Mail accounts in the Companion: a user's IMAP/SMTP or JMAP accounts, credentials sealed with the user's data key, the core's engine running per account | T24 |
 | T27 | JMAP API for clients (Core and Mail) over the accounts of T26, per-user isolation | T26 |
 | T28 | Push relay: the Companion watches accounts (IDLE or JMAP push) and sends content-free pings over UnifiedPush and Web Push (the Android flavours registering a UnifiedPush distributor moved to T34) | T26 |
-| T29 | Thin push gateway (separate service, AGPL) for FCM; the Play flavour; the FCM flavour's Data safety and manifest checks | T28 |
+| T29 | Thin push gateway (separate service, AGPL) for FCM (the Play flavour and its checks moved to T34) | T28 |
 | T30 | Web client foundation: SvelteKit + TypeScript, design tokens (the generator's CSS output), sign-in to the Companion, the state machines shared with Android | T27 |
 | T31 | Web W01 inbox and W02 conversation and compose, keyboard shortcuts table, hover quick actions | T30 |
 | T32 | Web W04 settings and Appearance, PWA (installable, offline shell), accessibility check with axe-core | T31 |
 | T33 | Companion search (tantivy) and scheduled send | T27 |
-| T34 | Phones through the Companion: S58 connection screen, sync mode, push in place of periodic checks | T28 |
+| T34 | Phones through the Companion: S58 connection screen, sync mode, push in place of periodic checks; the `play`, `fdroid` and `github` flavours (FCM through the gateway in `play`, UnifiedPush in the others) with checks that no Google library reaches `fdroid` or `github`, and registering for push | T28, T29 |
 
 Things the owner decides before gate 3 are listed in `docs/OPEN-ITEMS.md` (store accounts, the push gateway's host and its keys,
 the Docker Hub namespace).

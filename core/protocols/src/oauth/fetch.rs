@@ -190,6 +190,26 @@ pub async fn post_form(
     .await
 }
 
+/// `POST url` with a JSON body and an `Authorization` header, to an address the server's admin
+/// configured (T29: the push gateway's FCM endpoint), reading at most `max_answer` bytes of the
+/// answer. The header and body are never logged.
+pub async fn post_json(
+    url: &str,
+    authorization: &str,
+    json: &[u8],
+    max_answer: usize,
+) -> Result<Answer, FetchError> {
+    send(
+        "POST",
+        url,
+        Some(authorization),
+        Some("application/json"),
+        json,
+        max_answer,
+    )
+    .await
+}
+
 /// Whether `url` can be delivered to as a push endpoint: an absolute `https` URL this client
 /// reads (the same parser that sends).
 pub fn is_push_url(url: &str) -> bool {
@@ -241,24 +261,31 @@ pub async fn post_push_to_loopback_for_tests(
 
 /// Encodes a form body (`application/x-www-form-urlencoded`), wiped when dropped.
 pub fn form(pairs: &[(&str, &str)]) -> Zeroizing<String> {
-    let enc = |s: &str| -> String {
-        s.bytes()
-            .map(|b| {
-                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-                    char::from(b).to_string()
-                } else {
-                    format!("%{b:02X}")
-                }
-            })
-            .collect()
+    // One buffer, sized for the worst case first, so no partial copy of a secret value is left
+    // behind by a reallocation.
+    let worst: usize = pairs.iter().map(|(k, v)| 3 * (k.len() + v.len()) + 2).sum();
+    let mut out = Zeroizing::new(String::with_capacity(worst));
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let push = |out: &mut String, s: &str| {
+        for b in s.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                out.push(char::from(b));
+            } else {
+                out.push('%');
+                out.push(char::from(HEX[usize::from(b >> 4)]));
+                out.push(char::from(HEX[usize::from(b & 15)]));
+            }
+        }
     };
-    Zeroizing::new(
-        pairs
-            .iter()
-            .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
-            .collect::<Vec<_>>()
-            .join("&"),
-    )
+    for (i, (k, v)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push('&');
+        }
+        push(&mut out, k);
+        out.push('=');
+        push(&mut out, v);
+    }
+    out
 }
 
 #[cfg(test)]

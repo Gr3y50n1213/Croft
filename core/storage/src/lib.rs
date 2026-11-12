@@ -20,6 +20,7 @@ pub mod op_store;
 pub mod outbox_store;
 pub mod reading;
 pub mod recipients;
+pub mod search;
 pub mod settings;
 
 #[cfg(test)]
@@ -34,6 +35,8 @@ mod reading_tests;
 mod repo_tests;
 #[cfg(test)]
 mod schema_checks;
+#[cfg(test)]
+mod search_tests;
 
 pub use db::Db;
 pub use error::{Result, StorageError};

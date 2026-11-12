@@ -198,6 +198,9 @@ pub struct Exchange {
     code: String,
     verifier: String,
     device: Option<String>,
+    /// The web app's sign-in (T30): the refresh token goes into a cookie.
+    #[serde(default)]
+    web: bool,
 }
 
 /// `POST /api/sign-in/oidc/exchange`: the hand-over code and the app's verifier for tokens.
@@ -209,11 +212,12 @@ pub async fn exchange(
 ) -> ApiResult {
     let ip = limit(&app, peer, &headers)?;
     let req = body(req)?;
+    super::web_api::check_web(&app, &headers, req.web)?;
     let p = provider(&app)?;
     let (code, verifier) = (Zeroizing::new(req.code), Zeroizing::new(req.verifier));
     match p.redeem(&code, &verifier, app.auth.now()) {
         Ok(Outcome::SignIn { user_id }) => {
-            let res = start_session(&app, user_id, device_name(req.device), false).await;
+            let res = start_session(&app, user_id, device_name(req.device), false, req.web).await;
             if res.is_ok() {
                 // Marks the sign-in as made through the provider.
                 let _ =

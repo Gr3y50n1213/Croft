@@ -67,6 +67,7 @@ struct FileConfig {
     trusted_proxies: Option<Vec<String>>,
     oidc: Option<FileOidc>,
     mail_allowed_networks: Option<Vec<String>>,
+    web_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -119,6 +120,8 @@ pub struct Config {
     /// Private networks a mail server may be on (T26). Everything internal (loopback, private,
     /// link-local...) is refused otherwise.
     pub mail_allowed_networks: Vec<Network>,
+    /// The built web app to serve (T30); none when not set.
+    pub web_dir: Option<PathBuf>,
 }
 
 /// An IP network (`address/prefix`).
@@ -267,6 +270,9 @@ impl Config {
             trusted_proxies,
             oidc,
             mail_allowed_networks,
+            web_dir: env("CROFT_COMPANION_WEB_DIR")
+                .map(PathBuf::from)
+                .or(file.web_dir),
         })
     }
 

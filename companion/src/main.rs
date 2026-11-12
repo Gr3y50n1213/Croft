@@ -59,9 +59,15 @@ fn run(args: &[String]) -> Result<String, CliError> {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| CliError::Serve(e.to_string()))?;
     runtime
         .block_on(async {
-            let app = http::App::new(store, auth).with_mail(croft_companion::mail::MailCores::new(
-                config.data_dir.clone(),
-            ));
+            let mut app = http::App::new(store, auth).with_mail(
+                croft_companion::mail::MailCores::new(config.data_dir.clone()),
+            );
+            // T30: the web app, read once from its folder.
+            if let Some(dir) = &config.web_dir {
+                let web =
+                    croft_companion::webapp::WebApp::load(dir).map_err(std::io::Error::other)?;
+                app = app.with_web(web);
+            }
             // The cores of users who have mail accounts start syncing at once.
             let opening = app.clone();
             tokio::task::spawn_blocking(move || opening.open_all_mail());

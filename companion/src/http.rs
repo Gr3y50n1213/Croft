@@ -69,6 +69,8 @@ pub struct App {
     pub(crate) body_read_timeout: Duration,
     pub(crate) mail: Option<Arc<crate::mail::MailCores>>,
     pub(crate) relay: Arc<crate::push::Relay>,
+    /// The web app (T30), when `web_dir` is set.
+    pub(crate) web: Option<Arc<crate::webapp::WebApp>>,
 }
 
 impl App {
@@ -80,6 +82,7 @@ impl App {
             body_read_timeout: BODY_READ_TIMEOUT,
             mail: None,
             relay: Arc::new(crate::push::Relay::default()),
+            web: None,
         }
     }
 
@@ -133,6 +136,12 @@ impl App {
         self
     }
 
+    /// The same, serving the web app (T30).
+    pub fn with_web(mut self, web: crate::webapp::WebApp) -> Self {
+        self.web = Some(Arc::new(web));
+        self
+    }
+
     /// The same, with another body read timeout (tests).
     pub fn with_body_read_timeout(mut self, t: Duration) -> Self {
         self.body_read_timeout = t;
@@ -148,7 +157,7 @@ pub fn router(app: App) -> Router {
     for route in api::routes() {
         r = r.route(route.path, route.handler);
     }
-    r.fallback(not_found)
+    r.fallback(fallback)
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -172,8 +181,16 @@ async fn version() -> Response {
     (StatusCode::OK, env!("CARGO_PKG_VERSION")).into_response()
 }
 
-async fn not_found() -> Response {
-    StatusCode::NOT_FOUND.into_response()
+/// A path no route takes: the web app's files and page when it is served (T30), else 404.
+async fn fallback(
+    State(app): State<App>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+) -> Response {
+    match &app.web {
+        Some(web) => web.serve(&method, &uri),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Reads the whole body (at most [`MAX_BODY`]) within the body read timeout, so a client that
@@ -224,7 +241,10 @@ async fn guard(State(app): State<App>, req: Request<Body>, next: Next) -> Respon
             "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
         );
     }
-    set(h, header::CACHE_CONTROL, "no-store");
+    // The web app's hashed files may be cached (T30); everything else never is.
+    if !h.contains_key(header::CACHE_CONTROL) {
+        set(h, header::CACHE_CONTROL, "no-store");
+    }
     set(h, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     set(h, header::REFERRER_POLICY, "no-referrer");
     set(h, header::X_FRAME_OPTIONS, "DENY");
@@ -449,6 +469,7 @@ mod tests {
             trusted_proxies: Vec::new(),
             oidc: None,
             mail_allowed_networks: Vec::new(),
+            web_dir: None,
         };
         let out = tokio::task::spawn_blocking(move || {
             crate::cli::run(&config, &crate::cli::Command::Healthcheck)

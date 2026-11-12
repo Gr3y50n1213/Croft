@@ -1566,3 +1566,353 @@ fn device_names_lose_control_and_invisible_formatting_characters() {
     assert_eq!(device_name(Some("  ".into())), "Unnamed device");
     assert_eq!(device_name(Some("x".repeat(100))).len(), MAX_DEVICE);
 }
+
+// T30: sign-in sessions for the web app.
+
+impl H {
+    /// A request with extra headers; the status, the answer's headers and its JSON.
+    async fn call_raw(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> (StatusCode, axum::http::HeaderMap, Value) {
+        static N: AtomicI64 = AtomicI64::new(1);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let mut req = Request::builder().method(method).uri(path);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let mut req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(b.to_string()))
+                .unwrap(),
+            None => req.body(Body::empty()).unwrap(),
+        };
+        req.extensions_mut().insert(Peer(
+            format!("10.77.{}.{}:40000", (n >> 8) & 255, n & 255)
+                .parse()
+                .unwrap(),
+        ));
+        let res = self.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            headers,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    /// A web sign-in with the passkey: the access token and the cookie's value.
+    async fn web_sign_in(&self, p: &mut Person) -> (String, String) {
+        let (c, cred) = self.assertion(p).await;
+        let (s, h, v) = self
+            .call_raw(
+                Method::POST,
+                "/api/sign-in/passkey/finish",
+                WEB,
+                Some(json!({ "ceremony": c, "credential": cred, "web": true })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        (
+            v["access_token"].as_str().unwrap().to_owned(),
+            cookie_value(&h),
+        )
+    }
+}
+
+/// The headers the web app sends.
+const WEB: &[(&str, &str)] = &[
+    ("x-croft-web", "1"),
+    ("origin", ORIGIN),
+    ("sec-fetch-site", "same-origin"),
+];
+
+fn set_cookie(h: &axum::http::HeaderMap) -> String {
+    h.get("set-cookie")
+        .map(|v| v.to_str().unwrap().to_owned())
+        .unwrap_or_default()
+}
+
+fn cookie_value(h: &axum::http::HeaderMap) -> String {
+    let c = set_cookie(h);
+    c.split(';')
+        .next()
+        .unwrap()
+        .strip_prefix("__Host-croft_refresh=")
+        .unwrap()
+        .to_owned()
+}
+
+fn with_cookie(value: &str) -> Vec<(&'static str, String)> {
+    let mut h: Vec<(&str, String)> = WEB.iter().map(|(k, v)| (*k, (*v).to_owned())).collect();
+    h.push(("cookie", format!("__Host-croft_refresh={value}")));
+    h
+}
+
+fn refs<'a>(h: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
+    h.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
+#[tokio::test]
+async fn a_web_sign_in_sets_an_httponly_cookie_and_returns_no_refresh_token() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    // Only the web app's own request gets a web session.
+    for headers in [
+        &[][..],
+        &[("x-croft-web", "1"), ("origin", "https://evil.test")][..],
+        &[("x-croft-web", "1"), ("sec-fetch-site", "cross-site")][..],
+    ] {
+        let (c, cred) = h.assertion(&mut ann).await;
+        let (s, hd, _) = h
+            .call_raw(
+                Method::POST,
+                "/api/sign-in/passkey/finish",
+                headers,
+                Some(json!({ "ceremony": c, "credential": cred, "web": true })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{headers:?}");
+        assert!(hd.get("set-cookie").is_none());
+    }
+    let (c, cred) = h.assertion(&mut ann).await;
+    let (s, hd, v) = h
+        .call_raw(
+            Method::POST,
+            "/api/sign-in/passkey/finish",
+            WEB,
+            Some(json!({ "ceremony": c, "credential": cred, "web": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.get("refresh_token").is_none(), "{v}");
+    let cookie = set_cookie(&hd);
+    for part in [
+        "__Host-croft_refresh=",
+        "Path=/",
+        "Max-Age=2592000",
+        "HttpOnly",
+        "SameSite=Strict",
+        "Secure",
+    ] {
+        assert!(cookie.contains(part), "{part} in {cookie}");
+    }
+    assert!(!cookie.contains("Domain"), "{cookie}");
+    let access = v["access_token"].as_str().unwrap();
+    assert_eq!(
+        h.status(Method::GET, "/api/me", Some(access)).await,
+        StatusCode::OK
+    );
+    // An app's sign-in is as before: both tokens in the body, no cookie.
+    let (c, cred) = h.assertion(&mut ann).await;
+    let (s, hd, v) = h
+        .call_raw(
+            Method::POST,
+            "/api/sign-in/passkey/finish",
+            &[],
+            Some(json!({ "ceremony": c, "credential": cred })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["refresh_token"].is_string());
+    assert!(hd.get("set-cookie").is_none());
+}
+
+#[tokio::test]
+async fn the_web_refresh_rotates_the_cookie_and_a_reused_one_ends_the_session() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let (_, first) = h.web_sign_in(&mut ann).await;
+    // Not from the web app: refused, whatever the cookie.
+    let mut no_header = with_cookie(&first);
+    no_header.retain(|(k, _)| *k != "x-croft-web");
+    let (s, _, _) = h
+        .call_raw(Method::POST, "/api/web/refresh", &refs(&no_header), None)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // No cookie: invalid, and the cookie is cleared.
+    let (s, hd, _) = h
+        .call_raw(Method::POST, "/api/web/refresh", WEB, None)
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(set_cookie(&hd).contains("Max-Age=0"));
+    // Two cookies of that name (one planted): refused.
+    let mut two = with_cookie(&first);
+    two.push(("cookie", "__Host-croft_refresh=planted".into()));
+    let (s, _, _) = h
+        .call_raw(Method::POST, "/api/web/refresh", &refs(&two), None)
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // The cookie: a new access token and a new cookie.
+    let (s, hd, v) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/refresh",
+            &refs(&with_cookie(&first)),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.get("refresh_token").is_none());
+    let second = cookie_value(&hd);
+    assert_ne!(second, first);
+    let access = v["access_token"].as_str().unwrap().to_owned();
+    assert_eq!(
+        h.status(Method::GET, "/api/me", Some(&access)).await,
+        StatusCode::OK
+    );
+    // The first cookie again (someone kept a copy): the session ends.
+    let (s, hd, _) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/refresh",
+            &refs(&with_cookie(&first)),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(set_cookie(&hd).contains("Max-Age=0"));
+    assert_eq!(
+        h.status(Method::GET, "/api/me", Some(&access)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, _, _) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/refresh",
+            &refs(&with_cookie(&second)),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_web_sign_out_ends_the_session_and_clears_the_cookie() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let (access, cookie) = h.web_sign_in(&mut ann).await;
+    let (s, _, _) = h
+        .call_raw(Method::POST, "/api/web/sign-out", &[], None)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "not from the web app");
+    let (s, hd, v) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/sign-out",
+            &refs(&with_cookie(&cookie)),
+            None,
+        )
+        .await;
+    assert_eq!((s, &v["ok"]), (StatusCode::OK, &json!(true)));
+    assert!(set_cookie(&hd).contains("Max-Age=0"));
+    assert_eq!(
+        h.status(Method::GET, "/api/me", Some(&access)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, _, _) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/refresh",
+            &refs(&with_cookie(&cookie)),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // Without a session it still answers ok and clears the cookie.
+    let (s, hd, _) = h
+        .call_raw(Method::POST, "/api/web/sign-out", WEB, None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(set_cookie(&hd).contains("Max-Age=0"));
+}
+
+#[tokio::test]
+async fn a_web_recovery_sign_in_gets_a_cookie_that_cannot_refresh() {
+    let h = h();
+    let ann = h.person("ann", Role::User).await;
+    let totp = h.totp_now(&ann);
+    let code = ann.recovery_codes[0].clone();
+    let (s, hd, v) = h
+        .call_raw(
+            Method::POST,
+            "/api/sign-in/recovery",
+            WEB,
+            Some(json!({ "user": ann.name, "totp": totp, "recovery_code": code, "web": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["recovery"], true);
+    assert!(v.get("refresh_token").is_none());
+    let cookie = cookie_value(&hd);
+    let (s, _, _) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/refresh",
+            &refs(&with_cookie(&cookie)),
+            None,
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::UNAUTHORIZED,
+        "a recovery session is not refreshed"
+    );
+}
+
+#[tokio::test]
+async fn the_web_app_is_served_with_its_own_csp_and_caching_behind_the_api() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("_app/immutable")).unwrap();
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<html><body><script>boot()</script></body></html>",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("_app/immutable/a.1.js"), "export {}").unwrap();
+    let h = h();
+    let router = router(
+        h.app
+            .clone()
+            .with_web(crate::webapp::WebApp::load(dir.path()).unwrap()),
+    );
+    let get = |path: &str| {
+        let router = router.clone();
+        let path = path.to_owned();
+        async move {
+            let res = router
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            (res.status(), res.headers().clone())
+        }
+    };
+    let (s, hd) = get("/inbox").await;
+    assert_eq!(s, StatusCode::OK);
+    let csp = hd["content-security-policy"].to_str().unwrap();
+    assert!(csp.contains("script-src 'self' 'sha256-") && csp.contains("frame-ancestors 'none'"));
+    assert_eq!(hd["cache-control"], "no-store");
+    assert_eq!(hd["x-frame-options"], "DENY");
+    let (s, hd) = get("/_app/immutable/a.1.js").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hd["cache-control"], "public, max-age=31536000, immutable");
+    // The API is never the app's page; the enrolment page keeps its own policy.
+    assert_eq!(get("/api/nothing").await.0, StatusCode::NOT_FOUND);
+    let (s, hd) = get("/enrol").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(hd["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .contains("require-trusted-types-for"));
+    // Without a web app nothing is served there.
+    assert_eq!(
+        h.status(Method::GET, "/inbox", None).await,
+        StatusCode::NOT_FOUND
+    );
+}

@@ -926,6 +926,27 @@ impl Store {
         Ok(tokens)
     }
 
+    /// The (user, session) of a refresh token that is current (not yet exchanged, not expired, its
+    /// session live): for signing a browser out by its cookie (T30).
+    pub fn session_of_refresh(
+        &self,
+        refresh: &str,
+        now: i64,
+    ) -> Result<Option<(i64, i64)>, StoreError> {
+        let hash = token_hash(refresh);
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT r.user_id, r.session_id FROM refresh_token r
+                 JOIN session s ON s.id = r.session_id AND s.user_id = r.user_id
+                 WHERE r.token_hash = ?1 AND r.rotated_ms IS NULL AND r.expires_ms > ?2
+                   AND s.revoked_ms IS NULL",
+                params![&hash[..], now],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
     /// Ends one of the user's sessions (signing that device out). `false` if it is not theirs or
     /// already ended. Audited.
     pub fn revoke_session(

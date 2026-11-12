@@ -24,6 +24,7 @@ pub mod push;
 pub mod push_store;
 pub mod store;
 pub mod totp;
+pub mod webapp;
 pub mod webpush;
 
 #[cfg(test)]

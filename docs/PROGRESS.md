@@ -5,6 +5,36 @@ unverified, the next step.
 
 ---
 
+## T30a: The web app's foundation (12 November 2026)
+
+**Status:** draft pull request #52 on `task/t30` (CI green before the review fixes, run 43320232806); independent review done, every
+finding fixed or accepted (DECISIONS). Merged with the pull request that carries this entry. T30b (the swipe machine in TypeScript)
+follows in its own pull request.
+
+**What was built.**
+- **The app** (`web/`): SvelteKit 3, Svelte 5 and TypeScript strict, a static single-page app on the generated tokens. Sign-in with
+  a passkey, single sign-on (PKCE) or a recovery code leading to a new passkey; the empty W01 layout with the user and sign-out.
+- **Served by the Companion** (`web_dir`, set by the Docker image, which now builds the app): read once into memory, exact paths
+  only, hashed assets cached, the page under a strict CSP with Trusted Types.
+- **Browser sessions:** the refresh token in an `HttpOnly`, `SameSite=Strict`, `__Host-` cookie, the access token in memory only;
+  `/api/web/refresh` and `/api/web/sign-out` for the app's own requests only (`X-Croft-Web`, origin, fetch site); refreshes
+  serialised across tabs.
+- **CI:** a `web` job (types, unit tests, build, then Playwright against a real Companion).
+
+**Checks.** 157 Companion tests (the cookie and its attributes, rotation and reuse, the web checks with and without fetch metadata,
+duplicate cookies, the recovery cookie's life, stale-cookie sign-out, the rate limits, the serving and its CSP, the inline-script
+scan on hostile pages, the configuration). 13 unit tests for the client (renewal, the signed-out memory, two tabs with and without
+the lock). 5 Playwright tests against a real Companion with Chromium's virtual authenticator: sign in, reload and stay signed in,
+sign out; recovery to a new passkey; plain-word errors; two tabs at once; repeated signed-out visits then a sign-in. No CSP
+violation or script error in any of them. Clippy and `svelte-check` are clean.
+
+**Review** (one independent agent, opus, high effort): no high, 2 medium, lows; fixed with regression tests; not re-reviewed.
+
+**Not verified here:** real passkey providers (platform authenticators, password managers), Safari and Firefox, a real OIDC
+provider through the web app.
+
+---
+
 ## T29: The push gateway (12 November 2026)
 
 **Status:** draft pull request #50 on `task/t29` (CI green before the review fixes, run 43313646883); independent review done, every

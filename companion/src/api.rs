@@ -384,6 +384,7 @@ fn is_format_char(c: char) -> bool {
 }
 
 fn tokens_json(tokens: &Tokens, recovery: bool) -> Response {
+    // Apps: both tokens in the body. The web app's sign-ins go through `web_api::tokens_response`.
     Json(json!({
         "access_token": tokens.access.as_str(),
         "refresh_token": tokens.refresh.as_str(),
@@ -529,6 +530,13 @@ pub fn routes() -> Vec<Route> {
             post(sign_in_recovery),
         ),
         route(Method::POST, "/api/token/refresh", P, post(refresh)),
+        route(Method::POST, "/api/web/refresh", P, post(web_api::refresh)),
+        route(
+            Method::POST,
+            "/api/web/sign-out",
+            P,
+            post(web_api::sign_out),
+        ),
         route(Method::GET, "/api/me", S, get(me)),
         route(Method::POST, "/api/sign-out", S, post(sign_out)),
         route(Method::POST, "/api/passkeys/start", S, post(passkey_start)),
@@ -869,6 +877,9 @@ struct SignInFinish {
     ceremony: String,
     credential: PublicKeyCredential,
     device: Option<String>,
+    /// The web app's sign-in (T30): the refresh token goes into a cookie.
+    #[serde(default)]
+    web: bool,
 }
 
 /// After a failed passkey check: count it for the address and audit it for the user. It never
@@ -883,14 +894,20 @@ async fn passkey_failed(app: &App, ip: IpAddr, user_id: Option<i64>) -> ApiError
     }
 }
 
-async fn start_session(app: &App, user_id: i64, device: String, recovery: bool) -> ApiResult {
+async fn start_session(
+    app: &App,
+    user_id: i64,
+    device: String,
+    recovery: bool,
+    web: bool,
+) -> ApiResult {
     let now = app.auth.now();
     match with_store(app, move |s| {
         s.start_session(user_id, &device, recovery, now)
     })
     .await?
     {
-        Ok(tokens) => Ok(tokens_json(&tokens, recovery)),
+        Ok(tokens) => Ok(web_api::tokens_response(app, &tokens, recovery, web)),
         Err(SignInError::Invalid) => Err(ApiError::Invalid),
         Err(SignInError::Locked { until_ms }) => Err(ApiError::Locked(until_ms)),
         Err(SignInError::Store(e)) => Err(e.into()),
@@ -913,6 +930,7 @@ async fn sign_in_finish(
 ) -> ApiResult {
     let ip = limit(&app, peer, &headers)?;
     let req = body(req)?;
+    web_api::check_web(&app, &headers, req.web)?;
     let now = app.auth.now();
     let Some(Pending::SignIn {
         user_id: named,
@@ -965,7 +983,7 @@ async fn sign_in_finish(
     .await??;
     match checked {
         Checked::Good(user_id) => {
-            start_session(&app, user_id, device_name(req.device), false).await
+            start_session(&app, user_id, device_name(req.device), false, req.web).await
         }
         Checked::Bad(user_id) => Err(passkey_failed(&app, ip, user_id).await),
     }
@@ -978,6 +996,9 @@ struct Recovery {
     totp: String,
     recovery_code: String,
     device: Option<String>,
+    /// The web app's sign-in (T30).
+    #[serde(default)]
+    web: bool,
 }
 
 /// How a recovery sign-in ended.
@@ -995,6 +1016,8 @@ async fn sign_in_recovery(
 ) -> ApiResult {
     let ip = limit(&app, peer, &headers)?;
     let req = body(req)?;
+    web_api::check_web(&app, &headers, req.web)?;
+    let web = req.web;
     let now = app.auth.now();
     let name = req.user;
     let device = device_name(req.device);
@@ -1025,7 +1048,7 @@ async fn sign_in_recovery(
     })
     .await??;
     match outcome {
-        Recovered::Tokens(tokens) => Ok(tokens_json(&tokens, true)),
+        Recovered::Tokens(tokens) => Ok(web_api::tokens_response(&app, &tokens, true, web)),
         Recovered::Locked(until) => {
             failed(&app, ip);
             Err(ApiError::Locked(until))
@@ -1334,6 +1357,9 @@ pub(crate) mod jmap_api;
 
 #[path = "push_api.rs"]
 pub(crate) mod push_api;
+
+#[path = "web_api.rs"]
+pub(crate) mod web_api;
 
 #[cfg(test)]
 #[path = "api_tests.rs"]

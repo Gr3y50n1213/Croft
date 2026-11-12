@@ -1156,3 +1156,75 @@ async fn a_created_name_never_differs_from_another_only_by_case() {
         (Some("ann-2"), Some("user"))
     );
 }
+
+#[tokio::test]
+async fn a_web_exchange_needs_the_web_apps_request_and_sets_the_cookie() {
+    let h = h_with(false).await;
+    let ann = h.user("ann");
+    h.link(ann, "made-up-sub-ann");
+    let app = app_side();
+    let back = h.sign_in_redirect(&app).await;
+    let post = |headers: &'static [(&'static str, &'static str)]| {
+        let router = h.router.clone();
+        let body = json!({"code": back["code"], "verifier": app.verifier, "web": true});
+        async move {
+            let mut req = Request::post("/api/sign-in/oidc/exchange")
+                .header("content-type", "application/json");
+            for (k, v) in headers {
+                req = req.header(*k, *v);
+            }
+            let mut req = req.body(Body::from(body.to_string())).unwrap();
+            req.extensions_mut()
+                .insert(Peer("10.9.250.1:4000".parse().unwrap()));
+            let res = router.oneshot(req).await.unwrap();
+            let status = res.status();
+            let cookie = res
+                .headers()
+                .get("set-cookie")
+                .map(|v| v.to_str().unwrap().to_owned());
+            let bytes = res.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                cookie,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    // Not the web app's own request: refused, and the code is not spent.
+    let (s, cookie, _) = post(&[("origin", ORIGIN)]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(cookie.is_none());
+    let (s, cookie, v) = post(&[("x-croft-web", "1"), ("origin", ORIGIN)]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v.get("refresh_token").is_none());
+    let cookie = cookie.unwrap();
+    assert!(cookie.starts_with("__Host-croft_refresh=") && cookie.contains("HttpOnly"));
+}
+
+#[tokio::test]
+async fn an_unknown_callback_state_does_not_lock_the_address_out() {
+    let h = h_with(false).await;
+    // A page embedding the callback address many times from the visitor's browser.
+    for _ in 0..40 {
+        let mut req = Request::get("/oidc/callback?state=made-up")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(Peer("10.9.251.1:4000".parse().unwrap()));
+        let res = h.router.clone().oneshot(req).await.unwrap();
+        assert_ne!(res.status(), StatusCode::OK);
+        if res.status() == StatusCode::TOO_MANY_REQUESTS {
+            break;
+        }
+    }
+    // The visitor can still sign in afterwards (the request limit may apply, a lock does not).
+    h.advance(61_000);
+    let mut req = Request::post("/api/sign-in/passkey/start")
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    req.extensions_mut()
+        .insert(Peer("10.9.251.1:4000".parse().unwrap()));
+    let res = h.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}

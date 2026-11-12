@@ -67,6 +67,7 @@ struct FileConfig {
     trusted_proxies: Option<Vec<String>>,
     oidc: Option<FileOidc>,
     mail_allowed_networks: Option<Vec<String>>,
+    web_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -119,6 +120,8 @@ pub struct Config {
     /// Private networks a mail server may be on (T26). Everything internal (loopback, private,
     /// link-local...) is refused otherwise.
     pub mail_allowed_networks: Vec<Network>,
+    /// The built web app to serve (T30); none when not set.
+    pub web_dir: Option<PathBuf>,
 }
 
 /// An IP network (`address/prefix`).
@@ -259,6 +262,16 @@ impl Config {
                 "public_url must be https:// and a domain name (plain http only for localhost; no IP address)",
             ));
         }
+        let web_dir = env("CROFT_COMPANION_WEB_DIR")
+            .map(PathBuf::from)
+            .or(file.web_dir);
+        // The web app's cookie is for the whole host (`__Host-`, path /): a Companion under a path
+        // would share it with everything else on that host (T30 review).
+        if web_dir.is_some() && !public_url_is_origin(&public_url) {
+            return Err(ConfigError::Invalid(
+                "web_dir needs a public_url of its own host, without a path (such as https://mail.example.org)",
+            ));
+        }
         Ok(Self {
             listen,
             public_url: public_url.trim_end_matches('/').to_owned(),
@@ -267,6 +280,7 @@ impl Config {
             trusted_proxies,
             oidc,
             mail_allowed_networks,
+            web_dir,
         })
     }
 
@@ -343,6 +357,13 @@ fn oidc_settings(
         required_group: file.required_group,
         groups_claim: file.groups_claim.unwrap_or_else(|| "groups".to_owned()),
     }))
+}
+
+/// Whether `url` is an origin only (`https://host[:port]`, an optional trailing slash).
+fn public_url_is_origin(url: &str) -> bool {
+    let rest = url.split_once("://").map_or("", |(_, r)| r);
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    !rest.is_empty() && !rest.contains(['/', '?', '#'])
 }
 
 fn public_url_is_ok(url: &str) -> bool {
@@ -498,6 +519,23 @@ mod tests {
 
     fn no_env(_: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn the_web_app_needs_a_host_of_its_own() {
+        let ok = Config::parse(
+            "public_url = \"https://mail.example.org/\"\nweb_dir = \"/srv/web\"",
+            &no_env,
+        )
+        .unwrap();
+        assert_eq!(ok.web_dir, Some(PathBuf::from("/srv/web")));
+        assert!(Config::parse(
+            "public_url = \"https://example.org/croft\"\nweb_dir = \"/srv/web\"",
+            &no_env
+        )
+        .is_err());
+        // Without the web app a path is still fine.
+        assert!(Config::parse("public_url = \"https://example.org/croft\"", &no_env).is_ok());
     }
 
     #[test]

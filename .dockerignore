@@ -2,3 +2,7 @@
 **/target
 .git
 android/
+web/node_modules
+web/build
+web/.svelte-kit
+web/test-results

@@ -114,8 +114,10 @@ pub async fn callback(
     let Query(q) = q.map_err(|_| ApiError::BadRequest)?;
     let p = provider(&app)?;
     let now = app.auth.now();
+    // An unknown or spent `state` is not a guess at anything (the flow it names is random and
+    // single-use): it does not count against the address, or any page could embed this address
+    // and lock its visitors out of sign-in (T30 review). It is still audited.
     let Some(flow) = q.state.as_deref().and_then(|s| p.take_flow(s, now)) else {
-        failed(&app, ip);
         let _ = with_store(&app, move |s| s.record_failure(None, now, false)).await;
         return Err(ApiError::Invalid);
     };
@@ -198,6 +200,9 @@ pub struct Exchange {
     code: String,
     verifier: String,
     device: Option<String>,
+    /// The web app's sign-in (T30): the refresh token goes into a cookie.
+    #[serde(default)]
+    web: bool,
 }
 
 /// `POST /api/sign-in/oidc/exchange`: the hand-over code and the app's verifier for tokens.
@@ -209,11 +214,12 @@ pub async fn exchange(
 ) -> ApiResult {
     let ip = limit(&app, peer, &headers)?;
     let req = body(req)?;
+    super::web_api::check_web(&app, &headers, req.web)?;
     let p = provider(&app)?;
     let (code, verifier) = (Zeroizing::new(req.code), Zeroizing::new(req.verifier));
     match p.redeem(&code, &verifier, app.auth.now()) {
         Ok(Outcome::SignIn { user_id }) => {
-            let res = start_session(&app, user_id, device_name(req.device), false).await;
+            let res = start_session(&app, user_id, device_name(req.device), false, req.web).await;
             if res.is_ok() {
                 // Marks the sign-in as made through the provider.
                 let _ =

@@ -160,16 +160,37 @@ const MAX_ID_KEY: &str = "account.max_id";
 /// needed; a database without the key starts from `MAX(id)`.
 pub fn insert(conn: &Connection, new: &NewAccount, now_ms: i64) -> Result<i64> {
     let config = serde_json::to_string(&new.config)?;
-    conn.execute_batch("SAVEPOINT account_insert")?;
+    // On its own, the insert takes the write lock before it reads: the core has more than one
+    // connection to the file, and a deferred transaction that read before another connection's
+    // commit could not write after it (`SQLITE_BUSY_SNAPSHOT`, which no busy timeout waits out).
+    // Inside a caller's transaction it is a savepoint of it.
+    let own = conn.is_autocommit();
+    conn.execute_batch(if own {
+        "BEGIN IMMEDIATE"
+    } else {
+        "SAVEPOINT account_insert"
+    })?;
     let result = insert_in_savepoint(conn, new, &config, now_ms);
     match result {
+        Ok(id) if own => {
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                // Never leave the shared connection inside a transaction.
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.into());
+            }
+            Ok(id)
+        }
         Ok(id) => {
             conn.execute_batch("RELEASE account_insert")?;
             Ok(id)
         }
         Err(e) => {
-            // Undo and close the savepoint; the original error is the one to report.
-            let _ = conn.execute_batch("ROLLBACK TO account_insert; RELEASE account_insert");
+            // Undo; the original error is the one to report.
+            let _ = conn.execute_batch(if own {
+                "ROLLBACK"
+            } else {
+                "ROLLBACK TO account_insert; RELEASE account_insert"
+            });
             Err(e)
         }
     }
@@ -286,6 +307,41 @@ mod tests {
             color: None,
             position: 0,
         }
+    }
+
+    /// Another connection to the same file (the core has several) writing while an insert waits for
+    /// the lock: the insert must not have read before it, or SQLite refuses its write at once
+    /// (`SQLITE_BUSY_SNAPSHOT`, which no busy timeout waits out).
+    #[test]
+    fn an_insert_waits_for_another_connections_write_instead_of_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("croft.db");
+        let db = Db::open(&path, None).unwrap();
+        insert(db.connection(), &new_account("one"), 1).unwrap();
+        let mut other = Db::open(&path, None).unwrap();
+        let (locked, go) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let writer = std::thread::spawn(move || {
+            other
+                .transaction(|tx| {
+                    tx.execute("UPDATE account SET label = 'renamed' WHERE id = 1", [])?;
+                    locked.0.send(()).unwrap();
+                    go.1.recv().unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    Ok::<_, StorageError>(())
+                })
+                .unwrap();
+        });
+        locked.1.recv().unwrap();
+        go.0.send(()).unwrap();
+        // The other connection holds the write lock and commits a change while this waits.
+        assert_eq!(insert(db.connection(), &new_account("two"), 2).unwrap(), 2);
+        writer.join().unwrap();
+        assert_eq!(list(db.connection()).unwrap().len(), 2);
+        // Inside a caller's transaction it is still a savepoint (it commits or rolls back with it).
+        db.connection().execute_batch("BEGIN IMMEDIATE").unwrap();
+        insert(db.connection(), &new_account("three"), 3).unwrap();
+        db.connection().execute_batch("ROLLBACK").unwrap();
+        assert_eq!(list(db.connection()).unwrap().len(), 2);
     }
 
     #[test]

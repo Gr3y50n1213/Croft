@@ -5,6 +5,24 @@ unverified, the next step.
 
 ---
 
+## Fix: adding an account while another connection writes (12 November 2026)
+
+**Status:** its own pull request after T28.
+
+**What was fixed.** The JMAP integration test that failed now and then on CI (three times, T25 to T28, always at `add_account`
+with a database error within 0.04 s). `accounts::insert` began a deferred transaction (a bare `SAVEPOINT`) that read before it wrote.
+The core has more than one connection to the same file: a JMAP account's first sync writes its id map on its own connection. A commit
+there between the insert's read and write made SQLite refuse the write at once (`SQLITE_BUSY_SNAPSHOT`, which no busy timeout waits
+out). The insert now takes the write lock first (`BEGIN IMMEDIATE`) unless it runs inside a caller's transaction, and rolls back if its
+commit fails. Every other write in the core already went through `Db::transaction` (`BEGIN IMMEDIATE`).
+
+**Checks.** A regression test holds a write on a second connection that commits while the insert waits: it failed with "database busy"
+before the fix and passes after it. All core tests and clippy pass; the SQLCipher storage tests pass.
+
+**Not verified here:** that the CI failure is gone for good (it was intermittent); the integration job runs on every pull request.
+
+---
+
 ## T28: The Companion's push relay (12 November 2026)
 
 **Status:** draft pull request #46 on `task/t28` (CI green on the shutdown fix, run 43308057266); independent review done, every finding

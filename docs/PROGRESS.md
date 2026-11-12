@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T22: JMAP accounts in the app (12 November 2026)
 
-**Status:** task branch `task/t22` (draft pull request for CI next). FFI API version 12 (no type the app reads changed).
+**Status:** draft pull request #34 on `task/t22` (CI); independent review done, fixes included. FFI API version 12 (no type the app reads changed).
 
 **What was built.** A server that discovery finds offering JMAP (and that is not a well-known provider's) becomes a JMAP account:
 its own stored settings (session URL, login, pin; told apart by a `jmap` key, so earlier settings read exactly as before), the JMAP
@@ -34,7 +34,7 @@ OAuth token is refused for JMAP.
 
 ## T21: bring-your-own OAuth for Gmail and Outlook (12 November 2026)
 
-**Status:** draft pull request #32 on `task/t21` (CI); independent review done, fixes included. **FFI API version 12.**
+**Status:** merged to `main` through pull request #33 (all CI jobs green; independent review done, fixes included). **FFI API version 12.**
 
 **What was built.** (1) *Core* (`croft_protocols::oauth`): the provider table (Google: `accounts.google.com`, `oauth2.googleapis.com`, scope
 `https://mail.google.com/`; Microsoft: the v2.0 endpoints of `login.microsoftonline.com/common`, `IMAP.AccessAsUser.All`, `SMTP.Send`,
@@ -67,7 +67,7 @@ Croft on real phones, refresh-token lifetime.
 
 ## T20: background check and notifications (12 November 2026)
 
-**Status:** pull request #31 to `main` (all CI jobs green on the task branch; review done). **FFI API version 11.**
+**Status:** merged to `main` through pull request #31 (all CI jobs green; review done). **FFI API version 11.**
 
 **What was built.** (1) *What counts as new* (`croft_mail_core::notify`, pure): unread, in the Inbox, above the account's "notified up to"
 marker under the Inbox's UIDVALIDITY. The first check (or one after the Inbox was renumbered) only sets a baseline, so the mail already

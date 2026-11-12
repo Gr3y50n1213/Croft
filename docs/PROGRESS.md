@@ -5,10 +5,49 @@ unverified, the next step.
 
 ---
 
+## T27: The Companion's JMAP API for clients (12 November 2026)
+
+**Status:** draft pull request #44 on `task/t27` (CI green before the review fixes, run 43298272597); independent review done, every
+finding fixed or accepted (DECISIONS). Merged with the pull request that carries this entry.
+
+**What was built.** Standard JMAP (RFC 8620 and 8621) for the apps, as a thin layer over each user's core (T26):
+- **Session.** One JMAP account per mail account.
+- **Methods.** `Core/echo`, `Mailbox/get`, `Email/query`, `Email/get` (text and sanitised HTML bodies, remote content blocked),
+  `Email/set` (read, flag, move, delete through the core's operation queue), `Thread/get`, `Identity/get`, `/changes`.
+- **Request handling.** Result references with JMAP's `*`.
+- **States.** The core's change number, with a random epoch per core opening (a new `Core::change_seq`, outside the app bindings).
+- **Limits.** A byte budget per request; its own per-user rate and concurrency.
+
+**Checks.** 127 companion tests. Against the core's IMAP test server through a user's account:
+- the session, the folders with roles;
+- the Inbox newest first by result reference, with bodies;
+- read, flag, move to Archive and delete reaching the server;
+- `/changes`;
+- malformed requests getting the RFC's errors.
+
+Plus regression tests for every review finding:
+- amplification;
+- the per-user limits;
+- a pending restore guarding a destroy;
+- whole totals and bounded positions;
+- bounded gets;
+- the `mailboxIds/<id>` patches and strict keyword values;
+- one account's id never reaching another's mail;
+- recovery sign-ins refused.
+
+Clippy is clean.
+
+**Review** (one independent agent, opus, high effort): 1 high, 5 medium, lows. Fixed with regression tests, except thread-id stability
+(accepted, OPEN-ITEMS). The fixes were not re-reviewed.
+
+**Not verified here:** a third-party JMAP client library against it (the web client of T30 is the first real client).
+
+---
+
 ## T26: Mail accounts in the Companion (12 November 2026)
 
-**Status:** draft pull request #43 on `task/t26` (CI green before the review fixes, run 43287485947); independent review done, every
-finding fixed or accepted (DECISIONS). Merged with the pull request that carries this entry.
+**Status:** merged to main (pull request #43; CI green, run 43291216328); independent review done, every finding fixed or accepted
+(DECISIONS).
 
 **What was built.**
 - **One core per user.** The Companion runs one `croft_ffi::Core` (the phones' own core) per user, over that user's SQLCipher database,

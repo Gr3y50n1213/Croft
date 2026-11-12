@@ -97,6 +97,12 @@
 //!   [`EngineHandle::signed_in`]; an account removed and added back after a refused sign-in starts
 //!   waiting for the sign-in again.
 //!
+//! # Reading
+//!
+//! [`EngineHandle::fetch_body`] fetches a message's body once (the whole message, through the
+//! account's backend, never marking it read), parses and sanitises it with `croft_reader` on a
+//! blocking thread, and stores it (`croft_storage::reading`), so it opens offline from then on.
+//!
 //! # Message-ID lookups never guess before something is destroyed
 //!
 //! A message that moved (no new UID in the answer) or whose folder was renumbered is found again by
@@ -110,6 +116,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+mod body;
 mod clock;
 mod demo;
 mod engine;
@@ -119,6 +126,7 @@ mod outbox;
 mod sync;
 mod worker;
 
+pub use body::BodyError;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use croft_mail_core::compose;
 pub use croft_mail_core::{

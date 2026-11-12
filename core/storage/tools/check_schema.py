@@ -260,4 +260,44 @@ check("migration 0006 keeps outbox rows and adds an empty draft link",
       and {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('draft','draft_attachment','sent_recipient')")}
       == {"draft", "draft_attachment", "sent_recipient"})
 
+# Migration 0007 (reading): the fetched message, sanitiser counts, attachment details and the
+# remote-content choices go with their message and account.
+db.execute("INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (4,'R','r@example.org','imap','{}',0)")
+db.execute("INSERT INTO folder (id,account_id,path,special_use) VALUES (40,4,'INBOX','inbox')")
+db.execute("INSERT INTO message (id,account_id,folder_id,uid,thread_key,date_ts,message_id_hdr) VALUES (400,4,40,1,'t',1,'<r@x>')")
+db.execute("INSERT INTO message_raw (message_id,account_id,raw,fetched_at) VALUES (400,4,x'00',1)")
+db.execute("INSERT INTO message_body (message_id,text_plain,remote_blocked) VALUES (400,'okapi sighting',2)")
+db.execute("INSERT INTO attachment (message_id,part_id,mime_type,content_id,shown_inline,executable) VALUES (400,'3','image/png','c@x',1,0)")
+db.execute("INSERT INTO trusted_sender (account_id,address,created_at) VALUES (4,'ann@example.org',1)")
+check("a stored body is searchable", one("SELECT rowid FROM message_fts WHERE message_fts MATCH 'okapi'") == 400)
+check("remote_allowed defaults to 0", one("SELECT remote_allowed FROM message WHERE id=400") == 0)
+check("a body is not marked too complex by default", one("SELECT too_complex FROM message_body WHERE message_id=400") == 0)
+check("a body's HTML is not pending by default", one("SELECT html_pending FROM message_body WHERE message_id=400") == 0)
+check("a raw copy may have no hash yet", one("SELECT sha256 IS NULL FROM message_raw WHERE message_id=400") == 1)
+plan = " ".join(r[3] for r in db.execute(
+    "EXPLAIN QUERY PLAN SELECT id FROM message WHERE account_id=4 AND message_id_hdr='<r@x>'"))
+check("a Message-ID lookup uses message_msgid", "message_msgid" in plan)
+db.execute("DELETE FROM message WHERE id=400")
+check("deleting a message removes its raw copy, body and attachments",
+      one("SELECT count(*) FROM message_raw") + one("SELECT count(*) FROM message_body WHERE message_id=400")
+      + one("SELECT count(*) FROM attachment WHERE message_id=400") == 0)
+db.execute("DELETE FROM account WHERE id=4")
+check("deleting the account removes its known senders", one("SELECT count(*) FROM trusted_sender") == 0)
+
+# Upgrading a version-6 database keeps its bodies and adds the new columns with their defaults.
+old = sqlite3.connect(":memory:")
+for path in mig[:6]:
+    old.executescript(open(path).read())
+old.executescript("""INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'S','s@example.org','imap','{}',0);
+INSERT INTO folder (id,account_id,path) VALUES (1,1,'INBOX');
+INSERT INTO message (id,account_id,folder_id,uid,thread_key,date_ts) VALUES (1,1,1,1,'t1',1);
+INSERT INTO message_body (message_id,text_plain,html_clean) VALUES (1,'old text','<p>old</p>');
+INSERT INTO attachment (message_id,part_id,mime_type) VALUES (1,'2','application/pdf');""")
+old.executescript(open(mig[6]).read())
+check("migration 0007 keeps old bodies and attachments with default counts",
+      old.execute("SELECT text_plain, remote_blocked, trackers_removed, truncated FROM message_body").fetchone()
+      == ("old text", 0, 0, 0)
+      and old.execute("SELECT content_id, shown_inline, executable FROM attachment").fetchone() == (None, 0, 0)
+      and old.execute("SELECT remote_allowed FROM message").fetchone()[0] == 0)
+
 sys.exit(1 if check.failed else 0)

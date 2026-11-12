@@ -65,7 +65,8 @@ pub struct Message {
     pub local_hidden: bool,
 }
 
-fn map_row(row: &Row<'_>) -> rusqlite::Result<Message> {
+/// Reads a [`Message`] from the first 23 columns of a row, in the order of [`LIST_SQL`].
+pub(crate) fn map_row(row: &Row<'_>) -> rusqlite::Result<Message> {
     let keywords: String = row.get(16)?;
     let keywords = serde_json::from_str(&keywords).map_err(|_| {
         rusqlite::Error::FromSqlConversionFailure(

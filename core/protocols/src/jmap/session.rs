@@ -41,6 +41,8 @@ struct RawSession {
     api_url: String,
     #[serde(default, rename = "uploadUrl")]
     upload_url: Option<String>,
+    #[serde(default, rename = "downloadUrl")]
+    download_url: Option<String>,
     #[serde(default)]
     state: Option<String>,
 }
@@ -54,6 +56,11 @@ pub(crate) struct Session {
     pub api_url: Url,
     /// The upload address with `{accountId}` still in it, on the session URL's origin.
     upload_template: Option<Url>,
+    /// The `downloadUrl` template as the server wrote it (`{accountId}`, `{blobId}`, `{type}` and
+    /// `{name}` still in it). Filled in and checked by [`Session::download_url`].
+    download_template: Option<String>,
+    /// The session URL, which a download address is resolved against and kept on.
+    origin: Url,
     /// `maxObjectsInGet`, capped.
     pub max_get: usize,
     /// `maxObjectsInSet`, capped.
@@ -129,6 +136,8 @@ impl Session {
             account_id,
             api_url,
             upload_template,
+            download_template: raw.download_url,
+            origin: session_url.clone(),
             max_get: limit("maxObjectsInGet", DEFAULT_OBJECTS).min(MAX_OBJECTS),
             max_set: limit("maxObjectsInSet", DEFAULT_OBJECTS).min(MAX_OBJECTS),
             max_calls: limit("maxCallsInRequest", 16),
@@ -143,6 +152,23 @@ impl Session {
     /// The address blobs are uploaded to, if the server offers uploads.
     pub fn upload_url(&self) -> Option<&Url> {
         self.upload_template.as_ref()
+    }
+
+    /// The address to download a blob from (RFC 8620 section 6.2), on the session URL's origin
+    /// like every other address: the template's `{accountId}`, `{blobId}`, `{type}` and `{name}`
+    /// are filled in, percent-encoded. `None` when the server names no download address or the
+    /// result is not a usable URL.
+    pub fn download_url(&self, blob_id: &str, content_type: &str, name: &str) -> Option<Url> {
+        let template = self.download_template.as_deref()?;
+        if !template.contains("{blobId}") {
+            return None;
+        }
+        let filled = template
+            .replace("{accountId}", &percent_encode(&self.account_id))
+            .replace("{blobId}", &percent_encode(blob_id))
+            .replace("{type}", &percent_encode(content_type))
+            .replace("{name}", &percent_encode(name));
+        Some(self.origin.resolve(&filled)?.on_origin_of(&self.origin))
     }
 }
 

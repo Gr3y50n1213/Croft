@@ -1,0 +1,17 @@
+From: x@example.org
+To: y@example.org
+Subject: Cut short
+Message-ID: <cut-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="CUT"
+
+--CUT
+Content-Type: text/html
+
+<p>Start of a <b>message that was cut <img src="https://t.example/a.png
+--CUT
+Content-Type: application/pdf; name="half.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="half.pdf"
+
+JVBERi0xLjQgQ3JvZnQgdGVzdC

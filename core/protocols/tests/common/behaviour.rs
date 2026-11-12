@@ -137,6 +137,26 @@ pub async fn behaviour(
         "{label}"
     );
 
+    // The whole message, without marking it read; a UID that is not there is gone.
+    match b.fetch_body(&inbox, u1).await.unwrap() {
+        RawMessage::Found(raw) => {
+            let text = String::from_utf8_lossy(&raw);
+            assert!(text.contains(&format!("Body of {}.", ids[0])), "{label}");
+            assert!(text.contains(&mid(0)), "{label}: the Message-ID header");
+        }
+        other => panic!("{label}: {other:?}"),
+    }
+    assert!(
+        !b.snapshot(&inbox).await.unwrap().messages[&u1].seen,
+        "{label}: fetching a message must not mark it read"
+    );
+    let absent = u1.max(u2).max(u3) + 1000;
+    assert_eq!(
+        b.fetch_body(&inbox, absent).await.unwrap(),
+        RawMessage::Gone,
+        "{label}"
+    );
+
     // Find by Message-ID, and an id that is not there.
     assert_eq!(
         b.find_by_message_id(&inbox, &mid(1)).await.unwrap(),

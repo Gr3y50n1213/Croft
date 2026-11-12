@@ -5,6 +5,90 @@ unverified, the next step.
 
 ---
 
+## T18a: reading in the core (11 November 2026)
+
+**Status:** draft pull request #18 on `task/t18a` (CI only; not merged). Part A of T18, core side only: no screens.
+**FFI API version 9** and migration **0007** (T18c merged first with version 8 and migration 0006; `claude/croft-build`
+is merged into this branch).
+
+**Opus review round 3: 6 high (DoS), 2 medium, 3 low; fixed by a work budget inside the parser** (12 November).
+The shape scan's prediction is replaced by measurement: the vendored html5ever (new change 3 in its `CROFT-PATCHES.md`)
+and a newly vendored ammonia 4.2.4 (`core/vendor/ammonia`, MIT OR Apache-2.0, notices kept) charge every token, every
+step over the stack of open elements and the formatting list, every node, every rebuilt attribute byte, the DOM's
+sibling searches and the CSS and URL work to a per-thread budget (`html5ever::budget`): **30 000 000 units and 8 MiB of
+rebuilt attributes** per document. When it is spent the parser stops at once and the message shows as text. Input is
+normalised first (CR, CRLF to LF; NUL to U+FFFD); the serialiser writes into a buffer that refuses more than 8 MiB; the
+3 s deadline is a backstop that cancels the parser (its thread ends within milliseconds); one sanitiser thread per
+process (a caller waits for it within its own deadline, then shows text); a deadline miss or a busy sanitiser is
+`html_pending` (stored, retried on the next open, never a mark), only deterministic outcomes are `too_complex`. L1: the
+scan counts implied `tr`/`colgroup`. L2: size-only folding only when neither copy is fetched. L3: one fetch and sanitise
+per message (a per-message lock in the engine). Release, x86, every input to 4 MiB with the budget alone (no shape
+scan): worst 0.31 s and 92 MB; newsletters render (a 4 MiB MJML newsletter uses 16.5 million units). Table in
+`docs/DECISIONS.md`; regression test per finding (`tests/sanitize.rs`, `tests/sanitizer_thread.rs`,
+`engine/tests/body.rs`, `storage` reading tests), charge-point tests that fail when a charge is removed
+(`tests/budget.rs`, checked by removing two charges), and a guard test on the vendored sources. The S60 licence list was
+regenerated with `gen_licences.py` (Gradle ran offline this time). Not re-reviewed.
+
+**Opus review round 2: 3 high (DoS), 2 medium, 5 low; all fixed** (12 November; N6 accepted and documented). N1:
+the shape scan never pops on end tags inside quoted values, comments, CDATA or bogus comments, and void names nest once
+`<svg`/`<math` appeared. N2: a node budget for rebuilt formatting elements, 1 500 000 (0.31 s and 125 MB at the cap;
+the legacy test layout counts 1.17 million and still renders). N3: html5ever vendored with a one-pass escape and no
+logging of token text (`core/vendor/html5ever/CROFT-PATCHES.md`). D: sanitising runs on its own thread with a 3 s
+deadline (30 s in debug builds); past it, or past 8 MiB of markup, the message shows as text and a stored
+`too_complex` mark stops any retry. N4/N5: browser-style dimension reading and CSS functions in sizes count as
+pixels. N7: `getrandom`. N8: every Cf character stripped, 11 more launcher extensions. N9: copies fold only with the
+same SHA-256 (or the same server size before both are fetched). N10: `styles_removed` counts kept elements only. Every
+reviewer input now falls back in under 1 ms, or runs in under 0.4 s (release, x86; `limits_bench.rs`).
+
+**Opus review: 4 high (hang or memory), 2 medium, 5 low; all fixed** (12 November). H1/H2: a byte scan that can only
+over-count (`croft_reader::shape`) measures tags, depth, the parser's cost (sum of depths) and attributes per tag before
+any parser runs; limits 50 000 tags, depth 2 048, cost 40 000 000, 256 attributes per tag; worst case found inside them
+0.22 s (release, x86), the review's 47-58 s inputs refused in under 1 ms, newsletter-shaped HTML (including a legacy
+layout at depth 1 210) still renders. H3: references deduplicated with a set and cut to 100 from each end (also in the
+IMAP and JMAP header code). H4: a 21 MiB budget for `data:` URIs per document. M1: pixels decided inside the ammonia
+pass on the output tree (marker attribute per `img`, random tokens for remote addresses), sizes in any unit, opacity,
+srcset candidates. M2: names trimmed again after cutting; `save_attachment` re-checks the final name. L1: inline images
+typed by their bytes. L2: more executable types (local HTML/SVG/MHT/CHM, macro Office files, `.apkm`), superscript
+device names, blank-looking characters. L3: only true copies (same Message-ID, sender and date) fold in a conversation.
+L4: existence checks read no blob. A regression test per finding; the timings are in `core/reader/tests/limits_bench.rs`
+(ignored; run in release). T18c's `reply_all_draft` and Sent-folder suggestions now get To and Cc from every message
+whose body was loaded (test `a_loaded_body_gives_reply_all_its_to_and_cc_and_its_quote`); messages never opened still
+have none. The S60 licence list (`open-source-licences.json`) gains the 20 new crates: its Rust entries were
+regenerated with `gen_licences.py`'s own `rust_entries()` (Gradle cannot run offline here; the Kotlin inputs did not change).
+
+**What was built:** (1) `MailBackend::fetch_body(folder, uid) -> RawMessage { Found(bytes), Gone, TooLarge { size } }`:
+IMAP `EXAMINE` + `RFC822.SIZE` + `BODY.PEEK[]`, JMAP `blobId` download from the session's `downloadUrl` (session origin
+only), the sample mailbox serves `message_source` (and a stand-in for a message whose source was not kept), the app's
+account backend forwards it; a default answer for adapters that have none. 50 MiB limit, checked before downloading.
+(2) New crate `croft-reader` (pure): `render` parses with mail-parser 1.0 (caps on size, parts, depth, text, HTML,
+inline images), sanitises the HTML with ammonia configured for mail (see `sanitize.rs` and `docs/DECISIONS.md`), lists
+attachments with safe names and executable marks; `part_content`; `remote_allowed`. (3) Migration 0007 and
+`storage::reading`: the fetched message (`message_raw`), body counts, attachment details, `message.remote_allowed`,
+`trusted_sender`, a Message-ID index, and the conversation query (Sent in, Trash/Junk/Drafts only when opened from
+there, one copy per Message-ID, widened through Message-IDs); a confirmed move takes all of it along. (4)
+`EngineHandle::fetch_body`: fetch, parse on a blocking thread, store; never marks read; offline and sign-in cases
+typed. (5) FFI (`core/ffi/src/reading.rs`): `open_conversation`, `load_body`, `save_attachment`, `allow_remote_content`,
+`trust_sender`, `untrust_sender`, `trusted_senders`, records `Conversation`, `ConversationMessage`, `MailAddress`,
+`MessageBody`, `AttachmentInfo`, enums `BodyState`, `RemoteImagesSetting`, error `ReadError`; README section "Reading a
+message" (how the app renders: sanitised string only, JavaScript and file access off, network off while blocked).
+Kotlin: only `EXPECTED_FFI_API_VERSION` and its test literal.
+
+**Checks:** in this container (Rust 1.99, the CI's stable; the default 1.97 cannot build mail-parser 1.0): `cargo fmt --check`,
+`cargo clippy --all-targets` and `-p croft-ffi --features cli`, `cargo test` (all crates: reader 33 tests including the
+fuzz-style test, storage 153, engine, protocols, ffi 98), `croft-storage` with `sqlcipher` (clippy and 156 tests),
+`croft-ffi` with `sqlcipher` (102) and `test-server` (clippy and 99), `check_schema.py`: all pass. Integration
+(`cargo test -p croft-protocols --features integration`) against GreenMail, Dovecot and Stalwart under compose project
+`t18a` on remapped ports: all pass, including the new `body_integration.rs` (a body and its attachment, byte for byte, on
+all three servers, still unread afterwards). `smtp_integration.rs` reads `CROFT_GREENMAIL_*_PORT`, not
+`CROFT_TEST_GREENMAIL_*_PORT` (older naming; it passed with those set). Containers stopped. Gradle was not run here
+(Maven Central refuses this container): the Android jobs run on CI. Found by testing: 100 000 nested `div`s took 340 s
+to sanitise, hence the depth limit; the fuzz test found that an unknown CSS function name (`--x--url(...)`) passed the
+first CSS filter, hence the function allow-list.
+
+**Not done / not verified:** the JMAP thread id is not used for conversations (the sync does not store it, and JMAP
+accounts cannot be added from the app yet): conversations use References/In-Reply-To on both protocols. No screens
+(S20, S21 are Part A's app half, for the Android agent). The review fixes were not re-reviewed. Rendering fidelity in a real WebView is unverified. "Show original" has its data
+(`message_raw`, `headers_raw`) but no FFI call yet.
 ## Preview build for phone testing (12 November 2026)
 
 **Status:** draft pull request `task/preview` (CI only; not merged).

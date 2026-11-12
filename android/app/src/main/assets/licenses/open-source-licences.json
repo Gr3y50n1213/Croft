@@ -1,7 +1,7 @@
 {
  "version": 1,
  "inputs": {
-  "cargoLockSha256": "2e9e6db519e80a187d5a9902f0ed8ac07d4a33f80a00fdcc6418c2caa049651c",
+  "cargoLockSha256": "d449cda7e7e3bd7ddbebff875cb0d4ebeb57d7962251b88675576176cd9d6033",
   "libsCatalogSha256": "97da1ae55696128da16e4d69a7a7f035085990a6070df4dfb05f950ff6b958f7"
  },
  "entries": [
@@ -582,6 +582,12 @@
    "origin": "Rust"
   },
   {
+   "name": "ammonia",
+   "version": "4.2.4",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
    "name": "anyhow",
    "version": "1.0.104",
    "licence": "MIT OR Apache-2.0",
@@ -613,13 +619,13 @@
   },
   {
    "name": "async-channel",
-   "version": "2.5.0",
+   "version": "1.9.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "async-channel",
-   "version": "1.9.0",
+   "version": "2.5.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -798,6 +804,12 @@
    "origin": "Rust"
   },
   {
+   "name": "cssparser",
+   "version": "0.38.0",
+   "licence": "MPL-2.0",
+   "origin": "Rust"
+  },
+  {
    "name": "data-encoding",
    "version": "2.11.1",
    "licence": "MIT",
@@ -816,9 +828,27 @@
    "origin": "Rust"
   },
   {
+   "name": "dtoa",
+   "version": "1.0.11",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "dtoa-short",
+   "version": "0.3.5",
+   "licence": "MPL-2.0",
+   "origin": "Rust"
+  },
+  {
    "name": "either",
    "version": "1.19.0",
    "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "encodify",
+   "version": "1.0.2",
+   "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
@@ -943,13 +973,13 @@
   },
   {
    "name": "getrandom",
-   "version": "0.4.3",
+   "version": "0.2.17",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "getrandom",
-   "version": "0.2.17",
+   "version": "0.4.3",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -969,6 +999,12 @@
    "name": "hashbrown",
    "version": "0.17.1",
    "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "hashify",
+   "version": "0.3.2",
+   "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
@@ -998,6 +1034,12 @@
   {
    "name": "hickory-resolver",
    "version": "0.26.3",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "html5ever",
+   "version": "0.40.1",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1152,6 +1194,24 @@
    "origin": "Rust"
   },
   {
+   "name": "mail-parser",
+   "version": "1.0.1",
+   "licence": "Apache-2.0 OR MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "maplit",
+   "version": "1.0.2",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "markup5ever",
+   "version": "0.40.0",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
    "name": "memchr",
    "version": "2.8.3",
    "licence": "Unlicense OR MIT",
@@ -1191,6 +1251,12 @@
    "name": "ndk-context",
    "version": "0.1.1",
    "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "new_debug_unreachable",
+   "version": "1.0.6",
+   "licence": "MIT",
    "origin": "Rust"
   },
   {
@@ -1260,6 +1326,30 @@
    "origin": "Rust"
   },
   {
+   "name": "phf",
+   "version": "0.14.0",
+   "licence": "MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "phf_codegen",
+   "version": "0.14.0",
+   "licence": "MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "phf_generator",
+   "version": "0.14.0",
+   "licence": "MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "phf_shared",
+   "version": "0.14.0",
+   "licence": "MIT",
+   "origin": "Rust"
+  },
+  {
    "name": "pin-project",
    "version": "1.1.13",
    "licence": "Apache-2.0 OR MIT",
@@ -1305,6 +1395,12 @@
    "name": "potential_utf",
    "version": "0.1.6",
    "licence": "Unicode-3.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "precomputed-hash",
+   "version": "0.1.1",
+   "licence": "MIT",
    "origin": "Rust"
   },
   {
@@ -1560,6 +1656,18 @@
    "origin": "Rust"
   },
   {
+   "name": "string_cache",
+   "version": "0.11.0",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "string_cache_codegen",
+   "version": "0.11.2",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
    "name": "subtle",
    "version": "2.6.1",
    "licence": "BSD-3-Clause",
@@ -1567,13 +1675,13 @@
   },
   {
    "name": "syn",
-   "version": "3.0.10",
+   "version": "2.0.119",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "syn",
-   "version": "2.0.119",
+   "version": "3.0.10",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1592,6 +1700,12 @@
   {
    "name": "tempfile",
    "version": "3.27.0",
+   "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "tendril",
+   "version": "0.5.1",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1615,13 +1729,13 @@
   },
   {
    "name": "thiserror-impl",
-   "version": "1.0.69",
+   "version": "2.0.21",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "thiserror-impl",
-   "version": "2.0.21",
+   "version": "1.0.69",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1797,6 +1911,12 @@
    "name": "walkdir",
    "version": "2.5.0",
    "licence": "Unlicense OR MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "web_atoms",
+   "version": "0.3.0",
+   "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {

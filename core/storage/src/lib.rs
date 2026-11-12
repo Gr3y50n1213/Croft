@@ -2,7 +2,7 @@
 //!
 //! [`Db`] opens the file (optionally encrypted with the `sqlcipher` feature), refuses a database
 //! written by a newer app, and runs the forward-only migrations. The repository modules
-//! ([`accounts`], [`folders`], [`messages`], [`settings`]) are plain functions over a
+//! ([`accounts`], [`folders`], [`messages`], [`reading`], [`settings`]) are plain functions over a
 //! `&rusqlite::Connection`, so they work the same inside [`Db::transaction`].
 //!
 //! Every query on account data is scoped by `account_id`; only `account` itself and the app-wide
@@ -18,6 +18,7 @@ pub mod jmap_ids;
 pub mod messages;
 pub mod op_store;
 pub mod outbox_store;
+pub mod reading;
 pub mod recipients;
 pub mod settings;
 
@@ -27,6 +28,8 @@ mod jmap_ids_tests;
 mod op_store_tests;
 #[cfg(test)]
 mod outbox_store_tests;
+#[cfg(test)]
+mod reading_tests;
 #[cfg(test)]
 mod repo_tests;
 #[cfg(test)]
@@ -80,6 +83,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "compose",
         sql: include_str!("../migrations/0006_compose.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "reading",
+        sql: include_str!("../migrations/0007_reading.sql"),
     },
 ];
 

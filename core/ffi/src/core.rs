@@ -513,7 +513,7 @@ impl Inner {
 
     /// Finds the account of each message id (the ids are local row ids, unique across accounts).
     /// Fails with `NoSuchMessage` if any id matches no message, before anything is changed.
-    fn resolve(&self, ids: &[i64]) -> Result<Vec<Message>, CoreError> {
+    pub(crate) fn resolve(&self, ids: &[i64]) -> Result<Vec<Message>, CoreError> {
         self.handle.read(|db| {
             let conn = db.connection();
             let accounts: Vec<i64> = accounts::list(conn)?.into_iter().map(|a| a.id).collect();

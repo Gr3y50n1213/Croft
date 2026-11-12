@@ -28,6 +28,9 @@ const MAX_REDIRECTS: usize = 3;
 const MAX_SESSION_BYTES: usize = 1024 * 1024;
 /// Largest answer to an upload (a small JSON object).
 const MAX_UPLOAD_ANSWER: usize = 64 * 1024;
+/// How fast a download is assumed to arrive at least: one second of extra time per 16 KiB of the
+/// size the server announced (the same allowance as the IMAP adapter's).
+const DOWNLOAD_BYTES_PER_SECOND: u64 = 16 * 1024;
 
 /// A method-level failure: either a classified error, or the server's error `type` for the caller
 /// that wants to handle one specially (`cannotCalculateChanges` on `Email/changes`).
@@ -214,6 +217,26 @@ impl Client {
         body: &[u8],
         max_response: usize,
     ) -> Result<HttpResponse, SendError> {
+        self.send_with_time(
+            method,
+            url,
+            content_type,
+            body,
+            max_response,
+            std::time::Duration::ZERO,
+        )
+        .await
+    }
+
+    async fn send_with_time(
+        &self,
+        method: &'static str,
+        url: &Url,
+        content_type: Option<&str>,
+        body: &[u8],
+        max_response: usize,
+        extra_time: std::time::Duration,
+    ) -> Result<HttpResponse, SendError> {
         if !url.same_origin(&self.session_url) {
             return Err(BackendError::Permanent(
                 "refusing to send the sign-in to another server".into(),
@@ -228,6 +251,7 @@ impl Client {
                 content_type,
                 body,
                 max_response,
+                extra_time,
             })
             .await
     }
@@ -356,6 +380,35 @@ impl Client {
         }
         let up: Uploaded = serde_json::from_slice(&resp.body).map_err(|_| malformed())?;
         Ok(up.blob_id)
+    }
+
+    /// Downloads a blob (RFC 8620 section 6.2) of at most `max` bytes. `expected` is the size the
+    /// server announced for it, which buys the download extra time. A 404 is `Ok(None)` (the blob
+    /// is gone); a bigger answer than `max` is refused while it is read.
+    pub async fn download(
+        &self,
+        session: &Session,
+        blob_id: &str,
+        content_type: &str,
+        name: &str,
+        expected: u64,
+        max: usize,
+    ) -> Result<Option<Vec<u8>>, BackendError> {
+        let url = session
+            .download_url(blob_id, content_type, name)
+            .ok_or_else(|| {
+                BackendError::Permanent("the server offers no message downloads".into())
+            })?;
+        let extra = std::time::Duration::from_secs(expected / DOWNLOAD_BYTES_PER_SECOND);
+        let resp = self
+            .send_with_time("GET", &url, None, b"", max, extra)
+            .await
+            .map_err(|e| e.error)?;
+        match resp.status {
+            200..=299 => Ok(Some(resp.body)),
+            404 => Ok(None),
+            status => Err(from_status(status)),
+        }
     }
 }
 

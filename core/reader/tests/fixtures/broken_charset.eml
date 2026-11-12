@@ -1,0 +1,21 @@
+From: x@example.org
+To: y@example.org
+Subject: =?x-unknown?B?SGVsbG8=?= =?shift_jis?B?k/qWe4zq?=
+Message-ID: <cs-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=B
+
+--B
+Content-Type: text/plain; charset=x-no-such-charset
+
+Unknown ÿþ charset.
+--B
+Content-Type: text/plain; charset=shift_jis
+
+“ú–{Œê
+--B
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+!!!not base64%%%Ã(
+--B--

@@ -35,6 +35,7 @@ struct H {
     router: Router,
     clock: Arc<AtomicI64>,
     master: Key,
+    _mail_dir: tempfile::TempDir,
 }
 
 fn h() -> H {
@@ -50,12 +51,16 @@ fn h() -> H {
         Arc::new(move || c.load(Ordering::SeqCst)),
     )
     .unwrap();
-    let app = App::new(store, auth);
+    // With users' mail too, so the cross-user test reaches each user's own core.
+    let mail_dir = tempfile::tempdir().unwrap();
+    let app =
+        App::new(store, auth).with_mail(crate::mail::MailCores::new(mail_dir.path().to_path_buf()));
     H {
         router: router(app.clone()),
         app,
         clock,
         master,
+        _mail_dir: mail_dir,
     }
 }
 
@@ -1030,6 +1035,14 @@ async fn every_route_checks_who_calls_and_no_user_reaches_another_users_data() {
         StatusCode::FORBIDDEN
     );
     covered.insert(("POST".to_owned(), "/api/admin/users/{id}/oidc/unlink"));
+    // Mail accounts live in each user's own core, so another user's account id names nothing
+    // here (A has none); the mail tests check it with accounts on both sides.
+    assert_eq!(
+        h.status(Method::DELETE, "/api/accounts/1", Some(&a_t.access))
+            .await,
+        StatusCode::NOT_FOUND
+    );
+    covered.insert(("DELETE".to_owned(), "/api/accounts/{id}"));
     for action in ["disable", "enable"] {
         let p = format!("/api/admin/users/{}/{action}", b.id);
         assert_eq!(

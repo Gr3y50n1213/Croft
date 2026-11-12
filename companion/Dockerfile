@@ -4,13 +4,19 @@
 # The Croft Companion. Build from the repository root:
 #   docker build -f companion/Dockerfile -t croft-companion .
 FROM rust:1-slim-bookworm AS build
+# SQLCipher (users' mail databases, T26) links against the system's OpenSSL.
+RUN apt-get update && apt-get install -y --no-install-recommends libssl-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-# The Companion uses the core's protocol crate (and its patched async-imap) by path.
+# The Companion uses the core (and its patched crates) by path.
 COPY core/ core/
 COPY companion/ companion/
 RUN cd companion && cargo build --release --locked
 
 FROM debian:bookworm-slim
+# OpenSSL's runtime library for SQLCipher.
+RUN apt-get update && apt-get install -y --no-install-recommends libssl3 \
+    && rm -rf /var/lib/apt/lists/*
 # The master key lives on its own volume (/keys), never next to the database (/data): one stolen
 # backup must not hold both. Both folders belong to the Companion's user only.
 RUN useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin croft \

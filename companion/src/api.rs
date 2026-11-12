@@ -54,6 +54,8 @@ pub struct Auth {
     master: Key,
     ceremonies: Mutex<Ceremonies>,
     limits: Mutex<Limits>,
+    /// Per-user limits for the mail routes that connect out (T26).
+    mail_limits: Mutex<Limits>,
     trusted_proxies: Vec<IpAddr>,
     clock: Clock,
     oidc: Option<Arc<crate::oidc::Provider>>,
@@ -97,6 +99,7 @@ impl Auth {
             master,
             ceremonies: Mutex::new(Ceremonies::default()),
             limits: Mutex::new(Limits::default()),
+            mail_limits: Mutex::new(Limits::default()),
             trusted_proxies: trusted_proxies.iter().map(IpAddr::to_canonical).collect(),
             clock,
             oidc: None,
@@ -107,6 +110,11 @@ impl Auth {
     pub fn with_oidc(mut self, provider: crate::oidc::Provider) -> Self {
         self.oidc = Some(Arc::new(provider));
         self
+    }
+
+    /// The master key (to open users' data keys).
+    pub(crate) fn master(&self) -> &Key {
+        &self.master
     }
 
     /// The system clock.
@@ -132,6 +140,16 @@ impl Auth {
         self.ceremonies
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Counts a mail request (discover, verify, add) against the user (30 a minute).
+    pub(crate) fn mail_limit(&self, user_id: i64) -> Result<(), ApiError> {
+        let key = (1u128 << 126) | u128::from(user_id.unsigned_abs());
+        self.mail_limits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .request_key(key, self.now())
+            .map_err(|r| ApiError::RateLimited(r.retry_after_s))
     }
 
     fn limits(&self) -> std::sync::MutexGuard<'_, Limits> {
@@ -495,6 +513,26 @@ pub fn routes() -> Vec<Route> {
         ),
         route(Method::GET, "/api/admin/audit", A, get(admin_audit)),
         route(Method::GET, "/api/oidc", P, get(oidc_api::info)),
+        route(
+            Method::POST,
+            "/api/accounts/discover",
+            F,
+            post(mail_api::discover),
+        ),
+        route(
+            Method::POST,
+            "/api/accounts/verify",
+            F,
+            post(mail_api::verify),
+        ),
+        route(Method::POST, "/api/accounts", F, post(mail_api::add)),
+        route(Method::GET, "/api/accounts", F, get(mail_api::list)),
+        route(
+            Method::DELETE,
+            "/api/accounts/{id}",
+            F,
+            delete(mail_api::remove),
+        ),
         route(
             Method::GET,
             "/api/sign-in/oidc/start",
@@ -1174,6 +1212,12 @@ async fn admin_set_disabled(app: &App, actor: Caller, id: i64, disabled: bool) -
     })
     .await??
     {
+        // A disabled user's mail stops syncing at once (T26); it starts again on next use.
+        if disabled {
+            if let Some(mail) = app.mail.clone() {
+                let _ = tokio::task::spawn_blocking(move || mail.close(id)).await;
+            }
+        }
         Ok(ok())
     } else {
         Err(ApiError::NotFound)
@@ -1206,6 +1250,9 @@ async fn admin_audit(State(app): State<App>, Admin(_): Admin) -> ApiResult {
 #[path = "oidc_api.rs"]
 pub(crate) mod oidc_api;
 
+#[path = "mail_api.rs"]
+pub(crate) mod mail_api;
+
 #[cfg(test)]
 #[path = "api_tests.rs"]
 mod tests;
@@ -1213,3 +1260,7 @@ mod tests;
 #[cfg(test)]
 #[path = "oidc_tests.rs"]
 mod oidc_tests;
+
+#[cfg(test)]
+#[path = "mail_tests.rs"]
+mod mail_tests;

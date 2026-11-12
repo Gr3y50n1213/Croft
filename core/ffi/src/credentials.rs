@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 
 use croft_protocols::{
     BackendError, BackendFuture, Capabilities, Credential, FlagChange, FolderStatus, ImapBackend,
-    ImapConfig, MailBackend, MoveOutcome, RawMessage, RemoteFolder, RemoteHeader, RemoteSnapshot,
-    SearchOutcome, ServerQuery, Uid,
+    ImapConfig, JmapBackend, JmapConfig, JmapIdStore, MailBackend, MoveOutcome, RawMessage,
+    RemoteFolder, RemoteHeader, RemoteSnapshot, SearchOutcome, ServerQuery, Uid,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -233,6 +233,104 @@ pub(crate) fn tell_sign_in_needed(provider: &dyn CredentialProvider, account: i6
     let _ = provider.sign_in_needed(account);
 }
 
+/// The server an account's backend talks to.
+enum Server {
+    /// IMAP (with SMTP for sending, see `submit.rs`).
+    Imap(ImapConfig),
+    /// JMAP (T22), with the account's persistent id map.
+    Jmap {
+        config: JmapConfig,
+        ids: Arc<dyn JmapIdStore + Send + Sync>,
+    },
+}
+
+/// The protocol adapter of a ready account.
+#[derive(Clone)]
+pub(crate) enum Adapter {
+    /// IMAP.
+    Imap(Arc<ImapBackend>),
+    /// JMAP.
+    Jmap(Arc<JmapBackend>),
+}
+
+/// Calls the same method on whichever adapter it is.
+macro_rules! on_adapter {
+    ($self:ident, |$b:ident| $call:expr) => {
+        match $self {
+            Adapter::Imap($b) => $call,
+            Adapter::Jmap($b) => $call,
+        }
+    };
+}
+
+impl MailBackend for Adapter {
+    fn capabilities(&self) -> BackendFuture<'_, Capabilities> {
+        on_adapter!(self, |b| b.capabilities())
+    }
+
+    fn list_folders(&self) -> BackendFuture<'_, Vec<RemoteFolder>> {
+        on_adapter!(self, |b| b.list_folders())
+    }
+
+    fn folder_status<'a>(&'a self, folder: &'a str) -> BackendFuture<'a, FolderStatus> {
+        on_adapter!(self, |b| b.folder_status(folder))
+    }
+
+    fn snapshot<'a>(&'a self, folder: &'a str) -> BackendFuture<'a, RemoteSnapshot> {
+        on_adapter!(self, |b| b.snapshot(folder))
+    }
+
+    fn fetch_headers<'a>(
+        &'a self,
+        folder: &'a str,
+        uids: &'a [Uid],
+    ) -> BackendFuture<'a, Vec<RemoteHeader>> {
+        on_adapter!(self, |b| b.fetch_headers(folder, uids))
+    }
+
+    fn find_by_message_id<'a>(
+        &'a self,
+        folder: &'a str,
+        message_id: &'a str,
+    ) -> BackendFuture<'a, Option<Uid>> {
+        on_adapter!(self, |b| b.find_by_message_id(folder, message_id))
+    }
+
+    fn set_flag<'a>(
+        &'a self,
+        folder: &'a str,
+        uids: &'a [Uid],
+        change: FlagChange,
+    ) -> BackendFuture<'a, ()> {
+        on_adapter!(self, |b| b.set_flag(folder, uids, change))
+    }
+
+    fn move_to<'a>(
+        &'a self,
+        folder: &'a str,
+        uids: &'a [Uid],
+        dest: &'a str,
+    ) -> BackendFuture<'a, MoveOutcome> {
+        on_adapter!(self, |b| b.move_to(folder, uids, dest))
+    }
+
+    fn delete_forever<'a>(&'a self, folder: &'a str, uids: &'a [Uid]) -> BackendFuture<'a, ()> {
+        on_adapter!(self, |b| b.delete_forever(folder, uids))
+    }
+
+    fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
+        on_adapter!(self, |b| b.fetch_body(folder, uid))
+    }
+
+    fn search<'a>(
+        &'a self,
+        folder: &'a str,
+        query: &'a ServerQuery,
+    ) -> BackendFuture<'a, SearchOutcome> {
+        on_adapter!(self, |b| b.search(folder, query))
+    }
+}
+
 /// What an account's backend can do right now.
 #[derive(Clone)]
 enum State {
@@ -244,7 +342,7 @@ enum State {
     /// provider again. `failures` counts the answers that were `NotReady` in a row.
     NotReady { retry_at: Instant, failures: u32 },
     /// Ready.
-    Ready(Arc<ImapBackend>),
+    Ready(Adapter),
     /// An OAuth account: the adapter is rebuilt with a new access token shortly before the old one
     /// expires (and once when the server refuses it).
     OAuth {
@@ -293,7 +391,7 @@ const NOT_READY_BASE_DELAY: Duration = if cfg!(test) {
 /// on a later call, after a delay that doubles each time (2 s up to 5 min). `NoCredential` from
 /// that later ask puts the account in the needs-sign-in state as usual.
 pub(crate) struct AccountBackend {
-    config: ImapConfig,
+    config: Server,
     provider: Arc<dyn CredentialProvider>,
     account: i64,
     not_ready_base: Duration,
@@ -311,6 +409,28 @@ impl AccountBackend {
         Self::with_not_ready_base(config, provider, account, NOT_READY_BASE_DELAY)
     }
 
+    /// A JMAP account's backend (T22) with no credential yet. `ids` is the account's persistent
+    /// id map (UIDs stay the same across restarts).
+    pub(crate) fn new_jmap(
+        config: JmapConfig,
+        ids: Arc<dyn JmapIdStore + Send + Sync>,
+        provider: Arc<dyn CredentialProvider>,
+        account: i64,
+    ) -> Self {
+        Self {
+            config: Server::Jmap { config, ids },
+            provider,
+            account,
+            not_ready_base: NOT_READY_BASE_DELAY,
+            state: Mutex::new(State::NeedsSignIn),
+        }
+    }
+
+    /// Whether the account uses JMAP (its drafts stay on the device; it has no IMAP adapter).
+    pub(crate) fn is_jmap(&self) -> bool {
+        matches!(self.config, Server::Jmap { .. })
+    }
+
     /// Like [`AccountBackend::new`] with another first wait after `NotReady` (tests use a short one).
     pub(crate) fn with_not_ready_base(
         config: ImapConfig,
@@ -319,7 +439,7 @@ impl AccountBackend {
         not_ready_base: Duration,
     ) -> Self {
         Self {
-            config,
+            config: Server::Imap(config),
             provider,
             account,
             not_ready_base,
@@ -345,6 +465,8 @@ impl AccountBackend {
                     Readiness::NotReady,
                 )
             }
+            // OAuth is for Gmail and Outlook, which are IMAP accounts.
+            Asked::OAuth(_) if self.is_jmap() => (State::Broken, Readiness::Broken),
             Asked::OAuth(stored) => (
                 State::OAuth {
                     session: Arc::new(crate::oauth::session(
@@ -356,8 +478,8 @@ impl AccountBackend {
                 },
                 Readiness::Ready,
             ),
-            Asked::Credential(c) => match ImapBackend::new(self.config.clone(), c) {
-                Ok(b) => (State::Ready(Arc::new(b)), Readiness::Ready),
+            Asked::Credential(c) => match self.adapter_for(c) {
+                Ok(b) => (State::Ready(b), Readiness::Ready),
                 Err(_) => (State::Broken, Readiness::Broken),
             },
         }
@@ -377,7 +499,22 @@ impl AccountBackend {
     }
 
     /// The adapter, asking the provider again first when it said `NotReady` and the wait is over.
-    async fn current(&self) -> Result<Arc<ImapBackend>, BackendError> {
+    /// A new adapter for this account's server with `credential`.
+    fn adapter_for(&self, credential: Credential) -> Result<Adapter, BackendError> {
+        match &self.config {
+            Server::Imap(config) => Ok(Adapter::Imap(Arc::new(ImapBackend::new(
+                config.clone(),
+                credential,
+            )?))),
+            Server::Jmap { config, ids } => Ok(Adapter::Jmap(Arc::new(JmapBackend::new(
+                config.clone(),
+                credential,
+                ids.clone(),
+            )?))),
+        }
+    }
+
+    async fn current(&self) -> Result<Adapter, BackendError> {
         let claimed = {
             let mut st = self.lock();
             match &*st {
@@ -419,7 +556,7 @@ impl AccountBackend {
     /// The adapter; for an OAuth account, one with an access token that is not about to expire
     /// (a new one when `force`: the server refused the last). A revoked sign-in (`invalid_grant`)
     /// puts the account in the needs-sign-in state.
-    async fn ready_oauth(&self, force: bool) -> Result<Arc<ImapBackend>, BackendError> {
+    async fn ready_oauth(&self, force: bool) -> Result<Adapter, BackendError> {
         // The guard is dropped at the end of this statement: `ready` locks again.
         let session = match &*self.lock() {
             State::OAuth { session, adapter } => {
@@ -433,13 +570,16 @@ impl AccountBackend {
         };
         let session = match session {
             None => return self.ready(),
-            Some((_, Some(b))) => return Ok(b),
+            Some((_, Some(b))) => return Ok(Adapter::Imap(b)),
             Some((session, None)) => session,
         };
         match session.credential(force).await {
             Ok((credential, expires)) => {
+                let Server::Imap(config) = &self.config else {
+                    return Err(BackendError::Permanent("unusable server settings".into()));
+                };
                 let b = Arc::new(
-                    ImapBackend::new(self.config.clone(), credential)
+                    ImapBackend::new(config.clone(), credential)
                         .map_err(|_| BackendError::Permanent("unusable server settings".into()))?,
                 );
                 let mut st = self.lock();
@@ -452,7 +592,7 @@ impl AccountBackend {
                         *adapter = Some((b.clone(), expires));
                     }
                 }
-                Ok(b)
+                Ok(Adapter::Imap(b))
             }
             Err(BackendError::Auth(m)) => {
                 self.revoked(&session);
@@ -494,10 +634,13 @@ impl AccountBackend {
     /// draft or a sent copy). Answers like every other call while the account has no credential
     /// (`Auth`) or the app's storage is not ready (`Transient`).
     pub(crate) async fn imap(&self) -> Result<Arc<ImapBackend>, BackendError> {
-        self.current().await
+        match self.current().await? {
+            Adapter::Imap(b) => Ok(b),
+            Adapter::Jmap(_) => Err(BackendError::Permanent("not an IMAP account".into())),
+        }
     }
 
-    fn ready(&self) -> Result<Arc<ImapBackend>, BackendError> {
+    fn ready(&self) -> Result<Adapter, BackendError> {
         match &*self.lock() {
             State::Ready(b) => Ok(b.clone()),
             State::NeedsSignIn => Err(BackendError::Auth("sign-in needed".into())),

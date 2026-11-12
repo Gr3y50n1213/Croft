@@ -5,9 +5,36 @@ unverified, the next step.
 
 ---
 
+## T22: JMAP accounts in the app (12 November 2026)
+
+**Status:** draft pull request #34 on `task/t22` (CI); independent review done, fixes included. FFI API version 12 (no type the app reads changed).
+
+**What was built.** A server that discovery finds offering JMAP (and that is not a well-known provider's) becomes a JMAP account:
+its own stored settings (session URL, login, pin; told apart by a `jmap` key, so earlier settings read exactly as before), the JMAP
+adapter (T09) behind the account's backend over the persistent id map, `EmailSubmission` for sending (the server files the sent copy),
+the same states as IMAP (no credential, storage not ready, needs sign-in, unusable), and the same rules for adding: a sign-in check
+with the trust question for a self-signed certificate, the same address and server is signing in again, another server is
+`AccountExists`, a pin never replaced unconfirmed. On Android, S03 no longer stops a JMAP-only server: S04 shows "host, JMAP" and the
+account is added. Drafts of JMAP accounts stay on the device for now (DECISIONS).
+
+**Checks.** Rust: 7 FFI tests against the in-process JMAP server (trust then add, sync, mark read, keeps no secret; sending with
+EmailSubmission; a restart keeps the same rows; wrong password; signing in again; a self-signed server with a wrong password says
+wrong password; settings shapes), the whole FFI suite (172) and clippy. Integration (CI, Stalwart): two JMAP accounts added through the
+FFI, one sends to the other, the message arrives. JVM: the app's onboarding backend adds a JMAP-only account and its Inbox shows.
+Robolectric: a JMAP-only lookup reaches S04 saying JMAP. Two older tests that used a JMAP-only server as "refused input" now use
+input that is still refused (no server at all).
+
+**Review** (one independent agent): six findings, all fixed (REVIEW-QUEUE), with tests: no request before the trust question, a
+changed pin is `CertificateChanged`, an IMAP account on a JMAP-publishing server signs in again over IMAP, S05 settings stay IMAP, a raw
+OAuth token is refused for JMAP.
+
+**Not verified:** a real Fastmail or self-hosted Stalwart account on a phone.
+
+---
+
 ## T21: bring-your-own OAuth for Gmail and Outlook (12 November 2026)
 
-**Status:** draft pull request #32 on `task/t21` (CI); independent review done, fixes included. **FFI API version 12.**
+**Status:** merged to `main` through pull request #33 (all CI jobs green; independent review done, fixes included). **FFI API version 12.**
 
 **What was built.** (1) *Core* (`croft_protocols::oauth`): the provider table (Google: `accounts.google.com`, `oauth2.googleapis.com`, scope
 `https://mail.google.com/`; Microsoft: the v2.0 endpoints of `login.microsoftonline.com/common`, `IMAP.AccessAsUser.All`, `SMTP.Send`,
@@ -40,7 +67,7 @@ Croft on real phones, refresh-token lifetime.
 
 ## T20: background check and notifications (12 November 2026)
 
-**Status:** pull request #31 to `main` (all CI jobs green on the task branch; review done). **FFI API version 11.**
+**Status:** merged to `main` through pull request #31 (all CI jobs green; review done). **FFI API version 11.**
 
 **What was built.** (1) *What counts as new* (`croft_mail_core::notify`, pure): unread, in the Inbox, above the account's "notified up to"
 marker under the Inbox's UIDVALIDITY. The first check (or one after the Inbox was renumbered) only sets a baseline, so the mail already

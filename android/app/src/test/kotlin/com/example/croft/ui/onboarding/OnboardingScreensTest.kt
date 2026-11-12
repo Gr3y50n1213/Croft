@@ -18,6 +18,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performTextInput
@@ -173,6 +174,16 @@ class OnboardingScreensTest {
     }
 
     // ---- Back through S02 to S05 ----
+
+    @Test
+    fun aServerThatOffersOnlyJmapLeadsToSignInAndSaysJmap() {
+        // T22: JMAP accounts are added like IMAP ones.
+        backend.onDiscover = { e, _ -> fakeFound(e).copy(imap = null, smtp = null, jmap = "https://jmap.example.org/.well-known/jmap") }
+        show()
+        toLookup()
+        waitTag(OnboardingTags.SIGN_IN)
+        rule.onNodeWithText("jmap.example.org, JMAP").assertExists()
+    }
 
     @Test
     fun backGoesOneStepBackThroughTheScreens() {

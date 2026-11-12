@@ -351,3 +351,12 @@ For Gmail and Outlook the person can sign in with **their own** OAuth client (Cr
 `oauth_client_id(provider)` gives the client id used last, to fill in the field (it is not a secret and is kept in the `setting`
 table). Token requests go only to the provider's token host. Host builds with the `test-server` feature add `TestTokenEndpoint`,
 which points them at a fake endpoint on `127.0.0.1` for the JVM tests.
+
+## JMAP accounts (T22)
+
+`add_account` and `verify` take the `FfiDiscovered` of `discover` as before. When it has a `jmap` session URL and no well-known
+`provider`, the account is a **JMAP account**: it syncs and sends over JMAP (EmailSubmission; the server files the sent copy), and the
+app stores its password and answers `credential` exactly as for IMAP. `verify` asks to trust a self-signed certificate the same way
+(`UntrustedCertificate`, then pass the fingerprint). A JMAP account's drafts are not copied to the server yet (`sync_draft` answers
+`NotApplicable`). Host builds with the `test-server` feature add `TestJmapServer` for the JVM tests.
+

@@ -156,6 +156,8 @@ jobs:
       # Compose through the exported calls against GreenMail: draft append and replace, a message sent
       # with no network delivered once, Undo sending nothing (T18c).
       - run: cd core && cargo test --locked -p croft-ffi --features integration compose::tests::integration
+      # T22: two JMAP accounts on Stalwart through the exported calls: check, add, send, receive.
+      - run: cd core && cargo test --locked -p croft-ffi --features integration tests::jmap_integration
       - if: always()
         run: docker compose -f test-servers/docker-compose.yml down -v
 

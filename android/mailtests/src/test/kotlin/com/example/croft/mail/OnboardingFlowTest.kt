@@ -669,5 +669,8 @@ class OnboardingFlowTest {
         assertEquals("143", good.withSecurity(SecurityMode.START_TLS).port)
         assertEquals("1993", good.copy(port = "1993").withSecurity(SecurityMode.START_TLS).port)
         assertNotNull(good.copy(outHost = "smtp.example.org").toDiscovered("alice@example.org", null)!!.smtp)
+        // T22: settings typed on S05 are IMAP, even when discovery had found a JMAP server.
+        val withJmap = good.toDiscovered("alice@example.org", null)!!.copy(jmap = "https://jmap.example.org/.well-known/jmap")
+        assertNull(good.toDiscovered("alice@example.org", withJmap)!!.jmap)
     }
 }

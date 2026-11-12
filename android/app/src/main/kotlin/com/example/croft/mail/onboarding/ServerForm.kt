@@ -66,7 +66,9 @@ data class ServerForm(
             email = email.trim(),
             imap = imap,
             smtp = smtp,
-            jmap = base?.jmap,
+            // The settings typed on S05 are IMAP and SMTP (T22): a JMAP URL discovery found must not
+            // override them (the core makes a JMAP account whenever it is given one).
+            jmap = null,
             source = kept?.source ?: DiscoverySource.AUTOCONFIG,
             provider = ProviderHosts.providerFor(imap.host),
             authHint = kept?.authHint ?: AuthKind.PASSWORD,

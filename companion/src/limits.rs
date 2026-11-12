@@ -63,6 +63,16 @@ impl Limits {
 
     /// The same for any key (T26: per user, for the routes that make outbound connections).
     pub fn request_key(&mut self, key: u128, now: i64) -> Result<(), Refused> {
+        self.request_key_with(key, now, REQUESTS_PER_MINUTE)
+    }
+
+    /// The same with another number of requests a minute (T27: the JMAP API).
+    pub fn request_key_with(
+        &mut self,
+        key: u128,
+        now: i64,
+        per_minute: u32,
+    ) -> Result<(), Refused> {
         let e = self.entry(key, now);
         while e
             .failures
@@ -82,7 +92,7 @@ impl Limits {
             e.minute = minute;
             e.requests = 0;
         }
-        if e.requests >= REQUESTS_PER_MINUTE {
+        if e.requests >= per_minute {
             return Err(Refused {
                 retry_after_s: ((minute + 1) * 60_000 - now).div_euclid(1000).max(1),
             });

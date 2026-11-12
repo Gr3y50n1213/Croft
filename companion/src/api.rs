@@ -56,6 +56,9 @@ pub struct Auth {
     limits: Mutex<Limits>,
     /// Per-user limits for the mail routes that connect out (T26).
     mail_limits: Mutex<Limits>,
+    /// Per-user limits for the JMAP API (T27), and its requests running per user.
+    jmap_limits: Mutex<Limits>,
+    jmap_running: Arc<Mutex<std::collections::HashMap<i64, usize>>>,
     trusted_proxies: Vec<IpAddr>,
     clock: Clock,
     oidc: Option<Arc<crate::oidc::Provider>>,
@@ -100,6 +103,8 @@ impl Auth {
             ceremonies: Mutex::new(Ceremonies::default()),
             limits: Mutex::new(Limits::default()),
             mail_limits: Mutex::new(Limits::default()),
+            jmap_limits: Mutex::new(Limits::default()),
+            jmap_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
             trusted_proxies: trusted_proxies.iter().map(IpAddr::to_canonical).collect(),
             clock,
             oidc: None,
@@ -157,6 +162,33 @@ impl Auth {
             .map_err(|r| ApiError::RateLimited(r.retry_after_s))
     }
 
+    /// Counts a JMAP request against the user.
+    pub(crate) fn jmap_limit(&self, user_id: i64) -> Result<(), ApiError> {
+        let key = (1u128 << 125) | u128::from(user_id.unsigned_abs());
+        self.jmap_limits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .request_key_with(key, self.now(), jmap_api::JMAP_PER_MINUTE)
+            .map_err(|r| ApiError::RateLimited(r.retry_after_s))
+    }
+
+    /// A place among the user's JMAP requests running at once; `None` when they are all taken.
+    pub(crate) fn jmap_slot(&self, user_id: i64) -> Option<JmapSlot> {
+        let mut running = self
+            .jmap_running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let n = running.entry(user_id).or_insert(0);
+        if *n >= jmap_api::JMAP_CONCURRENT {
+            return None;
+        }
+        *n += 1;
+        Some(JmapSlot {
+            running: self.jmap_running.clone(),
+            user_id,
+        })
+    }
+
     fn limits(&self) -> std::sync::MutexGuard<'_, Limits> {
         self.limits.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -190,6 +222,24 @@ impl Auth {
             }
         }
         ip
+    }
+}
+
+/// A running JMAP request of a user (freed when dropped).
+pub struct JmapSlot {
+    running: Arc<Mutex<std::collections::HashMap<i64, usize>>>,
+    user_id: i64,
+}
+
+impl Drop for JmapSlot {
+    fn drop(&mut self) {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = running.get_mut(&self.user_id) {
+            *n -= 1;
+            if *n == 0 {
+                running.remove(&self.user_id);
+            }
+        }
     }
 }
 

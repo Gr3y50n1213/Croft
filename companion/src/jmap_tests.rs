@@ -482,3 +482,384 @@ async fn malformed_requests_get_the_rfc_errors() {
         .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
+
+// ---- Regression tests for the independent review's findings ----
+
+impl H {
+    async fn post_raw(&self, token: &str, body: Value) -> (StatusCode, usize, Value) {
+        let bytes = body.to_string().into_bytes();
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri("/jmap/api")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(bytes))
+            .unwrap();
+        req.extensions_mut()
+            .insert(Peer("10.9.9.9:4000".parse().unwrap()));
+        let res = self.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let out = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            out.len(),
+            serde_json::from_slice(&out).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn second_account(&self, token: &str, server: &TestImapServer, email: &str) -> String {
+        let d = json!({
+            "email": email,
+            "imap": {"host": server.host(), "port": server.port(), "security": "tls", "username": server.username()},
+        });
+        let body =
+            json!({"discovered": d, "password": PW, "pin": server.certificate_fingerprint()});
+        let (s, v) = self
+            .raw(
+                Method::POST,
+                "/api/accounts",
+                token,
+                Some(body.to_string().into_bytes()),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        format!("a{}", v["id"])
+    }
+}
+
+/// H1: result references multiplied a small request into a huge answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn result_references_cannot_amplify_a_request() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let mut refs = serde_json::Map::new();
+    for i in 0..8 {
+        refs.insert(
+            format!("#k{i}"),
+            json!({"resultOf": "0", "name": "Core/echo", "path": ""}),
+        );
+    }
+    let mut calls = vec![json!(["Core/echo", {"b": "x".repeat(30_000)}, "0"])];
+    for i in 1..16 {
+        let mut r = refs.clone();
+        for v in r.values_mut() {
+            v["resultOf"] = json!((i - 1).to_string());
+        }
+        calls.push(json!(["Core/echo", r, i.to_string()]));
+    }
+    let (s, len, v) = h
+        .post_raw(&t, json!({"using": USING, "methodCalls": calls}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(len < 2 * crate::api::jmap_api::MAX_RESPONSE_BYTES, "{len} bytes");
+    assert!(v["methodResponses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r[1]["type"] == "requestTooLarge"));
+    // More than eight references in one call are refused.
+    let mut many = serde_json::Map::new();
+    for i in 0..9 {
+        many.insert(
+            format!("#k{i}"),
+            json!({"resultOf": "0", "name": "Core/echo", "path": ""}),
+        );
+    }
+    let r = h
+        .jmap(
+            &t,
+            json!([["Core/echo", {}, "0"], ["Core/echo", many, "1"]]),
+        )
+        .await;
+    assert_eq!(r[1], json!(["error", {"type": "requestTooLarge"}, "1"]));
+}
+
+/// M5: JMAP requests shared the 30-a-minute account limit.
+#[tokio::test]
+async fn ordinary_use_is_not_rate_limited() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    for i in 0..60 {
+        let (s, _) = h
+            .raw(
+                Method::POST,
+                "/jmap/api",
+                &t,
+                Some(
+                    json!({"using": USING, "methodCalls": [["Core/echo", {}, "e"]]})
+                        .to_string()
+                        .into_bytes(),
+                ),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "request {i}");
+    }
+}
+
+/// M2: a restore from Trash followed by a destroy deleted the email for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_destroy_while_a_restore_is_pending_never_deletes_for_good() {
+    let h = h();
+    let (ann, t) = h.user("ann");
+    let server = start_server(1).await;
+    let s2 = server.clone();
+    tokio::task::spawn_blocking(move || s2.inject_message("Trash".into(), "Victim".into()))
+        .await
+        .unwrap();
+    let account = h.account(&t, &server).await;
+    let core = h.app.mail.clone().unwrap().open_core(ann).unwrap();
+    let inbox = h.inbox(&t, &account, 1).await;
+    let mut trash = String::new();
+    for _ in 0..150 {
+        let r = h
+            .jmap(&t, json!([["Mailbox/get", {"accountId": account}, "0"]]))
+            .await;
+        if let Some(tr) = r[0][1]["list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "trash")
+        {
+            if tr["totalEmails"] == 1 {
+                trash = tr["id"].as_str().unwrap().to_owned();
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let r = h
+        .jmap(
+            &t,
+            json!([["Email/query", {"accountId": account, "filter": {"inMailbox": trash}}, "q"]]),
+        )
+        .await;
+    let victim = r[0][1]["ids"][0].as_str().unwrap().to_owned();
+    core.set_undo_window_ms(1500);
+    h.jmap(
+        &t,
+        json!([["Email/set", {"accountId": account, "update": {victim.clone(): {"mailboxIds": {inbox.clone(): true}}}}, "s"]]),
+    )
+    .await;
+    let r = h
+        .jmap(
+            &t,
+            json!([["Email/set", {"accountId": account, "destroy": [victim.clone()]}, "d"]]),
+        )
+        .await;
+    assert_eq!(
+        r[0][1]["notDestroyed"][&victim]["type"], "forbidden",
+        "{r:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let s2 = server.clone();
+    let (inb, tr) = tokio::task::spawn_blocking(move || {
+        (s2.subjects("INBOX".into()), s2.subjects("Trash".into()))
+    })
+    .await
+    .unwrap();
+    assert!(
+        inb.iter().chain(tr.iter()).any(|s| s.contains("Victim")),
+        "deleted for good"
+    );
+    stop(server).await;
+}
+
+/// M4 and M6: the total counted only the rows read; a huge position overflowed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn totals_are_whole_and_positions_are_bounded() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(250).await;
+    let account = h.account(&t, &server).await;
+    let inbox = h.inbox(&t, &account, 250).await;
+    let r = h
+        .jmap(
+            &t,
+            json!([
+                ["Email/query", {"accountId": account, "filter": {"inMailbox": inbox}, "limit": 10, "calculateTotal": true}, "a"],
+                ["Email/query", {"accountId": account, "filter": {"inMailbox": inbox}, "position": u64::MAX, "limit": 10}, "b"],
+                ["Email/query", {"accountId": account, "filter": {"inMailbox": inbox}, "position": -1}, "c"],
+                ["Email/query", {"accountId": account, "filter": {"inMailbox": inbox}, "limit": 100000}, "d"],
+            ]),
+        )
+        .await;
+    assert_eq!(r[0][1]["total"], 250);
+    assert_eq!(r[0][1]["ids"].as_array().unwrap().len(), 10);
+    assert_eq!(r[1][1]["ids"], json!([]));
+    assert_eq!(r[2][0], "error");
+    assert_eq!(r[3][1]["limit"], 256);
+    stop(server).await;
+}
+
+/// M6: an Email/get of many emails with bodies is refused, not run.
+#[tokio::test]
+async fn email_get_is_bounded() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(1).await;
+    let account = h.account(&t, &server).await;
+    let ids: Vec<String> = (1..=17).map(|i| format!("m{i}")).collect();
+    let many: Vec<String> = (1..=65).map(|i| format!("m{i}")).collect();
+    let r = h
+        .jmap(
+            &t,
+            json!([
+                ["Email/get", {"accountId": account, "ids": ids, "fetchTextBodyValues": true}, "a"],
+                ["Email/get", {"accountId": account, "ids": many}, "b"],
+            ]),
+        )
+        .await;
+    assert_eq!(r[0], json!(["error", {"type": "requestTooLarge"}, "a"]));
+    assert_eq!(r[1], json!(["error", {"type": "requestTooLarge"}, "b"]));
+    stop(server).await;
+}
+
+/// M7 and the patch rules: `mailboxIds/<id>` moves; keyword values other than true or null are
+/// refused before anything is applied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn patches_follow_rfc_8620() {
+    let h = h();
+    let (ann, t) = h.user("ann");
+    let server = start_server(2).await;
+    let account = h.account(&t, &server).await;
+    h.app
+        .mail
+        .clone()
+        .unwrap()
+        .open_core(ann)
+        .unwrap()
+        .set_undo_window_ms(100);
+    let inbox = h.inbox(&t, &account, 2).await;
+    let r = h
+        .jmap(
+            &t,
+            json!([
+                ["Mailbox/get", {"accountId": account}, "m"],
+                ["Email/query", {"accountId": account, "filter": {"inMailbox": inbox}}, "q"],
+            ]),
+        )
+        .await;
+    let archive = r[0][1]["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "archive")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let a = r[1][1]["ids"][0].as_str().unwrap().to_owned();
+    let b = r[1][1]["ids"][1].as_str().unwrap().to_owned();
+    let r = h
+        .jmap(
+            &t,
+            json!([["Email/set", {"accountId": account, "update": {
+                a.clone(): {format!("mailboxIds/{inbox}"): null, format!("mailboxIds/{archive}"): true},
+                b.clone(): {"keywords/$seen": "yes"},
+            }}, "s"]]),
+        )
+        .await;
+    assert!(r[0][1]["updated"].get(&a).is_some(), "{r:?}");
+    assert_eq!(r[0][1]["notUpdated"][&b]["type"], "invalidPatch");
+    assert_ne!(
+        r[0][1]["oldState"], r[0][1]["newState"],
+        "the new state covers the change"
+    );
+    let mut moved = false;
+    for _ in 0..100 {
+        let s2 = server.clone();
+        if tokio::task::spawn_blocking(move || s2.subjects("Archive".into()).len())
+            .await
+            .unwrap()
+            == 1
+        {
+            moved = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(moved);
+    stop(server).await;
+}
+
+/// Isolation within one user: one account's id never names another account's mail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_accounts_id_never_reaches_another_accounts_mail() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let s1 = start_server(1).await;
+    let s2 = start_server(1).await;
+    let a1 = h.account(&t, &s1).await;
+    let a2 = h.second_account(&t, &s2, "ann2@example.test").await;
+    let inbox2 = h.inbox(&t, &a2, 1).await;
+    h.inbox(&t, &a1, 1).await;
+    let r = h
+        .jmap(
+            &t,
+            json!([["Email/query", {"accountId": a2, "filter": {"inMailbox": inbox2}}, "q"]]),
+        )
+        .await;
+    let email2 = r[0][1]["ids"][0].clone();
+    let r = h
+        .jmap(
+            &t,
+            json!([["Email/get", {"accountId": a2, "ids": [email2.clone()], "properties": ["threadId"]}, "t"]]),
+        )
+        .await;
+    let thread2 = r[0][1]["list"][0]["threadId"].clone();
+    let r = h
+        .jmap(
+            &t,
+            json!([
+                ["Email/get", {"accountId": a1, "ids": [email2.clone()]}, "g"],
+                ["Email/query", {"accountId": a1, "filter": {"inMailbox": inbox2}}, "q"],
+                ["Thread/get", {"accountId": a1, "ids": [thread2.clone()]}, "t"],
+                ["Email/set", {"accountId": a1, "update": {email2.as_str().unwrap(): {"keywords/$flagged": true}},
+                               "destroy": [email2.clone()]}, "s"],
+            ]),
+        )
+        .await;
+    assert_eq!(r[0][1]["notFound"], json!([email2]));
+    assert_eq!(r[1][0], "error");
+    assert_eq!(r[2][1]["notFound"], json!([thread2]));
+    assert_eq!(
+        r[3][1]["notUpdated"][email2.as_str().unwrap()]["type"],
+        "notFound"
+    );
+    assert_eq!(
+        r[3][1]["notDestroyed"][email2.as_str().unwrap()]["type"],
+        "notFound"
+    );
+    stop(s1).await;
+    stop(s2).await;
+}
+
+#[tokio::test]
+async fn a_recovery_sign_in_cannot_use_jmap() {
+    let h = h();
+    let (ann, _) = h.user("ann");
+    let recovery = h
+        .app
+        .store
+        .lock()
+        .unwrap()
+        .start_session(ann, "test", true, crate::store::now_ms())
+        .unwrap()
+        .access
+        .to_string();
+    let (s, _) = h.raw(Method::GET, "/jmap/session", &recovery, None).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = h
+        .raw(
+            Method::POST,
+            "/jmap/api",
+            &recovery,
+            Some(
+                json!({"using": USING, "methodCalls": []})
+                    .to_string()
+                    .into_bytes(),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

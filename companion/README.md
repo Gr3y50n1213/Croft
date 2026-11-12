@@ -132,7 +132,8 @@ The web app (and later the phones) read and organise mail through a standard JMA
 `Core/echo`, `Mailbox/get`, `Email/query` (one mailbox, or flagged; newest first), `Email/get` (with the core's text and sanitised HTML
 bodies; remote content stays blocked), `Email/set` (read, flag, move, delete: to Trash, or for good when already in Trash), `Thread/get`,
 `Identity/get`, and `/changes` (no changes from the current state, otherwise `cannotCalculateChanges`, so the client fetches again).
-Sending, drafts, uploads, downloads and push come with later tasks.
+Sending, drafts, uploads, downloads and push come with later tasks. Limits: 600 requests a minute and 4 at once per user, 16 calls
+per request, 64 emails per `Email/get` (16 with bodies), and 4 MB for all of one request's answers.
 
 ## Commands
 

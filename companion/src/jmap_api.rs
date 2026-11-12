@@ -31,6 +31,21 @@ pub const MAX_CALLS: usize = 16;
 pub const MAX_OBJECTS: usize = 256;
 /// Most results one `Email/query` gives.
 const MAX_QUERY: usize = 256;
+/// Most emails one `Email/get` returns (each opens its conversation).
+const MAX_EMAILS_IN_GET: usize = 64;
+/// Most emails one `Email/get` returns with bodies (each body can be fetched from the server).
+const MAX_BODIES_IN_GET: usize = 16;
+/// The furthest `Email/query` pages into a mailbox.
+const MAX_POSITION: usize = 50_000;
+/// Most result references in one call.
+const MAX_REFERENCES: usize = 8;
+/// Most bytes the arguments and answers of one request may add up to (review finding: result
+/// references copied answers into arguments and back, multiplying a small request into gigabytes).
+pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+/// Requests a minute per user, and at once per user (the session's `maxConcurrentRequests`).
+pub const JMAP_PER_MINUTE: u32 = 600;
+/// See [`JMAP_PER_MINUTE`].
+pub const JMAP_CONCURRENT: usize = 4;
 
 /// The caller's core and its epoch.
 async fn core(app: &App, user_id: i64) -> Result<(Arc<Core>, u64), ApiError> {
@@ -215,7 +230,18 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
         )
             .into_response());
     }
-    app.auth.mail_limit(c.user_id)?;
+    app.auth.jmap_limit(c.user_id)?;
+    let Some(_running) = app.auth.jmap_slot(c.user_id) else {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "type": "urn:ietf:params:jmap:error:limit",
+                "status": 429,
+                "limit": "maxConcurrentRequests",
+            })),
+        )
+            .into_response());
+    };
     let (core, epoch) = core(&app, c.user_id).await?;
     let accounts: Vec<i64> = {
         let listed = core.clone();
@@ -233,6 +259,7 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
         accounts,
     };
     let mut responses: Vec<Value> = Vec::new();
+    let mut spent = body.len();
     for call in calls {
         let Some([name, args, call_id]) = call
             .as_array()
@@ -250,12 +277,30 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
                 "a method call is not [name, arguments, id]",
             ));
         };
-        let answer = match resolve_references(args, &responses) {
-            Err(e) => vec![("error".to_owned(), e)],
-            Ok(args) => ctx.call(name, &args).await,
+        let too_large = || vec![("error".to_owned(), json!({ "type": "requestTooLarge" }))];
+        let answer = if spent > MAX_RESPONSE_BYTES {
+            too_large()
+        } else {
+            match resolve_references(args, &responses) {
+                Err(e) => vec![("error".to_owned(), e)],
+                Ok(args) => {
+                    spent += serde_json::to_vec(&args).map_or(MAX_RESPONSE_BYTES, |v| v.len());
+                    if spent > MAX_RESPONSE_BYTES {
+                        too_large()
+                    } else {
+                        ctx.call(name, &args).await
+                    }
+                }
+            }
         };
         for (n, v) in answer {
-            responses.push(json!([n, v, call_id]));
+            let item = json!([n, v, call_id]);
+            spent += serde_json::to_vec(&item).map_or(MAX_RESPONSE_BYTES, |v| v.len());
+            if spent > MAX_RESPONSE_BYTES {
+                responses.push(json!(["error", { "type": "requestTooLarge" }, call_id]));
+            } else {
+                responses.push(item);
+            }
         }
     }
     Ok(Json(json!({
@@ -271,6 +316,9 @@ fn resolve_references(args: &Value, responses: &[Value]) -> Result<Value, Value>
     let Some(obj) = args.as_object() else {
         return Err(error("invalidArguments"));
     };
+    if obj.keys().filter(|k| k.starts_with('#')).count() > MAX_REFERENCES {
+        return Err(json!({ "type": "requestTooLarge" }));
+    }
     let mut out = Map::new();
     for (k, v) in obj {
         if let Some(plain) = k.strip_prefix('#') {
@@ -284,6 +332,9 @@ fn resolve_references(args: &Value, responses: &[Value]) -> Result<Value, Value>
             ) else {
                 return Err(error("invalidResultReference"));
             };
+            if name == "error" {
+                return Err(error("invalidResultReference"));
+            }
             let found = responses.iter().find(|r| {
                 r.get(2).and_then(Value::as_str) == Some(result_of)
                     && r.get(0).and_then(Value::as_str) == Some(name)
@@ -426,6 +477,7 @@ impl Ctx {
 
     async fn mailbox_get(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
+        let state = self.state();
         let wanted = Self::ids_arg(args, 'f')?;
         let folders = self
             .blocking(move |c| c.list_folders(account))
@@ -467,7 +519,7 @@ impl Ctx {
         }
         Ok(json!({
             "accountId": format!("a{account}"),
-            "state": self.state(),
+            "state": state,
             "list": list,
             "notFound": not_found,
         }))
@@ -475,6 +527,8 @@ impl Ctx {
 
     async fn email_query(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
+        // The state before the data: a state older than the data is safe, a newer one is not.
+        let query_state = self.state();
         let filter = args.get("filter").cloned().unwrap_or(Value::Null);
         let scope = match &filter {
             Value::Null => return Err(json!({ "type": "unsupportedFilter" })),
@@ -512,64 +566,90 @@ impl Ctx {
                 return Err(json!({ "type": "unsupportedSort" }));
             }
         }
-        if args.get("collapseThreads").and_then(Value::as_bool) == Some(true) {
+        if args.get("collapseThreads").and_then(Value::as_bool) == Some(true)
+            || args.get("anchor").is_some_and(|a| !a.is_null())
+        {
             return Err(error("invalidArguments"));
         }
-        let position = args.get("position").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let position = match args.get("position") {
+            None | Some(Value::Null) => 0,
+            Some(p) => p
+                .as_u64()
+                .and_then(|p| usize::try_from(p).ok())
+                .ok_or_else(|| error("invalidArguments"))?,
+        };
         let limit = args
             .get("limit")
             .and_then(Value::as_u64)
-            .map_or(MAX_QUERY, |l| (l as usize).min(MAX_QUERY));
-        // The folder must be the account's (an id from another account names nothing here).
+            .map_or(MAX_QUERY, |l| {
+                usize::try_from(l).unwrap_or(MAX_QUERY).min(MAX_QUERY)
+            });
+        // The folder must be the account's; its count is the total.
+        let mut folder_total = None;
         if let MessageScope::Folder { folder_id, .. } = &scope {
             let folder_id = *folder_id;
             let folders = self
                 .blocking(move |c| c.list_folders(account))
                 .await?
                 .map_err(|_| error("serverFail"))?;
-            if !folders.iter().any(|f| f.id == folder_id) {
-                return Err(error("invalidArguments"));
-            }
+            let folder = folders
+                .iter()
+                .find(|f| f.id == folder_id)
+                .ok_or_else(|| error("invalidArguments"))?;
+            folder_total = Some(usize::try_from(folder.total_count).unwrap_or(usize::MAX));
         }
-        let want = position + limit;
-        let rows = self
-            .blocking(move |c| {
+        // Never further than MAX_POSITION into a mailbox (a client pages, it does not dump).
+        let wants_total = args.get("calculateTotal").and_then(Value::as_bool) == Some(true);
+        let want = if wants_total && folder_total.is_none() {
+            // Flagged across the account has no stored count: read to the end (bounded).
+            MAX_POSITION
+        } else {
+            position.saturating_add(limit).min(MAX_POSITION)
+        };
+        let past_end = position >= MAX_POSITION || folder_total.is_some_and(|t| position >= t);
+        let rows = if past_end {
+            Vec::new()
+        } else {
+            self.blocking(move |c| {
                 let mut out = Vec::new();
                 let mut cursor: Option<RowCursor> = None;
                 loop {
                     let page = c.list_messages(scope, cursor, 200)?;
                     out.extend(page.rows);
                     match page.next {
-                        Some(n) if out.len() < want + 1 => cursor = Some(n),
+                        Some(n) if out.len() < want => cursor = Some(n),
                         _ => break,
                     }
                 }
                 Ok::<_, croft_ffi::CoreError>(out)
             })
             .await?
-            .map_err(|_| error("serverFail"))?;
-        let ids: Vec<String> = rows
+            .map_err(|_| error("serverFail"))?
+        };
+        let mine: Vec<_> = rows.iter().filter(|r| r.account == account).collect();
+        let ids: Vec<String> = mine
             .iter()
-            .filter(|r| r.account == account)
             .skip(position)
             .take(limit)
             .map(|r| format!("m{}", r.id))
             .collect();
         let mut out = json!({
             "accountId": format!("a{account}"),
-            "queryState": self.state(),
+            "queryState": query_state,
             "canCalculateChanges": false,
             "position": position,
             "ids": ids,
+            "limit": limit,
         });
-        if args.get("calculateTotal").and_then(Value::as_bool) == Some(true) {
-            out["total"] = json!(rows.iter().filter(|r| r.account == account).count());
+        if wants_total {
+            out["total"] = json!(folder_total.unwrap_or(mine.len()));
         }
         Ok(out)
     }
 
     async fn email_get(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
+        let state = self.state();
         let Some(ids) = Self::ids_arg(args, 'm')? else {
             return Err(json!({ "type": "requestTooLarge" }));
         };
@@ -580,6 +660,10 @@ impl Ctx {
             .unwrap_or_default();
         let text = args.get("fetchTextBodyValues").and_then(Value::as_bool) == Some(true);
         let html = args.get("fetchHTMLBodyValues").and_then(Value::as_bool) == Some(true);
+        // Each email opens its conversation, and each body may be fetched from the server.
+        if ids.len() > MAX_EMAILS_IN_GET || ((text || html) && ids.len() > MAX_BODIES_IN_GET) {
+            return Err(json!({ "type": "requestTooLarge" }));
+        }
         let mut list = Vec::new();
         let mut not_found = Vec::new();
         for (i, id) in ids.iter().enumerate() {
@@ -641,33 +725,39 @@ impl Ctx {
                     .await
                     .map_err(|_| error("serverFail"));
                 if let Ok(body) = body {
+                    let value = |v: &str| json!({ "value": v, "isEncodingProblem": false, "isTruncated": body.truncated });
+                    let text_part = body
+                        .text
+                        .as_ref()
+                        .map(|_| json!({ "partId": "text", "type": "text/plain" }));
+                    let html_part = body
+                        .html_sanitised
+                        .as_ref()
+                        .map(|_| json!({ "partId": "html", "type": "text/html" }));
+                    // RFC 8621: each of textBody and htmlBody falls back to the other kind.
+                    let text_body = text_part.clone().or_else(|| html_part.clone());
+                    let html_body = html_part.or(text_part);
                     let mut values = Map::new();
-                    if text {
-                        if let Some(t) = &body.text {
-                            values.insert(
-                                "text".into(),
-                                json!({ "value": t, "isEncodingProblem": false, "isTruncated": body.truncated }),
-                            );
+                    for (wanted, part) in [(text, &text_body), (html, &html_body)] {
+                        if !wanted {
+                            continue;
+                        }
+                        match part.as_ref().and_then(|p| p["partId"].as_str()) {
+                            Some("text") => {
+                                if let Some(t) = &body.text {
+                                    values.insert("text".into(), value(t));
+                                }
+                            }
+                            Some("html") => {
+                                if let Some(h) = &body.html_sanitised {
+                                    values.insert("html".into(), value(h));
+                                }
+                            }
+                            _ => {}
                         }
                     }
-                    if html {
-                        if let Some(h) = &body.html_sanitised {
-                            values.insert(
-                                "html".into(),
-                                json!({ "value": h, "isEncodingProblem": false, "isTruncated": body.truncated }),
-                            );
-                        }
-                    }
-                    email["textBody"] = if body.text.is_some() {
-                        json!([{ "partId": "text", "type": "text/plain" }])
-                    } else {
-                        json!([])
-                    };
-                    email["htmlBody"] = if body.html_sanitised.is_some() {
-                        json!([{ "partId": "html", "type": "text/html" }])
-                    } else {
-                        email["textBody"].clone()
-                    };
+                    email["textBody"] = text_body.map_or_else(|| json!([]), |p| json!([p]));
+                    email["htmlBody"] = html_body.map_or_else(|| json!([]), |p| json!([p]));
                     email["bodyValues"] = Value::Object(values);
                 }
             }
@@ -681,14 +771,15 @@ impl Ctx {
         }
         Ok(json!({
             "accountId": format!("a{account}"),
-            "state": self.state(),
+            "state": state,
             "list": list,
             "notFound": not_found,
         }))
     }
 
-    /// The account and folder of one of the account's emails.
-    async fn locate(&self, account: i64, id: i64) -> Option<(i64, String)> {
+    /// The folder (and its special use) of one of the account's emails, and whether a change of
+    /// it is still waiting in the core's queue.
+    async fn locate(&self, account: i64, id: i64) -> Option<(i64, String, bool)> {
         let conv = self
             .blocking(move |c| c.open_conversation(id))
             .await
@@ -697,17 +788,18 @@ impl Ctx {
         conv.messages
             .iter()
             .find(|m| m.id == id && m.account == account)
-            .map(|m| (m.folder, m.folder_special_use.clone()))
+            .map(|m| (m.folder, m.folder_special_use.clone(), m.pending))
     }
 
     async fn email_set(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
+        let old = self.state();
+        let seq_before = self.core.change_seq();
         if let Some(if_in) = args.get("ifInState").and_then(Value::as_str) {
-            if if_in != self.state() {
+            if if_in != old {
                 return Err(error("stateMismatch"));
             }
         }
-        let old = self.state();
         let mut not_created = Map::new();
         if let Some(create) = args.get("create").and_then(Value::as_object) {
             for k in create.keys() {
@@ -732,7 +824,7 @@ impl Ctx {
                     None => Err(json!({ "type": "notFound" })),
                     Some(id) => match self.locate(account, id).await {
                         None => Err(json!({ "type": "notFound" })),
-                        Some(_) => self.apply_patch(id, patch, &folders).await,
+                        Some((folder, _, _)) => self.apply_patch(id, folder, patch, &folders).await,
                     },
                 };
                 match result {
@@ -757,11 +849,21 @@ impl Ctx {
                     Some(id) => self.locate(account, id).await.map(|l| (id, l)),
                     None => None,
                 };
-                let Some((id, (_, special))) = located else {
+                let Some((id, (_, special, pending))) = located else {
                     not_destroyed.insert(key, json!({ "type": "notFound" }));
                     continue;
                 };
                 let in_trash = mailbox_role(&special, "") == Some("trash");
+                // Deleting for good is decided from where the email is; while a change of it
+                // (a move out of Trash) is still queued, that is not known yet (review finding:
+                // a restore followed by a destroy deleted the email for good).
+                if in_trash && pending {
+                    not_destroyed.insert(
+                        key,
+                        json!({ "type": "forbidden", "description": "a change of this email is still pending" }),
+                    );
+                    continue;
+                }
                 let done = self
                     .blocking(move |c| {
                         if in_trash {
@@ -779,6 +881,15 @@ impl Ctx {
                 }
             }
         }
+        // The core records a change a moment after it is made: wait (briefly) for it, so the new
+        // state covers this call's changes (review finding: `newState` equalled `oldState`).
+        if (!updated.is_empty() || !destroyed.is_empty()) && self.core.change_seq() == seq_before {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                self.core.next_change(seq_before),
+            )
+            .await;
+        }
         Ok(json!({
             "accountId": format!("a{account}"),
             "oldState": old,
@@ -792,60 +903,91 @@ impl Ctx {
         }))
     }
 
-    /// Applies an `Email/set` patch: `keywords/$seen`, `keywords/$flagged` (or a whole
-    /// `keywords`), and `mailboxIds` (one mailbox: a move).
+    /// Applies an `Email/set` patch: `keywords/$seen`, `keywords/$flagged` (or a whole `keywords`
+    /// object), and `mailboxIds` (a whole object, or `mailboxIds/<id>` entries) leaving the email in
+    /// exactly one mailbox: a move. The patch is checked whole before anything is applied.
     async fn apply_patch(
         &self,
         id: i64,
+        current_folder: i64,
         patch: &Value,
         folders: &[croft_ffi::FolderInfo],
     ) -> Result<(), Value> {
+        let invalid_patch = || json!({ "type": "invalidPatch" });
         let Some(patch) = patch.as_object() else {
-            return Err(json!({ "type": "invalidPatch" }));
+            return Err(invalid_patch());
+        };
+        let known = |f: &str| parse_id(f, 'f').filter(|f| folders.iter().any(|x| x.id == *f));
+        let keyword_value = |v: &Value| match v {
+            Value::Bool(true) => Ok(true),
+            Value::Null => Ok(false),
+            _ => Err(invalid_patch()),
         };
         let mut seen = None;
         let mut flagged = None;
-        let mut move_to = None;
+        let mut mailboxes: Option<Vec<i64>> = None;
+        let mut mailbox_changes: Vec<(i64, bool)> = Vec::new();
         for (path, value) in patch {
             match path.as_str() {
-                "keywords/$seen" => seen = Some(value.as_bool() == Some(true)),
-                "keywords/$flagged" => flagged = Some(value.as_bool() == Some(true)),
+                "keywords/$seen" => seen = Some(keyword_value(value)?),
+                "keywords/$flagged" => flagged = Some(keyword_value(value)?),
                 "keywords" => {
-                    let k = value
-                        .as_object()
-                        .ok_or_else(|| json!({ "type": "invalidPatch" }))?;
-                    if k.keys().any(|k| {
-                        k != "$seen" && k != "$flagged" && k != "$answered" && k != "$draft"
-                    }) {
-                        return Err(
-                            json!({ "type": "invalidProperties", "properties": ["keywords"] }),
-                        );
+                    let k = value.as_object().ok_or_else(invalid_patch)?;
+                    for (name, v) in k {
+                        if v != &Value::Bool(true) {
+                            return Err(invalid_patch());
+                        }
+                        if !matches!(name.as_str(), "$seen" | "$flagged") {
+                            return Err(
+                                json!({ "type": "invalidProperties", "properties": ["keywords"] }),
+                            );
+                        }
                     }
                     seen = Some(k.contains_key("$seen"));
                     flagged = Some(k.contains_key("$flagged"));
                 }
                 "mailboxIds" => {
-                    let m = value
-                        .as_object()
-                        .ok_or_else(|| json!({ "type": "invalidPatch" }))?;
-                    if m.len() != 1 {
-                        return Err(json!({ "type": "tooManyMailboxes" }));
-                    }
-                    let target = m
-                        .keys()
-                        .next()
-                        .and_then(|k| parse_id(k, 'f'))
-                        .filter(|f| folders.iter().any(|x| x.id == *f))
-                        .ok_or_else(
+                    let m = value.as_object().ok_or_else(invalid_patch)?;
+                    let mut ids = Vec::new();
+                    for (mb, v) in m {
+                        if v != &Value::Bool(true) {
+                            return Err(invalid_patch());
+                        }
+                        ids.push(known(mb).ok_or_else(
                             || json!({ "type": "invalidProperties", "properties": ["mailboxIds"] }),
-                        )?;
-                    move_to = Some(target);
+                        )?);
+                    }
+                    mailboxes = Some(ids);
+                }
+                other if other.starts_with("mailboxIds/") => {
+                    let mb = known(&other["mailboxIds/".len()..]).ok_or_else(
+                        || json!({ "type": "invalidProperties", "properties": [other] }),
+                    )?;
+                    mailbox_changes.push((mb, keyword_value(value)?));
                 }
                 _ => {
                     return Err(json!({ "type": "invalidProperties", "properties": [path] }));
                 }
             }
         }
+        if mailboxes.is_some() && !mailbox_changes.is_empty() {
+            return Err(invalid_patch());
+        }
+        if !mailbox_changes.is_empty() {
+            let mut set = vec![current_folder];
+            for (mb, on) in &mailbox_changes {
+                set.retain(|x| x != mb);
+                if *on {
+                    set.push(*mb);
+                }
+            }
+            mailboxes = Some(set);
+        }
+        let move_to = match mailboxes {
+            None => None,
+            Some(m) if m.len() == 1 => Some(m[0]).filter(|f| *f != current_folder),
+            Some(_) => return Err(json!({ "type": "tooManyMailboxes" })),
+        };
         let done = self
             .blocking(move |c| {
                 if let Some(s) = seen {
@@ -865,6 +1007,7 @@ impl Ctx {
 
     async fn thread_get(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
+        let state = self.state();
         let Some(ids) = Self::ids_arg(args, 't')? else {
             return Err(json!({ "type": "requestTooLarge" }));
         };
@@ -897,7 +1040,7 @@ impl Ctx {
         }
         Ok(json!({
             "accountId": format!("a{account}"),
-            "state": self.state(),
+            "state": state,
             "list": list,
             "notFound": not_found,
         }))
@@ -905,6 +1048,7 @@ impl Ctx {
 
     async fn identity_get(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
+        let state = self.state();
         let identities = self
             .blocking(move |c| c.identities(account))
             .await?
@@ -924,7 +1068,7 @@ impl Ctx {
             .collect();
         Ok(json!({
             "accountId": format!("a{account}"),
-            "state": self.state(),
+            "state": state,
             "list": list,
             "notFound": [],
         }))

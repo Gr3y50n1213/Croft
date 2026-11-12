@@ -28,6 +28,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod jmap;
+pub mod oauth;
 mod proto;
 mod smtp;
 
@@ -328,6 +329,12 @@ impl TestServer {
     /// The accepted password.
     pub fn password(&self) -> String {
         self.st().opts.password.clone()
+    }
+
+    /// Changes the accepted password (and the accepted XOAUTH2 access token): the old one is
+    /// refused from the next sign-in, like an access token that expired.
+    pub fn set_password(&self, password: &str) {
+        self.st().opts.password = password.to_owned();
     }
 
     /// The DER bytes of the server's certificate, when TLS is on. Tests hash these to pin it.

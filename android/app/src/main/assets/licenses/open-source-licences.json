@@ -1,7 +1,7 @@
 {
  "version": 1,
  "inputs": {
-  "cargoLockSha256": "5675daf454352b7c23975af6e8dfada15f593c51c600ae97f22c2a1c30dc70d5",
+  "cargoLockSha256": "2e9e6db519e80a187d5a9902f0ed8ac07d4a33f80a00fdcc6418c2caa049651c",
   "libsCatalogSha256": "97da1ae55696128da16e4d69a7a7f035085990a6070df4dfb05f950ff6b958f7"
  },
  "entries": [
@@ -841,13 +841,13 @@
   },
   {
    "name": "event-listener",
-   "version": "2.5.3",
+   "version": "5.4.2",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "event-listener",
-   "version": "5.4.2",
+   "version": "2.5.3",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -1567,13 +1567,13 @@
   },
   {
    "name": "syn",
-   "version": "2.0.119",
+   "version": "3.0.10",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "syn",
-   "version": "3.0.10",
+   "version": "2.0.119",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1615,13 +1615,13 @@
   },
   {
    "name": "thiserror-impl",
-   "version": "2.0.21",
+   "version": "1.0.69",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "thiserror-impl",
-   "version": "1.0.69",
+   "version": "2.0.21",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

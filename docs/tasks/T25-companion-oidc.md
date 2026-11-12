@@ -25,15 +25,17 @@ limits, audit and admin rules.
 - **ID token.** Signature checked with the provider's JWKS (RS256, ES256, EdDSA; `none` and every HMAC algorithm refused, and the key's
   type must match the algorithm); `iss` exact, `aud` contains the client id (and `azp` equals it when there are several audiences),
   `exp`, `iat` and `nbf` with 60 seconds of leeway, `nonce` equal to the one sent. The identity is (`iss`, `sub`), never the e-mail.
-- **Linking.** A signed-in user links their provider identity on a settings page (it starts the flow and stores `iss`/`sub` against
-  their user id); an admin can unlink. With `create_users`, a first sign-in by a member of the group creates a user (role `user`, a name
+- **Linking.** A signed-in user links their provider identity on a settings page: the flow ends in a hand-over code that the same
+  signed-in app redeems (`/api/oidc/link/finish`), so a link flow started by someone else cannot attach an identity to the wrong
+  account. An admin can unlink. With `create_users`, a first sign-in by a member of the group creates a user (role `user`, a name
   from `preferred_username` cleaned to T24's name rule, made unique). An unknown identity otherwise gets "not linked", audited.
 - **Handing over to an app.** The browser lands on the callback; the Companion then hands a one-time code (60 seconds, single use, bound
   to the PKCE challenge the app sent at the start) to the app's redirect: the web app's own origin (`public_url`), or the phones' claimed
   `https` link / loopback address (T34). The app exchanges code + verifier at `/api/sign-in/oidc/exchange` for T24 tokens. Tokens never
   appear in a URL.
-- **Rules kept from T24.** A disabled or locked user is refused after the provider says yes; failures count towards the lockout and
-  the address limits; every sign-in, link, unlink and refusal is audited; OIDC sessions are full sessions (not recovery ones).
+- **Rules kept from T24.** A disabled user is refused after the provider says yes. As with passkeys (T24 review), failures count for
+  the address only, never toward the user's lock, and the lock does not stop an OIDC sign-in (nothing here can be guessed). Every
+  sign-in, link, unlink and refusal is audited; OIDC sessions are full sessions (not recovery ones).
 - **No passkey needed.** A user created by OIDC can work with OIDC alone; they may add a passkey later. Enrolment links still work.
 
 ## Done when

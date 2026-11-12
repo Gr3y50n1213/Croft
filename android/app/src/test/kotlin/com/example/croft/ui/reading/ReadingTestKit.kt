@@ -29,6 +29,7 @@ import com.example.croft.mail.reading.ConversationMessageData
 import com.example.croft.mail.reading.FakeMail
 import com.example.croft.mail.reading.FakeReadingRepository
 import com.example.croft.mail.reading.MailAddressData
+import com.example.croft.mail.reading.MarkReadDelay
 import com.example.croft.theme.AnimationLevel
 import com.example.croft.ui.components.show
 import com.example.croft.ui.mail.NOW
@@ -77,6 +78,9 @@ class ReadingFixture(
     private val newestCc: List<MailAddressData> = listOf(MailAddressData(null, "ops@example.org")),
     senderAddress: String = "mira@example.net",
     olderTexts: Boolean = true,
+    olderOneSeen: Boolean = true,
+    /** Only the newest message exists (S21: a message on its own). */
+    onlyNewest: Boolean = false,
 ) {
     val account = 1L
     val inbox = FakeData.folderId(account, FakeData.INBOX)
@@ -87,7 +91,7 @@ class ReadingFixture(
     )
 
     val rows = listOf(
-        row(OLD_ONE, "Sam Rivera", ME, "Re: Server migration notes", 3 * 24 * 60, true),
+        row(OLD_ONE, "Sam Rivera", ME, "Re: Server migration notes", 3 * 24 * 60, olderOneSeen),
         row(OLD_TWO, "Mira Okafor", "mira@example.net", "Re: Server migration notes", 2 * 24 * 60, true),
         row(NEWEST, "Mira Okafor", senderAddress, "Re: Server migration notes", 30, false),
     )
@@ -105,7 +109,7 @@ class ReadingFixture(
             FakeMail(message(rows[0], listOf(MailAddressData("Mira", "mira@example.net")), emptyList(), olderTexts), textBody(OLD_ONE, "The plan is attached.")),
             FakeMail(message(rows[1], listOf(MailAddressData("Sam", ME)), emptyList(), olderTexts), textBody(OLD_TWO)),
             FakeMail(message(rows[2], newestTo, newestCc, true), newestBody, newestAllowed),
-        ),
+        ).filter { !onlyNewest || it.message.id == NEWEST },
         localOnly = localOnly,
     )
 
@@ -124,13 +128,16 @@ class ReadingFixture(
     /** Whether a viewer app exists for opened files. */
     var viewerExists = true
 
-    /** Shows S20 for [id] under the app theme. [settings] can be changed by the test while the screen is up. */
-    fun show(rule: ComposeContentTestRule, id: Long = NEWEST, settings: () -> MailSettings = { MailSettings() }, level: AnimationLevel = AnimationLevel.OFF) {
+    /**
+     * Shows S20 for [id] under the app theme. [settings] can be changed by the test while the screen is up; by default the screen does not
+     * mark anything read (the mark-read tests choose their own delay), so the calls a test sees are its own.
+     */
+    fun show(rule: ComposeContentTestRule, id: Long = NEWEST, settings: () -> MailSettings = { MailSettings(markRead = MarkReadDelay.NEVER) }, level: AnimationLevel = AnimationLevel.OFF) {
         rule.show(level, haptics) { Screen(id, settings()) }
     }
 
     @Composable
-    fun Screen(id: Long = NEWEST, settings: MailSettings = MailSettings()) {
+    fun Screen(id: Long = NEWEST, settings: MailSettings = MailSettings(markRead = MarkReadDelay.NEVER)) {
         ConversationHost(
             session = session, messageId = id, settings = settings,
             onBack = { backs += Unit }, onClosed = { closed += it }, onCompose = { composed += it },

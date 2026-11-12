@@ -2,7 +2,7 @@
  "version": 1,
  "inputs": {
   "cargoLockSha256": "e129f7e6aad3a211f6ba808438701dd36a73425d90580c904375cf4d931bbd6e",
-  "libsCatalogSha256": "97da1ae55696128da16e4d69a7a7f035085990a6070df4dfb05f950ff6b958f7"
+  "libsCatalogSha256": "9d9a1ddedca679350073cd37b2b888f157b68dd3efa4ab6950b8456f1ca1a383"
  },
  "entries": [
   {
@@ -198,6 +198,12 @@
    "origin": "Android"
   },
   {
+   "name": "androidx.concurrent:concurrent-futures-ktx",
+   "version": "1.1.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
    "name": "androidx.constraintlayout:constraintlayout",
    "version": "2.2.1",
    "licence": "Apache-2.0",
@@ -372,6 +378,12 @@
    "origin": "Android"
   },
   {
+   "name": "androidx.lifecycle:lifecycle-service",
+   "version": "2.10.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
    "name": "androidx.lifecycle:lifecycle-viewmodel",
    "version": "2.10.0",
    "licence": "Apache-2.0",
@@ -426,6 +438,18 @@
    "origin": "Android"
   },
   {
+   "name": "androidx.room:room-common",
+   "version": "2.7.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.room:room-runtime",
+   "version": "2.7.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
    "name": "androidx.savedstate:savedstate",
    "version": "1.4.0",
    "licence": "Apache-2.0",
@@ -444,6 +468,18 @@
    "origin": "Android"
   },
   {
+   "name": "androidx.sqlite:sqlite",
+   "version": "2.5.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.sqlite:sqlite-framework",
+   "version": "2.5.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
    "name": "androidx.startup:startup-runtime",
    "version": "1.1.1",
    "licence": "Apache-2.0",
@@ -451,6 +487,12 @@
   },
   {
    "name": "androidx.tracing:tracing",
+   "version": "2.0.1",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.tracing:tracing-ktx",
    "version": "2.0.1",
    "licence": "Apache-2.0",
    "origin": "Android"
@@ -500,6 +542,18 @@
   {
    "name": "androidx.window:window-core",
    "version": "1.5.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.work:work-runtime",
+   "version": "2.12.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.work:work-runtime-ktx",
+   "version": "2.12.0",
    "licence": "Apache-2.0",
    "origin": "Android"
   },
@@ -619,13 +673,13 @@
   },
   {
    "name": "async-channel",
-   "version": "2.5.0",
+   "version": "1.9.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "async-channel",
-   "version": "1.9.0",
+   "version": "2.5.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -1729,13 +1783,13 @@
   },
   {
    "name": "thiserror-impl",
-   "version": "2.0.21",
+   "version": "1.0.69",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "thiserror-impl",
-   "version": "1.0.69",
+   "version": "2.0.21",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

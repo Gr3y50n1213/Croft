@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<!-- T20: S07 (notifications set-up), S32 (the notifications) and S46 (notification settings). -->
+<resources>
+    <!-- S32: the notifications. Sender and subject only, never the body. -->
+    <string name="notify_channel_mail_description">New mail in this account</string>
+    <string name="notify_channel_status">Account problems</string>
+    <string name="notify_signin_title">Sign in again</string>
+    <string name="notify_signin_text">%1$s: Croft can\'t check for new mail until you sign in.</string>
+    <plurals name="notify_new_count">
+        <item quantity="one">%d new message</item>
+        <item quantity="other">%d new messages</item>
+    </plurals>
+    <string name="notify_unknown_sender">Unknown sender</string>
+    <string name="notify_no_subject">(No subject)</string>
+    <string name="notify_action_archive">Archive</string>
+    <string name="notify_action_delete">Delete</string>
+    <string name="notify_action_read">Mark read</string>
+    <string name="notify_action_reply">Reply</string>
+    <string name="notify_action_undo">Undo</string>
+    <string name="notify_done_archived">Archived</string>
+    <string name="notify_done_deleted">Moved to Trash</string>
+    <string name="notify_test_sender">Croft</string>
+    <string name="notify_test_subject">This is how new mail will look</string>
+
+    <!-- S07: shown once, after the first account. -->
+    <string name="notify_intro_title">Know when mail arrives</string>
+    <string name="notify_intro_body">Croft can check your mail in the background and tell you when something new arrives. A notification shows who it is from and the subject, never the message itself.</string>
+    <string name="notify_intro_method">How Croft checks</string>
+    <string name="notify_intro_periodic">Periodic sync</string>
+    <string name="notify_intro_periodic_hint">Croft checks every 30 minutes while your phone has a connection. Battery saver can delay checks. You can change this in Settings.</string>
+    <string name="notify_intro_turn_on">Turn on notifications</string>
+    <string name="notify_intro_skip">Not now</string>
+    <string name="notify_intro_done">Done</string>
+    <string name="notify_intro_on">Notifications are on.</string>
+    <string name="notify_send_test">Send test</string>
+    <string name="notify_test_sent">Test notification sent.</string>
+    <string name="notify_test_failed">Couldn\'t show a notification. Check that notifications are on for Croft.</string>
+    <string name="notify_denied_banner">Notifications are off for Croft. It still checks for mail, and you can turn them on in system settings.</string>
+    <string name="notify_denied_action">Settings</string>
+
+    <!-- S46: notification settings (minimal). -->
+    <string name="settings_notifications">Notifications</string>
+    <string name="settings_notifications_hint">New mail, how often Croft checks</string>
+    <string name="notify_settings_title">Notifications</string>
+    <string name="notify_master">Notify me about new mail</string>
+    <string name="notify_accounts">Accounts</string>
+    <string name="notify_frequency">Check for new mail</string>
+    <string name="notify_freq_15m">15 min</string>
+    <string name="notify_freq_30m">30 min</string>
+    <string name="notify_freq_1h">1 hour</string>
+    <string name="notify_freq_2h">2 hours</string>
+    <string name="notify_freq_manual">Manual</string>
+    <string name="notify_frequency_hint">Checks run only while the phone has a connection, and battery saver can delay them. Manual: Croft checks only while it is open.</string>
+    <string name="notify_battery_not_low">Only when the battery isn\'t low</string>
+    <string name="notify_lock_screen">Hide sender and subject on the lock screen</string>
+    <string name="notify_lock_screen_hint">The lock screen then says only how many new messages there are.</string>
+    <string name="notify_actions">Buttons on a notification</string>
+    <string name="notify_actions_hint">Pick up to three.</string>
+    <string name="notify_battery_settings">Battery settings</string>
+    <string name="notify_battery_settings_hint">If checks come late, let Croft run in the background in the system\'s battery settings.</string>
+    <string name="notify_no_accounts">Add an account to get notifications. The sample mailbox never notifies.</string>
+    <string name="notify_settings_later">Quiet hours and instant push come later.</string>
+</resources>

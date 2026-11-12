@@ -22,7 +22,13 @@ import com.example.croft.mail.MailSettingsStore
 import com.example.croft.mail.accounts.AccountPrefsStore
 import com.example.croft.theme.ThemeStore
 import com.example.croft.ui.compose.ComposeIntents
+import com.example.croft.mail.compose.ComposeStart
+import com.example.croft.notify.CheckSchedule
+import com.example.croft.notify.NotificationIntents
+import com.example.croft.notify.NotificationOpen
+import com.example.croft.notify.NotifySettingsStore
 import com.example.croft.ui.nav.ComposeRequest
+import com.example.croft.ui.nav.OpenMessageRequest
 import com.example.croft.ui.nav.CroftApp
 import com.example.croft.ui.nav.Route
 import com.example.croft.ui.nav.StartProblemScreen
@@ -40,17 +46,30 @@ class MainActivity : ComponentActivity() {
     /** A `mailto:` link or a share that opened (or reached) the app, until the navigation has taken it. */
     private var composeRequest by mutableStateOf<ComposeRequest?>(null)
 
+    /** A tap on a new-mail notification (S32), until the navigation has taken it. */
+    private var openRequest by mutableStateOf<OpenMessageRequest?>(null)
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
+        take(intent)
+    }
+
+    /** What [intent] asks for: compose (a link, a share, a notification's Reply) or a message (a notification's tap). */
+    private fun take(intent: Intent?) {
+        when (val open = NotificationIntents.parse(intent, this)) {
+            is NotificationOpen.Message -> openRequest = OpenMessageRequest(open.messageId)
+            is NotificationOpen.Reply -> composeRequest = ComposeRequest(ComposeStart.Reply(open.account, open.messageId))
+            NotificationOpen.Inbox -> openRequest = OpenMessageRequest(null)
+            null -> ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // Only on a first start: after a rotation the intent is still the old one and the request was already used.
-        if (savedInstanceState == null) ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
+        if (savedInstanceState == null) take(intent)
         // A missing library or a version mismatch shows the error line instead of crashing.
         val info = runCatching { loadRustInfo() }.getOrNull()
         val store = ThemeStore.shared(applicationContext)
@@ -58,6 +77,7 @@ class MainActivity : ComponentActivity() {
         val connectivity = AndroidConnectivity(applicationContext)
         val onboarding = appOnboardingEnvironment(applicationContext, mailStore)
         val accountOps = appAccountOps(applicationContext)
+        val notifyStore = NotifySettingsStore.shared(applicationContext)
         setContent {
             var session by remember { mutableStateOf<MailSession?>(null) }
             var startAt by remember { mutableStateOf<Route?>(null) }
@@ -72,6 +92,8 @@ class MainActivity : ComponentActivity() {
                 if (count == null) { problem = true; return@LaunchedEffect }
                 startAt = if (count > 0) Route.HOME else Route.ONBOARDING
                 session = ready
+                // The periodic check (T20): scheduled once, kept as it is when it already runs (KEEP).
+                try { CheckSchedule.apply(applicationContext, notifyStore.current(), changed = false) } catch (e: IllegalStateException) { /* WorkManager not ready: the next start */ }
             }
             val ready = session
             val start = startAt
@@ -89,6 +111,9 @@ class MainActivity : ComponentActivity() {
                     connectivity = connectivity,
                     composeRequest = composeRequest,
                     onComposeRequestHandled = { composeRequest = null },
+                    notifyStore = notifyStore,
+                    openRequest = openRequest,
+                    onOpenRequestHandled = { openRequest = null },
                 )
             }
         }

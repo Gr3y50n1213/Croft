@@ -8,6 +8,9 @@ Usage: check-release-manifest.py <AndroidManifest.xml> [allowlist.json]
 Also fails on android:debuggable="true", and on a content provider that grants URI permissions (android:grantUriPermissions="true", which
 is how an app hands one file to another app) unless it is listed under "uri-grant-providers" by authority, is not exported, and is the class
 the allowlist names.
+Also fails, whatever the allowlist says, on the permissions and components the store rules forbid in every build
+(docs/store/READINESS.md, T20): exact alarms, foreground-service permissions, contacts, the battery-optimisation exemption request, and any
+service with a foreground service type.
 The allowlist defaults to manifest-allowlist.json next to this script.
 In the allowlist, ${applicationId} is the manifest's package (the application id, which the preview build gives a suffix) and
 ${namespace} is the code's namespace, where the app's own classes live (environment variable CROFT_NAMESPACE, default: the package).
@@ -20,6 +23,15 @@ from pathlib import Path
 
 A = "{http://schemas.android.com/apk/res/android}"
 COMPONENTS = ("activity", "activity-alias", "service", "receiver", "provider")
+
+# Never in any build (docs/store/READINESS.md rows 4 to 6, T20). A prefix match, so FOREGROUND_SERVICE_DATA_SYNC and the like count too.
+FORBIDDEN_PERMISSION_PREFIXES = (
+    "android.permission.SCHEDULE_EXACT_ALARM",
+    "android.permission.USE_EXACT_ALARM",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.READ_CONTACTS",
+    "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+)
 
 
 def check(manifest_path, allowlist_path):
@@ -38,8 +50,10 @@ def check(manifest_path, allowlist_path):
 
     for el in root.iter():
         if el.tag in ("uses-permission", "uses-permission-sdk-23"):
-            name = el.get(A + "name")
-            if name not in allowed_perms:
+            name = el.get(A + "name") or ""
+            if name.startswith(FORBIDDEN_PERMISSION_PREFIXES):
+                errors.append(f"permission forbidden by the store rules: {name}")
+            elif name not in allowed_perms:
                 errors.append(f"permission not on the allowlist: {name}")
         elif el.tag == "permission":
             name = el.get(A + "name")
@@ -58,6 +72,8 @@ def check(manifest_path, allowlist_path):
             name = el.get(A + "name") or ""
             if name.startswith("."):
                 name = namespace + name
+            if el.tag == "service" and el.get(A + "foregroundServiceType"):
+                errors.append(f"service {name} has a foreground service type; no build has a foreground service")
             # A provider can grant URI permissions with the attribute or with <grant-uri-permission> children; both are checked.
             if el.tag == "provider" and (el.get(A + "grantUriPermissions") == "true" or el.find("grant-uri-permission") is not None):
                 errors.extend(check_grant_provider(el, name, allowed_grant, sub))

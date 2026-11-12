@@ -52,12 +52,21 @@ import com.example.croft.ui.accounts.LicencesScreen
 import com.example.croft.ui.accounts.openInBrowser
 import com.example.croft.ui.onboarding.OnboardingEnvironment
 import com.example.croft.ui.onboarding.OnboardingHost
+import com.example.croft.notify.CheckAccount
+import com.example.croft.notify.CheckSchedule
+import com.example.croft.notify.NotifySettingsStore
+import com.example.croft.ui.notify.NotificationSettingsHost
+import com.example.croft.ui.notify.NotifyIntroHost
+import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** A request from outside to open compose ([ComposeIntents]). Compared by identity, so the same link opened twice is two requests. */
 class ComposeRequest(val start: ComposeStart)
+
+/** A tap on a notification (S32): the message [messageId] with the Inbox under it, or the Inbox when null. Compared by identity. */
+class OpenMessageRequest(val messageId: Long?)
 
 /** The screens reachable today. S50 and its drill-down live inside [APPEARANCE] (see `AppearanceFlow`). S02 to S05 and S09 live inside [ONBOARDING] and [ADD_ACCOUNT]. */
 enum class Route(val parent: Route?) {
@@ -108,6 +117,12 @@ enum class Route(val parent: Route?) {
 
     /** S27 Search and S28 results (T19), from the Inbox's search pill. It handles its own Back (results first, then the Inbox). */
     SEARCH(HOME),
+
+    /** S07 Notifications set-up (T20): once, after the first account. Back is Not now. Then the Inbox. */
+    NOTIFY_INTRO(null),
+
+    /** S46 Notifications (T20). */
+    NOTIFICATIONS(SETTINGS),
     ;
 
     /** How deep the screen is; going to a larger depth is "forward". */
@@ -149,8 +164,15 @@ fun CroftNavHost(
     /** A request from outside the app (a `mailto:` link, a share): compose opens on it once, as soon as the app is past sign-in. */
     composeRequest: ComposeRequest? = null,
     onComposeRequestHandled: () -> Unit = {},
+    /** The notification settings (S07, S46). Without them neither screen is reachable (tests of other screens). */
+    notifyStore: NotifySettingsStore? = null,
+    /** A tap on a notification: opens once, as soon as the app is past sign-in. */
+    openRequest: OpenMessageRequest? = null,
+    onOpenRequestHandled: () -> Unit = {},
 ) {
     var route by rememberSaveable { mutableStateOf(startAt) }
+    val notifySettings by (notifyStore?.settings ?: kotlinx.coroutines.flow.flowOf(null)).collectAsState(initial = null)
+    if ((route == Route.NOTIFY_INTRO || route == Route.NOTIFICATIONS) && notifyStore == null) route = Route.HOME
     var accountId by rememberSaveable { mutableStateOf(0L) }
     // Compose (T18d). What it opens is kept in memory only: after process death the route falls back to the Inbox, and the draft that
     // was open is in the Drafts folder (it was autosaved).
@@ -206,9 +228,22 @@ fun CroftNavHost(
             onComposeRequestHandled()
         }
     }
+    // A tap on a notification: the message over the Inbox (Back returns to the Inbox), or the Inbox.
+    LaunchedEffect(openRequest, route) {
+        val open = openRequest ?: return@LaunchedEffect
+        if (route == Route.ONBOARDING || route == Route.ADD_ACCOUNT || route == Route.COMPOSE) return@LaunchedEffect
+        val id = open.messageId
+        if (id != null) { conversationId = id; conversationReturn = Route.HOME; route = Route.CONVERSATION } else route = Route.HOME
+        onOpenRequestHandled()
+    }
+    // After an account was added: S07 once (not for the sample mailbox, which never notifies), else where the flow returns to.
+    val afterAccountAdded: suspend (Route) -> Unit = { next ->
+        val intro = notifyStore != null && !(runCatching { notifyStore.current().introDone }.getOrDefault(true))
+        route = if (intro) Route.NOTIFY_INTRO else next
+    }
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
     // Compose and the Outbox handle their own Back (compose saves first).
-    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION && route != Route.SEARCH) { route = route.parent ?: Route.HOME }
+    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION && route != Route.SEARCH && route != Route.NOTIFY_INTRO) { route = route.parent ?: Route.HOME }
 
     // Removing an account: the account in the core first (its task stops, nothing new is sent), then its saved secret (`AccountOps.remove`),
     // then the app's own entries for it (folder choices, order, name, colour: the prefs are written and waited for), then a fresh session.
@@ -227,6 +262,9 @@ fun CroftNavHost(
             try { sessionNow.folderMapping.forgetAccount(id) } catch (e: Exception) { /* swept at the next start */ }
             try { sessionNow.anchors.forgetAccount(id) } catch (e: Exception) { /* swept at the next start */ }
             try { removeAccountPrefs(id) } catch (e: Exception) { /* swept at the next start */ }
+            // T20: its notification switches, its notifications and its channel.
+            try { notifyStore?.update { it.forget(id) } } catch (e: Exception) { /* harmless: an id that is never used again */ }
+            try { com.example.croft.notify.AndroidNotifier(context).forgetAccount(id) } catch (e: Exception) { /* nothing showing */ }
             try { onAccountReady() } catch (e: Exception) { /* the next screen reads the core again */ }
             try { sessionNow.repository.listAccounts().size } catch (e: Exception) { REMOVED_COUNT_UNKNOWN }
         }
@@ -278,14 +316,14 @@ fun CroftNavHost(
             Route.ONBOARDING -> if (onboarding != null) OnboardingHost(
                 environment = onboarding,
                 onTrySampleMail = trySample,
-                onFinished = { scope.launch { onAccountReady(); route = Route.HOME } },
+                onFinished = { scope.launch { onAccountReady(); afterAccountAdded(Route.HOME) } },
                 sampleProblem = sampleProblem,
                 onPrivacyPolicy = { context.openInBrowser(AboutLinks.PRIVACY_POLICY_URL) },
             )
             Route.ADD_ACCOUNT -> if (onboarding != null) OnboardingHost(
                 environment = onboarding,
                 onTrySampleMail = {},
-                onFinished = { scope.launch { onAccountReady(); route = addReturn } },
+                onFinished = { scope.launch { onAccountReady(); afterAccountAdded(addReturn) } },
                 startAt = Step.ADD_ACCOUNT,
                 onExit = { route = addReturn },
             )
@@ -347,6 +385,7 @@ fun CroftNavHost(
                 onOpenGallery = if (DebugGallery.available) ({ route = Route.GALLERY }) else null,
                 onOpenAccounts = { route = Route.ACCOUNTS },
                 onOpenAbout = { route = Route.ABOUT },
+                onOpenNotifications = if (notifyStore != null) ({ route = Route.NOTIFICATIONS }) else null,
                 onBack = { route = Route.HOME },
             )
             Route.ACCOUNTS -> AccountsScreen(
@@ -370,6 +409,33 @@ fun CroftNavHost(
             Route.SWIPE_ACTIONS -> SwipeSettingsFlow(settings = swipeSettings, onChange = onSwipeSettingsChange, onBack = { route = Route.SETTINGS })
             Route.INBOX_SETTINGS -> InboxSettingsScreen(settings = mailSettings, onChange = onMailSettingsChange, onBack = { route = Route.SETTINGS }, session = session)
             Route.GALLERY -> DebugGallery.Screen(onBack = { route = Route.SETTINGS })
+            Route.NOTIFY_INTRO -> {
+                val ns = notifySettings
+                if (notifyStore != null && ns != null) NotifyIntroHost(
+                    settings = ns,
+                    onChange = { next -> notifyStore.set(next); CheckSchedule.apply(context, next, changed = true) },
+                    accounts = { notifyAccounts(sessionNow) },
+                    onFinished = { route = Route.HOME },
+                )
+            }
+            Route.NOTIFICATIONS -> {
+                val ns = notifySettings
+                if (notifyStore != null && ns != null) NotificationSettingsHost(
+                    settings = ns,
+                    onChange = { next ->
+                        scope.launch {
+                            notifyStore.set(next)
+                            if (next.frequency != ns.frequency || next.batteryNotLow != ns.batteryNotLow) CheckSchedule.apply(context, next, changed = true)
+                        }
+                    },
+                    accounts = { notifyAccounts(sessionNow) },
+                    onBack = { route = Route.SETTINGS },
+                )
+            }
         }
     }
 }
+
+/** The accounts S07 and S46 list, from the session (the sample mailbox is marked and never notifies). */
+private suspend fun notifyAccounts(session: MailSession): List<CheckAccount> =
+    session.repository.listAccounts().map { CheckAccount(it.id, it.label.ifBlank { it.email }, isDemo = it.isDemo) }

@@ -60,6 +60,11 @@ fun CroftApp(
     /** A `mailto:` link or a share that started or reached the app: compose opens on it. */
     composeRequest: ComposeRequest? = null,
     onComposeRequestHandled: () -> Unit = {},
+    /** The notification settings (S07, S46); without them those screens are not reachable (tests of other screens). */
+    notifyStore: com.example.croft.notify.NotifySettingsStore? = null,
+    /** A tap on a notification: the message (or the Inbox) opens once the app is past sign-in. */
+    openRequest: OpenMessageRequest? = null,
+    onOpenRequestHandled: () -> Unit = {},
 ) {
     // The session the Inbox shows: the one given, until the first account is added; then the one over the core.
     var active by remember(session) { mutableStateOf(session) }
@@ -80,6 +85,7 @@ fun CroftApp(
     var accountPrefs by remember { mutableStateOf<AccountPrefs?>(null) }
     LaunchedEffect(accountPrefsStore) { accountPrefs = accountPrefsStore?.prefs?.first() ?: AccountPrefs() }
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val prefsNow = accountPrefs
     val swipeNow = swipe
     val themeNow = settings
@@ -103,6 +109,9 @@ fun CroftApp(
                     accountOps = accountOps,
                     composeRequest = composeRequest,
                     onComposeRequestHandled = onComposeRequestHandled,
+                    notifyStore = notifyStore,
+                    openRequest = openRequest,
+                    onOpenRequestHandled = onOpenRequestHandled,
                     accountPrefs = prefsNow,
                     onAccountPrefsChange = { next -> accountPrefs = next; scope.launch { accountPrefsStore?.set(next) } },
                     // The removal path waits for this: the entries of a removed account are gone from the stored prefs when it returns.
@@ -113,6 +122,10 @@ fun CroftApp(
                     // "Erase all Croft data": the core and the secrets are already gone; the settings stores go back to their defaults too.
                     onErased = {
                         store.set(ThemeSettings.Default); swipeStore?.set(SwipeSettings.Default); mailStore?.set(MailSettings()); accountPrefsStore?.set(AccountPrefs())
+                        // T20: the notification settings go back to their defaults (S07 shows again after the next account), and every
+                        // notification and per-account channel of Croft goes.
+                        notifyStore?.set(com.example.croft.notify.NotifySettings())
+                        try { com.example.croft.notify.AndroidNotifier(context).forgetAll() } catch (e: Exception) { /* nothing showing */ }
                         settings = ThemeSettings.Default; swipe = SwipeSettings.Default; mail = MailSettings(); accountPrefs = AccountPrefs()
                         // No core is opened here: an erase leaves no Croft file, and the next one is made when the person adds an account (the
                         // sign-in flow and "Try with sample mail" open the core when they first need it, then `onAccountReady` builds the session).

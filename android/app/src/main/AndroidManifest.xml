@@ -4,13 +4,22 @@
   License, v. 2.0. If a copy of the MPL was not distributed with this
   file, You can obtain one at https://mozilla.org/MPL/2.0/.
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- INTERNET: the Rust core opens its own sockets to the person's mail servers (T16 is the first task that syncs).
          ACCESS_NETWORK_STATE: the connectivity callback that tells the core whether the device has a network (Offline banner,
          nothing sent while offline). Both are normal permissions, granted at install; see docs/store/READINESS.md. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- T20, S32: new-mail notifications. A runtime permission on Android 13 and later, asked only from S07 (never at start); the app works fully
+         without it. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- T20: WorkManager (the periodic check) merges in RECEIVE_BOOT_COMPLETED (it restores its own schedule after a restart; Croft has no
+         boot receiver of its own) and WAKE_LOCK (held by WorkManager while a job runs). Both are normal permissions and stay.
+         It also merges FOREGROUND_SERVICE and its SystemForegroundService for setForeground(), which Croft never calls: the Play build has
+         no foreground service (docs/store/READINESS.md rows 4 and 5), so both are removed here. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
 
     <application
         android:allowBackup="false"
@@ -55,6 +64,23 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <!-- T20: see the FOREGROUND_SERVICE note above. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            tools:node="remove" />
+
+        <!-- T20, S32: a tap on a new-mail notification and its Reply button open MainActivity through this alias. Not exported, so only
+             Croft's own PendingIntents reach it; MainActivity honours a croft:// URI only when it came through here (NotificationIntents). -->
+        <activity-alias
+            android:name=".OpenFromNotification"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
+
+        <!-- T20, S32: the Archive, Delete, Mark read and Undo buttons of a notification. Not exported: only Croft's immutable PendingIntents. -->
+        <receiver
+            android:name=".notify.NotificationActionReceiver"
+            android:exported="false" />
 
         <!-- T18b: the FileProvider that gives a viewer app read access to one attachment the person opened (store rule: never file://).
              Not exported; access only through a temporary URI grant (FLAG_GRANT_READ_URI_PERMISSION) that Croft puts on the intent. Its paths file

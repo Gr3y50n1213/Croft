@@ -16,6 +16,7 @@ pub mod folders;
 pub mod identities;
 pub mod jmap_ids;
 pub mod messages;
+pub mod notify;
 pub mod op_store;
 pub mod outbox_store;
 pub mod reading;

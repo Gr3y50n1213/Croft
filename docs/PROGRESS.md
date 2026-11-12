@@ -5,6 +5,31 @@ unverified, the next step.
 
 ---
 
+## T23: Companion foundation (12 November 2026)
+
+**Status:** draft pull request #36 on `task/t23` (CI); independent review done, fixes included. Phase 2 begins; the plan is `docs/tasks/PHASE-2.md`.
+
+**What was built.** `companion/`, a Cargo workspace of its own (AGPL-3.0-or-later): settings (TOML plus environment variables, unknown
+keys refused, an https public address), the master key file (created with mode 0600, refused when others can read it, never
+overwritten), envelope encryption (a random data key per user wrapped by the master key; values sealed under the data key bound to the
+user and the field), SQLite storage with forward-only migrations (`meta`, `user`, `user_key`, `audit_log`), master key rotation that
+survives a crash at any point, the command line (`init`, `user add`, `user list`, `rotate-master-key`, `serve`, `healthcheck`), and the
+HTTP service (`/healthz`, `/version`, strict security headers, a body limit, a time limit, graceful shutdown). A Dockerfile (non-root,
+`/data` volume), an example Compose file and a README on the master key. A `companion` CI job: fmt, clippy, tests, the image build.
+
+**Checks.** 17 tests: sealing and opening bound to user and field, a wrong or rotated-away master key opens nothing, rotation keeps
+every value, damaged input never opens; migrations once and a newer database refused; every table scoped by user or justified as
+global; the settings file and environment; the key file's permissions; init twice keeps the key; a rotation cut short finishes at the
+next start; the HTTP headers, the body limit and the health check. Clippy clean.
+
+**Review** (one independent agent): two serious findings (a planted key file could be adopted; the Docker key volume was not
+writable) and several smaller ones, fixed with tests (20 tests now); two accepted for now (DECISIONS).
+
+**Not verified here:** the Docker image builds on CI only (this container's build sandbox cannot reach crates.io); running it on a real
+host behind a real reverse proxy.
+
+---
+
 ## T22: JMAP accounts in the app (12 November 2026)
 
 **Status:** draft pull request #34 on `task/t22` (CI); independent review done, fixes included. FFI API version 12 (no type the app reads changed).

@@ -296,6 +296,19 @@ class AccountsScreensTest {
         waitFor(AccountsTags.ACCOUNTS)
     }
 
+    @Test
+    fun signInOnAnAccountThatNeedsItOpensTheSignInForItsAddress() {
+        // T21: S45's Sign in (and the banner's) goes to S04 for that account; signing in there is the core's "sign in again".
+        backend.onDiscover = { e, _ -> fakeFound(e) }
+        show()
+        openAccounts()
+        tag(AccountsTags.row(2)).performScrollTo().performClick()
+        waitFor(AccountsTags.ACCOUNT)
+        tag(AccountsTags.SIGN_IN_AGAIN).performScrollTo().performClick()
+        waitFor(OnboardingTags.SIGN_IN)
+        assertEquals(listOf(testAccounts()[1].email), backend.discovers.toList())
+    }
+
     /** From S44: Add account, S02, the address, Continue, the password, Sign in (the scripted backend answers). */
     private fun addFromAccounts(email: String) {
         backend.onDiscover = { e, _ -> fakeFound(e) }

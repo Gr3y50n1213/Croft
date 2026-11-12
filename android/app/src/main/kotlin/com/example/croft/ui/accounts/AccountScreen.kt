@@ -135,8 +135,19 @@ fun AccountScreen(
             if (account.isDemo) stringResource(R.string.accounts_sample_hint) else account.email,
             style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        // Tapping a status that is not OK tries a sync now (there is no other fix to offer here).
-        AccountStatusLabel(shownName, account.status, onClick = { scope.launch { try { session.repository.syncNow(accountId) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* the status chip shows the result */ } } })
+        // Tapping a status that is not OK tries a sync now; Needs sign-in opens the sign-in (T21: for Gmail and Outlook, with the own client).
+        val signIn = { session.raise(com.example.croft.mail.MailEvent.SignInRequested(accountId)) }
+        AccountStatusLabel(shownName, account.status, onClick = {
+            if (account.status == com.example.croft.mail.AccountState.NEEDS_SIGN_IN) signIn()
+            else scope.launch { try { session.repository.syncNow(accountId) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* the status chip shows the result */ } }
+        })
+        if (account.status == com.example.croft.mail.AccountState.NEEDS_SIGN_IN && !account.isDemo) {
+            com.example.croft.ui.components.CroftButton(
+                stringResource(R.string.banner_action_sign_in), signIn,
+                Modifier.testTag(AccountsTags.SIGN_IN_AGAIN),
+                kind = com.example.croft.ui.components.ButtonKind.FILLED,
+            )
+        }
         if (!account.isDemo) {
             CroftTextField(
                 value = name, onValueChange = { name = it.take(AccountPrefs.MAX_NAME) }, label = stringResource(R.string.account_name),

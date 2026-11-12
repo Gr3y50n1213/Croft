@@ -20,7 +20,9 @@ access token is refreshed a minute before it expires and once more when the serv
 (3) *Android*: S04 "Or sign in with your own Google/Microsoft client" for Gmail and Outlook: client ID (and the Desktop client's secret
 for Google), the help (where to register, which client type, the redirect to copy for Microsoft, Google's 7-day limit for projects
 left in Testing), the provider's page in a Custom Tab, a waiting line with Cancel, plain messages for each failure. The secret is kept
-like a password (`AccountSecrets.addOAuthAccount`, `SecretKind.OAUTH_REFRESH`).
+like a password (`AccountSecrets.addOAuthAccount`, `SecretKind.OAUTH_REFRESH`). *Signing in again*: the Needs sign-in banner and a new Sign in
+button on S45 open the sign-in flow for that account's address (it did nothing before T21, for password accounts too); finishing it
+there is the core's "sign in again" (same id, mail kept, paused changes go on).
 
 **Decisions that depart from the task** (DECISIONS): loopback redirect for both providers instead of a redirect activity; Google
 needs a "Desktop app" client with its own secret; a pending sign-in does not survive the process being stopped.

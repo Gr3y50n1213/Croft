@@ -68,6 +68,12 @@ fun OnboardingHost(
     sampleProblem: Boolean = false,
     /** S01's privacy policy link (a view intent); no link when null. */
     onPrivacyPolicy: (() -> Unit)? = null,
+    /**
+     * Signing in again (the Needs sign-in banner): the account's address, looked up at once, so the flow goes straight on to S04 for it
+     * (S04 offers the own-client sign-in for Gmail and Outlook). Adding an address that exists with the same servers is the core's
+     * "sign in again": the account keeps its id and mail and its paused changes go on.
+     */
+    signInAgainEmail: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val flow = rememberSaveable(
@@ -75,6 +81,15 @@ fun OnboardingHost(
     ) { OnboardingFlow(environment.backend, scope, startAt = startAt) }
     DisposableEffect(flow) { onDispose { flow.close() } }
     val state by flow.state.collectAsState()
+    // Once per flow (not again after a rotation, which restores the flow where it was).
+    var prefilled by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(signInAgainEmail) {
+        if (!prefilled && signInAgainEmail != null && state.step == Step.ADD_ACCOUNT) {
+            prefilled = true
+            flow.setEmail(signInAgainEmail)
+            flow.continueWithEmail()
+        }
+    }
 
     // The first sync ending, Continue and Back can all say "finished" at about the same moment: only the first counts, so the
     // app builds the Inbox's session once.

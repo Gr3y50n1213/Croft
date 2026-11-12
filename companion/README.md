@@ -5,7 +5,7 @@ search; phones work without it. Licence: AGPL-3.0-or-later (see `LICENSES.md`).
 
 **Status:** the foundation (T23), sign-in (T24, T25: passkeys, an authenticator app with recovery codes, OIDC, tokens for the apps,
 the admin's user management) and mail accounts (T26: each user's own IMAP/SMTP or JMAP accounts, synced by the same core the phones
-run) and a JMAP API for the apps (T27: reading and organising; sending, push and attachments come next); see
+run), a JMAP API for the apps (T27: reading and organising) and push (T28: the apps are woken when mail changes); see
 `docs/tasks/PHASE-2.md`.
 
 ## Run it with Docker
@@ -135,6 +135,14 @@ bodies; remote content stays blocked), `Email/set` (read, flag, move, delete: to
 Sending, drafts, uploads, downloads and push come with later tasks. Limits: 600 requests a minute and 4 at once per user, 16 calls
 per request, 64 emails per `Email/get` (16 with bodies), and 4 MB for all of one request's answers.
 
+## Push
+
+When a user's mail changes, the Companion wakes their apps with a Web Push message (the standard browsers use, and the one UnifiedPush
+distributors such as ntfy take for Android). The message says only "something changed" (`{"v":1,"type":"changed"}`), encrypted for the
+device; the app then syncs. At most one per 30 seconds per user. An app subscribes with `POST /api/push/subscriptions` (the
+`PushSubscription` JSON a browser or UnifiedPush gives it) after reading the Companion's key from `GET /api/push/vapid`; a subscription
+ends when its device signs out. Push services are reached through the same address policy as mail servers.
+
 ## Commands
 
 ```
@@ -163,4 +171,5 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `GET /api/oidc`, `GET /api/sign-in/oidc/start?app_challenge&app_redirect`, `GET /oidc/callback`, `POST /api/sign-in/oidc/exchange` (`{"code", "verifier"}`) | anyone |
 | `POST /api/oidc/link/start`, `/api/oidc/link/finish`, `DELETE /api/oidc/link` | signed in |
 | `POST /api/admin/users/{id}/oidc/unlink` | admins |
+| `GET /api/push/vapid`, `POST /api/push/subscriptions`, `GET /api/push/subscriptions`, `DELETE /api/push/subscriptions/{id}` | signed in (not a recovery sign-in) |
 | `POST /api/accounts/discover` (`{"email"}`), `/api/accounts/verify` and `POST /api/accounts` (`{"discovered", "password", "pin"?}`), `GET /api/accounts`, `DELETE /api/accounts/{id}` | signed in (not a recovery sign-in); 30 a minute per user |

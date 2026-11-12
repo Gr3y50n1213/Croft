@@ -1075,6 +1075,10 @@ fn uid_search(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> Strin
                 hits.retain(|m| !m.flags.contains("\\Deleted"));
                 i += 1;
             }
+            "DRAFT" => {
+                hits.retain(|m| m.flags.contains("\\Draft"));
+                i += 1;
+            }
             "UID" => {
                 let set = parse_set(
                     toks.get(i + 1).and_then(Tok::text).unwrap_or(""),

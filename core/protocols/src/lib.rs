@@ -14,6 +14,7 @@
 pub mod backend;
 pub mod demo;
 pub mod discovery;
+pub mod drafts;
 mod host;
 pub mod imap;
 pub mod jmap;

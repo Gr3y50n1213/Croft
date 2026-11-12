@@ -66,6 +66,7 @@ enum Op<'a> {
     Snapshot(&'a str),
     FetchHeaders(&'a str, &'a [Uid]),
     FindByMessageId(&'a str, &'a str),
+    FindDraftByMessageId(&'a str, &'a str),
     SetFlag(&'a str, &'a [Uid], FlagChange),
     MoveTo(&'a str, &'a [Uid], &'a str),
     DeleteForever(&'a str, &'a [Uid]),
@@ -94,6 +95,7 @@ impl Op<'_> {
             Op::Snapshot(f) => Out::Snapshot(c.snapshot(f).await?),
             Op::FetchHeaders(f, uids) => Out::Headers(c.fetch_headers(f, uids).await?),
             Op::FindByMessageId(f, id) => Out::Uid(c.find_by_message_id(f, id).await?),
+            Op::FindDraftByMessageId(f, id) => Out::Uid(c.find_draft_by_message_id(f, id).await?),
             Op::SetFlag(f, uids, change) => {
                 c.set_flag(f, uids, change).await?;
                 Out::Done
@@ -198,6 +200,25 @@ impl ImapBackend {
             conn.logout().await;
             state.saved_cache = conn.cache;
         }
+    }
+
+    /// Finds a **draft** in a folder by its Message-ID: the UID of the newest message with the id
+    /// that is flagged `\Draft`, or `None`. For replacing and deleting the copy of a draft, which
+    /// must never touch another message that happens to have the same id (a copy in Sent, say).
+    pub fn find_draft_by_message_id<'a>(
+        &'a self,
+        folder: &'a str,
+        message_id: &'a str,
+    ) -> BackendFuture<'a, Option<Uid>> {
+        Box::pin(async move {
+            match self
+                .run(Op::FindDraftByMessageId(folder, message_id))
+                .await?
+            {
+                Out::Uid(v) => Ok(v),
+                _ => Err(unexpected()),
+            }
+        })
     }
 
     /// Creates a folder (for example an Archive when the server has none). Succeeds if it

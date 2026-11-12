@@ -107,6 +107,7 @@ fn recipients_json(recipients: &[String]) -> Result<String> {
 struct Row {
     id: i64,
     identity: Option<i64>,
+    draft: Option<i64>,
     state: String,
     send_at: i64,
     attempts: i64,
@@ -144,7 +145,7 @@ fn load_all(tx: &Transaction<'_>) -> Result<StoredOutbox> {
         )?;
         let rows: Vec<Row> = tx
             .prepare(
-                "SELECT id, identity_id, state, send_at, attempts, last_error, envelope_from, recipients
+                "SELECT id, identity_id, state, send_at, attempts, last_error, envelope_from, recipients, draft_id
                    FROM outbox WHERE account_id = ?1 ORDER BY id",
             )?
             .query_map([account], |r| {
@@ -157,6 +158,7 @@ fn load_all(tx: &Transaction<'_>) -> Result<StoredOutbox> {
                     last_error: r.get(5)?,
                     envelope_from: r.get(6)?,
                     recipients: r.get(7)?,
+                    draft: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -179,6 +181,7 @@ fn entry_from_row(account: i64, row: Row) -> Result<OutboxEntry> {
         id,
         account,
         identity: row.identity,
+        draft: row.draft,
         envelope_from: row.envelope_from,
         recipients: recipients.unwrap_or_default(),
         state: if readable {
@@ -200,8 +203,8 @@ fn write_batch(tx: &Transaction<'_>, batch: &OutboxBatch) -> Result<()> {
     for (entry, mime) in &batch.inserted {
         tx.execute(
             "INSERT INTO outbox (id, account_id, identity_id, mime_blob, state, send_at, attempts,
-                                 last_error, envelope_from, recipients)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                 last_error, envelope_from, recipients, draft_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 db_id(entry.id)?,
                 entry.account,
@@ -213,6 +216,7 @@ fn write_batch(tx: &Transaction<'_>, batch: &OutboxBatch) -> Result<()> {
                 entry.last_error,
                 entry.envelope_from,
                 recipients_json(&entry.recipients)?,
+                entry.draft,
             ],
         )?;
     }

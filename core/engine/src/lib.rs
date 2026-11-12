@@ -120,6 +120,7 @@ mod sync;
 mod worker;
 
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use croft_mail_core::compose;
 pub use croft_mail_core::{
     AccountId, NewMessage, Op, OpId, OpKind, OpState, OutboxEntry, OutboxId, OutboxState,
     RemovedMessage, UnreadableOp,

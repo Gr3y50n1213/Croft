@@ -221,4 +221,43 @@ check("migration 0005 adds the JMAP id tables to a version-4 database",
       == {"jmap_mailbox", "jmap_email_uid", "jmap_account_state"}
       and old.execute("SELECT count(*) FROM account").fetchone()[0] == 1)
 
+# Migration 0006: drafts, their attachments, sent recipients and the draft link on the outbox.
+db.execute("INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (6,'D','d@example.org','imap','{}',0)")
+db.execute("INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (7,'E','e@example.org','imap','{}',0)")
+db.execute("INSERT INTO draft (account_id,message_id,created_at,updated_at) VALUES (6,'<m@x>',1,1)")
+did = one("SELECT id FROM draft")
+check("a new draft is editable at revision 1 and not yet copied to the server",
+      db.execute("SELECT state, revision, synced_revision, server_uid FROM draft").fetchone() == ("draft", 1, 0, None))
+check("a draft state outside draft, queued, done is refused",
+      refused("UPDATE draft SET state = 'bogus'"))
+check("a draft needs its account", refused("INSERT INTO draft (account_id,message_id,created_at,updated_at) VALUES (99,'<m@x>',1,1)"))
+db.execute("INSERT INTO draft_attachment (account_id,draft_id,name,mime_type,size,data) VALUES (6,?,'a.txt','text/plain',1,x'41')", (did,))
+check("an attachment needs its draft", refused("INSERT INTO draft_attachment (account_id,draft_id,name,mime_type,size,data) VALUES (6,999,'a','b',1,x'41')"))
+db.execute("INSERT INTO sent_recipient (account_id,address,last_used) VALUES (6,'x@example.org',1)")
+db.execute("INSERT INTO sent_recipient (account_id,address,last_used) VALUES (7,'x@example.org',1)")
+check("two accounts keep their own sent recipients", one("SELECT count(*) FROM sent_recipient") == 2)
+check("one account keeps an address once", refused("INSERT INTO sent_recipient (account_id,address,last_used) VALUES (6,'x@example.org',2)"))
+db.execute("INSERT INTO outbox (account_id,mime_blob,send_at,draft_id) VALUES (6,x'00',0,?)", (did,))
+check("the outbox row keeps its draft link", one("SELECT draft_id FROM outbox WHERE account_id = 6") == did)
+db.execute("DELETE FROM draft")
+check("removing a draft removes its attachments", one("SELECT count(*) FROM draft_attachment") == 0)
+db.execute("INSERT INTO draft (account_id,message_id,created_at,updated_at) VALUES (6,'<m2@x>',1,1)")
+db.execute("DELETE FROM account WHERE id = 6")
+check("removing the account removes its drafts and sent recipients",
+      one("SELECT count(*) FROM draft WHERE account_id = 6") == 0
+      and one("SELECT count(*) FROM sent_recipient WHERE account_id = 6") == 0
+      and one("SELECT count(*) FROM sent_recipient WHERE account_id = 7") == 1)
+
+# Upgrading a version-5 database that has an outbox row keeps the row and gives it no draft link.
+old = sqlite3.connect(":memory:")
+for path in mig[:5]:
+    old.executescript(open(path).read())
+old.executescript("""INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'S','s@example.org','imap','{}',0);
+INSERT INTO outbox (id,account_id,mime_blob,send_at) VALUES (5,1,x'41',9);""")
+old.executescript(open(mig[5]).read())
+check("migration 0006 keeps outbox rows and adds an empty draft link",
+      old.execute("SELECT id, send_at, draft_id FROM outbox").fetchone() == (5, 9, None)
+      and {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('draft','draft_attachment','sent_recipient')")}
+      == {"draft", "draft_attachment", "sent_recipient"})
+
 sys.exit(1 if check.failed else 0)

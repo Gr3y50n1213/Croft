@@ -70,13 +70,13 @@ use zeroize::Zeroizing;
 pub const MAYBE_SENT_REASON: &str = "May not have been sent; check Sent before retrying";
 
 /// Reason for a sender the server refused.
-const REASON_SENDER: &str = "The server refused the sender address";
+pub const REASON_SENDER: &str = "The server refused the sender address";
 /// Reason for a recipient the server refused.
-const REASON_RECIPIENT: &str = "The server refused a recipient address";
+pub const REASON_RECIPIENT: &str = "The server refused a recipient address";
 /// Reason for a message the server refused.
-const REASON_MESSAGE: &str = "The server refused the message";
+pub const REASON_MESSAGE: &str = "The server refused the message";
 /// Reason for a message the server says is too big.
-const REASON_TOO_LARGE: &str = "The message is larger than the server accepts";
+pub const REASON_TOO_LARGE: &str = "The message is larger than the server accepts";
 /// 4xx.
 const TRY_LATER: &str = "The server asked to try again later";
 

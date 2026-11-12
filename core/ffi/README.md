@@ -69,13 +69,21 @@ screen holding a stale id from another account can never read or change anything
    (`Saved`, `AlreadyCurrent`, `Deferred`, `Offline`, `NotApplicable` for the sample mailbox, `TryLater`, `NeedsSignIn`, `Refused`);
    none is an error: the draft is safe on the device. **Offline or failing, the core copies it later by itself**: when
    `set_network_available(true)` is called and at the next start. An empty draft is not copied.
-5. **Attachments.** `add_draft_attachment_file(account, id, path, name, mime_type)` (async) with a path in the app's own cache
-   (the system picker's result, copied there), or `add_draft_attachment_bytes(account, id, name, mime_type, bytes)` (async). They
-   are stored in the draft (encrypted with the database). Limits: `MAX_ATTACHMENT_BYTES` 40 MB each and in total, 50 files; over
-   25 MB is accepted so the chip can warn (Send is disabled by `check_draft`). From a path the core reads **only that file**:
-   absolute, no `..`, a plain file (not a link, folder or device), checked by size before it is read; otherwise
+5. **Attachments.** **First register the attachment folder, once, right after `Core.open`:**
+   `set_attachment_directory(path)` with an absolute path to an existing folder that holds only the copies the system picker's
+   results are written to (for example `File(cacheDir, "compose-attach")`, created by the app). The core's database must not be inside
+   it (`BadAttachmentDirectory`): never pass the app's data folder. Then `add_draft_attachment_file(account, id, path, name,
+   mime_type)` (async) with the path of such a copy, or `add_draft_attachment_bytes(account, id, name, mime_type, bytes)` (async).
+   They are stored in the draft (encrypted with the database). Limits: `MAX_ATTACHMENT_BYTES` 40 MB each and in total, 50 files; over
+   25 MB is accepted so the chip can warn (Send is disabled by `check_draft`). **From a path the core reads only that file**: the
+   path must be under the registered folder (`NoAttachmentDirectory` before one is registered), absolute, with no `..` and **no
+   link anywhere below the folder**, and name a plain file with one name (not a link, folder, pipe, device or hard link), checked by
+   size before it is read; the file is opened without following links and without waiting, examined again once open, and the read
+   stops at the cap whatever the size says. Anything else, the database and the files of `/proc` included, is
    `AttachmentUnreadable` / `AttachmentTooLarge`. The name shown and sent is `name`, never the path's. Delete the cache file after the
-   call returns. `remove_draft_attachment(account, id, attachment_id)`.
+   call returns. **Bytes** cross the FFI already in memory: check `compose_limits().max_attachment_bytes` before reading a file into
+   memory (the core checks the size first, but the copy has been made by then), and use the file variant for anything large.
+   `remove_draft_attachment(account, id, attachment_id)`.
 6. **Send.** `send(account, id)` returns `SendStarted { outbox_id, send_at_ms }`. The message is written (its Message-ID is the
    draft's; Bcc recipients get it but are not in it), put in the Outbox with `send_at = now + the undo window`
    (`set_undo_window_ms`, the same setting as for moves), and sent when the window ends and the network allows, **exactly once**.
@@ -92,9 +100,11 @@ screen holding a stale id from another account can never read or change anything
 9. **Outbox screen (S26).** `list_outbox(account)`: `OutboxItem { id, state (Queued, Sending, Failed), send_at_ms, attempts, reason,
    may_have_been_sent, draft_id, subject, recipient_count, to_preview }`. `reason` is an `OutboxReason`, a fixed category, never the
    server's words (they can hold an address): `outbox_reason_key(reason)` is the key to translate, `outbox_reason_default_message`
-   the English text. Actions: `retry_outbox_item(account, id)` (for `may_have_been_sent` ask the person to check Sent first: the
-   server may have the message, and only the person's own Retry sends it again), `edit_outbox_item(account, id) -> draft_id`
-   (back to the draft; not while Sending: `WrongState`), `discard_outbox_item(account, id)` (ask first; drops the message and its
+   the English text. Actions: `retry_outbox_item(account, id, confirmed)` (for `may_have_been_sent` the call is **refused** with
+   `NeedsConfirmation` unless `confirmed` is true: show "This message may already have been sent" (suggest a look in Sent) with
+   Retry anyway and Cancel, and pass `true` only for Retry anyway; for any other Failed row pass `false`), `edit_outbox_item(account, id) -> draft_id`
+   (back to the draft; not while Sending: `WrongState`. A message that was handed to the server at least once comes back with a
+   **new Message-ID**, so the corrected message is not taken for the old one; the old draft copy on the server is deleted), `discard_outbox_item(account, id)` (ask first; drops the message and its
    draft). For "notify once" on a Failed row, remember the ids you have notified.
 10. **Discard.** `discard_draft(account, id)`: gone from the lists at once; the copy on the server is deleted in the background.
 
@@ -123,7 +133,9 @@ Forwarded attachments are not carried over yet.
 ### Sending for a real account: what the core does
 - The engine is opened with an Outbox (`Engine::open_with_outbox`), and every account with an SMTP server in its stored settings gets
   a submitter (`AccountSubmitter`): SMTP to the stored server, the copy in Sent over the account's IMAP connection (found by
-  Message-ID first, so never twice). An account without an SMTP server can read but `send` is `CannotSend`.
+  Message-ID first, so never twice). An account without an SMTP server can read but `send` is `CannotSend`. Only Gmail files its
+  own copy: the SMTP host must be exactly `smtp.gmail.com` or `smtp.googlemail.com` and the IMAP host Gmail's too (a relay such as
+  `smtp-relay.gmail.com` files nothing).
 - **The credential** is the same one IMAP uses, from the app's `CredentialProvider`, and is asked for **at each send** (not kept):
   it lives in a wiping string only while the message goes out. No credential means the account is paused as "needs sign-in" and the
   message waits; a busy keystore (`ProviderError::NotReady`) is a retry.
@@ -136,11 +148,12 @@ Forwarded attachments are not carried over yet.
 - The database now has three connections from the core (engine queue, Outbox, compose), all with the same key.
 
 ### Known gaps
-Plain-text body only (no rich text); no scheduled send (S25); no encryption policy (S24 is the app's seam); a draft in the Drafts
+Plain-text body only (no rich text); addresses are checked for structure and for invisible or direction-changing characters, but
+non-ASCII domain names are not converted (no IDNA); only IMAP draft copies exist (JMAP accounts are not added by the FFI yet); no scheduled send (S25); no encryption policy (S24 is the app's seam); a draft in the Drafts
 folder list (a synced server copy) is a second row next to the local draft with the same Message-ID, and the app should hide the
 synced one; the Bcc recipients are not in the copy filed in Sent; a crash between the server append and the local record can leave
-one extra old copy of a draft on the server until the draft is sent or discarded; non-ASCII domain names are not converted to
-punycode.
+one extra old copy of a draft on the server until the next save, or until the draft is sent or discarded (the folder is noted before
+the copy is made, so a copy whose record failed is deleted too).
 
 ## The test server (feature `test-server`, test only)
 `--features test-server` adds the object `TestImapServer` (`src/test_server.rs`): the in-process IMAP server of `core/test-support`

@@ -4,7 +4,9 @@
 
 //! A draft's copy in the server's Drafts folder.
 //!
-//! A draft keeps one Message-ID for its whole life, and that is how its copy on the server is found:
+//! A draft keeps one Message-ID for its whole life, and that is how its copy on the server is found
+//! (among the messages flagged `\Draft` only, so a message that merely has the same id is never
+//! touched):
 //! no stored UID is trusted (a UID means nothing after the folder's UIDVALIDITY changed, and a
 //! wrong one would delete somebody else's message). Saving is **look up, append, delete the old
 //! one**, in that order, so the server never has less than one copy of the draft; a crash between
@@ -68,14 +70,14 @@ pub async fn save_draft_copy(
     let text = std::str::from_utf8(mime)
         .map_err(|_| BackendError::Permanent(REASON_DRAFT_NOT_TEXT.to_owned()))?;
     // The copy to replace, found before the new one is added (afterwards both have the id).
-    let old = imap.find_by_message_id(folder, message_id).await?;
+    let old = imap.find_draft_by_message_id(folder, message_id).await?;
     let appended = imap
         .append_message(folder, &["\\Draft", "\\Seen"], text)
         .await?;
     let new = match appended {
         Some(uid) => Some(uid),
         // No `UIDPLUS`: the newest message with the id is the one just added.
-        None => imap.find_by_message_id(folder, message_id).await?,
+        None => imap.find_draft_by_message_id(folder, message_id).await?,
     };
     if let Some(old) = old.filter(|old| Some(*old) != new) {
         imap.delete_forever(folder, &[old]).await?;
@@ -95,7 +97,7 @@ pub async fn delete_draft_copies(
 ) -> Result<usize, BackendError> {
     let mut deleted = 0;
     while deleted < MAX_COPIES_DELETED {
-        let Some(uid) = imap.find_by_message_id(folder, message_id).await? else {
+        let Some(uid) = imap.find_draft_by_message_id(folder, message_id).await? else {
             break;
         };
         imap.delete_forever(folder, &[uid]).await?;

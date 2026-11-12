@@ -102,6 +102,8 @@ pub struct Draft {
     pub server_folder: Option<String>,
     /// The UID of the copy in that folder, if the server reported it.
     pub server_uid: Option<i64>,
+    /// Earlier Message-IDs of this draft whose copies on the server are still to be deleted.
+    pub stale_message_ids: Vec<String>,
     /// Creation time, Unix milliseconds.
     pub created_at: i64,
     /// Time of the last change, Unix milliseconds.
@@ -159,7 +161,7 @@ fn addresses_from(text: &str) -> Vec<Address> {
 const COLUMNS: &str =
     "id, account_id, identity_id, message_id, to_json, cc_json, bcc_json, subject, body,
        in_reply_to, references_json, state, outbox_id, revision, synced_revision, server_folder,
-       server_uid, created_at, updated_at";
+       server_uid, created_at, updated_at, stale_message_ids";
 
 fn map_row(r: &Row<'_>) -> rusqlite::Result<Draft> {
     let state: String = r.get(11)?;
@@ -186,6 +188,7 @@ fn map_row(r: &Row<'_>) -> rusqlite::Result<Draft> {
         server_uid: r.get(16)?,
         created_at: r.get(17)?,
         updated_at: r.get(18)?,
+        stale_message_ids: serde_json::from_str(&r.get::<_, String>(19)?).unwrap_or_default(),
     })
 }
 
@@ -308,6 +311,64 @@ pub fn unlink_outbox(conn: &Connection, account_id: i64, id: i64) -> Result<bool
     Ok(conn.execute(
         "UPDATE draft SET outbox_id = NULL WHERE account_id = ?1 AND id = ?2 AND state = 'queued'",
         params![account_id, id],
+    )? == 1)
+}
+
+/// Like [`unlink_outbox`], and gives the draft a **new** Message-ID: the one it had is kept in
+/// `stale_message_ids` so that its copies on the server are deleted. For a message that was handed
+/// to the server at least once and is taken back: the person's corrected message must not be
+/// mistaken for the old one (the Sent copy is looked up by Message-ID, and recipients may drop a
+/// message whose id they have seen). Returns false when the draft is not queued.
+pub fn unlink_outbox_with_new_id(
+    conn: &Connection,
+    account_id: i64,
+    id: i64,
+    new_message_id: &str,
+) -> Result<bool> {
+    let Some(d) = get(conn, account_id, id)?.filter(|d| d.state == DraftState::Queued) else {
+        return Ok(false);
+    };
+    let mut stale = d.stale_message_ids;
+    if !stale.contains(&d.message_id) {
+        stale.push(d.message_id);
+    }
+    // Eight is far more than anyone edits before one copy is made.
+    let keep = stale.len().saturating_sub(8);
+    let stale = serde_json::to_string(&stale[keep..])?;
+    Ok(conn.execute(
+        "UPDATE draft SET outbox_id = NULL, message_id = ?3, stale_message_ids = ?4,
+                          synced_revision = 0
+          WHERE account_id = ?1 AND id = ?2 AND state = 'queued'",
+        params![account_id, id, new_message_id, stale],
+    )? == 1)
+}
+
+/// Forgets stale Message-IDs whose copies on the server were deleted.
+pub fn clear_stale(conn: &Connection, account_id: i64, id: i64, removed: &[String]) -> Result<()> {
+    let Some(d) = get(conn, account_id, id)? else {
+        return Ok(());
+    };
+    let rest: Vec<&String> = d
+        .stale_message_ids
+        .iter()
+        .filter(|s| !removed.contains(s))
+        .collect();
+    conn.execute(
+        "UPDATE draft SET stale_message_ids = ?3 WHERE account_id = ?1 AND id = ?2",
+        params![account_id, id, serde_json::to_string(&rest)?],
+    )?;
+    Ok(())
+}
+
+/// Notes that a copy of the draft **may** be in `folder` on the server, before it is made. If the
+/// copy is made and the record of it is not (a failure, a crash), the draft still knows where to
+/// look when it is sent or discarded, and the copy is deleted then. Does nothing when a folder
+/// is recorded already.
+pub fn plan_server_copy(conn: &Connection, account_id: i64, id: i64, folder: &str) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE draft SET server_folder = ?3
+          WHERE account_id = ?1 AND id = ?2 AND server_folder IS NULL",
+        params![account_id, id, folder],
     )? == 1)
 }
 

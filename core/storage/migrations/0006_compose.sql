@@ -9,6 +9,9 @@
 --                    deleted, then the row is deleted too
 --   revision goes up with every change the person makes; synced_revision is the revision the server
 --            copy has. They differ when a copy is still to be made (offline, or a pause).
+--   stale_message_ids are earlier Message-IDs of this draft (a draft taken back from a message that
+--            may have been sent gets a new one, so the corrected message is not mistaken for the
+--            old one); their copies on the server are deleted at the next copy.
 --   outbox_id is a hint written after the Outbox row (which carries draft_id itself, so the two can
 --            never be separated by a crash). It lets the core tell "sent" from "taken back".
 CREATE TABLE draft (
@@ -29,6 +32,7 @@ CREATE TABLE draft (
     synced_revision INTEGER NOT NULL DEFAULT 0,
     server_folder   TEXT,
     server_uid      INTEGER,
+    stale_message_ids TEXT  NOT NULL DEFAULT '[]',
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
 );

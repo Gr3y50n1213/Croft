@@ -221,3 +221,43 @@ async fn the_copy_in_sent_is_made_once_even_when_asked_twice() {
         .unwrap();
     assert_eq!(server.messages("Sent").len(), 2);
 }
+
+#[tokio::test]
+async fn only_a_message_flagged_draft_is_replaced_or_deleted() {
+    let server = TestServer::start_default().await;
+    let b = backend(&server);
+    // A message with the draft's Message-ID that is not a draft (a copy somebody filed here).
+    let other = String::from_utf8(draft("same@x", "not a draft")).unwrap();
+    server.add_message_with_flags("Drafts", &other, &["\\Seen"]);
+    let first = save_draft_copy(&b, "Drafts", "<same@x>", &draft("same@x", "v1"))
+        .await
+        .unwrap();
+    save_draft_copy(&b, "Drafts", "<same@x>", &draft("same@x", "v2"))
+        .await
+        .unwrap();
+    let raws: Vec<_> = server
+        .messages("Drafts")
+        .into_iter()
+        .map(|m| m.raw)
+        .collect();
+    assert_eq!(
+        raws.len(),
+        2,
+        "the replaced draft is gone, the other message stays"
+    );
+    assert!(raws.iter().any(|r| r.contains("not a draft")));
+    assert!(raws.iter().any(|r| r.contains("v2")) && !raws.iter().any(|r| r.contains("v1")));
+    assert!(first.uid.is_some());
+    assert_eq!(
+        delete_draft_copies(&b, "Drafts", "<same@x>").await.unwrap(),
+        1
+    );
+    let left = server.messages("Drafts");
+    assert_eq!(left.len(), 1);
+    assert!(left[0].raw.contains("not a draft"));
+    assert!(b
+        .find_draft_by_message_id("Drafts", "<same@x>")
+        .await
+        .unwrap()
+        .is_none());
+}

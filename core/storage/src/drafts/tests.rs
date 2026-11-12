@@ -193,3 +193,55 @@ fn debug_output_shows_no_text() {
     let d = format!("{:?}", content("SECRET-SUBJECT"));
     assert!(!d.contains("SECRET") && !d.contains("bob@"));
 }
+
+#[test]
+fn taking_a_tried_message_back_gives_the_draft_a_new_message_id_and_remembers_the_old_one() {
+    let db = Db::open_in_memory().unwrap();
+    let a = account(&db, "a@example.org");
+    let c = db.connection();
+    let id = insert(c, a, "<old@x>", &content("One"), 0).unwrap();
+    record_server_copy(c, a, id, "Drafts", Some(3), 1).unwrap();
+    // Not queued: nothing changes.
+    assert!(!unlink_outbox_with_new_id(c, a, id, "<new@x>").unwrap());
+    set_queued(c, a, id, 5).unwrap();
+    assert!(unlink_outbox_with_new_id(c, a, id, "<new@x>").unwrap());
+    let d = get(c, a, id).unwrap().unwrap();
+    assert_eq!(d.message_id, "<new@x>");
+    assert_eq!(d.stale_message_ids, ["<old@x>"]);
+    assert_eq!((d.outbox_id, d.synced_revision), (None, 0));
+    assert_eq!(d.server_folder.as_deref(), Some("Drafts"));
+    // A second round keeps both, and the other account cannot clear them.
+    assert!(set_editable(c, a, id, 9).unwrap());
+    set_queued(c, a, id, 6).unwrap();
+    assert!(unlink_outbox_with_new_id(c, a, id, "<newer@x>").unwrap());
+    assert_eq!(
+        get(c, a, id).unwrap().unwrap().stale_message_ids,
+        ["<old@x>", "<new@x>"]
+    );
+    let b = account(&db, "b@example.org");
+    clear_stale(c, b, id, &["<old@x>".to_owned()]).unwrap();
+    assert_eq!(get(c, a, id).unwrap().unwrap().stale_message_ids.len(), 2);
+    clear_stale(c, a, id, &["<old@x>".to_owned()]).unwrap();
+    assert_eq!(
+        get(c, a, id).unwrap().unwrap().stale_message_ids,
+        ["<new@x>"]
+    );
+}
+
+#[test]
+fn a_planned_server_copy_names_the_folder_once_and_changes_no_revision() {
+    let db = Db::open_in_memory().unwrap();
+    let a = account(&db, "a@example.org");
+    let c = db.connection();
+    let id = insert(c, a, "<m@x>", &content("One"), 0).unwrap();
+    assert!(plan_server_copy(c, a, id, "Drafts").unwrap());
+    assert!(!plan_server_copy(c, a, id, "Other").unwrap());
+    let d = get(c, a, id).unwrap().unwrap();
+    assert_eq!(
+        (d.server_folder.as_deref(), d.synced_revision, d.server_uid),
+        (Some("Drafts"), 0, None)
+    );
+    let b = account(&db, "b@example.org");
+    let other = insert(c, b, "<n@x>", &content("Two"), 0).unwrap();
+    assert!(!plan_server_copy(c, a, other, "Drafts").unwrap());
+}

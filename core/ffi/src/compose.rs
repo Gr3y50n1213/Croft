@@ -165,9 +165,20 @@ pub enum ComposeError {
     AttachmentTooLarge,
     /// The draft already has [`MAX_ATTACHMENTS`] attachments.
     TooManyAttachments,
-    /// The file could not be read: it is not a plain file, the path is not absolute or has `..`,
-    /// or the system refused. Nothing outside the one file is ever read.
+    /// The file could not be read: it is outside the attachment directory, not a plain file, or the
+    /// path has a link or `..` in it, or the system refused. Nothing outside the one file is ever
+    /// read.
     AttachmentUnreadable,
+    /// `add_draft_attachment_file` before the app registered its attachment directory
+    /// ([`Core::set_attachment_directory`]).
+    NoAttachmentDirectory,
+    /// [`Core::set_attachment_directory`]: the path is not an absolute existing folder, or the
+    /// core's own database is inside it.
+    BadAttachmentDirectory,
+    /// [`Core::retry_outbox_item`]: the message may already have been sent and `confirmed` was
+    /// false. Nothing was changed. Ask the person ("This message may already have been sent"), and
+    /// call again with `confirmed = true` only if they choose Retry anyway.
+    NeedsConfirmation,
     /// A field is longer than the limits ([`compose_limits`]).
     DraftTooLarge,
     /// The database failed.
@@ -197,6 +208,9 @@ impl std::fmt::Display for ComposeError {
             Self::AttachmentTooLarge => "the attachments are too large",
             Self::TooManyAttachments => "too many attachments",
             Self::AttachmentUnreadable => "the file could not be read",
+            Self::NoAttachmentDirectory => "no attachment directory was registered",
+            Self::BadAttachmentDirectory => "the attachment directory cannot be used",
+            Self::NeedsConfirmation => "the message may already have been sent",
             Self::DraftTooLarge => "a field is too long",
             Self::Storage { .. } => "storage error",
             Self::Internal => "internal error",
@@ -683,14 +697,20 @@ pub(crate) struct Compose {
     /// (account, draft) -> time of the last attempt to copy it, Unix milliseconds.
     last_attempt: Mutex<HashMap<(i64, i64), i64>>,
     interval_ms: AtomicI64,
+    /// The one folder attachment files may be read from (registered by the app).
+    attachment_dir: Mutex<Option<AttachmentDir>>,
+    /// The database file, to keep it out of the attachment directory.
+    db_path: std::path::PathBuf,
     /// Background runs of `kick_compose` that have started and not finished (tests wait for 0).
     kicks: std::sync::atomic::AtomicUsize,
 }
 
 impl Compose {
-    pub(crate) fn new(db: Db, rt: tokio::runtime::Handle) -> Self {
+    pub(crate) fn new(db: Db, rt: tokio::runtime::Handle, db_path: std::path::PathBuf) -> Self {
         Self {
             rt,
+            attachment_dir: Mutex::new(None),
+            db_path,
             db: Mutex::new(db),
             actions: Mutex::new(()),
             server: tokio::sync::Mutex::new(()),
@@ -706,6 +726,13 @@ impl Compose {
 
     fn actions(&self) -> MutexGuard<'_, ()> {
         self.actions.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn attachment_dir(&self) -> Option<AttachmentDir> {
+        self.attachment_dir
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     fn attempts(&self) -> MutexGuard<'_, HashMap<(i64, i64), i64>> {
@@ -826,7 +853,9 @@ fn attachment_infos(
 }
 
 fn server_copy_of(d: &Draft) -> ServerCopy {
-    if d.server_folder.is_none() {
+    // A folder noted before a copy was made (`plan_server_copy`) is not a copy: only a recorded
+    // revision is.
+    if d.server_folder.is_none() || d.synced_revision == 0 {
         ServerCopy::NotCopied
     } else if d.synced_revision >= d.revision {
         ServerCopy::Current
@@ -951,37 +980,98 @@ fn draft_is_empty(conn: &Connection, d: &Draft) -> Result<bool, ComposeError> {
 // Reading a file the app names
 // ------------------------------------------------------------------------------------------
 
-/// Reads one file for an attachment: an absolute path with no `..`, a plain file (not a link, a
-/// folder or a device), at most `cap` bytes. Nothing but that file is opened.
-fn read_capped_file(path: &str, cap: u64) -> Result<Vec<u8>, ComposeError> {
+/// The one folder attachment files may be read from, as the app registered it
+/// ([`Core::set_attachment_directory`]).
+#[derive(Clone)]
+pub(crate) struct AttachmentDir {
+    /// The path as the app gave it (absolute, no `..`). The app's cache path may itself go through
+    /// a link (`/data/user/0/...` is `/data/data/...` on Android), so a file path is accepted under
+    /// this spelling or under the canonical one.
+    given: std::path::PathBuf,
+    /// The same folder with every link resolved.
+    canonical: std::path::PathBuf,
+}
+
+/// Reads one file for an attachment, and nothing else. The path must lie under the registered
+/// attachment folder, with **no link anywhere below it** and no `..`; it must name a plain file with
+/// exactly one name (no hard link), of at most `cap` bytes.
+///
+/// The check and the open are not one step, so the open is made to refuse what the check forbids:
+/// `O_NOFOLLOW` (a final link is an error), `O_NONBLOCK` (a pipe swapped in at the last moment is
+/// opened without waiting, and refused by the next step), then the opened file itself is examined
+/// (`fstat`): a regular file, one link, the same device and inode as the file that was checked, and
+/// its size. The path is resolved once more after the open and must still be where it was. What
+/// remains is a swap of a folder **inside** the app's private cache folder during these few
+/// microseconds, which needs a process that can already write there.
+#[cfg(unix)]
+fn read_capped_file(dir: &AttachmentDir, path: &str, cap: u64) -> Result<Vec<u8>, ComposeError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let bad = || ComposeError::AttachmentUnreadable;
     let p = Path::new(path);
     if !p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(ComposeError::AttachmentUnreadable);
+        return Err(bad());
     }
-    // `symlink_metadata` does not follow a final link, so a link is not a plain file here.
-    let before = std::fs::symlink_metadata(p).map_err(|_| ComposeError::AttachmentUnreadable)?;
-    if !before.is_file() {
-        return Err(ComposeError::AttachmentUnreadable);
+    let rel = p
+        .strip_prefix(&dir.given)
+        .or_else(|_| p.strip_prefix(&dir.canonical))
+        .map_err(|_| bad())?;
+    let parts: Vec<_> = rel.components().collect();
+    if parts.is_empty() || !parts.iter().all(|c| matches!(c, Component::Normal(_))) {
+        return Err(bad());
     }
-    if before.len() > cap {
+    // Walk down from the canonical folder: nothing on the way may be a link; the last part must be
+    // a plain file.
+    let mut here = dir.canonical.clone();
+    let mut checked = None;
+    for (i, part) in parts.iter().enumerate() {
+        here.push(part);
+        let md = std::fs::symlink_metadata(&here).map_err(|_| bad())?;
+        let last = i + 1 == parts.len();
+        if md.file_type().is_symlink() || (last && !md.is_file()) || (!last && !md.is_dir()) {
+            return Err(bad());
+        }
+        if last {
+            checked = Some(md);
+        }
+    }
+    let checked = checked.ok_or_else(bad)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&here)
+        .map_err(|_| bad())?;
+    let opened = file.metadata().map_err(|_| bad())?;
+    if !opened.is_file()
+        || opened.nlink() != 1
+        || opened.dev() != checked.dev()
+        || opened.ino() != checked.ino()
+    {
+        return Err(bad());
+    }
+    if opened.len() > cap {
         return Err(ComposeError::AttachmentTooLarge);
     }
-    let file = std::fs::File::open(p).map_err(|_| ComposeError::AttachmentUnreadable)?;
-    let opened = file
-        .metadata()
-        .map_err(|_| ComposeError::AttachmentUnreadable)?;
-    if !opened.is_file() || opened.len() > cap {
-        return Err(ComposeError::AttachmentUnreadable);
+    // Still the same place after the open (no folder on the way became a link meanwhile).
+    if std::fs::canonicalize(&here).map_err(|_| bad())? != here {
+        return Err(bad());
     }
     let mut bytes = Vec::with_capacity(usize::try_from(opened.len()).unwrap_or(0));
-    // One byte more than the cap shows a file that grew while it was read.
+    // One byte more than the cap shows a file that grew (or a file that reports no size, as the
+    // files of `/proc` do); the cap holds whatever the size said.
     file.take(cap.saturating_add(1))
         .read_to_end(&mut bytes)
-        .map_err(|_| ComposeError::AttachmentUnreadable)?;
+        .map_err(|_| bad())?;
     if bytes.len() as u64 > cap {
         return Err(ComposeError::AttachmentTooLarge);
     }
     Ok(bytes)
+}
+
+/// Where the checks above cannot be made (no Unix file model), no file is read.
+#[cfg(not(unix))]
+fn read_capped_file(_: &AttachmentDir, _: &str, _: u64) -> Result<Vec<u8>, ComposeError> {
+    Err(ComposeError::AttachmentUnreadable)
 }
 
 /// A file name for the chip: no folders, no control characters, at most 200 characters.
@@ -1042,7 +1132,11 @@ impl Inner {
             DraftState::Done => Err(ComposeError::NoSuchDraft),
             DraftState::Queued => Err(ComposeError::InOutbox),
             DraftState::Draft => {
-                let entries = self.handle.outbox_entries(account);
+                // Without an Outbox nothing can be sent: the answer would mean nothing.
+                let entries = self
+                    .handle
+                    .outbox_entries(account)
+                    .ok_or(ComposeError::Internal)?;
                 if let Some(e) = entry_for(&entries, id) {
                     let outbox_id = i64::try_from(e.id).map_err(|_| ComposeError::Internal)?;
                     drafts::set_queued(conn, account, id, outbox_id)?;
@@ -1072,7 +1166,10 @@ impl Inner {
     /// lock.
     pub(crate) fn reconcile(&self, account: i64) -> Result<bool, ComposeError> {
         let _actions = self.compose.actions();
-        let entries = self.handle.outbox_entries(account);
+        // No Outbox: nothing is known about any message, so no draft may be called sent.
+        let Some(entries) = self.handle.outbox_entries(account) else {
+            return Ok(false);
+        };
         let now = now_ms();
         self.compose_db(|conn| {
             let mut changed = false;
@@ -1242,14 +1339,39 @@ pub(crate) async fn sync_draft(
         mime,
         folder_hint,
     } = *prepared;
-    let copy = async {
+    let (imap, folder) = match async {
         let imap = backend.imap().await?;
         let folder = drafts_folder(&imap, folder_hint.as_deref()).await?;
-        save_draft_copy(&imap, &folder, &draft.message_id, &mime).await
+        Ok::<_, BackendError>((imap, folder))
     }
-    .await;
-    match copy {
+    .await
+    {
+        Ok(found) => found,
+        Err(e) => return Ok(outcome_of(&e)),
+    };
+    // Written before the copy is made: if the copy is made and its record is not (a failure, a
+    // crash), the draft still knows which folder to look in when it is sent or discarded, so the
+    // copy is never left behind.
+    {
+        let (id, folder) = (draft.id, folder.clone());
+        blocking(inner, move |i| {
+            i.compose_db(|conn| Ok(drafts::plan_server_copy(conn, account, id, &folder)?))
+        })
+        .await?;
+    }
+    match save_draft_copy(&imap, &folder, &draft.message_id, &mime).await {
         Ok(copy) => {
+            // Earlier Message-IDs of this draft (it was taken back from a message that may have
+            // been sent): their copies go now. Those that cannot be deleted stay on the list.
+            let mut removed = Vec::new();
+            for stale in &draft.stale_message_ids {
+                if delete_draft_copies(&imap, &copy.folder, stale)
+                    .await
+                    .is_ok()
+                {
+                    removed.push(stale.clone());
+                }
+            }
             let revision = draft.revision;
             let id = draft.id;
             blocking(inner, move |i| {
@@ -1262,6 +1384,7 @@ pub(crate) async fn sync_draft(
                         copy.uid.map(i64::from),
                         revision,
                     )?;
+                    drafts::clear_stale(conn, account, id, &removed)?;
                     Ok(())
                 })
             })
@@ -1291,7 +1414,10 @@ pub(crate) async fn cleanup_finished(inner: &Arc<Inner>, account: i64) {
                 } else {
                     let r = async {
                         let imap = backend.imap().await?;
-                        delete_draft_copies(&imap, folder, &d.message_id).await
+                        for id in std::iter::once(&d.message_id).chain(&d.stale_message_ids) {
+                            delete_draft_copies(&imap, folder, id).await?;
+                        }
+                        Ok::<_, BackendError>(())
                     }
                     .await;
                     // Only "try again later" and "sign in" keep the draft; a refusal (the folder
@@ -1444,7 +1570,11 @@ impl Core {
     /// One draft, to reopen compose (after a restart, from the Drafts list, or after Undo and
     /// Edit). A draft of another account, and a finished one, is [`ComposeError::NoSuchDraft`].
     pub fn load_draft(&self, account_id: i64, draft_id: i64) -> Result<FfiDraft, ComposeError> {
-        let entries = self.inner.handle.outbox_entries(account_id);
+        let entries = self
+            .inner
+            .handle
+            .outbox_entries(account_id)
+            .unwrap_or_default();
         self.inner.compose_db(|conn| {
             account_of(conn, account_id)?;
             let d = Inner::draft_of(conn, account_id, draft_id)?;
@@ -1459,7 +1589,11 @@ impl Core {
     /// the Outbox. After a crash this is how the app finds the draft that was open ("kill after
     /// 1 s: local draft restored").
     pub fn list_drafts(&self, account_id: i64) -> Result<Vec<DraftSummary>, ComposeError> {
-        let entries = self.inner.handle.outbox_entries(account_id);
+        let entries = self
+            .inner
+            .handle
+            .outbox_entries(account_id)
+            .unwrap_or_default();
         self.inner.compose_db(|conn| {
             account_of(conn, account_id)?;
             let mut out = Vec::new();
@@ -1549,6 +1683,11 @@ impl Core {
     /// ([`ComposeError::AttachmentTooLarge`], [`ComposeError::TooManyAttachments`]); an attachment
     /// larger than [`ATTACHMENT_WARN_BYTES`] is accepted (the chip warns and Send is disabled, see
     /// [`Core::check_draft`]).
+    ///
+    /// **The bytes are already in memory when this is called** (a `ByteArray` crossing the FFI is
+    /// copied): check `compose_limits().max_attachment_bytes` before reading a file into memory, and
+    /// prefer [`Core::add_draft_attachment_file`] for anything large. The size is the first thing
+    /// checked here.
     pub async fn add_draft_attachment_bytes(
         &self,
         account_id: i64,
@@ -1557,6 +1696,11 @@ impl Core {
         mime_type: String,
         bytes: Vec<u8>,
     ) -> Result<DraftAttachment, ComposeError> {
+        // The bytes are already in memory when they get here; refuse what could never be kept
+        // before anything else is done with them (no task, no database).
+        if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+            return Err(ComposeError::AttachmentTooLarge);
+        }
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
@@ -1570,12 +1714,15 @@ impl Core {
         task.await?
     }
 
-    /// Adds a file to the draft from a path in the app's own cache (a copy the system picker's
-    /// result was written to). The core reads **only that file**: the path must be absolute, with
-    /// no `..`, and name a plain file (not a link, a folder or a device) of at most
-    /// [`MAX_ATTACHMENT_BYTES`]; otherwise [`ComposeError::AttachmentUnreadable`] or
-    /// [`ComposeError::AttachmentTooLarge`] and nothing is read beyond that check. `name` is the
-    /// name to show and send; the path's own name is never used. Delete the cache file afterwards.
+    /// Adds a file to the draft from a path in the app's attachment folder (a copy the system
+    /// picker's result was written to; see [`Core::set_attachment_directory`], which must have been
+    /// called). The core reads **only that file**: the path must be absolute, without `..`, under
+    /// the registered folder with **no link anywhere below it**, and name a plain file with one name
+    /// (not a link, folder, pipe, device or hard link) of at most [`MAX_ATTACHMENT_BYTES`]. Anything
+    /// else, the core's own database and the files of `/proc` included, is
+    /// [`ComposeError::AttachmentUnreadable`] (or `AttachmentTooLarge`), and
+    /// [`ComposeError::NoAttachmentDirectory`] when no folder was registered. `name` is the name to
+    /// show and send; the path's own name is never used. Delete the cache file afterwards.
     pub async fn add_draft_attachment_file(
         &self,
         account_id: i64,
@@ -1590,7 +1737,11 @@ impl Core {
                 blocking(&inner, move |i| {
                     // Checked before the file is read: an unknown draft reads nothing.
                     i.compose_db(|conn| i.editable_draft(conn, account_id, draft_id).map(|_| ()))?;
-                    let bytes = read_capped_file(&path, MAX_ATTACHMENT_BYTES)?;
+                    let dir = i
+                        .compose
+                        .attachment_dir()
+                        .ok_or(ComposeError::NoAttachmentDirectory)?;
+                    let bytes = read_capped_file(&dir, &path, MAX_ATTACHMENT_BYTES)?;
                     add_attachment(i, account_id, draft_id, &name, &mime_type, bytes)
                 })
                 .await
@@ -1598,6 +1749,46 @@ impl Core {
             false,
         );
         task.await?
+    }
+
+    /// Registers the one folder `add_draft_attachment_file` may read from. **Call it once, right
+    /// after `Core.open`** (before any attachment is added from a path), with a folder that only
+    /// holds the copies the system picker's results are written to, for example a `compose-attach`
+    /// folder inside the app's cache folder. A later call replaces the folder.
+    ///
+    /// The path must be absolute and an existing folder. The core's own database must not be inside
+    /// it (`BadAttachmentDirectory`): never pass the app's data folder or the folder the database
+    /// lives in. Nothing is created, listed or deleted there by the core.
+    pub fn set_attachment_directory(&self, path: String) -> Result<(), ComposeError> {
+        let given = Path::new(&path);
+        let bad = ComposeError::BadAttachmentDirectory;
+        if !given.is_absolute()
+            || given
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(bad);
+        }
+        let canonical = std::fs::canonicalize(given).map_err(|_| bad.clone())?;
+        if !canonical.is_dir() {
+            return Err(bad);
+        }
+        // The database file (and the files beside it) must not be reachable through this folder.
+        let db = std::fs::canonicalize(&self.inner.compose.db_path)
+            .unwrap_or_else(|_| self.inner.compose.db_path.clone());
+        if db.starts_with(&canonical) {
+            return Err(bad);
+        }
+        *self
+            .inner
+            .compose
+            .attachment_dir
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(AttachmentDir {
+            given: given.to_path_buf(),
+            canonical,
+        });
+        Ok(())
     }
 
     /// Removes an attachment from the draft.
@@ -1704,6 +1895,7 @@ impl Core {
         let send_at_ms = inner
             .handle
             .outbox_entries(account_id)
+            .unwrap_or_default()
             .iter()
             .find(|e| e.id == queued)
             .map_or_else(now_ms, |e| e.send_at_ms);
@@ -1726,7 +1918,7 @@ impl Core {
     /// [`Core::load_draft`] (the cursor position is the app's to restore).
     /// [`ComposeError::TooLate`] once the window has closed or the message started going out.
     pub fn undo_send(&self, account_id: i64, outbox_id: u64) -> Result<i64, ComposeError> {
-        self.take_back(account_id, outbox_id, |handle, account, id| {
+        self.take_back(account_id, outbox_id, false, |handle, account, id| {
             handle.undo_send(account, id).map(|_| ())
         })
     }
@@ -1770,12 +1962,33 @@ impl Core {
         })
     }
 
-    /// Retry on a Failed message: it is queued again, due now, with fresh attempts. For
-    /// [`OutboxItem::may_have_been_sent`] the screen asks the person to check Sent first: a Retry
-    /// then is the person's own decision to send it again.
-    pub fn retry_outbox_item(&self, account_id: i64, outbox_id: u64) -> Result<(), ComposeError> {
+    /// Retry on a Failed message: it is queued again, due now, with fresh attempts.
+    ///
+    /// For a message with [`OutboxItem::may_have_been_sent`] the server may already have it, and a
+    /// Retry can deliver it twice. The call is therefore refused with
+    /// [`ComposeError::NeedsConfirmation`] unless `confirmed` is true. The screen shows "This message
+    /// may already have been sent" (suggesting a look in Sent) with Retry anyway and Cancel, and
+    /// passes `confirmed = true` only for Retry anyway. For any other Failed message pass `false`.
+    pub fn retry_outbox_item(
+        &self,
+        account_id: i64,
+        outbox_id: u64,
+        confirmed: bool,
+    ) -> Result<(), ComposeError> {
+        let _actions = self.inner.compose.actions();
         self.inner
             .compose_db(|conn| account_of(conn, account_id).map(|_| ()))?;
+        let entry = self
+            .inner
+            .handle
+            .outbox_entries(account_id)
+            .ok_or(ComposeError::Internal)?
+            .into_iter()
+            .find(|e| e.id == outbox_id)
+            .ok_or(ComposeError::NoSuchOutboxItem)?;
+        if entry.may_have_been_sent() && !confirmed {
+            return Err(ComposeError::NeedsConfirmation);
+        }
         self.inner.handle.retry_send(account_id, outbox_id)?;
         Ok(())
     }
@@ -1784,7 +1997,7 @@ impl Core {
     /// the draft's id: reopen compose with [`Core::load_draft`]. A message that is being sent
     /// cannot be taken back ([`ComposeError::WrongState`]).
     pub fn edit_outbox_item(&self, account_id: i64, outbox_id: u64) -> Result<i64, ComposeError> {
-        self.take_back(account_id, outbox_id, |handle, account, id| {
+        self.take_back(account_id, outbox_id, true, |handle, account, id| {
             handle.edit_back_to_draft(account, id).map(|_| ())
         })
     }
@@ -1792,7 +2005,7 @@ impl Core {
     /// Discard on a Queued or Failed message (the screen has asked first): the message and its
     /// draft are dropped, and so is the draft's copy on the server.
     pub fn discard_outbox_item(&self, account_id: i64, outbox_id: u64) -> Result<(), ComposeError> {
-        let draft_id = self.take_back(account_id, outbox_id, |handle, account, id| {
+        let draft_id = self.take_back(account_id, outbox_id, false, |handle, account, id| {
             handle.discard_send(account, id)
         })?;
         self.discard_draft(account_id, draft_id)
@@ -1905,14 +2118,16 @@ impl Core {
         &self,
         account_id: i64,
         outbox_id: u64,
+        rotate_id_if_tried: bool,
         act: impl FnOnce(&croft_engine::EngineHandle, i64, OutboxId) -> Result<(), OutboxActionError>,
     ) -> Result<i64, ComposeError> {
         let inner = &self.inner;
         let _actions = inner.compose.actions();
-        inner.compose_db(|conn| account_of(conn, account_id).map(|_| ()))?;
+        let acct = inner.compose_db(|conn| account_of(conn, account_id))?;
         let entry = inner
             .handle
             .outbox_entries(account_id)
+            .ok_or(ComposeError::Internal)?
             .into_iter()
             .find(|e| e.id == outbox_id)
             .ok_or(ComposeError::NoSuchOutboxItem)?;
@@ -1925,7 +2140,17 @@ impl Core {
             if draft.state == DraftState::Done {
                 return Err(ComposeError::NoSuchOutboxItem);
             }
-            drafts::unlink_outbox(conn, account_id, draft_id)?;
+            if rotate_id_if_tried && entry.attempts > 0 {
+                // The server may have taken this message already. The corrected one gets a new
+                // Message-ID, so that it is not taken for the old one (the Sent copy is found by
+                // Message-ID and would not be filed; a recipient's server may drop a repeat). The
+                // old id is kept only to delete the old draft copies on the server.
+                let (_, from) = sender_of(conn, &acct, draft.content.identity_id)?;
+                let fresh = mail::new_message_id(random()?, &from.address);
+                drafts::unlink_outbox_with_new_id(conn, account_id, draft_id, &fresh)?;
+            } else {
+                drafts::unlink_outbox(conn, account_id, draft_id)?;
+            }
             Ok(Taken { draft, entry })
         })?;
         match act(&inner.handle, account_id, outbox_id) {

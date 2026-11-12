@@ -172,12 +172,21 @@ impl StoredSettings {
     }
 
     /// True when the SMTP server saves the copy in Sent by itself (Gmail), so the core must not
-    /// add a second one. Only Gmail does: Microsoft's, iCloud's and Fastmail's SMTP servers leave
-    /// the copy to the client.
+    /// add a second one. Only Gmail's own submission servers do, and only for a Gmail account: the
+    /// SMTP host is exactly `smtp.gmail.com` or `smtp.googlemail.com` (cleaned like a connection's
+    /// host) **and** the IMAP host is Gmail's too. Another host under `gmail.com`
+    /// (`smtp-relay.gmail.com`, a relay that files nothing), or Gmail's SMTP next to another IMAP
+    /// server, is treated as a server that files nothing, so the copy is appended. A duplicate in
+    /// Sent is a smaller harm than none. Microsoft's, iCloud's and Fastmail's SMTP servers leave the
+    /// copy to the client.
     pub(crate) fn smtp_files_sent_itself(&self) -> bool {
-        self.smtp
-            .as_ref()
-            .is_some_and(|s| provider_for_host(&s.host) == Some(Provider::Gmail))
+        let Some(smtp) = &self.smtp else {
+            return false;
+        };
+        matches!(
+            clean_host(&smtp.host).as_str(),
+            "smtp.gmail.com" | "smtp.googlemail.com"
+        ) && provider_for_host(&self.imap.host) == Some(Provider::Gmail)
     }
 }
 
@@ -401,9 +410,25 @@ mod tests {
     }
 
     #[test]
-    fn only_gmails_smtp_server_saves_the_sent_copy_itself() {
+    fn only_gmails_smtp_server_of_a_gmail_account_saves_the_sent_copy_itself() {
         assert!(with_smtp("imap.gmail.com", "smtp.gmail.com", None).smtp_files_sent_itself());
-        assert!(with_smtp("x.example.org", "SMTP.GMAIL.COM.", None).smtp_files_sent_itself());
+        assert!(with_smtp("IMAP.Gmail.COM.", "SMTP.GMAIL.COM.", None).smtp_files_sent_itself());
+        assert!(with_smtp("imap.gmail.com", "smtp.googlemail.com", None).smtp_files_sent_itself());
+        // Another host under gmail.com, a relay: it files nothing.
+        for host in [
+            "smtp-relay.gmail.com",
+            "aspmx.l.google.com",
+            "smtp.gmail.com.evil.example",
+            "evil-smtp.gmail.com",
+            "gmail.com",
+        ] {
+            assert!(
+                !with_smtp("imap.gmail.com", host, None).smtp_files_sent_itself(),
+                "{host}"
+            );
+        }
+        // Gmail's SMTP next to another IMAP server (a hand-made record): not trusted to file.
+        assert!(!with_smtp("x.example.org", "smtp.gmail.com", None).smtp_files_sent_itself());
         for host in [
             "smtp.office365.com",
             "smtp.mail.me.com",
@@ -411,7 +436,7 @@ mod tests {
             "smtp.example.org",
         ] {
             assert!(
-                !with_smtp("x.example.org", host, None).smtp_files_sent_itself(),
+                !with_smtp("imap.gmail.com", host, None).smtp_files_sent_itself(),
                 "{host}"
             );
         }

@@ -654,3 +654,145 @@ fn a_header_is_read_unfolded_from_a_block_or_a_message() {
     assert!(header_value(raw, "Subject").is_none());
     assert_eq!(header_value("To: a@x\nCc: b@x\n", "cc").unwrap(), "b@x");
 }
+
+fn longest_line(text: &str) -> usize {
+    text.split("\r\n").map(str::len).max().unwrap_or(0)
+}
+
+/// RFC 5322 allows 998 octets in a line; Croft keeps the header lines it writes near 78.
+#[test]
+fn no_header_line_is_longer_than_the_limit_whatever_is_typed() {
+    // A subject of one unbroken word, with and without non-ASCII letters.
+    for word in [
+        "x".repeat(990),
+        "ü".repeat(450),
+        format!("{} {}", "y".repeat(300), "z".repeat(300)),
+    ] {
+        let text = build("body", |m| m.subject = &word);
+        let head = text.split("\r\n\r\n").next().unwrap();
+        assert!(longest_line(head) <= 78, "{}", longest_line(head));
+        // The subject comes back whole when its encoded words are read.
+        let value: String = head
+            .split("\r\n")
+            .skip_while(|l| !l.starts_with("Subject:"))
+            .take_while(|l| l.starts_with("Subject:") || l.starts_with(' '))
+            .map(|l| l.trim_start_matches("Subject:").trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut got = Vec::new();
+        for w in value.split(' ').filter(|w| w.starts_with("=?")) {
+            let b64 = w
+                .strip_prefix("=?UTF-8?B?")
+                .unwrap()
+                .strip_suffix("?=")
+                .unwrap();
+            got.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .unwrap(),
+            );
+        }
+        assert_eq!(String::from_utf8(got).unwrap(), word);
+    }
+    // A 120-letter non-ASCII file name: the encoded form is far longer than a line.
+    let name = "é".repeat(120);
+    let files = [AttachmentData {
+        name: &name,
+        mime_type: "application/pdf",
+        bytes: b"x",
+    }];
+    let text = build("body", |m| m.attachments = &files);
+    // The plain fallback name (up to 120 letters) cannot be folded, but nothing nears 998.
+    assert!(longest_line(&text) <= 998, "{}", longest_line(&text));
+    assert!(text
+        .split("\r\n")
+        .filter(|l| l.trim_start().starts_with("filename*"))
+        .all(|l| l.len() <= 78));
+    // The pieces put back together give the name.
+    let mut encoded = String::new();
+    for line in text.split("\r\n") {
+        let l = line.trim_start();
+        if let Some(rest) = l.strip_prefix("filename*") {
+            let (_, value) = rest.split_once('=').unwrap();
+            let value = value.trim_end_matches(';');
+            encoded.push_str(value.strip_prefix("UTF-8''").unwrap_or(value));
+        }
+    }
+    let mut bytes = Vec::new();
+    let raw = encoded.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' {
+            bytes.push(u8::from_str_radix(&encoded[i + 1..i + 3], 16).unwrap());
+            i += 3;
+        } else {
+            bytes.push(raw[i]);
+            i += 1;
+        }
+    }
+    assert_eq!(String::from_utf8(bytes).unwrap(), name);
+    // Many recipients with long names and a long reference list.
+    let to: Vec<Address> = (0..40)
+        .map(|i| {
+            addr(
+                Some(&"Önder ".repeat(30)),
+                &format!("person{i}@example.org"),
+            )
+        })
+        .collect();
+    let refs: Vec<String> = (0..300)
+        .map(|i| format!("<{i}{}@example.org>", "r".repeat(150)))
+        .collect();
+    let text = build("body", |m| {
+        m.to = &to;
+        m.references = &refs;
+    });
+    assert!(longest_line(text.split("\r\n\r\n").next().unwrap()) <= 998);
+}
+
+#[test]
+fn addresses_with_invisible_or_direction_changing_characters_are_invalid() {
+    for c in [
+        '\u{00A0}',
+        '\u{2028}',
+        '\u{2029}',
+        '\u{200B}',
+        '\u{200C}',
+        '\u{200D}',
+        '\u{200E}',
+        '\u{200F}',
+        '\u{202A}',
+        '\u{202B}',
+        '\u{202C}',
+        '\u{202D}',
+        '\u{202E}',
+        '\u{2060}',
+        '\u{2066}',
+        '\u{2067}',
+        '\u{2068}',
+        '\u{2069}',
+        '\u{FEFF}',
+        '\u{00AD}',
+        '\u{061C}',
+        '\u{3000}',
+        '\u{FE0F}',
+        '\u{E0041}',
+        '\u{0085}',
+    ] {
+        assert!(
+            !is_valid_address(&format!("a{c}b@example.org")),
+            "local {c:?}"
+        );
+        assert!(
+            !is_valid_address(&format!("ab@exa{c}mple.org")),
+            "domain {c:?}"
+        );
+        assert!(
+            !is_valid_address(&format!("{c}ab@example.org")),
+            "start {c:?}"
+        );
+    }
+    // Letters of other scripts are still fine.
+    assert!(is_valid_address("jörg@münchen.de"));
+    assert!(is_valid_address("用户@例え.jp"));
+}

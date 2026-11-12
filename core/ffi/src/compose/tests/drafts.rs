@@ -155,7 +155,10 @@ fn every_call_refuses_another_accounts_ids() {
     assert!(core.list_outbox(b).unwrap().is_empty());
     let gone = ComposeError::NoSuchOutboxItem;
     assert_eq!(core.undo_send(b, sent.outbox_id).unwrap_err(), gone);
-    assert_eq!(core.retry_outbox_item(b, sent.outbox_id).unwrap_err(), gone);
+    assert_eq!(
+        core.retry_outbox_item(b, sent.outbox_id, true).unwrap_err(),
+        gone
+    );
     assert_eq!(core.edit_outbox_item(b, sent.outbox_id).unwrap_err(), gone);
     assert_eq!(
         core.discard_outbox_item(b, sent.outbox_id).unwrap_err(),
@@ -410,6 +413,8 @@ fn an_attachment_from_a_path_reads_only_that_plain_file() {
         .unwrap()
         .id;
     let dir = tempfile::tempdir().unwrap();
+    core.set_attachment_directory(dir.path().display().to_string())
+        .unwrap();
     let file = dir.path().join("picked.bin");
     std::fs::write(&file, b"file bytes").unwrap();
     let add = |p: &Path| {
@@ -509,4 +514,140 @@ fn a_locked_draft_takes_no_attachments_and_no_edits() {
     );
     assert_eq!(core.send(a, id).unwrap_err(), ComposeError::InOutbox);
     assert_eq!(core.list_outbox(a).unwrap().len(), 1, "no second message");
+}
+
+/// The folder the app registers is the only place a file can be read from: not the database, not
+/// `/proc`, not a path with a link in it, not a pipe, not a file with two names.
+#[test]
+fn an_attachment_file_is_read_only_from_the_registered_folder() {
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    let a = block(core.add_demo_account()).unwrap().id;
+    let id = core
+        .save_draft(a, None, content(&["b@example.org"], "s", "b"))
+        .unwrap()
+        .id;
+    let add = |p: &Path| {
+        block(core.add_draft_attachment_file(
+            a,
+            id,
+            p.display().to_string(),
+            "f.bin".into(),
+            "a/b".into(),
+        ))
+    };
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let attach = cache.join("attach");
+    std::fs::create_dir_all(attach.join("sub")).unwrap();
+    std::fs::write(attach.join("ok.bin"), b"fine").unwrap();
+    std::fs::write(attach.join("sub").join("deep.bin"), b"deeper").unwrap();
+    std::fs::write(cache.join("outside.bin"), b"outside").unwrap();
+
+    // Nothing is read before the app has registered a folder.
+    assert_eq!(
+        add(&attach.join("ok.bin")).unwrap_err(),
+        ComposeError::NoAttachmentDirectory
+    );
+    // The folder must be absolute, existing, a folder, and not hold the database.
+    for bad in [
+        "relative/dir".to_owned(),
+        attach.join("missing").display().to_string(),
+        attach.join("ok.bin").display().to_string(),
+        format!("{}/../cache", attach.display()),
+        db.path.parent().unwrap().display().to_string(),
+        "/".to_owned(),
+    ] {
+        assert_eq!(
+            core.set_attachment_directory(bad.clone()).unwrap_err(),
+            ComposeError::BadAttachmentDirectory,
+            "{bad}"
+        );
+    }
+    core.set_attachment_directory(attach.display().to_string())
+        .unwrap();
+
+    // Inside: a file, and one in a sub-folder.
+    assert_eq!(add(&attach.join("ok.bin")).unwrap().size_bytes, 4);
+    assert_eq!(
+        add(&attach.join("sub").join("deep.bin"))
+            .unwrap()
+            .size_bytes,
+        6
+    );
+
+    // Outside the folder: a sibling, the parent, the database, the files of /proc.
+    let refused = ComposeError::AttachmentUnreadable;
+    assert_eq!(add(&cache.join("outside.bin")).unwrap_err(), refused);
+    assert_eq!(add(&db.path).unwrap_err(), refused);
+    assert_eq!(add(Path::new("/proc/self/environ")).unwrap_err(), refused);
+    assert_eq!(
+        add(Path::new("/proc/self/root/etc/hostname")).unwrap_err(),
+        refused
+    );
+    assert_eq!(add(Path::new("/etc/hostname")).unwrap_err(), refused);
+    // `..` out of the folder, and a name that only starts like the folder.
+    assert_eq!(
+        add(&attach.join("..").join("outside.bin")).unwrap_err(),
+        refused
+    );
+    let twin = cache.join("attach-twin");
+    std::fs::create_dir_all(&twin).unwrap();
+    std::fs::write(twin.join("x.bin"), b"x").unwrap();
+    assert_eq!(add(&twin.join("x.bin")).unwrap_err(), refused);
+    // The folder itself, and a sub-folder, are not files.
+    assert_eq!(add(&attach).unwrap_err(), refused);
+    assert_eq!(add(&attach.join("sub")).unwrap_err(), refused);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        // A link as the file, to a file inside and to one outside.
+        symlink(attach.join("ok.bin"), attach.join("link-in")).unwrap();
+        symlink(cache.join("outside.bin"), attach.join("link-out")).unwrap();
+        assert_eq!(add(&attach.join("link-in")).unwrap_err(), refused);
+        assert_eq!(add(&attach.join("link-out")).unwrap_err(), refused);
+        // A link anywhere in the path: a folder inside pointing at a folder inside, one pointing
+        // outside, and one pointing at the root of the system.
+        symlink(attach.join("sub"), attach.join("sub-link")).unwrap();
+        symlink(&cache, attach.join("cache-link")).unwrap();
+        symlink("/", attach.join("root-link")).unwrap();
+        assert_eq!(
+            add(&attach.join("sub-link").join("deep.bin")).unwrap_err(),
+            refused
+        );
+        assert_eq!(
+            add(&attach.join("cache-link").join("outside.bin")).unwrap_err(),
+            refused
+        );
+        assert_eq!(
+            add(&attach.join("root-link").join("etc").join("hostname")).unwrap_err(),
+            refused
+        );
+        // A pipe: refused at once, never waited for.
+        let fifo = attach.join("pipe");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if made.is_ok_and(|s| s.success()) {
+            let started = std::time::Instant::now();
+            assert_eq!(add(&fifo).unwrap_err(), refused);
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "waited for a pipe"
+            );
+        }
+        // A file with two names: both are refused.
+        std::fs::hard_link(attach.join("ok.bin"), attach.join("ok-twin.bin")).unwrap();
+        assert_eq!(add(&attach.join("ok.bin")).unwrap_err(), refused);
+        assert_eq!(add(&attach.join("ok-twin.bin")).unwrap_err(), refused);
+    }
+    // Too large is refused from the size, before the file is read.
+    let big = attach.join("big.bin");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(MAX_ATTACHMENT_BYTES + 1)
+        .unwrap();
+    assert_eq!(add(&big).unwrap_err(), ComposeError::AttachmentTooLarge);
+    // Nothing but the two good files was added.
+    assert_eq!(core.load_draft(a, id).unwrap().attachments.len(), 2);
 }

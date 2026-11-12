@@ -58,6 +58,11 @@ zeroize = "1.9.1"
 # Only with the `test-server` feature (test builds of the host library); see that feature.
 croft-test-support = { path = "../test-support", optional = true }
 
+# Only for the flag values of `open(2)` (O_NOFOLLOW, O_NONBLOCK) when a file is read for an attachment;
+# no `unsafe` is used.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [dev-dependencies]
 # `test-fakes`: recording stand-ins for DNS and HTTPS, so discovery is tested without a network.
 croft-protocols = { path = "../protocols", features = ["test-fakes"] }

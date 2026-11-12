@@ -64,6 +64,39 @@ const MAX_ADDRESS_BYTES: usize = 254;
 /// The longest local part (RFC 5321).
 const MAX_LOCAL_BYTES: usize = 64;
 
+/// True for a character that has no place in an address: a control character, any Unicode white
+/// space (`U+00A0`, `U+2028`, ...), and the invisible and direction-changing format characters
+/// (zero-width space and joiners `U+200B` to `U+200F`, the embeddings and overrides `U+202A` to
+/// `U+202E`, the word joiner and invisible operators `U+2060` to `U+2064`, the isolates `U+2066` to
+/// `U+2069`, the deprecated format characters `U+206A` to `U+206F`, the soft hyphen, the Arabic
+/// letter mark, the Mongolian free variation selectors and vowel separator, the Hangul fillers,
+/// variation selectors, the byte order mark, the interlinear annotation marks and the tag
+/// characters). They make an address look like another one, or let it change how the text around
+/// it is shown. Full IDNA (punycode, normalisation) is not done: a domain with non-ASCII letters is
+/// passed on as typed, and the server needs `SMTPUTF8` for it.
+fn is_invisible(c: char) -> bool {
+    c.is_control()
+        || c.is_whitespace()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{034F}'
+                | '\u{061C}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{17B4}'..='\u{17B5}'
+                | '\u{180B}'..='\u{180F}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E0FFF}'
+        )
+}
+
 /// True when `address` is something a server could deliver to: one `@`, a local part of dot-separated
 /// words (no spaces, quotes, brackets or other specials) and a domain of dot-separated labels. A
 /// single-label domain (`alice@localhost`) is allowed (private servers use them). Non-ASCII letters
@@ -83,8 +116,7 @@ pub fn is_valid_address(address: &str) -> bool {
     let local_ok = local.split('.').all(|word| {
         !word.is_empty()
             && word.chars().all(|c| {
-                !c.is_control()
-                    && !c.is_whitespace()
+                !is_invisible(c)
                     && !matches!(
                         c,
                         '(' | ')' | '<' | '>' | '[' | ']' | ':' | ';' | '@' | '\\' | ',' | '"'
@@ -99,7 +131,7 @@ pub fn is_valid_address(address: &str) -> bool {
                 && !label.ends_with('-')
                 && label
                     .chars()
-                    .all(|c| c == '-' || c.is_alphanumeric() || (!c.is_ascii() && !c.is_control()))
+                    .all(|c| c == '-' || c.is_alphanumeric() || (!c.is_ascii() && !is_invisible(c)))
         });
     local_ok && domain_ok
 }
@@ -223,12 +255,17 @@ fn clean_text(text: &str) -> String {
 
 /// The longest line a header is folded to, including the field name.
 const FOLD_AT: usize = 76;
+/// The longest word that is sent as it is in a header; a longer one (an unbroken run of letters)
+/// becomes encoded words, so no line is longer than the limit of 998 octets (RFC 5322).
+const MAX_PLAIN_WORD: usize = 70;
 
 /// `text` as header text: unchanged when it is printable ASCII, else RFC 2047 encoded words
 /// (UTF-8, base64), one per continuation line, each at most 75 characters.
 fn encode_text(text: &str) -> String {
     let text = clean_text(text);
-    if text.is_ascii() {
+    // A word that cannot be folded would make a line longer than the limit: such text is sent as
+    // encoded words too, which can be cut anywhere.
+    if text.is_ascii() && text.split(' ').all(|w| w.len() <= MAX_PLAIN_WORD) {
         return text;
     }
     // 45 bytes of text make 60 characters of base64: with the 12 of `=?UTF-8?B?` and `?=` that is
@@ -690,13 +727,70 @@ fn attachment_headers(a: &AttachmentData<'_>) -> String {
         .map(|c| if c.is_ascii() { c } else { '_' })
         .collect();
     let mime = clean_mime_type(a.mime_type);
-    let mut filename = format!("filename=\"{ascii}\"");
+    let mut disposition = vec![format!("filename=\"{ascii}\"")];
     if !name.is_ascii() {
-        filename.push_str(&format!("; filename*=UTF-8''{}", percent_encode(&name)));
+        // RFC 2231: a long value is cut into numbered pieces, each on a line of its own, so no
+        // line is longer than the limit (the encoded name of 120 letters can be 1440 characters).
+        let encoded = percent_encode(&name);
+        let pieces = split_encoded(&encoded, 50);
+        if pieces.len() == 1 {
+            disposition.push(format!("filename*=UTF-8''{encoded}"));
+        } else {
+            for (i, piece) in pieces.iter().enumerate() {
+                let charset = if i == 0 { "UTF-8''" } else { "" };
+                disposition.push(format!("filename*{i}*={charset}{piece}"));
+            }
+        }
     }
     format!(
-        "Content-Type: {mime}; name=\"{ascii}\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; {filename}\r\n"
+        "{}\r\nContent-Transfer-Encoding: base64\r\n{}\r\n",
+        with_params(
+            &format!("Content-Type: {mime}"),
+            &[format!("name=\"{ascii}\"")]
+        ),
+        with_params("Content-Disposition: attachment", &disposition)
     )
+}
+
+/// `head; param; param`, each parameter on the same line while it fits and on a continuation line
+/// when it does not.
+fn with_params(head: &str, params: &[String]) -> String {
+    let mut out = head.to_owned();
+    let mut line_len = head.len();
+    for p in params {
+        if line_len + 2 + p.len() > FOLD_AT {
+            out.push_str(";\r\n ");
+            line_len = 1;
+        } else {
+            out.push_str("; ");
+            line_len += 2;
+        }
+        out.push_str(p);
+        line_len += p.len();
+    }
+    out
+}
+
+/// Cuts a percent-encoded value into pieces of at most `max` characters without splitting a
+/// `%XX` triplet.
+fn split_encoded(encoded: &str, max: usize) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let bytes = encoded.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() {
+        let mut end = (start + max).min(bytes.len());
+        if end < bytes.len() {
+            // Do not end inside `%XX`.
+            if bytes[end - 1] == b'%' {
+                end -= 1;
+            } else if end >= 2 && bytes[end - 2] == b'%' {
+                end -= 2;
+            }
+        }
+        pieces.push(&encoded[start..end]);
+        start = end;
+    }
+    pieces
 }
 
 /// `type/subtype` when `text` is one (letters, digits and `+.-_` only), else `application/octet-stream`.

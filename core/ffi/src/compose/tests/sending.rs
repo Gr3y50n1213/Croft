@@ -51,10 +51,15 @@ fn a_message_is_delivered_once_filed_in_sent_and_its_draft_is_finished() {
         text.contains("From: Alice Example <alice@example.org>\r\n"),
         "{text}"
     );
+    // No Bcc header, and the hidden recipient appears nowhere in the message. (Not a search for the
+    // letters "bcc": the random hex of the Message-ID can contain them.)
+    let head = text.split("\r\n\r\n").next().unwrap();
     assert!(
-        !text.to_lowercase().contains("bcc") && !text.contains("hidden@example.org"),
+        head.split("\r\n")
+            .all(|l| !l.to_ascii_lowercase().starts_with("bcc:")),
         "{text}"
     );
+    assert!(!text.contains("hidden@example.org"), "{text}");
 
     // The copy in Sent, once.
     wait_until("the copy in Sent", || m.imap.messages("Sent").len() == 1);
@@ -140,9 +145,15 @@ fn undo_inside_the_window_sends_nothing_and_returns_the_draft() {
     let m = Mail::new();
     m.core().set_undo_window_ms(60_000);
     let id = m.draft("Oops");
+    let before = m.core().load_draft(m.account, id).unwrap().message_id;
     let started = m.core().send(m.account, id).unwrap();
     let back = m.core().undo_send(m.account, started.outbox_id).unwrap();
     assert_eq!(back, id);
+    // Nothing reached the server, so the draft keeps its Message-ID.
+    assert_eq!(
+        m.core().load_draft(m.account, id).unwrap().message_id,
+        before
+    );
     assert!(m.core().list_outbox(m.account).unwrap().is_empty());
     let d = m.core().load_draft(m.account, id).unwrap();
     assert_eq!(d.outbox_id, None);
@@ -251,7 +262,9 @@ fn a_refused_message_fails_with_a_reason_and_can_be_retried_edited_or_discarded(
     assert!(!outbox_reason_default_message(OutboxReason::RecipientRefused).contains('@'));
     // Retry once the server is fine: sent once.
     m.smtp.clear_reply(Stage::RcptTo);
-    m.core().retry_outbox_item(m.account, item.id).unwrap();
+    m.core()
+        .retry_outbox_item(m.account, item.id, false)
+        .unwrap();
     wait_until("sent after retry", || m.accepted() == 1);
     stays(400, || m.accepted() == 1);
     wait_until("outbox empty", || {
@@ -326,8 +339,19 @@ fn a_message_the_server_may_have_taken_is_never_sent_again_by_itself() {
     stays(900, || m.accepted() == 1);
     let item = first_outbox(&m);
     assert!(item.may_have_been_sent && item.state == OutboxItemState::Failed);
-    // Only the person's own Retry sends it again, once.
-    m.core().retry_outbox_item(m.account, item.id).unwrap();
+    // Retry is refused until the person has confirmed that the message may already have been sent.
+    assert_eq!(
+        m.core()
+            .retry_outbox_item(m.account, item.id, false)
+            .unwrap_err(),
+        ComposeError::NeedsConfirmation
+    );
+    stays(300, || m.accepted() == 1);
+    assert_eq!(first_outbox(&m).state, OutboxItemState::Failed);
+    // Only the person's own Retry anyway sends it again, once.
+    m.core()
+        .retry_outbox_item(m.account, item.id, true)
+        .unwrap();
     wait_until("the retry", || m.accepted() == 2);
     stays(500, || m.accepted() == 2);
 }
@@ -754,4 +778,179 @@ fn the_pacing_of_copies_to_the_server_can_be_shortened_for_tests_and_forced_by_t
         assert_eq!(drafts_on_server(&m).len(), 1);
     }
     assert!(drafts_on_server(&m)[0].raw.contains("edit 2"));
+}
+
+fn message_id_of(data: &[u8]) -> String {
+    String::from_utf8_lossy(data)
+        .lines()
+        .find_map(|l| l.strip_prefix("Message-ID: "))
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
+/// A message the server may have taken is edited and sent again: the corrected one must not look like
+/// the old one (the copy in Sent is found by Message-ID and would not be filed; a recipient's
+/// server may drop a repeat), and the old draft copy on the server must go.
+#[test]
+fn editing_a_message_that_may_have_been_sent_gives_the_draft_a_new_message_id() {
+    let m = Mail::new();
+    let id = m.draft("Maybe sent");
+    let old = m.core().load_draft(m.account, id).unwrap().message_id;
+    assert_eq!(
+        block(m.core().sync_draft_to_server(m.account, id, true)).unwrap(),
+        DraftSyncOutcome::Saved
+    );
+    assert!(drafts_on_server(&m)[0].raw.contains(&old));
+
+    m.smtp.set_misbehavior(SmtpMisbehavior::AcceptThenDrop);
+    m.core().send(m.account, id).unwrap();
+    wait_until("may have been sent", || {
+        m.core()
+            .list_outbox(m.account)
+            .unwrap()
+            .first()
+            .is_some_and(|i| i.may_have_been_sent)
+    });
+    m.smtp.set_misbehavior(SmtpMisbehavior::None);
+    let first = message_id_of(&m.smtp.accepted()[0].data);
+    assert_eq!(
+        first, old,
+        "the message that went out carries the draft's id"
+    );
+
+    // Edit: back to the draft, with a new Message-ID.
+    let item = first_outbox(&m);
+    assert_eq!(m.core().edit_outbox_item(m.account, item.id).unwrap(), id);
+    let edited = m.core().load_draft(m.account, id).unwrap();
+    assert_ne!(edited.message_id, old);
+    assert!(edited.message_id.starts_with('<') && edited.message_id.ends_with("@example.org>"));
+    m.core()
+        .save_draft(
+            m.account,
+            Some(id),
+            content(&["bob@example.org"], "Maybe sent", "Corrected text"),
+        )
+        .unwrap();
+    // The copy on the server is replaced under the new id, and the old one is gone.
+    assert_eq!(
+        block(m.core().sync_draft_to_server(m.account, id, true)).unwrap(),
+        DraftSyncOutcome::Saved
+    );
+    let on_server = drafts_on_server(&m);
+    assert_eq!(on_server.len(), 1, "{}", on_server.len());
+    assert!(on_server[0].raw.contains(&edited.message_id) && !on_server[0].raw.contains(&old));
+    assert!(on_server[0].raw.contains("Corrected text"));
+
+    // Sent again: a message with the new id, and its copy is filed in Sent (the first was never
+    // filed: it was not known to be sent).
+    m.core().send(m.account, id).unwrap();
+    wait_until("the corrected message is sent", || m.accepted() == 2);
+    let second = message_id_of(&m.smtp.accepted()[1].data);
+    assert_eq!(second, edited.message_id);
+    assert_ne!(second, first);
+    wait_until("filed in Sent under the new id", || {
+        let sent = m.imap.messages("Sent");
+        sent.len() == 1 && sent[0].raw.contains(&second)
+    });
+    wait_until("draft and its copy gone", || {
+        m.core().list_drafts(m.account).unwrap().is_empty() && drafts_on_server(&m).is_empty()
+    });
+}
+
+/// A message queued together with its draft, and the app dying before the draft was marked: when
+/// the account runs again and sends it, the draft must not be left behind as an editable draft of a
+/// message that went out. The check runs before any account starts.
+#[test]
+fn a_crash_between_the_outbox_write_and_the_draft_mark_never_leaves_an_editable_draft_of_a_sent_message(
+) {
+    let mut m = Mail::new();
+    m.core().set_undo_window_ms(60_000);
+    let id = m.draft("Sent after a crash");
+    let message_id = m.core().load_draft(m.account, id).unwrap().message_id;
+    let mime = format!(
+        "From: alice@example.org\r\nTo: bob@example.org\r\nSubject: Sent after a crash\r\nMessage-ID: {message_id}\r\n\r\nbody\r\n"
+    );
+    // What `send` does, stopped after the Outbox write and before the draft is marked.
+    m.core()
+        .inner
+        .handle
+        .send(
+            croft_engine::NewMessage {
+                account: m.account,
+                identity: None,
+                draft: Some(id),
+                envelope_from: "alice@example.org".into(),
+                recipients: vec!["bob@example.org".into()],
+            },
+            mime.into_bytes(),
+        )
+        .unwrap();
+    m.kill();
+    // The Undo window is over by the time the app is back: the message is due at once.
+    {
+        let c = rusqlite::Connection::open(&m.db.path).unwrap();
+        c.execute("UPDATE outbox SET send_at = 0", []).unwrap();
+        // The state the crash left: the Outbox row is there, the draft was not marked. (The
+        // check that follows a send may have marked it before the kill; put it back.)
+        c.execute(
+            "UPDATE draft SET state = 'draft', outbox_id = NULL WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    }
+    m.reopen();
+    // The draft is locked from the first moment (before the account could send anything), and it
+    // is finished, never left as an editable draft, once the message is out.
+    let state = |m: &Mail| -> Option<String> {
+        let c = rusqlite::Connection::open(&m.db.path).unwrap();
+        c.query_row("SELECT state FROM draft WHERE id = ?1", [id], |r| r.get(0))
+            .ok()
+    };
+    assert_ne!(state(&m).as_deref(), Some("draft"));
+    wait_until("sent", || m.accepted() == 1);
+    wait_until("filed in Sent", || m.imap.messages("Sent").len() == 1);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while state(&m).is_some_and(|s| s != "done") {
+        assert_ne!(
+            state(&m).as_deref(),
+            Some("draft"),
+            "an editable draft of a sent message"
+        );
+        assert!(Instant::now() < deadline, "the draft was never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    wait_until("draft gone", || {
+        m.core().list_drafts(m.account).unwrap().is_empty()
+    });
+    assert_eq!(m.accepted(), 1);
+}
+
+/// The copy of a draft was made on the server but never recorded (a failure, a crash): the draft
+/// had noted the folder before the copy, so discarding it still deletes the copy.
+#[test]
+fn a_server_copy_that_was_never_recorded_is_deleted_when_the_draft_is_discarded() {
+    let m = Mail::new();
+    let id = m.draft("Unrecorded copy");
+    let message_id = m.core().load_draft(m.account, id).unwrap().message_id;
+    m.imap.add_message_with_flags(
+        "Drafts",
+        &format!(
+            "From: alice@example.org\r\nSubject: Unrecorded copy\r\nMessage-ID: {message_id}\r\n\r\nbody\r\n"
+        ),
+        &["\\Draft"],
+    );
+    {
+        // What the core writes before it appends: the folder, and nothing else.
+        let d = Db::open(&m.db.path, None).unwrap();
+        assert!(
+            croft_storage::drafts::plan_server_copy(d.connection(), m.account, id, "Drafts")
+                .unwrap()
+        );
+    }
+    assert_eq!(drafts_on_server(&m).len(), 1);
+    m.core().discard_draft(m.account, id).unwrap();
+    wait_until("the unrecorded copy is deleted", || {
+        drafts_on_server(&m).is_empty()
+    });
 }

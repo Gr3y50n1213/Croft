@@ -712,7 +712,7 @@ impl Core {
             handle,
             hub,
             provider: credentials,
-            compose: Compose::new(compose_db, rt.clone()),
+            compose: Compose::new(compose_db, rt.clone(), path.to_path_buf()),
             backends: Mutex::new(HashMap::new()),
             demos: Mutex::new(HashMap::new()),
             account_changes: tokio::sync::Mutex::new(()),
@@ -721,6 +721,14 @@ impl Core {
         });
 
         watch_outbox(&inner, outbox_changes);
+        // Before any account runs: a message that was queued with its draft and whose draft was not
+        // marked (a crash in between) must find its draft locked first. Once an account's task
+        // runs, such a message can be sent and gone, and its draft would look like an unsent one.
+        for account in inner.account_ids()? {
+            if inner.reconcile(account).is_err() {
+                log::warn!("account {account}: could not settle drafts at start");
+            }
+        }
         let stored = inner.handle.read(|db| accounts::list(db.connection()))?;
         for account in stored {
             if is_demo(&account.config, &account.email) {

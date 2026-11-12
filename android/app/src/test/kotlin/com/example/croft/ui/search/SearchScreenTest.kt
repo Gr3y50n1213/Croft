@@ -8,7 +8,6 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyDescendant
-import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -140,8 +139,7 @@ class SearchScreenTest {
         rule.onNodeWithText("No results for “lunch nothing”").assertExists()
         rule.waitForIdle()
         val before = backend.calls.count { it == "server:null:lunch nothing" }
-        rule.onNodeWithTag(SearchTags.SERVER_BUTTON, useUnmergedTree = true).assertExists()
-        rule.onNode(hasClickAction() and hasAnyDescendant(hasText("Search server"))).performSemanticsAction(SemanticsActions.OnClick)
+        rule.onNodeWithTag(SearchTags.SERVER_BUTTON).performClick()
         waitOrExplain(c, backend) { backend.calls.count { it == "server:null:lunch nothing" } > before }
     }
 

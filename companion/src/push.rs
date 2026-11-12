@@ -112,7 +112,21 @@ async fn watch_loop(app: App, user_id: i64, epoch: u64, weak: Weak<Core>) {
         if !current.is_some_and(|c| Arc::ptr_eq(&c, &core)) {
             break;
         }
-        match tokio::time::timeout(CHECK_EVERY, core.next_change(after)).await {
+        let mut closing = match app.mail.as_ref() {
+            Some(m) => m.closing(),
+            None => break,
+        };
+        closing.mark_unchanged();
+        let changed = tokio::select! {
+            r = tokio::time::timeout(CHECK_EVERY, core.next_change(after)) => Some(r),
+            // A core is being closed: let this one go at once (it may be the one).
+            _ = closing.changed() => None,
+        };
+        let Some(changed) = changed else {
+            drop(core);
+            continue;
+        };
+        match changed {
             Err(_) => continue,
             Ok(Err(_)) => {
                 drop(core);

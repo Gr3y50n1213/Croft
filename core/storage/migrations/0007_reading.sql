@@ -26,9 +26,13 @@ ALTER TABLE message_body ADD COLUMN remote_blocked   INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE message_body ADD COLUMN trackers_removed INTEGER NOT NULL DEFAULT 0;
 -- 1 when a body was cut at a limit (too long, too many parts, HTML too deep).
 ALTER TABLE message_body ADD COLUMN truncated        INTEGER NOT NULL DEFAULT 0;
--- 1 when the HTML was not rendered (past the sanitiser's limits or its deadline): later opens show
--- the text and never try the HTML again.
+-- 1 when the HTML is too complex to render (the parser's work budget ran out, or a size limit):
+-- later opens show the text and never try the HTML again. Never set for a missed deadline.
 ALTER TABLE message_body ADD COLUMN too_complex      INTEGER NOT NULL DEFAULT 0;
+-- 1 when the HTML was not rendered this time for a reason that says nothing about the message (the
+-- sanitiser was busy with another message, or its deadline passed on a loaded device): the text is
+-- shown, and the next open tries the HTML again.
+ALTER TABLE message_body ADD COLUMN html_pending     INTEGER NOT NULL DEFAULT 0;
 
 -- attachment.part_id is the part's number in the stored message (croft-reader's numbering).
 ALTER TABLE attachment ADD COLUMN content_id   TEXT;

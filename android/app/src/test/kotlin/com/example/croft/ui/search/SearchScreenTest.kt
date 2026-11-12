@@ -62,8 +62,13 @@ class SearchScreenTest {
 
     /** Waits for [cond]; on a timeout the failure says what the controller and the backend saw. */
     private fun waitOrExplain(c: SearchController, backend: FakeSearchBackend, cond: () -> Boolean) {
+        // The condition reads the fake backend only, so each pass lets the main thread run its queued work first (the
+        // controller's coroutines run there); a condition on the screen would do that by itself.
         try {
-            rule.waitUntil(20_000, cond)
+            rule.waitUntil(20_000) {
+                rule.waitForIdle()
+                cond()
+            }
         } catch (e: Throwable) {
             throw AssertionError("state=${c.state.value.copy(hits = emptyList())} hits=${c.state.value.hits.size} calls=${backend.calls}", e)
         }

@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::time::Duration;
 
 use mail_parser::{Message, MessageParser, MessagePart, MessageRef, PartFlags, PartKind};
 
@@ -35,6 +36,16 @@ pub const MAX_HTML_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_INLINE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// Most bytes of inline images drawn inside one message (15 MiB).
 pub const MAX_INLINE_TOTAL_BYTES: usize = 15 * 1024 * 1024;
+/// How long sanitising one message may take. Past it the message is shown as text (the
+/// sanitiser keeps running on its own thread until it ends, holding only that message, and its
+/// result is thrown away). Every known slow input is refused earlier by [`crate::shape`]; this
+/// bounds the ones nobody has found yet to one attempt of this length. Debug builds (tests) are
+/// about ten times slower and get ten times as long.
+pub const SANITIZE_DEADLINE: Duration = if cfg!(debug_assertions) {
+    Duration::from_secs(30)
+} else {
+    Duration::from_secs(3)
+};
 /// Most bytes of the header block kept (for "Show original" headers and search).
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 /// Characters in a list preview.
@@ -160,6 +171,11 @@ pub struct Rendered {
     pub attachments: Vec<Attachment>,
     /// True when something was cut: a body over its limit, or more parts than [`MAX_PARTS`].
     pub truncated: bool,
+    /// True when the HTML was not rendered: past the sanitiser's limits, over
+    /// [`crate::sanitize::MAX_SANITIZED_MARKUP_BYTES`], or not done within [`SANITIZE_DEADLINE`].
+    /// `html` is then `None`, `text` has the message's text, and `truncated` is set. Store it, so
+    /// that later opens do not try again.
+    pub too_complex: bool,
 }
 
 impl fmt::Debug for Rendered {
@@ -195,6 +211,49 @@ fn parse_checked(raw: &[u8]) -> Result<Message<'_>, ParseError> {
 /// [`Rendered::blocked_remote`]; with it true they are kept (`https` only). Everything else the
 /// sanitiser removes is removed in both modes.
 pub fn render(raw: &[u8], remote_allowed: bool) -> Result<Rendered, ParseError> {
+    render_with(
+        raw,
+        remote_allowed,
+        SANITIZE_DEADLINE,
+        sanitize::sanitize_html,
+    )
+}
+
+/// The sanitiser `render` runs, as a plain function (a test can pass a slow one).
+pub type Sanitizer = fn(&str, bool, &HashMap<String, InlineImage>) -> sanitize::Sanitized;
+
+/// Runs `sanitizer` on its own thread and waits at most `deadline` for it. `None` when it did not
+/// finish in time (or the thread could not be started): the caller shows the text.
+fn sanitize_within(
+    html: String,
+    remote_allowed: bool,
+    images: HashMap<String, InlineImage>,
+    deadline: Duration,
+    sanitizer: Sanitizer,
+) -> Option<sanitize::Sanitized> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let started = std::thread::Builder::new()
+        .name("croft-sanitize".into())
+        .spawn(move || {
+            let out = sanitizer(&html, remote_allowed, &images);
+            // The receiver is gone when the deadline passed: the result is dropped.
+            let _ = tx.send(out);
+        });
+    if started.is_err() {
+        return None;
+    }
+    rx.recv_timeout(deadline).ok()
+}
+
+/// [`render`] with another deadline and sanitiser. For tests: the deadline path is checked with
+/// a sanitiser that is slow on purpose.
+#[doc(hidden)]
+pub fn render_with(
+    raw: &[u8],
+    remote_allowed: bool,
+    deadline: Duration,
+    sanitizer: Sanitizer,
+) -> Result<Rendered, ParseError> {
     let message = parse_checked(raw)?;
     let root = message.root();
     let mut out = Rendered {
@@ -266,11 +325,16 @@ pub fn render(raw: &[u8], remote_allowed: bool) -> Result<Rendered, ParseError> 
             }
         }
         let images = inline_images(&message);
-        let clean = sanitize::sanitize_html(&html, remote_allowed, &images);
+        let clean = sanitize_within(html.clone(), remote_allowed, images, deadline, sanitizer)
+            .unwrap_or_else(|| sanitize::Sanitized {
+                too_complex: true,
+                ..sanitize::Sanitized::default()
+            });
         out.blocked_remote = clean.blocked_remote;
         out.trackers_removed = clean.trackers_removed;
         shown = clean.cids_used;
         if clean.too_complex {
+            out.too_complex = true;
             // Shown as text: the plain text body, else the HTML converted to text.
             out.truncated = true;
             if out.text.is_none() {

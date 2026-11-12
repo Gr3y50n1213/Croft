@@ -24,16 +24,20 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "app",
     "appimage",
     "application",
+    "appref-ms",
     "appx",
     "appxbundle",
     "bat",
     "bin",
     "cab",
     "chm",
+    "cjs",
     "cmd",
     "com",
+    "command",
     "cpl",
     "deb",
+    "desktop",
     "dex",
     "dll",
     "dmg",
@@ -47,15 +51,18 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "img",
     "inf",
     "ins",
+    "iqy",
     "iso",
     "isp",
     "jar",
+    "jnlp",
     "js",
     "jse",
     "ksh",
     "lnk",
     "mht",
     "mhtml",
+    "mjs",
     "msc",
     "msi",
     "msix",
@@ -74,15 +81,18 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "psc1",
     "psm1",
     "py",
+    "pyw",
     "reg",
     "rpm",
     "run",
     "scf",
     "scr",
     "sct",
+    "settingcontent-ms",
     "sh",
     "shb",
     "shtml",
+    "slk",
     "svg",
     "svgz",
     "sys",
@@ -97,6 +107,7 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "wsf",
     "wsh",
     "xapk",
+    "xbap",
     "xht",
     "xhtml",
     "xlam",
@@ -147,16 +158,25 @@ fn reserved(stem: &str) -> bool {
     )
 }
 
-/// Characters that only change how text is shown, or show as nothing: bidirectional controls,
-/// zero-width characters, the soft hyphen, and the blank-looking fillers (Braille blank, Hangul
-/// fillers). Removed from names so what the person sees is what the name is, and so
+/// Characters that only change how text is shown, or show as nothing: every Unicode format
+/// character (general category Cf: bidirectional controls, zero-width characters, the soft
+/// hyphen, the invisible operators, interlinear annotation marks, musical formatting, the tag
+/// characters), and the blank-looking fillers and modifiers (Braille blank, Hangul fillers,
+/// combining grapheme joiner, Khmer inherent vowels, Mongolian vowel separator, variation
+/// selectors). Removed from names so what the person sees is what the name is, and so
 /// `report.exe\u{2800}` cannot hide its real extension.
 fn invisible(c: char) -> bool {
     matches!(c,
-        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}' | '\u{180E}' | '\u{00AD}'
+        // Cf, Unicode 15.1 (the whole list).
+        '\u{00AD}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' | '\u{070F}'
+        | '\u{0890}'..='\u{0891}' | '\u{08E2}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}' | '\u{110BD}' | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E007F}'
+        // Blank-looking characters and modifiers that are not Cf.
         | '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{2800}'
-        | '\u{3164}' | '\u{FFA0}' | '\u{FE00}'..='\u{FE0F}')
+        | '\u{3164}' | '\u{FFA0}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}')
 }
 
 /// An extension for a nameless part of this type.
@@ -351,6 +371,47 @@ mod tests {
             let safe = safe_file_name(Some(&format!("photo.exe{blank}")), "image/jpeg");
             assert_eq!(safe, "photo.exe", "{blank:?}");
             assert!(is_executable(&safe, "image/jpeg"));
+        }
+    }
+
+    #[test]
+    fn every_format_character_is_removed() {
+        for c in [
+            '\u{206A}',
+            '\u{206F}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{1D173}',
+            '\u{1D17A}',
+            '\u{E0001}',
+            '\u{E0041}',
+            '\u{E007F}',
+            '\u{0600}',
+            '\u{13430}',
+            '\u{E0100}',
+        ] {
+            let safe = safe_file_name(Some(&format!("a{c}b.exe{c}")), "image/png");
+            assert_eq!(safe, "ab.exe", "{c:?}");
+            assert!(is_executable(&safe, "image/png"));
+        }
+    }
+
+    #[test]
+    fn launchers_and_scripting_formats_are_blocked() {
+        for name in [
+            "a.jnlp",
+            "a.xbap",
+            "a.pyw",
+            "a.mjs",
+            "a.cjs",
+            "a.desktop",
+            "a.command",
+            "a.appref-ms",
+            "a.settingcontent-ms",
+            "a.iqy",
+            "a.slk",
+        ] {
+            assert!(is_executable(name, "application/octet-stream"), "{name}");
         }
     }
 

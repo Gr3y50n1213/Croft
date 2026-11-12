@@ -271,6 +271,8 @@ db.execute("INSERT INTO attachment (message_id,part_id,mime_type,content_id,show
 db.execute("INSERT INTO trusted_sender (account_id,address,created_at) VALUES (4,'ann@example.org',1)")
 check("a stored body is searchable", one("SELECT rowid FROM message_fts WHERE message_fts MATCH 'okapi'") == 400)
 check("remote_allowed defaults to 0", one("SELECT remote_allowed FROM message WHERE id=400") == 0)
+check("a body is not marked too complex by default", one("SELECT too_complex FROM message_body WHERE message_id=400") == 0)
+check("a raw copy may have no hash yet", one("SELECT sha256 IS NULL FROM message_raw WHERE message_id=400") == 1)
 plan = " ".join(r[3] for r in db.execute(
     "EXPLAIN QUERY PLAN SELECT id FROM message WHERE account_id=4 AND message_id_hdr='<r@x>'"))
 check("a Message-ID lookup uses message_msgid", "message_msgid" in plan)

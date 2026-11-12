@@ -10,6 +10,9 @@ CREATE TABLE message_raw (
     message_id  INTEGER PRIMARY KEY REFERENCES message (id) ON DELETE CASCADE,
     account_id  INTEGER NOT NULL REFERENCES account (id) ON DELETE CASCADE,
     raw         BLOB    NOT NULL,
+    -- SHA-256 of raw: two rows with the same Message-ID are the same message only when this
+    -- matches (a forged copy never stands in for the real one in a conversation).
+    sha256      BLOB,
     fetched_at  INTEGER NOT NULL
 );
 CREATE INDEX message_raw_account ON message_raw (account_id);
@@ -23,6 +26,9 @@ ALTER TABLE message_body ADD COLUMN remote_blocked   INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE message_body ADD COLUMN trackers_removed INTEGER NOT NULL DEFAULT 0;
 -- 1 when a body was cut at a limit (too long, too many parts, HTML too deep).
 ALTER TABLE message_body ADD COLUMN truncated        INTEGER NOT NULL DEFAULT 0;
+-- 1 when the HTML was not rendered (past the sanitiser's limits or its deadline): later opens show
+-- the text and never try the HTML again.
+ALTER TABLE message_body ADD COLUMN too_complex      INTEGER NOT NULL DEFAULT 0;
 
 -- attachment.part_id is the part's number in the stored message (croft-reader's numbering).
 ALTER TABLE attachment ADD COLUMN content_id   TEXT;

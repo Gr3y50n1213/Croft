@@ -9,7 +9,7 @@
 //! `account_id` column of their own, so they are always reached through a `message` row of the
 //! account (a join or a check first), and an id of another account answers like a missing one.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -26,6 +26,8 @@ const CONVERSATION_ROUNDS: usize = 4;
 pub struct NewBody<'a> {
     /// The message as the server sent it.
     pub raw: &'a [u8],
+    /// SHA-256 of `raw`.
+    pub raw_sha256: &'a [u8],
     /// When it was fetched, Unix milliseconds.
     pub fetched_at: i64,
     /// The header block as text.
@@ -40,6 +42,8 @@ pub struct NewBody<'a> {
     pub trackers_removed: u32,
     /// A body was cut at a limit.
     pub truncated: bool,
+    /// The HTML was not rendered (too complex, or past the sanitiser's deadline).
+    pub too_complex: bool,
     /// Recipients for `message.to_json` (a JSON array of `{name, address}`).
     pub to_json: &'a str,
     /// Copy recipients for `message.cc_json`.
@@ -86,6 +90,8 @@ pub struct StoredBody {
     pub trackers_removed: u32,
     /// A body was cut at a limit.
     pub truncated: bool,
+    /// The HTML was not rendered and must not be tried again.
+    pub too_complex: bool,
 }
 
 impl std::fmt::Debug for StoredBody {
@@ -135,6 +141,8 @@ pub struct ConversationRow {
     pub remote_allowed: bool,
     /// The folder's `special_use` (`inbox`, `sent`, ...).
     pub folder_special_use: String,
+    /// SHA-256 of the fetched message, when it was fetched.
+    pub raw_sha256: Option<Vec<u8>>,
 }
 
 /// True when the message is a message of this account.
@@ -163,9 +171,15 @@ pub fn store_body(
         return Ok(false);
     }
     conn.execute(
-        "INSERT OR REPLACE INTO message_raw (message_id, account_id, raw, fetched_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![message_id, account_id, body.raw, body.fetched_at],
+        "INSERT OR REPLACE INTO message_raw (message_id, account_id, raw, sha256, fetched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            message_id,
+            account_id,
+            body.raw,
+            body.raw_sha256,
+            body.fetched_at
+        ],
     )?;
     conn.execute(
         "DELETE FROM message_body WHERE message_id = ?1",
@@ -173,8 +187,8 @@ pub fn store_body(
     )?;
     conn.execute(
         "INSERT INTO message_body (message_id, headers_raw, text_plain, html_clean, remote_blocked,
-                                   trackers_removed, truncated)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                                   trackers_removed, truncated, too_complex)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             message_id,
             body.headers_raw,
@@ -182,7 +196,8 @@ pub fn store_body(
             body.html_clean,
             body.remote_blocked,
             body.trackers_removed,
-            body.truncated
+            body.truncated,
+            body.too_complex
         ],
     )?;
     conn.execute(
@@ -228,7 +243,7 @@ pub fn body(conn: &Connection, account_id: i64, message_id: i64) -> Result<Optio
     Ok(conn
         .query_row(
             "SELECT b.message_id, b.headers_raw, b.text_plain, b.html_clean, b.remote_blocked,
-                    b.trackers_removed, b.truncated
+                    b.trackers_removed, b.truncated, b.too_complex
                FROM message_body b JOIN message m ON m.id = b.message_id
               WHERE m.account_id = ?1 AND m.id = ?2",
             params![account_id, message_id],
@@ -241,6 +256,7 @@ pub fn body(conn: &Connection, account_id: i64, message_id: i64) -> Result<Optio
                     remote_blocked: r.get(4)?,
                     trackers_removed: r.get(5)?,
                     truncated: r.get(6)?,
+                    too_complex: r.get(7)?,
                 })
             },
         )
@@ -336,6 +352,16 @@ pub fn attachment(
         .optional()?)
 }
 
+/// Marks the stored body of a message of this account as too complex to render: later opens show
+/// its text and never try the HTML again. Returns false when it has no stored body.
+pub fn set_too_complex(conn: &Connection, account_id: i64, message_id: i64) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE message_body SET too_complex = 1
+          WHERE message_id = (SELECT id FROM message WHERE account_id = ?1 AND id = ?2)",
+        params![account_id, message_id],
+    )? > 0)
+}
+
 /// Records whether the person allowed remote content on a message of this account. Returns false
 /// when there is no such message.
 pub fn set_remote_allowed(
@@ -421,7 +447,8 @@ const CONVERSATION_COLUMNS: &str = "m.id, m.account_id, m.folder_id, m.uid, m.me
      m.thread_key, m.subject, m.from_name, m.from_addr, m.date_ts, m.size, m.snippet, m.is_seen, \
      m.is_flagged, m.is_answered, m.is_draft, m.keywords_json, m.has_attachments, m.category, \
      m.snoozed_until, m.pending_ops, m.body_state, m.local_hidden, m.to_json, m.cc_json, \
-     m.remote_allowed, f.special_use";
+     m.remote_allowed, f.special_use,
+     (SELECT r.sha256 FROM message_raw r WHERE r.message_id = m.id AND r.account_id = m.account_id)";
 
 fn conversation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRow> {
     Ok(ConversationRow {
@@ -430,6 +457,7 @@ fn conversation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRow> 
         cc_json: r.get(24)?,
         remote_allowed: r.get(25)?,
         folder_special_use: r.get(26)?,
+        raw_sha256: r.get(27)?,
     })
 }
 
@@ -445,11 +473,12 @@ fn conversation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRow> 
 ///   folder. **Drafts** likewise (drafts are edited in the composer, not read here).
 /// - Rows hidden while a move or delete waits for the server are left out, except the opened one.
 /// - The same message in two folders (Inbox and Gmail's All Mail, say) is listed once: copies
-///   are rows with the same `Message-ID`, **the same sender address (case ignored) and the same
-///   date**; the one kept is the opened one, else the one in the opened message's folder, else one
-///   not in Junk or Trash, else one not in an `all` folder. A row with a borrowed `Message-ID` but
-///   another sender or date is a different message and is always listed, so a forged copy can
-///   never stand in for the real one.
+///   are rows with the same `Message-ID`, **the same sender address (case ignored), the same date
+///   and the same bytes**: the same SHA-256 of the fetched message when both were fetched, else
+///   the same size on the server. The one kept is the opened one, else the one in the opened
+///   message's folder, else one not in Junk or Trash, else one not in an `all` folder. A row with
+///   a borrowed `Message-ID` but another sender, date or content is a different message and is
+///   always listed, so a forged copy can never stand in for the real one.
 /// - At most [`MAX_CONVERSATION`] messages (the newest).
 ///
 /// Empty when the message is not one of this account.
@@ -548,18 +577,35 @@ pub fn conversation(
         }
     };
     found.sort_by_key(|r| (rank(r), r.message.id));
-    let mut copies_kept: HashSet<(String, String, i64)> = HashSet::new();
+    // A later row is folded into a kept one only when they are the same bytes: the same
+    // SHA-256 when both were fetched, else (not fetched yet) the same size on the server.
+    type Copy = (i64, Option<Vec<u8>>);
+    let mut copies_kept: HashMap<(String, String, i64), Vec<Copy>> = HashMap::new();
     found.retain(|r| match &r.message.message_id_hdr {
-        Some(id) if !id.trim().is_empty() => copies_kept.insert((
-            id.clone(),
-            r.message
-                .from_addr
-                .as_deref()
-                .unwrap_or_default()
-                .trim()
-                .to_lowercase(),
-            r.message.date_ts,
-        )),
+        Some(id) if !id.trim().is_empty() => {
+            let key = (
+                id.clone(),
+                r.message
+                    .from_addr
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_lowercase(),
+                r.message.date_ts,
+            );
+            let kept = copies_kept.entry(key).or_default();
+            let same = kept.iter().any(|(size, hash)| {
+                *size == r.message.size
+                    && match (hash, &r.raw_sha256) {
+                        (Some(a), Some(b)) => a == b,
+                        _ => true,
+                    }
+            });
+            if !same {
+                kept.push((r.message.size, r.raw_sha256.clone()));
+            }
+            !same
+        }
         _ => true,
     });
 

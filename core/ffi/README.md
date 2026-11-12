@@ -83,8 +83,9 @@ images" (`allow_remote_content`, then `load_body` again) and, under `KnownSender
   app's `FileProvider` with a temporary URI grant (store rule), never a `file://` URI.
 
 What the sanitiser keeps and removes, the limits and the tracking-pixel rule are in `core/reader/src/sanitize.rs`,
-`core/reader/src/shape.rs` and `docs/DECISIONS.md` (T18a rows). HTML past the size limits comes back as
-`html_sanitised == None` with `truncated` set and its text in `text`.
+`core/reader/src/shape.rs` and `docs/DECISIONS.md` (T18a rows). HTML past the size limits, or not sanitised
+within 3 s, comes back as `html_sanitised == None` with `truncated` set and its text in `text`; the core remembers it
+and never tries that message's HTML again.
 
 Compose (T18c) reads what loading a body stores: `reply_all_draft` gets To and Cc, and the quote, only for a message
 whose body was loaded once; call `load_body` first when `ReplyDraft.quote_included` is false.

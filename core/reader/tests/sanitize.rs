@@ -351,3 +351,70 @@ fn tracking_pixels_are_found_on_the_tree_the_renderer_gets() {
     assert_eq!(out.blocked_remote, 2, "{}", out.html);
     assert!(!out.html.contains("img.example"));
 }
+
+#[test]
+fn round_two_slow_inputs_are_refused_before_any_parser_runs() {
+    // N1: under-counts the first scan had (voids inside SVG/MathML, end tags hidden in values and
+    // comments). N2: formatting elements rebuilt at every start tag (11.6 s, 4.35 GB).
+    let bs: String = (0..1500).map(|i| format!("<b a={i}>")).collect();
+    let inputs = [
+        format!("<svg>{}{}", "<area>".repeat(25_000), "</x>".repeat(24_998)),
+        format!(
+            "<math>{}{}",
+            "<input>".repeat(25_000),
+            "</x>".repeat(24_998)
+        ),
+        format!(
+            "{}{}",
+            "<span title=\"</span>\">".repeat(16_000),
+            "</x>".repeat(17_000)
+        ),
+        format!(
+            "{}{}",
+            "<div title=\"</div>\">".repeat(24_000),
+            "<div>".repeat(1000)
+        ),
+        "<div><!--</div>-->".repeat(16_600),
+        format!("<div>{bs}</div>{}", "<div>x</div>".repeat(12_000)),
+        format!(
+            "<div>{}</div>{}",
+            (0..1500)
+                .map(|i| format!("<b a={i} title=\"</b>\">"))
+                .collect::<String>(),
+            "<div>x</div>".repeat(12_000)
+        ),
+    ];
+    let start = std::time::Instant::now();
+    for html in &inputs {
+        let out = clean(html, false);
+        assert!(
+            out.too_complex && out.html.is_empty(),
+            "{} bytes",
+            html.len()
+        );
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+}
+
+#[test]
+fn text_full_of_ampersands_and_symbols_is_escaped_in_linear_time() {
+    // N3: html5ever's escape rescanned the rest of the text at every `&` or 0xC2 (4 MB: 81 s). The
+    // vendored copy (core/vendor/html5ever) scans once.
+    let start = std::time::Instant::now();
+    let out = clean(&"a & ".repeat(250_000), false);
+    assert!(!out.too_complex);
+    assert_eq!(out.html.matches("&amp;").count(), 250_000);
+    let out = clean(&"\u{a9}\u{a0}".repeat(200_000), false);
+    assert!(out.html.contains("&nbsp;"));
+    let attr = format!("<p title=\"{}\">x</p>", "& ".repeat(200_000));
+    assert!(!clean(&attr, false).too_complex);
+    // Linear: about a second in a debug build; the old code took minutes on these.
+    assert!(start.elapsed() < std::time::Duration::from_secs(30));
+}
+
+#[test]
+fn output_past_the_markup_cap_is_shown_as_text() {
+    // 2 MiB of `&` become 10 MiB of `&amp;`.
+    let out = clean(&"&".repeat(2 * 1024 * 1024), false);
+    assert!(out.too_complex && out.html.is_empty());
+}

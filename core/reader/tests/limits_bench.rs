@@ -136,6 +136,66 @@ fn bench() {
     run("div </x> 20k (H1)", &"<div></x>".repeat(20000));
     let attrs: String = (0..200_000).map(|i| format!(" a{i}")).collect();
     run("200k attrs (H2)", &format!("<p{attrs}>"));
+    // Round 2 of the review: its exact inputs.
+    run(
+        "N1 svg area x25000 </x>",
+        &format!("<svg>{}{}", "<area>".repeat(25_000), "</x>".repeat(24_998)),
+    );
+    run(
+        "N1 math input x25000 </x>",
+        &format!(
+            "<math>{}{}",
+            "<input>".repeat(25_000),
+            "</x>".repeat(24_998)
+        ),
+    );
+    run(
+        "N1 span title=</span> x16000",
+        &format!(
+            "{}{}",
+            "<span title=\"</span>\">".repeat(16_000),
+            "</x>".repeat(17_000)
+        ),
+    );
+    run(
+        "N1 div title=</div> x24000",
+        &format!(
+            "{}{}",
+            "<div title=\"</div>\">".repeat(24_000),
+            "<div>".repeat(1000)
+        ),
+    );
+    run(
+        "N1 div <!--</div>--> x16600",
+        &"<div><!--</div>-->".repeat(16_600),
+    );
+    let bs: String = (0..1500).map(|i| format!("<b a={i}>")).collect();
+    run(
+        "N2 1500 b then div x12000",
+        &format!("<div>{bs}</div>{}", "<div>x</div>".repeat(12_000)),
+    );
+    let bs: String = (0..1500)
+        .map(|i| format!("<b a={i} title=\"</b>\">"))
+        .collect();
+    run(
+        "N2 b title=</b> variant",
+        &format!("<div>{bs}</div>{}", "<div>x</div>".repeat(12_000)),
+    );
+    run("N3 'a & ' x1M (4 MB text)", &"a & ".repeat(1_000_000));
+    run("N3 '&am' x1.3M", &"&am".repeat(1_300_000));
+    run("N3 copyright x400k", &"\u{a9}".repeat(400_000));
+    run(
+        "N3 & in an attribute (4 MB)",
+        &format!("<p title=\"{}\">x</p>", "& ".repeat(1_000_000)),
+    );
+    // Most rebuilt nodes that stay inside the limits.
+    let fmt: String = (0..250).map(|i| format!("<b a={i}>")).collect();
+    // 250 open <b> cost about 63 000 to build; each <div>x</div> then adds 750.
+    let fill = (croft_reader::sanitize::MAX_HTML_NODES - 70_000) / 750;
+    run(
+        "nodes: 250 b then div near the cap",
+        &format!("<div>{fmt}</div>{}", "<div>x</div>".repeat(fill)),
+    );
 }
 
 const W: Limits = Limits {
@@ -143,6 +203,7 @@ const W: Limits = Limits {
     depth: usize::MAX,
     attributes: usize::MAX,
     cost: usize::MAX,
+    nodes: usize::MAX,
 };
 fn show(name: &str, html: &str) {
     let s = measure(html, W);

@@ -294,9 +294,19 @@ pub const MAX_HTML_COST: usize = 40_000_000;
 /// Most tags accepted in one HTML body (start and end tags, comments; real newsletters have a few
 /// thousand).
 pub const MAX_HTML_TAGS: usize = 50_000;
+/// Most elements html5ever may rebuild (formatting elements counted open, summed over every
+/// token; see [`crate::shape`]). Each rebuilt element costs memory and output, so a body that
+/// could rebuild more is shown as text. At the limit the worst input measured took 0.31 s and
+/// 125 MB at its peak (release, x86; the real rebuilds are about a third of the count); a legacy
+/// table layout with an unclosed `<font>` in each of 300 rows counts 1.17 million and renders.
+pub const MAX_HTML_NODES: usize = 1_500_000;
 /// Most attributes accepted on one tag (the tokenizer's duplicate check takes time that grows
 /// with the square of this).
 pub const MAX_ATTRIBUTES_PER_TAG: usize = 256;
+/// Most bytes of sanitised markup kept (not counting the `data:` URIs of inline images, which
+/// have their own budget). Escaping can make the output several times its input (`&` becomes
+/// `&amp;`); past this the message is shown as text.
+pub const MAX_SANITIZED_MARKUP_BYTES: usize = 8 * 1024 * 1024;
 /// Most bytes of `data:` URIs written for `cid:` images in one document (the base64 of
 /// [`crate::MAX_INLINE_TOTAL_BYTES`] and a little more). A message that references one image many
 /// times cannot make the HTML huge.
@@ -333,13 +343,14 @@ pub struct Sanitized {
     pub blocked_remote: u32,
     /// Tracking pixels removed.
     pub trackers_removed: u32,
-    /// `style` declarations removed because they named an image or a function that loads one.
+    /// `style` declarations removed because they named an image or a function that loads one, on
+    /// elements of [`TAGS`] (see the filter for the one case where such an element still goes).
     pub styles_removed: u32,
     /// The Content-IDs whose images were drawn (written as `data:` URIs).
     pub cids_used: Vec<String>,
     /// True when the HTML was past one of the limits ([`MAX_HTML_TAGS`], [`MAX_HTML_DEPTH`],
-    /// [`MAX_HTML_COST`], [`MAX_ATTRIBUTES_PER_TAG`]): `html` is then empty and the message is
-    /// shown as text.
+    /// [`MAX_HTML_COST`], [`MAX_HTML_NODES`], [`MAX_ATTRIBUTES_PER_TAG`]) or its output past
+    /// [`MAX_SANITIZED_MARKUP_BYTES`]: `html` is then empty and the message is shown as text.
     pub too_complex: bool,
 }
 
@@ -453,11 +464,17 @@ fn attributes() -> HashMap<&'static str, HashSet<&'static str>> {
         .collect()
 }
 
-/// A random value for this call: the tokens and the marker cannot be guessed by a sender.
+/// A random value for this call, from the system's random source: the tokens and the marker
+/// cannot be guessed by a sender. (Should the source fail, the standard library's per-process
+/// random hasher seed is used; a guessed token could then only make the message show as text,
+/// because a token anywhere but in an image address drops the HTML.)
 fn random_hex() -> String {
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u64(0x5afe_c0de);
-    format!("{:016x}", h.finish())
+    let value = getrandom::u64().unwrap_or_else(|_| {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u64(0x5afe_c0de);
+        h.finish()
+    });
+    format!("{value:016x}")
 }
 
 fn too_complex() -> Sanitized {
@@ -482,6 +499,7 @@ pub fn sanitize_html(
             depth: MAX_HTML_DEPTH,
             attributes: MAX_ATTRIBUTES_PER_TAG,
             cost: MAX_HTML_COST,
+            nodes: MAX_HTML_NODES,
         },
     );
     if shape.over {
@@ -525,6 +543,9 @@ pub fn sanitize_html(
     let Some(html) = substitute(&html, &context.nonce, &state.decided) else {
         return too_complex();
     };
+    if html.len().saturating_sub(state.inline_bytes) > MAX_SANITIZED_MARKUP_BYTES {
+        return too_complex();
+    }
     Sanitized {
         html,
         blocked_remote: state.blocked_remote,
@@ -701,7 +722,12 @@ fn filter_attribute<'u>(
                 state.img.style = Some(value.to_owned());
             }
             let (kept, removed) = filter_style(value);
-            state.styles_removed += removed;
+            // Counted for elements that are kept (ammonia also hands the filter the attributes of
+            // elements it is about to drop). An allowed element can still be dropped later for a
+            // namespace mismatch; its count stays.
+            if TAGS.contains(&element) {
+                state.styles_removed += removed;
+            }
             (!kept.is_empty()).then_some(Cow::Owned(kept))
         }
         // Presentational values are plain: numbers and sizes, colours, font names. Anything else
@@ -899,13 +925,29 @@ fn finish(declaration: &str, bad: bool, kept: &mut Vec<String>, removed: &mut u3
 // Tracking pixels
 // ---------------------------------------------------------------------------------------------
 
-/// A size of at most one (in any unit, or none): `0`, `1`, `1px`, `0.5`, `0%`, `0.01em`.
+/// A size of at most one (in any unit, or none): `0`, `1`, `1px`, `0.5`, `0%`, `0.01em`. Read
+/// the way browsers read a dimension attribute: after leading spaces, the leading digits with at
+/// most one decimal part, whatever follows (`1-`, `1+2`, `1.0.0`, `0.5.5` are all 1 or less). A
+/// sign makes the value invalid for a browser; it is counted as tiny too (a remote image with a
+/// broken size is not worth the risk).
 fn tiny(value: &str) -> bool {
-    let v = value.trim();
-    let end = v
-        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+')))
-        .unwrap_or(v.len());
-    v[..end].parse::<f64>().is_ok_and(|n| n <= 1.0)
+    let v = value.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    if v.starts_with(['-', '+']) {
+        return true;
+    }
+    let digits = v.find(|c: char| !c.is_ascii_digit()).unwrap_or(v.len());
+    let mut end = digits;
+    if v[digits..].starts_with('.') {
+        let fraction = v[digits + 1..]
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(v.len() - digits - 1);
+        end = digits + 1 + fraction;
+    }
+    let number = &v[..end];
+    if number.is_empty() || number == "." {
+        return false;
+    }
+    number.parse::<f64>().is_ok_and(|n| n <= 1.0)
 }
 
 /// True when an `img` style makes it invisible or at most one unit wide or high. Read with the CSS
@@ -940,6 +982,8 @@ fn style_hides(style: &str) -> bool {
             "width" | "height" | "max-width" | "max-height"
         );
         let hides = match p.next() {
+            // `calc(1px)`, `min(...)`, `clamp(...)`: not evaluated, so treated as tiny.
+            Ok(Token::Function(_)) => size,
             Ok(Token::Dimension { value, .. }) | Ok(Token::Number { value, .. }) => {
                 (size && *value <= 1.0) || (name == "opacity" && *value <= 0.1)
             }
@@ -1015,10 +1059,13 @@ mod tests {
 
     #[test]
     fn sizes_and_styles_that_make_a_pixel() {
-        for t in ["0", "1", "1px", " 0.5 ", "0%", "1%", "0.01em", "-3"] {
+        for t in [
+            "0", "1", "1px", " 0.5 ", "0%", "1%", "0.01em", "-3", "1-", "1+2", "1.0.0", "0.5.5",
+            "+600", ".5", "0.", "1 px",
+        ] {
             assert!(tiny(t), "{t}");
         }
-        for t in ["2", "100%", "600", "", "auto", "x"] {
+        for t in ["2", "100%", "600", "", "auto", "x", "10-", "2.5.1", "."] {
             assert!(!tiny(t), "{t}");
         }
         for s in [
@@ -1033,6 +1080,10 @@ mod tests {
             "opacity:0",
             "opacity:5%",
             "color:red; width:1px",
+            "width:calc(1px)",
+            "height: min(1px, 50%)",
+            "max-width:clamp(0px,1px,2px)",
+            "width:max(1px)",
         ] {
             assert!(style_hides(s), "{s}");
         }

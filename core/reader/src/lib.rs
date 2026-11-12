@@ -38,9 +38,9 @@ pub mod sanitize;
 pub mod shape;
 
 pub use parse::{
-    part_content, render, sniff_image, snippet, Address, Attachment, ParseError, Rendered,
-    MAX_DEPTH, MAX_HTML_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TOTAL_BYTES, MAX_MESSAGE_BYTES,
-    MAX_PARTS, MAX_REFERENCES_EACH_END, MAX_TEXT_BYTES,
+    part_content, render, render_with, sniff_image, snippet, Address, Attachment, ParseError,
+    Rendered, Sanitizer, MAX_DEPTH, MAX_HTML_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TOTAL_BYTES,
+    MAX_MESSAGE_BYTES, MAX_PARTS, MAX_REFERENCES_EACH_END, MAX_TEXT_BYTES, SANITIZE_DEADLINE,
 };
 pub use remote::{normalise_address, remote_allowed, RemoteImages};
 pub use sanitize::{sanitize_html, InlineImage, Sanitized, BLOCKED_IMAGE_PLACEHOLDER};

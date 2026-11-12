@@ -11,6 +11,17 @@ unverified, the next step.
 **FFI API version 9** and migration **0007** (T18c merged first with version 8 and migration 0006; `claude/croft-build`
 is merged into this branch).
 
+**Opus review round 2: 3 high (DoS), 2 medium, 5 low; all fixed** (12 November; N6 accepted and documented). N1:
+the shape scan never pops on end tags inside quoted values, comments, CDATA or bogus comments, and void names nest once
+`<svg`/`<math` appeared. N2: a node budget for rebuilt formatting elements, 1 500 000 (0.31 s and 125 MB at the cap;
+the legacy test layout counts 1.17 million and still renders). N3: html5ever vendored with a one-pass escape and no
+logging of token text (`core/vendor/html5ever/CROFT-PATCHES.md`). D: sanitising runs on its own thread with a 3 s
+deadline (30 s in debug builds); past it, or past 8 MiB of markup, the message shows as text and a stored
+`too_complex` mark stops any retry. N4/N5: browser-style dimension reading and CSS functions in sizes count as
+pixels. N7: `getrandom`. N8: every Cf character stripped, 11 more launcher extensions. N9: copies fold only with the
+same SHA-256 (or the same server size before both are fetched). N10: `styles_removed` counts kept elements only. Every
+reviewer input now falls back in under 1 ms, or runs in under 0.4 s (release, x86; `limits_bench.rs`).
+
 **Opus review: 4 high (hang or memory), 2 medium, 5 low; all fixed** (12 November). H1/H2: a byte scan that can only
 over-count (`croft_reader::shape`) measures tags, depth, the parser's cost (sum of depths) and attributes per tag before
 any parser runs; limits 50 000 tags, depth 2 048, cost 40 000 000, 256 attributes per tag; worst case found inside them

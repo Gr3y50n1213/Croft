@@ -630,9 +630,9 @@ fn copy_message(
     let new_id = tx.last_insert_rowid();
     tx.execute(
         "INSERT INTO message_body (message_id, headers_raw, text_plain, html_clean, remote_blocked,
-                                   trackers_removed, truncated)
+                                   trackers_removed, truncated, too_complex)
          SELECT ?3, b.headers_raw, b.text_plain, b.html_clean, b.remote_blocked,
-                b.trackers_removed, b.truncated
+                b.trackers_removed, b.truncated, b.too_complex
            FROM message_body b JOIN message m ON m.id = b.message_id
           WHERE m.account_id = ?1 AND m.id = ?2",
         params![account, source_id, new_id],
@@ -648,8 +648,8 @@ fn copy_message(
     )?;
     // The fetched message goes with it, so the moved copy opens offline and keeps its attachments.
     tx.execute(
-        "INSERT INTO message_raw (message_id, account_id, raw, fetched_at)
-         SELECT ?3, r.account_id, r.raw, r.fetched_at
+        "INSERT INTO message_raw (message_id, account_id, raw, sha256, fetched_at)
+         SELECT ?3, r.account_id, r.raw, r.sha256, r.fetched_at
            FROM message_raw r JOIN message m ON m.id = r.message_id
           WHERE r.account_id = ?1 AND m.account_id = ?1 AND m.id = ?2",
         params![account, source_id, new_id],

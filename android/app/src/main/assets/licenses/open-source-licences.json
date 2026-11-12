@@ -1,7 +1,7 @@
 {
  "version": 1,
  "inputs": {
-  "cargoLockSha256": "87c2b1b79035dd652e38610c3d2dbd62b1f9bb88e7e143cf24b9e0a39fb74c29",
+  "cargoLockSha256": "4c6702c3e81c72169b980c07d61bc8ae12842177d23a8ef424ce6060881ee381",
   "libsCatalogSha256": "97da1ae55696128da16e4d69a7a7f035085990a6070df4dfb05f950ff6b958f7"
  },
  "entries": [
@@ -619,13 +619,13 @@
   },
   {
    "name": "async-channel",
-   "version": "2.5.0",
+   "version": "1.9.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "async-channel",
-   "version": "1.9.0",
+   "version": "2.5.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -1729,13 +1729,13 @@
   },
   {
    "name": "thiserror-impl",
-   "version": "1.0.69",
+   "version": "2.0.21",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "thiserror-impl",
-   "version": "2.0.21",
+   "version": "1.0.69",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

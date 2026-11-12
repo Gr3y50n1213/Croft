@@ -76,6 +76,7 @@ fn message(
 fn body<'a>(attachments: &'a [NewAttachment], text: &'a str) -> NewBody<'a> {
     NewBody {
         raw: b"From: ann@example.org\r\n\r\nhello",
+        raw_sha256: &[1; 32],
         fetched_at: 7,
         headers_raw: "From: ann@example.org",
         text: Some(text),
@@ -83,6 +84,7 @@ fn body<'a>(attachments: &'a [NewAttachment], text: &'a str) -> NewBody<'a> {
         remote_blocked: 2,
         trackers_removed: 1,
         truncated: false,
+        too_complex: false,
         to_json: r#"[{"name":"Ben","address":"ben@example.com"}]"#,
         cc_json: "[]",
         snippet: "hello",
@@ -332,4 +334,69 @@ fn a_forged_copy_of_a_message_id_never_replaces_the_real_message() {
     assert_eq!(ids(copy), [copy, forged]);
     // Opened from Junk, the Junk copy is the one listed, and the forgery still shows apart.
     assert_eq!(ids(in_junk), [in_junk, forged]);
+}
+
+#[test]
+fn copies_with_the_same_header_but_other_bytes_are_both_listed() {
+    // Round 2 review N9: a forged copy (same Message-ID, sender, date and size) in the opened
+    // folder must not hide the real message elsewhere, here the person's own copy in Sent.
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    let a1 = account(c, "one@example.org");
+    let inbox = folder(c, a1, "INBOX", SpecialUse::Inbox);
+    let sent = folder(c, a1, "Sent", SpecialUse::Sent);
+    let all = folder(c, a1, "All Mail", SpecialUse::All);
+    let real = message(c, a1, sent, 1, "mine@x", &[], 100);
+    let forged = message(c, a1, inbox, 1, "mine@x", &[], 100);
+    let copy = message(c, a1, all, 1, "mine@x", &[], 100);
+    let ids = |opened: i64| -> Vec<i64> {
+        reading::conversation(c, a1, opened)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.message.id)
+            .collect()
+    };
+    // Not fetched yet: same size on the server, taken as copies.
+    assert_eq!(ids(forged).len(), 1);
+    let store = |m: i64, sha: [u8; 32]| {
+        let mut b = body(&[], "x");
+        b.raw_sha256 = &sha;
+        assert!(reading::store_body(c, a1, m, &b).unwrap());
+    };
+    store(real, [1; 32]);
+    store(forged, [2; 32]);
+    store(copy, [1; 32]);
+    let mut listed = ids(forged);
+    listed.sort();
+    assert_eq!(
+        listed,
+        [real, forged],
+        "different bytes: both stay; the true copy folds"
+    );
+    let mut listed = ids(real);
+    listed.sort();
+    assert_eq!(listed, [real, forged]);
+}
+
+#[test]
+fn the_too_complex_mark_is_stored_and_kept_for_the_message() {
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    let (a1, a2) = (account(c, "one@example.org"), account(c, "two@example.org"));
+    let f1 = folder(c, a1, "INBOX", SpecialUse::Inbox);
+    let m = message(c, a1, f1, 1, "m1@example.org", &[], 10);
+    assert!(!reading::set_too_complex(c, a1, m).unwrap(), "no body yet");
+    let mut b = body(&[], "x");
+    b.too_complex = true;
+    reading::store_body(c, a1, m, &b).unwrap();
+    assert!(reading::body(c, a1, m).unwrap().unwrap().too_complex);
+    let other = message(c, a1, f1, 2, "m2@example.org", &[], 11);
+    reading::store_body(c, a1, other, &body(&[], "y")).unwrap();
+    assert!(
+        !reading::set_too_complex(c, a2, other).unwrap(),
+        "another account's id"
+    );
+    assert!(!reading::body(c, a1, other).unwrap().unwrap().too_complex);
+    assert!(reading::set_too_complex(c, a1, other).unwrap());
+    assert!(reading::body(c, a1, other).unwrap().unwrap().too_complex);
 }

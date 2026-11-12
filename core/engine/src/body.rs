@@ -113,8 +113,13 @@ fn parse_and_store(
             executable: a.executable,
         })
         .collect();
+    let raw_sha256 = {
+        use sha2::Digest;
+        sha2::Sha256::digest(raw).to_vec()
+    };
     let body = NewBody {
         raw,
+        raw_sha256: &raw_sha256,
         fetched_at: shared.now(),
         headers_raw: &rendered.headers_raw,
         text: rendered.text.as_deref(),
@@ -122,6 +127,7 @@ fn parse_and_store(
         remote_blocked: rendered.blocked_remote,
         trackers_removed: rendered.trackers_removed,
         truncated: rendered.truncated,
+        too_complex: rendered.too_complex,
         to_json: &to_json,
         cc_json: &cc_json,
         snippet: &snippet,

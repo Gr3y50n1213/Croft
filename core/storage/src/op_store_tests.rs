@@ -588,13 +588,13 @@ fn a_confirmed_move_takes_the_fetched_message_and_the_remote_content_choice_alon
     let c = db(&q).connection();
     let old = row(&q, f.a1, "INBOX", 1).unwrap();
     c.execute(
-        "INSERT INTO message_raw (message_id, account_id, raw, fetched_at) VALUES (?1, ?2, x'414243', 5)",
+        "INSERT INTO message_raw (message_id, account_id, raw, sha256, fetched_at) VALUES (?1, ?2, x'414243', x'09', 5)",
         [old.id, f.a1],
     )
     .unwrap();
     c.execute(
-        "INSERT INTO message_body (message_id, text_plain, remote_blocked, trackers_removed, truncated)
-         VALUES (?1, 'hello', 3, 1, 1)",
+        "INSERT INTO message_body (message_id, text_plain, remote_blocked, trackers_removed, truncated, too_complex)
+         VALUES (?1, 'hello', 3, 1, 1, 1)",
         [old.id],
     )
     .unwrap();
@@ -626,6 +626,15 @@ fn a_confirmed_move_takes_the_fetched_message_and_the_remote_content_choice_alon
         (body.remote_blocked, body.trackers_removed, body.truncated),
         (3, 1, true)
     );
+    assert!(body.too_complex, "the mark moves with the message");
+    let sha: Vec<u8> = c
+        .query_row(
+            "SELECT sha256 FROM message_raw WHERE message_id = ?1",
+            [copy.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sha, [9]);
     let a = crate::reading::attachments(c, f.a1, copy.id).unwrap();
     assert_eq!(a[0].content_id.as_deref(), Some("logo@example.org"));
     assert!(a[0].shown_inline);

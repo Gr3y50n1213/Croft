@@ -191,7 +191,10 @@ pub struct MessageBody {
     pub trackers_removed: u32,
     /// The sender is on the account's known-senders list.
     pub sender_known: bool,
-    /// Something was cut at a size limit (very long text, too many parts, HTML too deep).
+    /// Something was cut at a size limit (very long text, too many parts), or the HTML was too
+    /// complex to render safely (past the sanitiser's limits or its 3 s deadline): then
+    /// `html_sanitised` is `None` and `text` holds the message's text. The core remembers that
+    /// and never tries the HTML of that message again.
     pub truncated: bool,
     /// The attachments, in document order.
     pub attachments: Vec<AttachmentInfo>,
@@ -511,6 +514,8 @@ impl Core {
                         })?;
                     let allowed =
                         remote_allowed(remote_images.into(), message_allowed, sender_known);
+                    // Marked when its HTML could not be rendered once: never tried again.
+                    let too_complex = stored.too_complex;
                     let mut body = MessageBody {
                         message_id: id,
                         text: stored.text,
@@ -533,7 +538,7 @@ impl Core {
                             })
                             .collect(),
                     };
-                    if allowed && body.html_sanitised.is_some() {
+                    if allowed && !too_complex && body.html_sanitised.is_some() {
                         // Sanitised again from the stored message, keeping remote images.
                         let raw = Zeroizing::new(
                             handle
@@ -542,10 +547,18 @@ impl Core {
                         );
                         let rendered =
                             croft_reader::render(&raw, true).map_err(|_| ReadError::Unreadable)?;
-                        body.html_sanitised = rendered.html;
-                        body.blocked_remote_count = rendered.blocked_remote;
-                        body.trackers_removed = rendered.trackers_removed;
-                        body.remote_allowed = true;
+                        if rendered.too_complex {
+                            // Past a limit or the deadline with remote images: keep the stored
+                            // (blocked) HTML, and never try again.
+                            handle.read(|db| {
+                                reading::set_too_complex(db.connection(), account, id)
+                            })?;
+                        } else {
+                            body.html_sanitised = rendered.html;
+                            body.blocked_remote_count = rendered.blocked_remote;
+                            body.trackers_removed = rendered.trackers_removed;
+                            body.remote_allowed = true;
+                        }
                     }
                     Ok(body)
                 })
@@ -787,6 +800,65 @@ mod tests {
         assert_eq!(
             write_into(&file, "a.txt", "text/plain", b"x"),
             Err(ReadError::BadDestination)
+        );
+    }
+}
+
+#[cfg(test)]
+mod too_complex_tests {
+    use crate::reading::RemoteImagesSetting;
+    use crate::tests::{block, wait_for, MemProvider, TempDb};
+    use croft_storage::reading;
+
+    #[test]
+    fn a_message_marked_too_complex_is_never_rendered_again() {
+        let db = TempDb::new();
+        let core = db.open(&MemProvider::new());
+        let account = block(core.add_demo_account()).unwrap().id;
+        let rows = || {
+            let folders = core.list_folders(account).unwrap();
+            let Some(inbox) = folders.iter().find(|f| f.path == "INBOX") else {
+                return Vec::new();
+            };
+            core.list_messages(
+                crate::MessageScope::Folder {
+                    account,
+                    folder_id: inbox.id,
+                },
+                None,
+                500,
+            )
+            .unwrap()
+            .rows
+        };
+        block(wait_for(&core, "sample inbox", || rows().len() >= 10));
+        // The sample message with a remote image.
+        let (id, _) = rows()
+            .iter()
+            .map(|r| {
+                (
+                    r.id,
+                    block(core.load_body(r.id, RemoteImagesSetting::Ask)).unwrap(),
+                )
+            })
+            .find(|(_, b)| b.blocked_remote_count > 0)
+            .unwrap();
+        core.allow_remote_content(id).unwrap();
+        assert!(
+            block(core.load_body(id, RemoteImagesSetting::Ask))
+                .unwrap()
+                .remote_allowed
+        );
+        // A render that timed out once: the mark is stored, and no later load tries again.
+        core.inner
+            .handle
+            .read(|db| reading::set_too_complex(db.connection(), account, id))
+            .unwrap();
+        let body = block(core.load_body(id, RemoteImagesSetting::Ask)).unwrap();
+        assert!(!body.remote_allowed, "the slow path is not tried again");
+        assert!(
+            body.html_sanitised.is_some(),
+            "the stored, blocked HTML is still shown"
         );
     }
 }

@@ -47,6 +47,7 @@ use std::io;
 use std::mem;
 use std::rc::{Rc, Weak};
 
+use html5ever::budget; // CROFT-PATCH: the parser's work budget (CROFT-PATCHES.md).
 use html5ever::tendril::StrTendril;
 
 use html5ever::interface::tree_builder;
@@ -177,6 +178,9 @@ fn get_parent_and_index(target: &Handle) -> Option<(Handle, usize)> {
             Some((i, _)) => i,
             None => panic!("have parent but couldn't find in parent's children!"),
         };
+        // CROFT-PATCH: a linear search through the siblings (foster parenting runs it for every
+        // piece of text put before a table): one unit per sibling looked at.
+        budget::charge(1 + i as u64);
         Some((parent, i))
     } else {
         None
@@ -195,6 +199,8 @@ fn append_to_existing_text(prev: &Handle, text: &str) -> bool {
 
 fn remove_from_parent(target: &Handle) {
     if let Some((parent, i)) = get_parent_and_index(target) {
+        // CROFT-PATCH: the removal shifts the later siblings.
+        budget::charge_shift(parent.children.borrow().len() - i);
         parent.children.borrow_mut().remove(i);
         target.parent.set(None);
     }
@@ -206,6 +212,8 @@ pub struct RcDom {
     pub document: Handle,
 
     /// Errors that occurred during parsing.
+    // CROFT-PATCH: always empty (see `parse_error`).
+    #[allow(dead_code)]
     pub errors: RefCell<Vec<Cow<'static, str>>>,
 
     /// The document's quirks mode.
@@ -222,8 +230,10 @@ impl TreeSink for RcDom {
 
     type ElemName<'a> = ExpandedName<'a>;
 
+    // CROFT-PATCH: parse errors are not kept. ammonia never reads them, and a body of 4 MB of
+    // NUL characters made 4 million of them (hundreds of MB). `errors` stays empty.
     fn parse_error(&self, msg: Cow<'static, str>) {
-        self.errors.borrow_mut().push(msg);
+        drop(msg);
     }
 
     fn get_document(&self) -> Handle {
@@ -298,9 +308,12 @@ impl TreeSink for RcDom {
         append(
             parent,
             match child {
-                NodeOrText::AppendText(text) => Node::new(NodeData::Text {
-                    contents: RefCell::new(text),
-                }),
+                NodeOrText::AppendText(text) => {
+                    budget::charge(budget::NODE_UNITS); // CROFT-PATCH: a new text node.
+                    Node::new(NodeData::Text {
+                        contents: RefCell::new(text),
+                    })
+                }
                 NodeOrText::AppendNode(node) => node,
             },
         );
@@ -312,9 +325,12 @@ impl TreeSink for RcDom {
 
         let child = match (child, i) {
             // No previous node.
-            (NodeOrText::AppendText(text), 0) => Node::new(NodeData::Text {
-                contents: RefCell::new(text),
-            }),
+            (NodeOrText::AppendText(text), 0) => {
+                budget::charge(budget::NODE_UNITS); // CROFT-PATCH: a new text node.
+                Node::new(NodeData::Text {
+                    contents: RefCell::new(text),
+                })
+            }
 
             // Look for a text node before the insertion point.
             (NodeOrText::AppendText(text), i) => {
@@ -323,6 +339,7 @@ impl TreeSink for RcDom {
                 if append_to_existing_text(prev, &text) {
                     return;
                 }
+                budget::charge(budget::NODE_UNITS); // CROFT-PATCH: a new text node.
                 Node::new(NodeData::Text {
                     contents: RefCell::new(text),
                 })
@@ -338,6 +355,8 @@ impl TreeSink for RcDom {
         remove_from_parent(&child);
 
         child.parent.set(Some(Rc::downgrade(&parent)));
+        // CROFT-PATCH: the insertion shifts the later siblings.
+        budget::charge_shift(parent.children.borrow().len() - i);
         parent.children.borrow_mut().insert(i, child);
     }
 
@@ -374,6 +393,9 @@ impl TreeSink for RcDom {
             panic!("not an element")
         };
 
+        // CROFT-PATCH: `<html>` and `<body>` tags in the body merge their attributes into the
+        // first one each time: charged per attribute looked at.
+        budget::charge((existing.len() + attrs.len()) as u64);
         let existing_names = existing
             .iter()
             .map(|e| e.name.clone())
@@ -392,6 +414,8 @@ impl TreeSink for RcDom {
     fn reparent_children(&self, node: &Handle, new_parent: &Handle) {
         let mut children = node.children.borrow_mut();
         let mut new_children = new_parent.children.borrow_mut();
+        // CROFT-PATCH: every child moved (the adoption agency moves a block's children).
+        budget::charge(1 + children.len() as u64);
         for child in children.iter() {
             let previous_parent = child.parent.replace(Some(Rc::downgrade(new_parent)));
             assert!(Rc::ptr_eq(

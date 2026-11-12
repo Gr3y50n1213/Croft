@@ -50,6 +50,12 @@ pub fn filter_style_attribute<'a>(
     url_relative: &UrlRelative<'a>,
     url_schemes: &HashSet<&'a str>,
 ) -> String {
+    // CROFT-PATCH: the CSS tokenizer's work is charged to the parser's budget (a style attribute
+    // copied into every rebuilt element is filtered once per copy); once it is spent the
+    // declarations are dropped instead of read.
+    if !html5ever::budget::charge(1 + style.len() as u64 * html5ever::budget::CSS_UNITS_PER_BYTE) {
+        return String::new();
+    }
     // add room for the trailing semicolon because we lazy
     let mut out = String::with_capacity(style.len() + 1);
 

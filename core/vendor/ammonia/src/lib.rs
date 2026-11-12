@@ -1880,6 +1880,12 @@ impl<'a> Builder<'a> {
     /// We want to be able to take breaking changes to html5ever itself
     /// without having to break Ammonia's API.
     fn clean_dom(&self, dom: RcDom) -> Document {
+        // CROFT-PATCH: when the parser stopped on its work budget (or was cancelled; see
+        // `html5ever::budget`), its tree is incomplete: the document is left empty.
+        if html5ever::budget::spent() {
+            Self::empty_document(&dom);
+            return Document(dom);
+        }
         let mut id_to_tag_name_map = HashMap::new();
         let mut id_to_tag_name_stack = vec![{
             let children = dom.document.children.borrow();
@@ -1948,6 +1954,11 @@ impl<'a> Builder<'a> {
         // of course, contains nodes that need to be dropped (we can't just drop them,
         // because they could have a very deep child tree).
         while let Some(mut node) = stack.pop() {
+            // CROFT-PATCH: stop once the budget is spent (the filters charge it); the document
+            // is then left empty, never half cleaned.
+            if !html5ever::budget::charge(1) {
+                break;
+            }
             if matches!(node.data, NodeData::Element { ref name, .. } if &*name.local == "selectedcontent" && name.ns == ns!(html))
                 && self.is_within(node.clone(), ns!(html), "select")
             {
@@ -1993,11 +2004,32 @@ impl<'a> Builder<'a> {
         while let Some(node) = removed.pop() {
             removed.extend_from_slice(&mem::take(&mut *node.children.borrow_mut())[..]);
         }
+        // CROFT-PATCH: see the top of the loop.
+        if html5ever::budget::spent() {
+            drop(stack);
+            Self::empty_document(&dom);
+        }
         Document(dom)
+    }
+
+    // CROFT-PATCH: removes everything from the document, without recursion (a node's `Drop`
+    // takes its children apart iteratively).
+    fn empty_document(dom: &RcDom) {
+        let root = dom.document.children.borrow().first().cloned();
+        if let Some(root) = root {
+            let children = mem::take(&mut *root.children.borrow_mut());
+            drop(children);
+        }
     }
 
     fn is_within(&self, mut child: Handle, ns: Namespace, tag: &str) -> bool {
         while let Some(parent) = child.parent.take() {
+            // CROFT-PATCH: a walk up the tree, run per `selectedcontent` element: charged per
+            // step, and given up once the budget is spent.
+            if !html5ever::budget::charge(1) {
+                child.parent.set(Some(parent));
+                return false;
+            }
             child.parent.set(Some(parent.clone()));
             match child.data {
                 NodeData::Element { ref name, .. } if name.ns == ns && &*name.local == tag => {
@@ -2079,6 +2111,12 @@ impl<'a> Builder<'a> {
                             // Banned classes will be filtered later.
                             attr_name == "class" && self.allowed_classes.contains_key(tag_name)
                         } else if is_url_attr(tag_name, attr_name) {
+                            // CROFT-PATCH: parsing a URL is the costliest step per attribute:
+                            // charged to the parser's budget (see `html5ever::budget`).
+                            html5ever::budget::charge(
+                                html5ever::budget::URL_UNITS
+                                    + attr_val.len() as u64 / html5ever::budget::URL_BYTES_PER_UNIT,
+                            );
                             let url = Url::parse(attr_val);
                             if let Ok(url) = url {
                                 self.url_schemes.contains(url.scheme())
@@ -2425,10 +2463,23 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
+            // CROFT-PATCH: once the parser's work budget is spent nothing is kept, so the filters
+            // are not run at all.
+            if html5ever::budget::spent() {
+                attrs.borrow_mut().clear();
+                return;
+            }
             if let Some(ref attr_filter) = self.attribute_filter {
                 let mut drop_attrs = Vec::new();
                 let mut attrs = attrs.borrow_mut();
+                let mut give_up = false; // CROFT-PATCH: see below.
                 for (i, attr) in &mut attrs.iter_mut().enumerate() {
+                    // CROFT-PATCH: one unit per attribute filtered; the filter's own work is
+                    // charged by the filter.
+                    if !html5ever::budget::charge(1) {
+                        give_up = true;
+                        break;
+                    }
                     let replace_with = if let Some(new) =
                         attr_filter.filter(&name.local, &attr.name.local, &attr.value)
                     {
@@ -2444,6 +2495,11 @@ impl<'a> Builder<'a> {
                     if let Some(replace_with) = replace_with {
                         attr.value = replace_with;
                     }
+                }
+                // CROFT-PATCH: the budget ran out in the loop: nothing is kept.
+                if give_up {
+                    attrs.clear();
+                    return;
                 }
                 for i in drop_attrs.into_iter().rev() {
                     attrs.swap_remove(i);

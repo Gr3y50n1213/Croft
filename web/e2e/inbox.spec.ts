@@ -14,13 +14,17 @@ let mail: TestMail;
 
 test.beforeAll(async () => {
   mail = await TestMail.start(30);
+});
+
+test.afterAll(() => mail.stop());
+
+// A Companion per test: every request comes from this machine's one address, and the sign-in
+// limits (30 requests a minute per address) would otherwise be shared by all the tests.
+test.beforeEach(async () => {
   companion = await Companion.start({ CROFT_COMPANION_MAIL_ALLOWED_NETWORKS: '127.0.0.1/32' });
 });
 
-test.afterAll(() => {
-  companion.stop();
-  mail.stop();
-});
+test.afterEach(() => companion.stop());
 
 let users = 0;
 
@@ -122,16 +126,25 @@ test('W01 has no accessibility violation (axe-core)', async ({ page }) => {
   expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ") + " " + (n.failureSummary ?? "")).join(" | ")}`)).toEqual([]);
 });
 
-test('a trackpad two-finger swipe runs the swipe action (right: mark read, by default)', async ({ page }) => {
+test('a trackpad two-finger swipe runs the swipe action (right: toggle read, by default)', async ({ page }) => {
   await signedInWithMail(page);
+  // The test server's mailbox is shared by every test's user: start from the row's state, whatever it is.
   const row = rows(page).nth(3);
-  await expect(row).toHaveClass(/unread/);
+  const wasUnread = /unread/.test((await row.getAttribute('class')) ?? '');
   const box = (await row.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   // A swipe to the right: the content moves right, the wheel reports a negative deltaX.
   for (let i = 0; i < 10; i++) await page.mouse.wheel(-30, 0);
-  await expect(row).not.toHaveClass(/unread/);
-  // The same swipe again toggles it back: unread.
+  await expect(row).toHaveClass(wasUnread ? /^(?!.*unread)/ : /unread/);
+  // The same swipe again toggles it back.
   for (let i = 0; i < 10; i++) await page.mouse.wheel(-30, 0);
-  await expect(row).toHaveClass(/unread/);
+  await expect(row).toHaveClass(wasUnread ? /unread/ : /^(?!.*unread)/);
+});
+
+test('an email clicked opens even when the keyboard moves before its body arrives', async ({ page }) => {
+  await signedInWithMail(page);
+  const subject = (await rows(page).nth(1).locator('.subject').textContent())!;
+  await rows(page).nth(1).getByRole('button', { name: /Message/ }).click();
+  await page.keyboard.press('j');
+  await expect(page.getByRole('region', { name: 'Reading pane' }).getByRole('heading', { level: 2 })).toHaveText(subject);
 });

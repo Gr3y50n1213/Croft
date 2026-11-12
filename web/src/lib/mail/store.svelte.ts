@@ -39,6 +39,8 @@ export class MailState {
   snack: Snack | null = $state(null);
   #snackTimer: ReturnType<typeof setTimeout> | undefined;
   #snackId = 0;
+  /** The latest open request: a slower earlier one never replaces it. */
+  #opens = 0;
   /** The last undoable action, for `z` and the snackbar. */
   #lastUndo: (() => Promise<void>) | null = null;
 
@@ -129,13 +131,15 @@ export class MailState {
     if (!this.account) return;
     const at = this.emails.findIndex((e) => e.id === id);
     if (at >= 0) this.cursor = at;
+    const request = ++this.#opens;
     this.opening = true;
     try {
       const body = await this.#jmap.body(this.account, id);
-      if (this.focused?.id !== id && at >= 0) return;
+      // Only the latest request opens (moving the keyboard meanwhile does not cancel it).
+      if (request !== this.#opens) return;
       this.open = body;
     } finally {
-      this.opening = false;
+      if (request === this.#opens) this.opening = false;
     }
     const email = this.emails.find((e) => e.id === id);
     if (email && email.keywords['$seen'] !== true) await this.act('mark-read', [id]);

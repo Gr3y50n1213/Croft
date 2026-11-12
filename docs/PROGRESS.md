@@ -49,7 +49,9 @@ path="shared-attachments/"/>`. The core saves into `cacheDir/shared-attachments/
 sample mailbox (conversation, body not marked read until `mark_seen`, remote blocked, Show images, allowed, Never wins, known senders,
 attachment saved into the folder, a blocked executable refused through a draft appended to Drafts, every `ReadException` variant has a
 `ReadProblem`) and `ReadingRulesTest` (links, requests, reply-all rule) pass; `python3 -m unittest discover -s android/tools` passes;
-the app and its unit tests compile. Robolectric and screenshot tests cannot run here (Maven Central refuses the container): see CI below.
+the app and its unit tests compile. Robolectric and screenshot tests cannot run here (Maven Central refuses the container), so they ran on CI only.
+
+**CI.** First run (`c1b4ec3`): 6 of 7 green; `android` had 13 failed tests, 2 of them T18d's (fixed by its `210f52f`, merged) and 11 of mine (merged semantics on three nodes, Safe Browsing asserted on a recording settings object because Robolectric's is a stub, the FileProvider static path cache cleared per test, a folder out of view in the Move to sheet, a state change with a paused clock). Second run (`123393f`): all 7 jobs green (`design`, `schema`, `core`, `sqlcipher`, `integration`, `android`, `android-release`).
 
 **Unverified (needs a device).** How real HTML mail renders and scrolls inside the conversation (WebView under Robolectric draws
 nothing; the screenshots show an empty light card), pinch zoom and nested scrolling, the chooser and real viewer apps, TalkBack reading

@@ -144,8 +144,9 @@ pub async fn session(State(app): State<App>, Full(c): Full) -> ApiResult {
                 "name": a.email,
                 "isPersonal": true,
                 "isReadOnly": false,
-                "accountCapabilities": {
+                                "accountCapabilities": {
                     CORE: {},
+                    jmap_compose::COMPOSE: {},
                     MAIL: {
                         "maxMailboxesPerEmail": 1,
                         "maxMailboxDepth": null,
@@ -172,7 +173,8 @@ pub async fn session(State(app): State<App>, Full(c): Full) -> ApiResult {
                 "maxObjectsInSet": MAX_OBJECTS,
                 "collationAlgorithms": [],
             },
-            MAIL: {},
+                        MAIL: {},
+            jmap_compose::COMPOSE: {},
         },
         "accounts": map,
         "primaryAccounts": primary.map_or_else(|| json!({}), |p| json!({ CORE: p, MAIL: p })),
@@ -202,9 +204,11 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
             "using and methodCalls are required",
         ));
     };
+    let mut compose = false;
     for cap in using {
         match cap.as_str() {
             Some(CORE | MAIL) => {}
+            Some(jmap_compose::COMPOSE) => compose = true,
             _ => {
                 return Ok(request_error(
                     "unknownCapability",
@@ -247,10 +251,14 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
             .map(|a| a.id)
             .collect()
     };
+    let limits = app.auth.clone();
+    let user_id = c.user_id;
     let ctx = Ctx {
         core,
         epoch,
         accounts,
+        compose,
+        send_allowed: Box::new(move || limits.mail_limit(user_id).is_ok()),
     };
     let mut responses: Vec<Value> = Vec::new();
     let mut spent = body.len();
@@ -381,6 +389,10 @@ struct Ctx {
     core: Arc<Core>,
     epoch: u64,
     accounts: Vec<i64>,
+    /// The request's `using` names the compose capability (its methods are unknown otherwise).
+    compose: bool,
+    /// Counts a send against the user's mail limit; false when over it.
+    send_allowed: Box<dyn Fn() -> bool + Send + Sync>,
 }
 
 type Answer = Vec<(String, Value)>;
@@ -418,6 +430,13 @@ impl Ctx {
             "Email/set" => one(name, self.email_set(args).await),
             "Thread/get" => one(name, self.thread_get(args).await),
             "Identity/get" => one(name, self.identity_get(args).await),
+            "CroftDraft/get" if self.compose => one(name, self.draft_get(args).await),
+            "CroftDraft/set" if self.compose => one(name, self.draft_set(args).await),
+            "CroftDraft/reply" if self.compose => one(name, self.draft_reply(args).await),
+            "CroftDraft/check" if self.compose => one(name, self.draft_check(args).await),
+            "CroftOutbox/send" if self.compose => one(name, self.outbox_send(args).await),
+            "CroftOutbox/undo" if self.compose => one(name, self.outbox_undo(args).await),
+            "CroftOutbox/get" if self.compose => one(name, self.outbox_get(args).await),
             _ => vec![("error".to_owned(), error("unknownMethod"))],
         }
     }
@@ -1068,6 +1087,9 @@ impl Ctx {
         }))
     }
 }
+
+#[path = "jmap_compose.rs"]
+mod jmap_compose;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

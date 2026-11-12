@@ -42,8 +42,8 @@ const MAX_HEAD: usize = 16 * 1024;
 /// Most addresses tried for one host.
 const MAX_ADDRS: usize = 4;
 
-/// What the server answered. The body is empty unless the status is 2xx.
-#[derive(Debug)]
+/// What the server answered. The body is empty unless the status is 2xx. `Debug` leaves the
+/// body out: it can hold tokens (an OAuth token answer) or mail.
 pub(crate) struct HttpResponse {
     /// Status code.
     pub status: u16,
@@ -51,6 +51,15 @@ pub(crate) struct HttpResponse {
     pub location: Option<String>,
     /// The body of a 2xx answer.
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for HttpResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpResponse")
+            .field("status", &self.status)
+            .field("body_len", &self.body.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Why a request failed, and whether the server may nevertheless have acted on it.

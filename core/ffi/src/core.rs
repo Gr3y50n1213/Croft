@@ -821,6 +821,17 @@ impl Core {
         // OAuth sign-in is checked with the access token it just got.
         let credential = match credential.to_asked() {
             Asked::Credential(c) => c,
+            // The token only ever goes to the provider's own servers.
+            Asked::OAuth(stored)
+                if !crate::oauth::servers_belong_to(
+                    stored.provider,
+                    discovered.imap.as_ref(),
+                    discovered.smtp.as_ref(),
+                    discovered.jmap.is_some(),
+                ) =>
+            {
+                return Err(VerifyFailure::BadSettings)
+            }
             Asked::OAuth(stored) => crate::oauth::one_off_credential(&stored)
                 .await
                 .map_err(|_| VerifyFailure::WrongPassword)?,
@@ -956,6 +967,17 @@ impl Core {
         // Not valid UTF-8 (the bytes are wiped), or an OAuth secret this version cannot read.
         let credential = match credential.to_asked() {
             Asked::NoCredential | Asked::NotReady => return Err(CoreError::NoCredential),
+            // The token only ever goes to the provider's own servers (IMAP and SMTP).
+            Asked::OAuth(stored)
+                if !crate::oauth::servers_belong_to(
+                    stored.provider,
+                    Some(&imap),
+                    discovered.smtp.as_ref(),
+                    discovered.jmap.is_some(),
+                ) =>
+            {
+                return Err(CoreError::BadSettings)
+            }
             usable => usable,
         };
         let inner = self.inner.clone();

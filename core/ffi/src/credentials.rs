@@ -368,7 +368,11 @@ impl AccountBackend {
     /// previous adapter is dropped, which closes its connection.
     pub(crate) fn set_asked(&self, asked: Asked) -> Readiness {
         let (state, readiness) = self.state_for(asked, 0);
-        *self.lock() = state;
+        let old = std::mem::replace(&mut *self.lock(), state);
+        // A session still refreshing must not hand its rotated secret back over the new sign-in.
+        if let State::OAuth { session, .. } = old {
+            session.retire();
+        }
         readiness
     }
 
@@ -451,10 +455,7 @@ impl AccountBackend {
                 Ok(b)
             }
             Err(BackendError::Auth(m)) => {
-                let mut st = self.lock();
-                if matches!(&*st, State::OAuth { session: s, .. } if Arc::ptr_eq(s, &session)) {
-                    *st = State::NeedsSignIn;
-                }
+                self.revoked(&session);
                 Err(BackendError::Auth(m))
             }
             Err(e) => Err(e),
@@ -471,7 +472,22 @@ impl AccountBackend {
             State::OAuth { session, .. } => Some(session.clone()),
             _ => None,
         }?;
-        Some(session.credential(force).await.map(|(c, _)| c))
+        let r = session.credential(force).await.map(|(c, _)| c);
+        if matches!(r, Err(BackendError::Auth(_))) {
+            // The sign-in was revoked (`invalid_grant`), found while sending.
+            self.revoked(&session);
+        }
+        Some(r)
+    }
+
+    /// `session`'s sign-in was revoked: the account needs a sign-in (unless another sign-in
+    /// replaced the session meanwhile).
+    fn revoked(&self, session: &Arc<OAuthSession>) {
+        let mut st = self.lock();
+        if matches!(&*st, State::OAuth { session: s, .. } if Arc::ptr_eq(s, session)) {
+            *st = State::NeedsSignIn;
+            session.retire();
+        }
     }
 
     /// The account's IMAP adapter, for what the [`MailBackend`] trait does not offer (saving a

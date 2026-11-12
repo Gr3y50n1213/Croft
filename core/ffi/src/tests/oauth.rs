@@ -318,3 +318,112 @@ fn the_person_saying_no_is_access_denied() {
     );
     browser.join().unwrap();
 }
+
+#[test]
+fn an_oauth_sign_in_is_refused_for_servers_that_are_not_the_providers() {
+    let f = fixture();
+    f.server.set_password("access-1");
+    let secret = sign_in(&f);
+    let cred = FfiCredential::oauth_stored(secret.clone());
+    // Another SMTP host than the provider's: the token would go there.
+    let mut other_smtp = discovered_for(&f.server);
+    other_smtp.smtp = Some(ServerSettings {
+        host: "smtp.gmai1.example".into(),
+        port: 465,
+        security: SecurityMode::Tls,
+        username: f.server.username(),
+    });
+    assert_eq!(
+        block(f.core.verify(
+            other_smtp.clone(),
+            cred.clone(),
+            Some(fingerprint_of(&f.server))
+        ))
+        .err(),
+        Some(VerifyFailure::BadSettings)
+    );
+    assert_eq!(
+        block(f.core.add_account(
+            other_smtp,
+            "x".into(),
+            Some(fingerprint_of(&f.server)),
+            None,
+            cred.clone()
+        ))
+        .err(),
+        Some(CoreError::BadSettings)
+    );
+    // A JMAP URL is never Google's or Microsoft's.
+    let mut with_jmap = discovered_for(&f.server);
+    with_jmap.jmap = Some("https://jmap.example.org/.well-known/jmap".into());
+    assert_eq!(
+        block(f.core.add_account(
+            with_jmap,
+            "x".into(),
+            Some(fingerprint_of(&f.server)),
+            None,
+            cred
+        ))
+        .err(),
+        Some(CoreError::BadSettings)
+    );
+}
+
+#[test]
+fn only_the_providers_own_hosts_belong_to_it() {
+    use crate::oauth::servers_belong_to;
+    use croft_protocols::oauth::OAuthProvider;
+    let s = |h: &str| ServerSettings {
+        host: h.into(),
+        port: 993,
+        security: SecurityMode::Tls,
+        username: "u".into(),
+    };
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    set_token_endpoint_for_tests(None);
+    let g = OAuthProvider::Google;
+    let m = OAuthProvider::Microsoft;
+    assert!(servers_belong_to(
+        g,
+        Some(&s("imap.gmail.com")),
+        Some(&s("smtp.gmail.com")),
+        false
+    ));
+    assert!(!servers_belong_to(
+        g,
+        Some(&s("imap.gmail.com")),
+        Some(&s("smtp.example.org")),
+        false
+    ));
+    assert!(!servers_belong_to(
+        g,
+        Some(&s("outlook.office365.com")),
+        None,
+        false
+    ));
+    assert!(servers_belong_to(
+        m,
+        Some(&s("outlook.office365.com")),
+        Some(&s("smtp.office365.com")),
+        false
+    ));
+    assert!(!servers_belong_to(
+        m,
+        Some(&s("imap.gmail.com")),
+        None,
+        false
+    ));
+    assert!(!servers_belong_to(
+        g,
+        Some(&s("imap.gmail.com")),
+        None,
+        true
+    ));
+    assert!(!servers_belong_to(g, None, None, false));
+    assert!(
+        !servers_belong_to(g, Some(&s("127.0.0.1")), None, false),
+        "loopback only in host tests"
+    );
+}

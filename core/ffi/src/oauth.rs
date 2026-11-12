@@ -180,6 +180,9 @@ pub(crate) struct OAuthSession {
     stored: Mutex<StoredOAuth>,
     /// Held while refreshing, so two callers never refresh at once.
     refreshing: tokio::sync::Mutex<()>,
+    /// The account has another sign-in now (or none): a rotation this session receives is not
+    /// handed to the app, so it can never write an old secret over the new one.
+    retired: std::sync::atomic::AtomicBool,
 }
 
 impl OAuthSession {
@@ -193,7 +196,14 @@ impl OAuthSession {
             provider,
             stored: Mutex::new(stored),
             refreshing: tokio::sync::Mutex::new(()),
+            retired: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The account no longer uses this session (a new sign-in replaced it, or it was revoked).
+    pub(crate) fn retire(&self) {
+        self.retired
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The account name the tokens belong to.
@@ -250,7 +260,9 @@ impl OAuthSession {
                 _ => None,
             }
         };
-        if let Some(blob) = rotated {
+        if let Some(blob) =
+            rotated.filter(|_| !self.retired.load(std::sync::atomic::Ordering::SeqCst))
+        {
             // The app keeps the new refresh token; the old one may stop working at once.
             let provider = self.provider.clone();
             let account = self.account;
@@ -260,6 +272,33 @@ impl OAuthSession {
         }
         Ok((tokens.access_token, tokens.expires_at_ms))
     }
+}
+
+/// Whether every server the account would use belongs to the OAuth `provider` (Gmail's servers for
+/// Google, Outlook's for Microsoft), so the access token never goes to another host. A JMAP URL
+/// is never one of theirs.
+pub(crate) fn servers_belong_to(
+    provider: OAuthProvider,
+    imap: Option<&crate::types::ServerSettings>,
+    smtp: Option<&crate::types::ServerSettings>,
+    has_jmap: bool,
+) -> bool {
+    use croft_protocols::discovery::{provider_for_host, Provider};
+    let want = match provider {
+        OAuthProvider::Google => Provider::Gmail,
+        OAuthProvider::Microsoft => Provider::Outlook,
+    };
+    let Some(imap) = imap else {
+        return false;
+    };
+    // Host tests only: with the fake token endpoint on (never in an Android build), the test
+    // servers on this machine stand in for the provider's.
+    let ok = |host: &str| {
+        provider_for_host(host) == Some(want)
+            || (lock(&TOKEN_ENDPOINT_FOR_TESTS).is_some()
+                && (host == "127.0.0.1" || host == "localhost"))
+    };
+    !has_jmap && ok(&imap.host) && smtp.is_none_or(|s| ok(&s.host))
 }
 
 /// A credential to check a sign-in with right away (`verify`): the access token the sign-in just
@@ -476,7 +515,9 @@ impl Core {
     /// `add_account`.
     pub async fn oauth_finish(&self, flow_id: String) -> Result<OAuthSignedIn, OAuthFailure> {
         let (loopback, state, page, cancel, left) = {
-            let flows = lock(&FLOWS);
+            let mut flows = lock(&FLOWS);
+            // Sign-ins nobody finished (an app stopped mid-way) are dropped with their listeners.
+            flows.retain(|_, f| f.started.elapsed() < FLOW_LIFETIME);
             let f = flows.get(&flow_id).ok_or(OAuthFailure::Expired)?;
             let left = FLOW_LIFETIME
                 .checked_sub(f.started.elapsed())
@@ -541,9 +582,11 @@ impl Core {
     /// Ends a pending sign-in (the person closed the tab, or left the screen): its `oauth_finish`
     /// returns `Cancelled` and the listener closes.
     pub fn oauth_cancel(&self, flow_id: String) {
-        if let Some(f) = lock(&FLOWS).remove(&flow_id) {
+        let mut flows = lock(&FLOWS);
+        if let Some(f) = flows.remove(&flow_id) {
             f.cancel.notify_one();
         }
+        flows.retain(|_, f| f.started.elapsed() < FLOW_LIFETIME);
     }
 
     /// The client id the person used last for `provider`, to fill in the field.

@@ -65,46 +65,63 @@ impl Loopback {
 
     /// Waits for the request that carries `state` and returns it as a full URL (redirect URI
     /// plus the path and query), for [`super::parse_redirect`]. `page` is what the browser shows
-    /// for it; other requests get an empty 404.
+    /// for it; other requests get an empty 404. Connections are read side by side (at most
+    /// [`MAX_OPEN`] at once), so a connection that sends nothing cannot hold the real redirect up.
     pub async fn wait(&self, state: &str, page: &str) -> Result<Zeroizing<String>, OAuthError> {
+        let mut open = tokio::task::JoinSet::new();
         loop {
-            let (mut stream, peer) = self
-                .listener
-                .accept()
-                .await
-                .map_err(|_| OAuthError::Transient)?;
-            if !peer.ip().is_loopback() {
-                continue;
-            }
-            let Ok(Some(target)) =
-                tokio::time::timeout(READ_TIMEOUT, read_target(&mut stream)).await
-            else {
-                continue;
-            };
-            let ours = target
-                .split_once('?')
-                .is_some_and(|(_, q)| q.split('&').any(|p| p == format!("state={state}")));
-            let reply = if ours {
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{}",
-                    page.len(),
-                    page
-                )
-            } else {
-                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    .to_owned()
-            };
-            let _ = stream.write_all(reply.as_bytes()).await;
-            let _ = stream.shutdown().await;
-            if ours {
-                return Ok(Zeroizing::new(format!(
-                    "{}{}",
-                    self.redirect_uri(),
-                    target.as_str()
-                )));
+            tokio::select! {
+                accepted = self.listener.accept() => {
+                    let Ok((stream, peer)) = accepted else {
+                        // A connection reset before it was accepted, say: keep listening.
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    };
+                    if !peer.ip().is_loopback() || open.len() >= MAX_OPEN {
+                        continue;
+                    }
+                    let (state, page) = (state.to_owned(), page.to_owned());
+                    open.spawn(async move { answer(stream, &state, &page).await });
+                }
+                Some(done) = open.join_next(), if !open.is_empty() => {
+                    if let Ok(Some(target)) = done {
+                        return Ok(Zeroizing::new(format!("{}{}", self.redirect_uri(), target.as_str())));
+                    }
+                }
             }
         }
     }
+}
+
+/// Most connections read at once.
+const MAX_OPEN: usize = 16;
+
+/// Reads one connection's request and answers it: the page when it carries `state` (the
+/// target is returned), an empty 404 otherwise.
+async fn answer(
+    mut stream: tokio::net::TcpStream,
+    state: &str,
+    page: &str,
+) -> Option<Zeroizing<String>> {
+    let target = tokio::time::timeout(READ_TIMEOUT, read_target(&mut stream))
+        .await
+        .ok()
+        .flatten()?;
+    let ours = target
+        .split_once('?')
+        .is_some_and(|(_, q)| q.split('&').any(|p| p == format!("state={state}")));
+    let reply = if ours {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n{}",
+            page.len(),
+            page
+        )
+    } else {
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+    };
+    let _ = stream.write_all(reply.as_bytes()).await;
+    let _ = stream.shutdown().await;
+    ours.then_some(target)
 }
 
 /// The target of a `GET` request line (`/?code=...`), or `None` for anything else.
@@ -178,6 +195,32 @@ mod tests {
                 .as_str(),
             "made-up"
         );
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_sends_nothing_does_not_hold_up_the_real_redirect() {
+        let lb = Loopback::bind().await.unwrap();
+        let port = lb.port();
+        // Another app opens connections and stays silent.
+        let mut silent = Vec::new();
+        for _ in 0..3 {
+            silent.push(
+                tokio::net::TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let browser = tokio::spawn(async move { get(port, "/?state=s&code=c").await });
+        let started = std::time::Instant::now();
+        let url = lb.wait("s", "ok").await.unwrap();
+        assert!(url.ends_with("/?state=s&code=c"));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        browser.await.unwrap();
+        drop(silent);
     }
 
     #[tokio::test]

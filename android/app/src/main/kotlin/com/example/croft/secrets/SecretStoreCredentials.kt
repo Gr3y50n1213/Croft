@@ -100,6 +100,9 @@ class SecretStoreCredentials(
      */
     override fun saveTokens(accountId: Long, secret: ByteArray) {
         try {
+            // Only over an OAuth sign-in that is still the account's: a late rotation from before a password sign-in must not
+            // bring the old OAuth secret back (the credential prefers it).
+            if (!store.has(accountId, SecretKind.OAUTH_REFRESH) || store.has(accountId, SecretKind.PASSWORD)) return
             store.put(accountId, SecretKind.OAUTH_REFRESH, secret)
         } catch (e: Exception) {
             // Kept as it was; nothing is logged.

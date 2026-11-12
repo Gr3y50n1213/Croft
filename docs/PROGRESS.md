@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T21: bring-your-own OAuth for Gmail and Outlook (12 November 2026)
 
-**Status:** in progress on `task/t21` (draft pull request for CI next). **FFI API version 12.**
+**Status:** draft pull request #32 on `task/t21` (CI); independent review done, fixes included. **FFI API version 12.**
 
 **What was built.** (1) *Core* (`croft_protocols::oauth`): the provider table (Google: `accounts.google.com`, `oauth2.googleapis.com`, scope
 `https://mail.google.com/`; Microsoft: the v2.0 endpoints of `login.microsoftonline.com/common`, `IMAP.AccessAsUser.All`, `SMTP.Send`,
@@ -26,7 +26,7 @@ like a password (`AccountSecrets.addOAuthAccount`, `SecretKind.OAUTH_REFRESH`).
 needs a "Desktop app" client with its own secret; a pending sign-in does not survive the process being stopped.
 
 **Checks so far.** Rust: 16 unit tests (RFC 7636 vector, URLs, redirects, token answers, loopback), 5 in-process tests (code exchange,
-rotation, `invalid_grant`, slow endpoint, XOAUTH2 with a good and an expired token), 7 FFI tests (the whole sign-in with a simulated
+rotation, `invalid_grant`, slow endpoint, XOAUTH2 with a good and an expired token), 9 FFI tests (servers that are not the provider's refused; the whole sign-in with a simulated
 browser, sync over XOAUTH2, no token in the database file, refresh on a refused token with the rotated secret handed back, refresh before
 expiry, revoked sign-in to needs-sign-in, cancel, access denied, bad client id).
 
@@ -38,7 +38,7 @@ Croft on real phones, refresh-token lifetime.
 
 ## T20: background check and notifications (12 November 2026)
 
-**Status:** draft pull request #30 on `task/t20` (CI). **FFI API version 11.**
+**Status:** pull request #31 to `main` (all CI jobs green on the task branch; review done). **FFI API version 11.**
 
 **What was built.** (1) *What counts as new* (`croft_mail_core::notify`, pure): unread, in the Inbox, above the account's "notified up to"
 marker under the Inbox's UIDVALIDITY. The first check (or one after the Inbox was renumbered) only sets a baseline, so the mail already

@@ -132,7 +132,9 @@ impl TokenEndpoint {
         if (300..400).contains(&answer.status) {
             return Err(OAuthError::Refused("redirect".into()));
         }
-        parse_token_answer(answer.status, &answer.body, now_ms)
+        // The answer holds the tokens: wiped once read.
+        let body = Zeroizing::new(answer.body);
+        parse_token_answer(answer.status, &body, now_ms)
     }
 }
 

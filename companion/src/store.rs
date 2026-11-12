@@ -170,41 +170,23 @@ impl Store {
             .is_ok()
     }
 
-    /// Checks `master` is this instance's master key, storing the check value on first use.
-    /// A different key is [`CryptoError::Open`].
+    /// Checks `master` is this instance's master key: it must open the check value **and every
+    /// user's wrapped data key**. The check value lives in the same database, so on its own it
+    /// proves nothing about a key file someone else wrote. A database without a check value takes
+    /// one only while it has no user key: a wrong key can never "initialise" data that exists.
     pub fn check_master_key(&self, master: &Key) -> Result<(), StoreError> {
-        let stored: Option<Vec<u8>> = self
-            .conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'master_check'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        match stored {
-            Some(sealed) => {
-                let plain = master.open(MASTER_CHECK_AAD, &sealed)?;
-                if plain.as_slice() == MASTER_CHECK {
-                    Ok(())
-                } else {
-                    Err(StoreError::Crypto(CryptoError::Open))
-                }
-            }
-            None => {
-                let sealed = master.seal(MASTER_CHECK_AAD, MASTER_CHECK)?;
-                self.conn.execute(
-                    "INSERT INTO meta(key, value) VALUES ('master_check', ?1)",
-                    params![sealed],
-                )?;
-                Ok(())
-            }
-        }
+        check_key(&self.conn, master)
     }
 
-    /// Adds a user with a fresh data key wrapped by `master`. Audited.
+    /// Adds a user with a fresh data key wrapped by `master`. The key is checked inside the same
+    /// write transaction (taken at once), so a rotation that committed meanwhile is never
+    /// undercut by a key wrapped under the old master key. Audited.
     pub fn add_user(&mut self, master: &Key, name: &str, role: Role) -> Result<User, StoreError> {
         let name = name.trim();
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        check_key(&tx, master)?;
         let taken: bool = tx
             .query_row("SELECT 1 FROM user WHERE name = ?1", params![name], |_| {
                 Ok(true)
@@ -304,8 +286,8 @@ impl Store {
     pub fn audit(
         &self,
         user_id: Option<i64>,
-        action: &str,
-        outcome: &str,
+        action: &'static str,
+        outcome: &'static str,
     ) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO audit_log(at_ms, user_id, action, outcome) VALUES (?1, ?2, ?3, ?4)",
@@ -334,6 +316,44 @@ impl Store {
         }
         Ok(out)
     }
+}
+
+/// See [`Store::check_master_key`]. Runs on a connection or inside a transaction.
+fn check_key(conn: &Connection, master: &Key) -> Result<(), StoreError> {
+    let stored: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'master_check'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let keys: Vec<(i64, Vec<u8>)> = {
+        let mut stmt = conn.prepare("SELECT user_id, wrapped FROM user_key")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    match stored {
+        Some(sealed) => {
+            let plain = master.open(MASTER_CHECK_AAD, &sealed)?;
+            if plain.as_slice() != MASTER_CHECK {
+                return Err(StoreError::Crypto(CryptoError::Open));
+            }
+        }
+        // The check value is missing while users exist: someone removed it. Never re-create it
+        // here (that would accept any key); the key must prove itself on the users' keys below.
+        None if !keys.is_empty() => {}
+        None => {
+            let sealed = master.seal(MASTER_CHECK_AAD, MASTER_CHECK)?;
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES ('master_check', ?1)",
+                params![sealed],
+            )?;
+        }
+    }
+    for (user_id, wrapped) in &keys {
+        crypto::unwrap_data_key(master, *user_id, wrapped)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -395,6 +415,24 @@ mod tests {
             s.check_master_key(&other),
             Err(StoreError::Crypto(_))
         ));
+    }
+
+    #[test]
+    fn a_removed_check_value_never_lets_a_wrong_key_in() {
+        let master = Key::generate().unwrap();
+        let mut s = Store::in_memory().unwrap();
+        s.check_master_key(&master).unwrap();
+        s.add_user(&master, "u", Role::User).unwrap();
+        s.conn
+            .execute("DELETE FROM meta WHERE key = 'master_check'", [])
+            .unwrap();
+        let wrong = Key::generate().unwrap();
+        assert!(
+            s.check_master_key(&wrong).is_err(),
+            "the users' keys do not open"
+        );
+        assert!(s.add_user(&wrong, "v", Role::User).is_err());
+        s.check_master_key(&master).unwrap();
     }
 
     #[test]

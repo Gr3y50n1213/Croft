@@ -82,7 +82,8 @@ impl Key {
     /// A key from 64 hex digits (surrounding whitespace ignored).
     pub fn from_hex(text: &str) -> Result<Self, CryptoError> {
         let t = text.trim();
-        if t.len() != 64 {
+        // Exactly 64 hex digits: `from_str_radix` alone would also take a sign (`+1`).
+        if t.len() != 64 || !t.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(CryptoError::BadKey);
         }
         let mut k = Zeroizing::new([0u8; 32]);

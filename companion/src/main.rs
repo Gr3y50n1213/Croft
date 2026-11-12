@@ -30,6 +30,8 @@ fn run(args: &[String]) -> Result<String, CliError> {
         return cli::run(&config, &command);
     }
     // `serve` below; `healthcheck` needs no database (handled in `cli::run`).
+    // Held while the server runs: a master key rotation waits for it to stop.
+    let _lock = cli::serve_lock(&config)?;
     let (store, _key) = cli::open(&config)?;
     let runtime = tokio::runtime::Runtime::new().map_err(|e| CliError::Serve(e.to_string()))?;
     runtime

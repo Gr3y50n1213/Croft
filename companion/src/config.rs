@@ -99,7 +99,14 @@ impl Config {
         let master_key_file = env("CROFT_COMPANION_MASTER_KEY_FILE")
             .map(PathBuf::from)
             .or(file.master_key_file)
-            .unwrap_or_else(|| data_dir.join("master.key"));
+            .unwrap_or_else(|| PathBuf::from("/keys/master.key"));
+        // The key next to the database would put both in one backup, and anyone who can write the
+        // data folder could replace it.
+        if master_key_file.starts_with(&data_dir) {
+            return Err(ConfigError::Invalid(
+                "master_key_file must be outside data_dir (keep the key on another volume)",
+            ));
+        }
         if listen.parse::<std::net::SocketAddr>().is_err() {
             return Err(ConfigError::Invalid(
                 "listen must be an address and port, such as 0.0.0.0:8480",
@@ -130,25 +137,48 @@ impl Config {
 }
 
 fn public_url_is_ok(url: &str) -> bool {
-    if let Some(rest) = url.strip_prefix("https://") {
-        return !rest.is_empty();
-    }
-    let Some(rest) = url.strip_prefix("http://") else {
+    let (secure, rest) = if let Some(r) = url.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (false, r)
+    } else {
         return false;
     };
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    host == "localhost" || host == "127.0.0.1"
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // No user name or password in the address (`http://localhost:x@evil.example`).
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = authority.rsplit_once(':').map_or(authority, |(h, port)| {
+        if port.bytes().all(|b| b.is_ascii_digit()) {
+            h
+        } else {
+            authority
+        }
+    });
+    secure || host == "localhost" || host == "127.0.0.1"
 }
 
-/// Reads the master key, refusing a file other users can read.
+/// Reads the master key. Refused: a symbolic link, a file other users can read, and a file that
+/// changed between the check and the read (the check is made on the opened file itself).
 pub fn load_master_key(path: &Path) -> Result<Key, ConfigError> {
-    let meta = std::fs::metadata(path).map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?;
-    if exposed(&meta) {
+    use std::io::Read;
+    let link =
+        std::fs::symlink_metadata(path).map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?;
+    if link.file_type().is_symlink() || !link.is_file() {
         return Err(ConfigError::MasterKeyExposed(path.to_owned()));
     }
-    let text = zeroize::Zeroizing::new(
-        std::fs::read_to_string(path).map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?,
-    );
+    let file = std::fs::File::open(path).map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?;
+    if exposed(&opened) || !same_file(&link, &opened) {
+        return Err(ConfigError::MasterKeyExposed(path.to_owned()));
+    }
+    let mut text = zeroize::Zeroizing::new(String::new());
+    file.take(256)
+        .read_to_string(&mut text)
+        .map_err(|_| ConfigError::MasterKeyDamaged(path.to_owned()))?;
     Key::from_hex(&text).map_err(|_| ConfigError::MasterKeyDamaged(path.to_owned()))
 }
 
@@ -161,6 +191,27 @@ fn exposed(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn exposed(_: &std::fs::Metadata) -> bool {
     false
+}
+
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// Makes the file's folder entry durable (a key file that vanished after a power cut would lose
+/// every user's data).
+pub fn sync_parent(path: &Path) {
+    if let Some(dir) = path.parent() {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
 }
 
 /// Writes `key` to a new file at `path`, readable by its owner only. Never overwrites a file.
@@ -178,6 +229,21 @@ pub fn write_master_key(path: &Path, key: &Key) -> Result<(), ConfigError> {
     f.write_all(key.to_hex().as_bytes())
         .and_then(|_| f.write_all(b"\n"))
         .and_then(|_| f.sync_all())
+        .map_err(|_| ConfigError::Write(path.to_owned()))?;
+    sync_parent(path);
+    Ok(())
+}
+
+/// Creates a folder (and its parents) readable by the owner only.
+pub fn create_private_dir(path: &Path) -> Result<(), ConfigError> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(path)
         .map_err(|_| ConfigError::Write(path.to_owned()))
 }
 
@@ -199,7 +265,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.listen, "0.0.0.0:9000");
         assert_eq!(c.public_url, "https://mail.example.org");
-        assert_eq!(c.master_key_file, PathBuf::from("/srv/c/master.key"));
+        assert_eq!(c.master_key_file, PathBuf::from("/keys/master.key"));
         let env = |n: &str| (n == "CROFT_COMPANION_LISTEN").then(|| "127.0.0.1:1234".to_owned());
         let c = Config::parse("public_url = \"https://x.example\"", &env).unwrap();
         assert_eq!(c.listen, "127.0.0.1:1234");
@@ -213,6 +279,25 @@ mod tests {
         ));
         assert!(Config::parse("public_url = \"http://mail.example.org\"", &no_env).is_err());
         assert!(Config::parse("public_url = \"http://localhost:8480\"", &no_env).is_ok());
+        for bad in [
+            "http://localhost:x@evil.example/",
+            "https://user@mail.example.org",
+            "http://localhost.evil.example",
+            "http://127.0.0.1.evil",
+        ] {
+            assert!(
+                Config::parse(&format!("public_url = \"{bad}\""), &no_env).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(
+            Config::parse(
+                "public_url = \"https://x\"\ndata_dir = \"/srv\"\nmaster_key_file = \"/srv/k\"",
+                &no_env
+            )
+            .is_err(),
+            "key inside data_dir"
+        );
         assert!(Config::parse("", &no_env).is_err());
         assert!(Config::parse("public_url = \"https://x\"\nlisten = \"nope\"", &no_env).is_err());
     }
@@ -241,6 +326,16 @@ mod tests {
                 Err(ConfigError::MasterKeyExposed(_))
             ));
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        // A symbolic link to a key is refused.
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.key");
+            std::os::unix::fs::symlink(&p, &link).unwrap();
+            assert!(matches!(
+                load_master_key(&link),
+                Err(ConfigError::MasterKeyExposed(_))
+            ));
         }
         std::fs::write(&p, "not a key").unwrap();
         #[cfg(unix)]

@@ -54,7 +54,7 @@ commands:
   init                         create the data folder, the master key and the database (never overwrites a key)
   user add --name NAME [--admin]
   user list
-  rotate-master-key            re-wrap every user's key under a new master key
+  rotate-master-key [--finish] re-wrap every user's key under a new master key (--finish completes one that was cut short)
   serve                        run the server
   healthcheck                  ask the running server's /healthz (for the container's health check)";
 
@@ -72,8 +72,11 @@ pub enum Command {
     },
     /// `user list`
     UserList,
-    /// `rotate-master-key`
-    RotateMasterKey,
+    /// `rotate-master-key`; `finish`: complete one that was cut short.
+    RotateMasterKey {
+        /// `--finish`
+        finish: bool,
+    },
     /// `serve`
     Serve,
     /// `healthcheck`
@@ -99,7 +102,8 @@ pub fn parse(args: &[String]) -> Result<(Option<PathBuf>, Command), CliError> {
         ["init"] => Command::Init,
         ["serve"] => Command::Serve,
         ["healthcheck"] => Command::Healthcheck,
-        ["rotate-master-key"] => Command::RotateMasterKey,
+        ["rotate-master-key"] => Command::RotateMasterKey { finish: false },
+        ["rotate-master-key", "--finish"] => Command::RotateMasterKey { finish: true },
         ["user", "list"] => Command::UserList,
         ["user", "add", tail @ ..] => {
             let mut name = None;
@@ -132,33 +136,60 @@ fn pending_key_path(key: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// Opens the database and checks the master key. Finishes a rotation that was cut short after
-/// the database had moved to the new key (`<key file>.new` is then the key in force).
+/// Opens the database and checks the master key (it must open every user's key). A key file
+/// left by a rotation that was cut short is **never adopted automatically** (anyone who can
+/// write next to the key could otherwise plant one): the operator finishes it with
+/// `rotate-master-key --finish`.
 pub fn open(config: &Config) -> Result<(Store, Key), CliError> {
     let store = Store::open(&config.database())?;
     let key = config::load_master_key(&config.master_key_file)?;
     match store.check_master_key(&key) {
         Ok(()) => Ok((store, key)),
-        Err(e) => {
-            let pending = pending_key_path(&config.master_key_file);
-            if let Ok(new) = config::load_master_key(&pending) {
-                if store.check_master_key(&new).is_ok() {
-                    std::fs::rename(&pending, &config.master_key_file)
-                        .map_err(|_| ConfigError::Write(config.master_key_file.clone()))?;
-                    return Ok((store, new));
-                }
-            }
-            Err(e.into())
-        }
+        Err(e) if pending_key_path(&config.master_key_file).exists() => Err(CliError::Usage(
+            format!("{e}. A master key rotation did not finish: check the key file and run `croft-companion rotate-master-key --finish`."),
+        )),
+        Err(e) => Err(e.into()),
     }
+}
+
+/// The lock that keeps a rotation from running while the server or another command uses the
+/// keys: shared for them, exclusive for a rotation.
+fn lock(config: &Config, exclusive: bool) -> Result<std::fs::File, CliError> {
+    let path = config.data_dir.join("companion.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|_| ConfigError::Write(path.clone()))?;
+    let locked = if exclusive {
+        f.try_lock().is_ok()
+    } else {
+        f.try_lock_shared().is_ok()
+    };
+    if !locked {
+        return Err(CliError::Usage(if exclusive {
+            "the Companion is running: stop the server (and any other command) before rotating the master key".into()
+        } else {
+            "a master key rotation is running: try again when it has finished".into()
+        }));
+    }
+    Ok(f)
+}
+
+/// Takes the shared lock for the server's lifetime (see [`lock`]).
+pub fn serve_lock(config: &Config) -> Result<std::fs::File, CliError> {
+    lock(config, false)
 }
 
 /// Runs a command other than `serve`; returns what to print.
 pub fn run(config: &Config, command: &Command) -> Result<String, CliError> {
     match command {
         Command::Init => {
-            std::fs::create_dir_all(&config.data_dir)
-                .map_err(|_| ConfigError::Write(config.data_dir.clone()))?;
+            config::create_private_dir(&config.data_dir)?;
+            if let Some(dir) = config.master_key_file.parent() {
+                config::create_private_dir(dir)?;
+            }
             let created = if config.master_key_file.exists() {
                 false
             } else {
@@ -180,6 +211,7 @@ pub fn run(config: &Config, command: &Command) -> Result<String, CliError> {
             })
         }
         Command::UserAdd { name, admin } => {
+            let _lock = lock(config, false)?;
             let (mut store, key) = open(config)?;
             let role = if *admin { Role::Admin } else { Role::User };
             let user = store.add_user(&key, name, role)?;
@@ -203,7 +235,20 @@ pub fn run(config: &Config, command: &Command) -> Result<String, CliError> {
             }
             Ok(out)
         }
-        Command::RotateMasterKey => {
+        Command::RotateMasterKey { finish: true } => {
+            let _lock = lock(config, true)?;
+            let pending = pending_key_path(&config.master_key_file);
+            let store = Store::open(&config.database())?;
+            let new = config::load_master_key(&pending)?;
+            // Only a key that opens every user's key is adopted.
+            store.check_master_key(&new)?;
+            std::fs::rename(&pending, &config.master_key_file)
+                .map_err(|_| ConfigError::Write(config.master_key_file.clone()))?;
+            config::sync_parent(&config.master_key_file);
+            Ok("Finished the master key rotation. Back up the key file.".into())
+        }
+        Command::RotateMasterKey { finish: false } => {
+            let _lock = lock(config, true)?;
             let (mut store, old) = open(config)?;
             let new = Key::generate().map_err(StoreError::from)?;
             let pending = pending_key_path(&config.master_key_file);
@@ -215,6 +260,7 @@ pub fn run(config: &Config, command: &Command) -> Result<String, CliError> {
             let n = store.rotate_master_key(&old, &new)?;
             std::fs::rename(&pending, &config.master_key_file)
                 .map_err(|_| ConfigError::Write(config.master_key_file.clone()))?;
+            config::sync_parent(&config.master_key_file);
             Ok(format!(
                 "Rotated the master key ({n} user keys re-wrapped). Back up the new key file; the old one opens nothing now."
             ))
@@ -256,7 +302,7 @@ mod tests {
             listen: "127.0.0.1:0".into(),
             public_url: "http://localhost".into(),
             data_dir: dir.join("data"),
-            master_key_file: dir.join("data").join("master.key"),
+            master_key_file: dir.join("keys").join("master.key"),
         }
     }
 
@@ -336,7 +382,7 @@ mod tests {
         )
         .unwrap();
         let before = std::fs::read_to_string(&c.master_key_file).unwrap();
-        run(&c, &Command::RotateMasterKey).unwrap();
+        run(&c, &Command::RotateMasterKey { finish: false }).unwrap();
         let after = std::fs::read_to_string(&c.master_key_file).unwrap();
         assert_ne!(before, after);
         let (store, key) = open(&c).unwrap();
@@ -344,17 +390,73 @@ mod tests {
         drop(store);
 
         // A crash after the database moved but before the rename: the old file is still in
-        // place and `.new` holds the key in force.
+        // place and `.new` holds the key in force. Nothing is adopted until `--finish`.
         let pending = pending_key_path(&c.master_key_file);
         let (mut store, old) = open(&c).unwrap();
         let new = Key::generate().unwrap();
         config::write_master_key(&pending, &new).unwrap();
         store.rotate_master_key(&old, &new).unwrap();
         drop(store);
+        assert!(matches!(open(&c), Err(CliError::Usage(m)) if m.contains("--finish")));
+        run(&c, &Command::RotateMasterKey { finish: true }).unwrap();
         let (store, key) = open(&c).unwrap();
         assert_eq!(key.to_hex(), new.to_hex());
         assert!(!pending.exists());
         store.data_key(&key, 1).unwrap();
+    }
+
+    #[test]
+    fn a_planted_key_file_is_never_adopted() {
+        // Review finding: someone who can write next to the key plants `.new` and a matching
+        // check value; the real key must stay, and `--finish` must refuse a key that does not
+        // open the users' keys.
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(dir.path());
+        run(&c, &Command::Init).unwrap();
+        run(
+            &c,
+            &Command::UserAdd {
+                name: "ann".into(),
+                admin: false,
+            },
+        )
+        .unwrap();
+        let real = std::fs::read_to_string(&c.master_key_file).unwrap();
+        let planted = Key::generate().unwrap();
+        config::write_master_key(&pending_key_path(&c.master_key_file), &planted).unwrap();
+        let sealed = planted
+            .seal(
+                crate::crypto::MASTER_CHECK_AAD,
+                b"croft-companion master key",
+            )
+            .unwrap();
+        let conn = rusqlite::Connection::open(c.database()).unwrap();
+        conn.execute(
+            "UPDATE meta SET value = ?1 WHERE key = 'master_check'",
+            rusqlite::params![sealed],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(open(&c).is_err());
+        assert!(run(&c, &Command::RotateMasterKey { finish: true }).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&c.master_key_file).unwrap(),
+            real,
+            "the real key is kept"
+        );
+    }
+
+    #[test]
+    fn a_rotation_waits_for_the_server_to_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(dir.path());
+        run(&c, &Command::Init).unwrap();
+        let server = serve_lock(&c).unwrap();
+        assert!(
+            matches!(run(&c, &Command::RotateMasterKey { finish: false }), Err(CliError::Usage(m)) if m.contains("stop the server"))
+        );
+        drop(server);
+        run(&c, &Command::RotateMasterKey { finish: false }).unwrap();
     }
 
     #[test]

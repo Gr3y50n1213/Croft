@@ -9,12 +9,14 @@ COPY companion/ companion/
 RUN cd companion && cargo build --release --locked
 
 FROM debian:bookworm-slim
+# The master key lives on its own volume (/keys), never next to the database (/data): one stolen
+# backup must not hold both. Both folders belong to the Companion's user only.
 RUN useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin croft \
-    && mkdir -p /data && chown croft /data && chmod 700 /data
+    && mkdir -p /data /keys && chown croft /data /keys && chmod 700 /data /keys
 COPY --from=build /src/companion/target/release/croft-companion /usr/local/bin/croft-companion
 USER croft
-VOLUME ["/data"]
-ENV CROFT_COMPANION_DATA_DIR=/data CROFT_COMPANION_LISTEN=0.0.0.0:8480
+VOLUME ["/data", "/keys"]
+ENV CROFT_COMPANION_DATA_DIR=/data CROFT_COMPANION_MASTER_KEY_FILE=/keys/master.key CROFT_COMPANION_LISTEN=0.0.0.0:8480
 EXPOSE 8480
 HEALTHCHECK --interval=30s --timeout=5s CMD ["/usr/local/bin/croft-companion", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/croft-companion"]

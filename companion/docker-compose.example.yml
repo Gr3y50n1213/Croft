@@ -12,8 +12,8 @@ services:
       dockerfile: companion/Dockerfile
     environment:
       CROFT_COMPANION_PUBLIC_URL: "https://mail.example.org"
-      # Keep the master key on a different volume from the data, and back it up separately.
-      CROFT_COMPANION_MASTER_KEY_FILE: "/keys/master.key"
+      # The master key is on its own volume (/keys, the image's default), never next to the data.
+      # Back it up separately from the data.
     volumes:
       - companion-data:/data
       - companion-keys:/keys

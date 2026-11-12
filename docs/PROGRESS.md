@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T23: Companion foundation (12 November 2026)
 
-**Status:** task branch `task/t23` (draft pull request for CI next). Phase 2 begins; the plan is `docs/tasks/PHASE-2.md`.
+**Status:** draft pull request #36 on `task/t23` (CI); independent review done, fixes included. Phase 2 begins; the plan is `docs/tasks/PHASE-2.md`.
 
 **What was built.** `companion/`, a Cargo workspace of its own (AGPL-3.0-or-later): settings (TOML plus environment variables, unknown
 keys refused, an https public address), the master key file (created with mode 0600, refused when others can read it, never
@@ -21,6 +21,9 @@ HTTP service (`/healthz`, `/version`, strict security headers, a body limit, a t
 every value, damaged input never opens; migrations once and a newer database refused; every table scoped by user or justified as
 global; the settings file and environment; the key file's permissions; init twice keeps the key; a rotation cut short finishes at the
 next start; the HTTP headers, the body limit and the health check. Clippy clean.
+
+**Review** (one independent agent): two serious findings (a planted key file could be adopted; the Docker key volume was not
+writable) and several smaller ones, fixed with tests (20 tests now); two accepted for now (DECISIONS).
 
 **Not verified here:** the Docker image builds on CI only (this container's build sandbox cannot reach crates.io); running it on a real
 host behind a real reverse proxy.

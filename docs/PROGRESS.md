@@ -5,9 +5,70 @@ unverified, the next step.
 
 ---
 
+## T24: Companion sign-in (12 November 2026)
+
+**Status:** draft pull request #38 on `task/t24` (CI green before the review fixes); independent review done, every finding fixed or
+accepted (DECISIONS). Merged with the pull request that carries this entry.
+
+**What was built.**
+- **Enrolment.** `user add` prints a one-time enrolment link: 256 bits, stored hashed, 24 hours, with the token in the URL fragment.
+  `user enrol` prints a new one, which replaces every factor and signs out every device.
+- **The enrolment page.** Static HTML, CSS and script under a `'self'`-only CSP with Trusted Types. It registers a passkey
+  (discoverable preferred, user verification required) and then shows the TOTP key, as a QR code drawn on a canvas and as text, and
+  ten recovery codes, once.
+- **Sign-in.**
+  - With a passkey: named, or discoverable without a name. The answer is checked against the passkey as stored, under the store
+    lock, so a counter going backwards is refused.
+  - With TOTP plus a recovery code: this gives a 15-minute recovery session that may only register a passkey.
+- **Tokens.** Access tokens last 15 minutes. Refresh tokens last 30 days and rotate on every use; reuse revokes that device and is
+  audited.
+- **Devices, passkeys and the audit log.** Each user can list and remove their devices and passkeys, and read their own audit log.
+- **Admins** can list, disable and enable users and read the instance's audit log. They have no way to act as a user.
+- **Limits.**
+  - Per address (trusted proxies and `X-Forwarded-For` handled).
+  - A per-user lock on the recovery path.
+  - Challenges capped per owner.
+  - The server loop is hyper's: a header-read timeout, a body-read timeout, connection limits overall and per address, and a maximum
+    connection age.
+- **Schema.** Migration `0002_sign_in.sql`.
+- **Docs.** The README's "Signing in" and "API" sections.
+- **Next task file.** T25 (OIDC).
+
+**Checks.** 67 tests:
+- **WebAuthn**, with webauthn-authenticator-rs's software passkey: registration and assertion; a wrong origin at registration and at
+  sign-in; a replayed answer; an answer to another challenge; a counter going backwards; a discoverable sign-in and a forged user
+  handle; another user's credential for a named ceremony.
+- **TOTP:** the RFC 6238 vectors, no code twice, drift of one step.
+- **Recovery:** single-use codes; the recovery session's limits, its upgrade and that it cannot be refreshed.
+- **Tokens:** expiry, rotation, reuse revoking the device, remote sign-out, a disabled user refused at once.
+- **Limits:**
+  - the lockout, and a concurrent burst of 60 getting exactly 10 checks;
+  - passkey failures never locking anyone;
+  - rate limits under a burst;
+  - challenges not crowded out;
+  - the address table bounded.
+- **Access:** every route checked for who may call it, and a cross-user test of every route with an id.
+- **Secrets:** no token, code, secret or link in the database in the clear or in the audit log.
+- **HTTP:** the enrolment page's CSP; slow headers, slow bodies, kept-alive hogs and the per-address cap in the server loop.
+
+Clippy is clean.
+
+**Review** (one independent agent, opus, high effort):
+- 1 high: an admin could get a user's enrolment link from the API and sign in as them.
+- 3 medium: the challenge table, the lock on passkeys, and slow clients.
+- 7 low.
+
+All fixed with regression tests built on the reviewer's own proofs, except those accepted in DECISIONS. The fixes were not
+re-reviewed.
+
+**Not verified here:** real authenticators (phones, security keys, platform passkeys) in real browsers; the enrolment page in a
+browser; the image behind a real reverse proxy.
+
+---
+
 ## T23: Companion foundation (12 November 2026)
 
-**Status:** draft pull request #36 on `task/t23` (CI); independent review done, fixes included. Phase 2 begins; the plan is `docs/tasks/PHASE-2.md`.
+**Status:** merged to main (pull request #37; CI green, run 43272022586); independent review done, fixes included. Phase 2 begins; the plan is `docs/tasks/PHASE-2.md`.
 
 **What was built.** `companion/`, a Cargo workspace of its own (AGPL-3.0-or-later): settings (TOML plus environment variables, unknown
 keys refused, an https public address), the master key file (created with mode 0600, refused when others can read it, never

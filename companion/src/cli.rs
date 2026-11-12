@@ -1,8 +1,9 @@
 // This Source Code Form is subject to the terms of the GNU Affero General Public License,
 // version 3 or later. See LICENSE-AGPL-3.0 at the repository root.
 
-//! The command line (T23): `init`, `user add`, `user list`, `rotate-master-key`, `serve`.
-//! Output never contains a key.
+//! The command line (T23, T24): `init`, `user add`, `user enrol`, `user list`,
+//! `rotate-master-key`, `serve`. Output never contains a key; `user add` and `user enrol` print a
+//! one-time enrolment link, which is meant for the person it names and nobody else.
 
 use std::path::{Path, PathBuf};
 
@@ -52,7 +53,9 @@ impl From<StoreError> for CliError {
 pub const USAGE: &str = "usage: croft-companion [--config FILE] <command>
 commands:
   init                         create the data folder, the master key and the database (never overwrites a key)
-  user add --name NAME [--admin]
+  user add --name NAME [--admin]   add a user and print their one-time enrolment link (24 hours)
+  user enrol --name NAME           print a new enrolment link: it replaces the user's passkeys,
+                                   authenticator key and recovery codes, and signs out their devices
   user list
   rotate-master-key [--finish] re-wrap every user's key under a new master key (--finish completes one that was cut short)
   serve                        run the server
@@ -69,6 +72,11 @@ pub enum Command {
         name: String,
         /// Admin role.
         admin: bool,
+    },
+    /// `user enrol`: a new enrolment link for an existing user.
+    UserEnrol {
+        /// Login name.
+        name: String,
     },
     /// `user list`
     UserList,
@@ -105,6 +113,9 @@ pub fn parse(args: &[String]) -> Result<(Option<PathBuf>, Command), CliError> {
         ["rotate-master-key"] => Command::RotateMasterKey { finish: false },
         ["rotate-master-key", "--finish"] => Command::RotateMasterKey { finish: true },
         ["user", "list"] => Command::UserList,
+        ["user", "enrol", "--name", name] if !name.trim().is_empty() => Command::UserEnrol {
+            name: (*name).to_owned(),
+        },
         ["user", "add", tail @ ..] => {
             let mut name = None;
             let mut admin = false;
@@ -215,7 +226,25 @@ pub fn run(config: &Config, command: &Command) -> Result<String, CliError> {
             let (mut store, key) = open(config)?;
             let role = if *admin { Role::Admin } else { Role::User };
             let user = store.add_user(&key, name, role)?;
-            Ok(format!("Added user {} (id {}).", user.name, user.id))
+            let token = store.create_enrolment(user.id, None, crate::store::now_ms())?;
+            Ok(format!(
+                "Added user {} (id {}).\nGive them this one-time link (it works once, for 24 hours):\n{}",
+                user.name,
+                user.id,
+                crate::api::enrolment_link(&config.public_url, &token).as_str()
+            ))
+        }
+        Command::UserEnrol { name } => {
+            let _lock = lock(config, false)?;
+            let (mut store, _) = open(config)?;
+            let user = store.user_by_name(name)?.ok_or(StoreError::NoSuchUser)?;
+            let token = store.create_enrolment(user.id, None, crate::store::now_ms())?;
+            Ok(format!(
+                "Give {} this one-time link (it works once, for 24 hours). Using it replaces their \
+                 passkeys, authenticator key and recovery codes and signs out their devices:\n{}",
+                user.name,
+                crate::api::enrolment_link(&config.public_url, &token).as_str()
+            ))
         }
         Command::UserList => {
             let (store, _) = open(config)?;
@@ -303,6 +332,7 @@ mod tests {
             public_url: "http://localhost".into(),
             data_dir: dir.join("data"),
             master_key_file: dir.join("keys").join("master.key"),
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -366,6 +396,66 @@ mod tests {
         let list = run(&c, &Command::UserList).unwrap();
         assert_eq!(list, "1\tann\tadmin\n2\tbob\tuser\n");
         assert!(!list.contains(key.trim()));
+    }
+
+    #[test]
+    fn user_add_and_user_enrol_print_a_one_time_link_with_the_token_in_the_fragment() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(dir.path());
+        run(&c, &Command::Init).unwrap();
+        let out = run(
+            &c,
+            &Command::UserAdd {
+                name: "ann".into(),
+                admin: false,
+            },
+        )
+        .unwrap();
+        let link = |out: &str| {
+            out.lines()
+                .find(|l| l.starts_with("http"))
+                .unwrap()
+                .to_owned()
+        };
+        let first = link(&out);
+        assert!(first.starts_with("http://localhost/enrol#"), "{first}");
+        let token = first.split('#').nth(1).unwrap();
+        assert_eq!(token.len(), 43);
+        let (mut store, _) = open(&c).unwrap();
+        let now = crate::store::now_ms();
+        assert!(store.enrolment_target(token, now).unwrap().is_some());
+        drop(store);
+        // A new link replaces the old one.
+        let out = run(&c, &Command::UserEnrol { name: "ann".into() }).unwrap();
+        let second = link(&out);
+        assert_ne!(first, second);
+        let (mut store, _) = open(&c).unwrap();
+        assert!(store.enrolment_target(token, now).unwrap().is_none());
+        drop(store);
+        assert!(run(
+            &c,
+            &Command::UserEnrol {
+                name: "nobody".into()
+            }
+        )
+        .is_err());
+        for bad in ["", "a b", "ann\u{0}", "émile", &"x".repeat(65)] {
+            assert!(
+                run(
+                    &c,
+                    &Command::UserAdd {
+                        name: bad.to_owned(),
+                        admin: false
+                    }
+                )
+                .is_err(),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            parse(&args("user enrol --name ann")).unwrap().1,
+            Command::UserEnrol { name: "ann".into() }
+        );
     }
 
     #[test]

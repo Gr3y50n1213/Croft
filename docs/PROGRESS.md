@@ -24,7 +24,8 @@ device names, blank-looking characters. L3: only true copies (same Message-ID, s
 L4: existence checks read no blob. A regression test per finding; the timings are in `core/reader/tests/limits_bench.rs`
 (ignored; run in release). T18c's `reply_all_draft` and Sent-folder suggestions now get To and Cc from every message
 whose body was loaded (test `a_loaded_body_gives_reply_all_its_to_and_cc_and_its_quote`); messages never opened still
-have none.
+have none. The S60 licence list (`open-source-licences.json`) gains the 20 new crates: its Rust entries were
+regenerated with `gen_licences.py`'s own `rust_entries()` (Gradle cannot run offline here; the Kotlin inputs did not change).
 
 **What was built:** (1) `MailBackend::fetch_body(folder, uid) -> RawMessage { Found(bytes), Gone, TooLarge { size } }`:
 IMAP `EXAMINE` + `RFC822.SIZE` + `BODY.PEEK[]`, JMAP `blobId` download from the session's `downloadUrl` (session origin

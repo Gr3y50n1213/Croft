@@ -283,36 +283,3 @@ fn inline_images_are_typed_by_their_bytes_and_svg_is_never_drawn() {
     assert!(html.contains("data:image/png;base64,iVBORw0KGgo"), "{html}");
     assert!(!html.contains("svg") && !html.contains("alert"), "{html}");
 }
-
-#[test]
-fn a_sanitiser_past_its_deadline_gives_the_text_at_once() {
-    // D: any slow input nobody has found yet costs at most one attempt of the deadline. A test
-    // sanitiser that sleeps stands in for it.
-    fn slow(
-        _: &str,
-        _: bool,
-        _: &std::collections::HashMap<String, croft_reader::InlineImage>,
-    ) -> croft_reader::Sanitized {
-        std::thread::sleep(std::time::Duration::from_secs(20));
-        croft_reader::Sanitized::default()
-    }
-    let raw = fixture("alternative.eml");
-    let start = std::time::Instant::now();
-    let r = croft_reader::render_with(&raw, false, std::time::Duration::from_millis(200), slow)
-        .unwrap();
-    assert!(start.elapsed() < std::time::Duration::from_secs(5));
-    assert!(r.too_complex && r.truncated && r.html.is_none());
-    assert!(r.text.unwrap().contains("Weekly news in plain text."));
-    // An HTML-only message falls back to its HTML converted to text.
-    let html_only = b"From: x@example.org\r\nSubject: H\r\nContent-Type: text/html\r\n\r\n<p>Only <b>html</b></p>\r\n";
-    let r = croft_reader::render_with(
-        html_only,
-        false,
-        std::time::Duration::from_millis(200),
-        slow,
-    )
-    .unwrap();
-    assert!(r.too_complex && r.text.unwrap().contains("Only html"));
-    // The ordinary path is not too complex.
-    assert!(!render(&raw, false).unwrap().too_complex);
-}

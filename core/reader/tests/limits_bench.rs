@@ -2,224 +2,315 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Timings behind the sanitiser's limits (`MAX_HTML_TAGS`, `MAX_HTML_DEPTH`, `MAX_HTML_COST`,
-//! `MAX_ATTRIBUTES_PER_TAG`): the worst inputs found that stay inside them, the inputs the review
-//! found slow (refused at once), and newsletter-shaped HTML that must still render. Ignored by
-//! default; run in a release build:
+//! Timings and peak memory behind the sanitiser's limits: the parser's work budget
+//! (`MAX_PARSE_UNITS`, `MAX_REBUILT_BYTES`) and the shape pre-filter. Every input the reviews
+//! found slow, the worst inputs found that stay inside the limits, and newsletter-shaped HTML
+//! that must still render. Each input runs twice: as the app runs it (shape scan first), and with
+//! the parser's budget alone (no shape scan), which is what bounds an input nobody has found yet.
+//! Each input runs in a process of its own, so that the peak memory measured is its own. Ignored
+//! by default; run in a release build:
 //!
 //! ```text
-//! cargo test --release -p croft-reader --test limits_bench -- --ignored --nocapture
+//! cargo test --release -p croft-reader --test limits_bench -- --ignored --exact bench --nocapture
 //! ```
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use croft_reader::sanitize::{
-    sanitize_html, MAX_ATTRIBUTES_PER_TAG as A, MAX_HTML_DEPTH as D, MAX_HTML_TAGS as T,
+    sanitize_html_with, Options, MAX_ATTRIBUTES_PER_TAG as A, MAX_HTML_TAGS as T,
 };
 use std::collections::HashMap;
 use std::time::Instant;
 
-use croft_reader::shape::{measure, Limits};
-fn run(name: &str, html: &str) {
-    let t = Instant::now();
-    let out = sanitize_html(html, false, &HashMap::new());
-    println!(
-        "{name:40} {:>8.1} ms  too_complex={} bytes={}",
-        t.elapsed().as_secs_f64() * 1000.0,
-        out.too_complex,
-        html.len()
-    );
+/// A `/proc/self/status` field in KiB (0 where there is none).
+fn status_kib(field: &str) -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with(field))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|n| n.parse().ok())
+        })
+        .unwrap_or(0)
 }
-#[test]
-#[ignore]
-fn bench() {
-    let _ = (D, T);
-    for d in [64usize, 512, 1000, 1500, 2040] {
-        let cost = croft_reader::sanitize::MAX_HTML_COST;
-        let fill = ((cost - d * d / 2) / d).min(croft_reader::sanitize::MAX_HTML_TAGS - d) - 10;
-        run(
-            &format!("d={d} spans then <dd></dd>"),
-            &("<span>".repeat(d) + &"<dd></dd>".repeat(fill / 2)),
-        );
-        run(
-            &format!("d={d} spans then </x>"),
-            &("<span>".repeat(d) + &"</x>".repeat(fill)),
-        );
-        run(
-            &format!("d={d} spans then <li></li>"),
-            &("<span>".repeat(d) + &"<li></li>".repeat(fill / 2)),
-        );
-        run(
-            &format!("d={d} b ids then <p>x</p>"),
-            &((0..d).map(|i| format!("<b id={i}>")).collect::<String>()
-                + &"<p>x</p>".repeat(fill / 2)),
-        );
-        run(
-            &format!("d={d} divs then <p></p>"),
-            &("<div>".repeat(d) + &"<p></p>".repeat(fill / 2)),
-        );
+
+/// Sanitises `html` once and returns the time, the outcome and the work charged.
+fn one(html: &str, prefilter: bool) -> (f64, String) {
+    let t = Instant::now();
+    let out = sanitize_html_with(
+        html,
+        false,
+        &HashMap::new(),
+        &Options {
+            prefilter,
+            ..Options::default()
+        },
+    );
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    let outcome = if out.too_complex {
+        format!("text (units {}k)", out.work.0 / 1000)
+    } else {
+        format!(
+            "html {} KB (units {}k, rebuilt {} KB)",
+            out.html.len() / 1024,
+            out.work.0 / 1000,
+            out.work.1 / 1024
+        )
+    };
+    (ms, outcome)
+}
+
+thread_local! {
+    static CASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One input. Run by `bench`, every input runs in its own process (this test binary again, with
+/// `CROFT_BENCH_CASE` and `CROFT_BENCH_PREFILTER` set), so that its peak memory is its own: the
+/// process's peak resident size (`VmHWM`) minus its resident size once the input was built.
+fn run(name: &str, build: impl FnOnce() -> String) {
+    let index = CASE.with(|c| {
+        let i = c.get();
+        c.set(i + 1);
+        i
+    });
+    let Some(wanted) = std::env::var("CROFT_BENCH_CASE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    else {
+        // Listing mode: the case names.
+        println!("CASE\t{index}\t{name}");
+        return;
+    };
+    if wanted != index {
+        return;
     }
-    let d = 510;
-    let fill = 40_000;
-    run(
-        "divs then <br>",
-        &("<div>".repeat(d) + &"<br>".repeat(fill)),
-    );
-    run(
-        "divs then </x>",
-        &("<div>".repeat(d) + &"</x>".repeat(fill)),
-    );
-    run(
-        "spans then </x>",
-        &("<span>".repeat(d) + &"</x>".repeat(fill)),
-    );
-    run(
-        "divs then <p></p>",
-        &("<div>".repeat(d) + &"<p></p>".repeat(fill / 2)),
-    );
-    run(
-        "spans then <p></p>",
-        &("<span>".repeat(d) + &"<p></p>".repeat(fill / 2)),
-    );
-    run(
-        "divs then <li></li>",
-        &("<div>".repeat(d) + &"<li></li>".repeat(fill / 2)),
-    );
-    run(
-        "spans then <li></li>",
-        &("<span>".repeat(d) + &"<li></li>".repeat(fill / 2)),
-    );
-    run(
-        "spans then <dd></dd>",
-        &("<span>".repeat(d) + &"<dd></dd>".repeat(fill / 2)),
-    );
-    run(
-        "b ids then <p>x</p>",
-        &((0..d).map(|i| format!("<b id={i}>")).collect::<String>() + &"<p>x</p>".repeat(fill / 2)),
-    );
-    let k = d / 2;
-    let recon = format!(
-        "<div>{}</div>x",
-        (0..k).map(|i| format!("<b id={i}>")).collect::<String>()
-    );
-    let reps = (T / (k + 3)).max(1);
-    run("reconstruct formatting", &recon.repeat(reps));
-    run(
-        "table foster b",
-        &(String::from("<table>")
-            + &(0..d).map(|i| format!("<b id={i}>x")).collect::<String>()
-            + &"<p>x</p>".repeat(fill / 2)),
-    );
-    run("a adoption", &"<a>x".repeat(T - 5));
-    run(
-        "a in divs",
-        &("<div>".repeat(d / 2) + &"<a>x<div>".repeat(d / 2) + &"</a>x".repeat(fill / 2)),
-    );
-    run("wide p", &"<p>a</p>".repeat(T / 2 - 5));
-    let attrs: String = (0..A).map(|i| format!(" a{i}")).collect();
-    let tag = format!("<p{attrs}>");
-    run(
-        "max attrs per tag, filled",
-        &tag.repeat((4 * 1024 * 1024) / tag.len()),
-    );
-    let attrs: String = (0..A).map(|i| format!(" a{i}=\"{i}\"")).collect();
-    let tag = format!("<img{attrs}>");
-    run(
-        "max attrs img, filled",
-        &tag.repeat((4 * 1024 * 1024) / tag.len()),
-    );
-    run("text 4MiB", &"word ".repeat(800_000));
-    run("div/ 100k (H1)", &"<div/>".repeat(100000));
-    run(
-        "svg plaintext (H1)",
-        &(String::from("<svg><plaintext></svg>") + &"<div>".repeat(110000)),
-    );
-    run("div </x> 20k (H1)", &"<div></x>".repeat(20000));
-    let attrs: String = (0..200_000).map(|i| format!(" a{i}")).collect();
-    run("200k attrs (H2)", &format!("<p{attrs}>"));
-    // Round 2 of the review: its exact inputs.
-    run(
-        "N1 svg area x25000 </x>",
-        &format!("<svg>{}{}", "<area>".repeat(25_000), "</x>".repeat(24_998)),
-    );
-    run(
-        "N1 math input x25000 </x>",
-        &format!(
-            "<math>{}{}",
-            "<input>".repeat(25_000),
-            "</x>".repeat(24_998)
-        ),
-    );
-    run(
-        "N1 span title=</span> x16000",
-        &format!(
-            "{}{}",
-            "<span title=\"</span>\">".repeat(16_000),
-            "</x>".repeat(17_000)
-        ),
-    );
-    run(
-        "N1 div title=</div> x24000",
-        &format!(
-            "{}{}",
-            "<div title=\"</div>\">".repeat(24_000),
-            "<div>".repeat(1000)
-        ),
-    );
-    run(
-        "N1 div <!--</div>--> x16600",
-        &"<div><!--</div>-->".repeat(16_600),
-    );
-    let bs: String = (0..1500).map(|i| format!("<b a={i}>")).collect();
-    run(
-        "N2 1500 b then div x12000",
-        &format!("<div>{bs}</div>{}", "<div>x</div>".repeat(12_000)),
-    );
-    let bs: String = (0..1500)
-        .map(|i| format!("<b a={i} title=\"</b>\">"))
-        .collect();
-    run(
-        "N2 b title=</b> variant",
-        &format!("<div>{bs}</div>{}", "<div>x</div>".repeat(12_000)),
-    );
-    run("N3 'a & ' x1M (4 MB text)", &"a & ".repeat(1_000_000));
-    run("N3 '&am' x1.3M", &"&am".repeat(1_300_000));
-    run("N3 copyright x400k", &"\u{a9}".repeat(400_000));
-    run(
-        "N3 & in an attribute (4 MB)",
-        &format!("<p title=\"{}\">x</p>", "& ".repeat(1_000_000)),
-    );
-    // Most rebuilt nodes that stay inside the limits.
-    let fmt: String = (0..250).map(|i| format!("<b a={i}>")).collect();
-    // 250 open <b> cost about 63 000 to build; each <div>x</div> then adds 750.
-    let fill = (croft_reader::sanitize::MAX_HTML_NODES - 70_000) / 750;
-    run(
-        "nodes: 250 b then div near the cap",
-        &format!("<div>{fmt}</div>{}", "<div>x</div>".repeat(fill)),
+    let prefilter = std::env::var("CROFT_BENCH_PREFILTER").as_deref() != Ok("0");
+    let html = build();
+    let before = status_kib("VmRSS:");
+    let (ms, outcome) = one(&html, prefilter);
+    let peak_mb = status_kib("VmHWM:").saturating_sub(before) / 1024;
+    println!(
+        "RESULT\t{} KB\t{ms:.0} ms\t{peak_mb} MB\t{outcome}",
+        html.len() / 1024
     );
 }
 
-const W: Limits = Limits {
-    tags: usize::MAX,
-    depth: usize::MAX,
-    attributes: usize::MAX,
-    cost: usize::MAX,
-    nodes: usize::MAX,
-};
-fn show(name: &str, html: &str) {
-    let s = measure(html, W);
-    let out = croft_reader::sanitize_html(html, false, &Default::default());
-    println!(
-        "{name:30} tags={:>6} depth={:>4} cost={:>9} attrs={:>3} too_complex={} bytes={}",
-        s.tags,
-        s.max_depth,
-        s.cost,
-        s.max_attributes,
-        out.too_complex,
-        html.len()
-    );
+/// Every input, in order.
+fn all() {
+    round3();
+    earlier();
+    per_unit();
+    newsletters();
 }
+
+/// Runs this test binary for one case and returns its result line.
+fn child(index: usize, prefilter: bool) -> String {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "one_case",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("CROFT_BENCH_CASE", index.to_string())
+        .env("CROFT_BENCH_PREFILTER", if prefilter { "1" } else { "0" })
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.split_once("RESULT\t").map(|(_, r)| r.to_owned()))
+        .unwrap_or_else(|| "failed".to_owned())
+}
+
+/// The case named by `CROFT_BENCH_CASE` (started by `bench`).
 #[test]
 #[ignore]
+fn one_case() {
+    all();
+}
+
+fn header() {
+    println!("| input | size | time | peak | outcome | time (budget only) | peak (budget only) | outcome (budget only) |");
+    println!("| --- | --- | --- | --- | --- | --- | --- | --- |");
+}
+
+/// Round 3 of the review: its inputs.
+fn round3() {
+    let font = |a: usize| format!("<div><font title=\"{}A\"></div>", "X".repeat(a));
+    run("H1 clone bomb, 50 KB title, 20k p", || {
+        font(50_000) + &"<p>x</p>".repeat(20_000)
+    });
+    let big = font(3_500_000);
+    let fill = (4 * 1024 * 1024 - big.len()) / 8;
+    run("H1 clone bomb, 3.5 MB title, p to 4 MiB", || {
+        big + &"<p>x</p>".repeat(fill)
+    });
+    let style = format!("<div><font style=\"{}\"></div>", "color:red;".repeat(100));
+    run("H1 clone bomb, 1 KB style, 20k p", || {
+        style.clone() + &"<p>x</p>".repeat(20_000)
+    });
+    let fill = (4 * 1024 * 1024 - style.len()) / 8;
+    run("H1 clone bomb, 1 KB style, p to 4 MiB", || {
+        style + &"<p>x</p>".repeat(fill)
+    });
+    run("H2 span li/dd x8300 + CR x3.7M", || {
+        String::from("<b>")
+            + &"<span><li></span><span><dd></span>".repeat(8_300)
+            + "x"
+            + &"\r".repeat(3_700_000)
+    });
+    run("H3 svg td x49990 + CR x100k", || {
+        String::from("<b><svg>")
+            + &"<td>".repeat(49_990)
+            + "<foreignObject>x"
+            + &"\r".repeat(100_000)
+    });
+    run("H4 b div x2040 + CR x4M", || {
+        String::from("<b>") + &"<div>".repeat(2_040) + "x" + &"\r".repeat(4_000_000)
+    });
+    run("H4 b div x2040 + & x4M", || {
+        String::from("<b>") + &"<div>".repeat(2_040) + "x" + &"&".repeat(4_000_000)
+    });
+    run("H5 br x24000 table + CR x4M", || {
+        "<br>".repeat(24_000) + "<table>x" + &"\r".repeat(4_000_000)
+    });
+    run("H5 br x24000 table + & x4M", || {
+        "<br>".repeat(24_000) + "<table>x" + &"&".repeat(4_000_000)
+    });
+    run("M2 p + NUL x4M", || {
+        String::from("<p>") + &"\0".repeat(4_000_000)
+    });
+}
+
+/// Earlier rounds' inputs and the worst found inside the shape limits.
+fn earlier() {
+    let d = 2040;
+    let fill = 40_000;
+    run("spans then <dd></dd> (d=2040)", || {
+        "<span>".repeat(d) + &"<dd></dd>".repeat(fill / 2)
+    });
+    run("b ids then <p>x</p> (d=510)", || {
+        (0..510).map(|i| format!("<b id={i}>")).collect::<String>() + &"<p>x</p>".repeat(fill / 2)
+    });
+    let attrs: String = (0..A).map(|i| format!(" a{i}=\"{i}\"")).collect();
+    let tag = format!("<img{attrs}>");
+    run("256 attributes on every img, 4 MiB", || {
+        tag.repeat((4 * 1024 * 1024) / tag.len())
+    });
+    run("text 4 MiB", || "word ".repeat(800_000));
+    run("div/ x100k", || "<div/>".repeat(100_000));
+    run("svg plaintext + div x110k", || {
+        String::from("<svg><plaintext></svg>") + &"<div>".repeat(110_000)
+    });
+    let attrs: String = (0..200_000).map(|i| format!(" a{i}")).collect();
+    run("200k attributes on one tag", || format!("<p{attrs}>"));
+    run("svg area x25000 </x>", || {
+        format!("<svg>{}{}", "<area>".repeat(25_000), "</x>".repeat(24_998))
+    });
+    let bs: String = (0..1500).map(|i| format!("<b a={i}>")).collect();
+    run("1500 b then div x12000", || {
+        format!("<div>{bs}</div>{}", "<div>x</div>".repeat(12_000))
+    });
+    run("'a & ' x1M (4 MB text)", || "a & ".repeat(1_000_000));
+    run("'&am' x1.3M", || "&am".repeat(1_300_000));
+    run("& in an attribute (4 MB)", || {
+        format!("<p title=\"{}\">x</p>", "& ".repeat(1_000_000))
+    });
+    run("a adoption", || "<a>x".repeat(T - 5));
+    run("closed formatting entries, deep stack, then text", || {
+        "<div>".repeat(3_000)
+            + "<span>"
+            + &(0..3_000).map(|i| format!("<b a={i}>")).collect::<String>()
+            + "</span>x"
+    });
+    run("table + many pieces of text and comments", || {
+        "<table>".to_string() + &"x<!---->".repeat(400_000)
+    });
+    run("body attributes merged x15000", || {
+        (0..15_000)
+            .map(|i| format!("<body a{i}=1>"))
+            .collect::<String>()
+    });
+}
+
+/// Inputs that make each kind of charged work as slow per unit as found, filled to 4 MiB: these
+/// set the time the budget allows.
+fn per_unit() {
+    let fill = |unit: &str| unit.repeat(4 * 1024 * 1024 / unit.len());
+    run("elements: <br>", || fill("<br>"));
+    run("elements and text: <span>x</span>", || {
+        fill("<span>x</span>")
+    });
+    run("allowed attributes: <td> x8", || {
+        String::from("<table>")
+            + &fill("<td width=1 height=2 colspan=3 rowspan=4 bgcolor=red valign=top nowrap=1 scope=row>")
+    });
+    run("addresses: <img src>", || {
+        fill("<img src=https://example.org/a.png>")
+    });
+    run("addresses: <a href>", || {
+        fill("<a href=https://example.org/a>x</a>")
+    });
+    run("styles: 40 bytes per span", || {
+        fill("<span style=\"color:red;font-size:12px;margin:0\">x</span>")
+    });
+    run("character references: &amp;x", || fill("&amp;x"));
+    run("character references: &am", || fill("&am"));
+    run("tokenizer errors: quotes in an attribute name", || {
+        format!("<a {}>", "\"".repeat(4_000_000))
+    });
+    run("comments: x<!---->", || fill("x<!---->"));
+    run("rebuilt font with 7 attributes", || {
+        "<div><font color=red face=Arial size=2 title=t lang=en dir=ltr align=left></div>"
+            .to_string()
+            + &fill("<p>x</p>")
+    });
+    run("rebuilt a href", || {
+        "<div><a href=https://example.org/some/path?x=1></div>".to_string() + &fill("<p>x</p>")
+    });
+    let attrs: String = (0..200).map(|i| format!(" a{i}")).collect();
+    run("formatting elements compared, 200 attributes", || {
+        (0..5000)
+            .map(|i| format!("<b{attrs} x={i}>"))
+            .collect::<String>()
+    });
+    run("svg end tags walking 5000 levels", || {
+        format!("<svg>{}{}", "<area>".repeat(5000), fill("</x>"))
+    });
+}
+
+#[test]
+#[ignore]
+fn bench() {
+    // Listing mode (no CROFT_BENCH_CASE): collect the names.
+    let listed = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "one_case",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .output()
+        .unwrap();
+    let names: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|l| l.split_once("CASE\t").map(|(_, r)| r))
+        .filter_map(|l| l.split_once('\t').map(|(_, n)| n.to_owned()))
+        .collect();
+    header();
+    for (i, name) in names.iter().enumerate() {
+        let with = child(i, true).replace('\t', " | ");
+        let alone = child(i, false);
+        // The size column is printed once.
+        let alone = alone
+            .split_once('\t')
+            .map_or(alone.clone(), |(_, r)| r.to_owned());
+        println!("| {name} | {with} | {} |", alone.replace('\t', " | "));
+    }
+}
+
 fn newsletters() {
     // MJML-style: sections of div > table > tbody > tr > td > div > table ... 6 levels, 60 sections.
     let mut mjml = String::from("<!doctype html><html><head><meta charset=utf-8><style>p{margin:0}</style><!--[if mso]><xml><o:OfficeDocumentSettings></o:OfficeDocumentSettings></xml><![endif]--></head><body style=\"margin:0\"><div style=\"background:#f4f4f4\">");
@@ -234,7 +325,7 @@ fn newsletters() {
     mjml.push_str(
         "<img src=\"https://t.example.org/open\" width=\"1\" height=\"1\"></div></body></html>",
     );
-    show("mjml 60 sections", &mjml);
+    run("mjml 60 sections", || mjml.clone());
 
     // Legacy: nested layout tables, unclosed <p>, <td> and <tr>, <font> closed, <br>s.
     let mut legacy = String::from("<html><body bgcolor=#ffffff><center><table width=600 border=0 cellpadding=0 cellspacing=0>");
@@ -242,7 +333,7 @@ fn newsletters() {
         legacy.push_str(&format!("<tr><td valign=top><font face=Arial size=2><p>Item {r}<br>Price<p>More text</font><td><table><tr><td><img src=https://x.example/{r}.gif width=100 height=100><td>caption {r}</table>"));
     }
     legacy.push_str("</table></center></body></html>");
-    show("legacy tables 300 rows", &legacy);
+    run("legacy tables 300 rows", || legacy.clone());
 
     // Legacy with unclosed <font> (each row opens one and never closes it).
     let mut fonts = String::from("<table>");
@@ -250,7 +341,7 @@ fn newsletters() {
         fonts.push_str(&format!("<tr><td><font size=2>row {r}"));
     }
     fonts.push_str("</table>");
-    show("unclosed font in cells x300", &fonts);
+    run("unclosed font in cells x300", || fonts.clone());
 
     // Outlook-generated: spans and o:p, MsoNormal paragraphs, closed.
     let mut outlook = String::from("<html xmlns:o=\"urn:schemas-microsoft-com:office:office\"><head><style><!-- p.MsoNormal{margin:0} --></style></head><body lang=EN-US><div class=WordSection1>");
@@ -258,7 +349,7 @@ fn newsletters() {
         outlook.push_str(&format!("<p class=MsoNormal><span style='font-size:11.0pt;font-family:\"Calibri\",sans-serif'>Line {p}<o:p></o:p></span></p>"));
     }
     outlook.push_str("<div style='border:none;border-top:solid #E1E1E1 1.0pt'><p class=MsoNormal><b>From:</b> x<br><b>Sent:</b> y</p></div></div></body></html>");
-    show("outlook 2000 paragraphs", &outlook);
+    run("outlook 2000 paragraphs", || outlook.clone());
 
     // Long reply chain: 40 nested blockquotes each with unclosed <p>s.
     let mut chain = String::new();
@@ -267,12 +358,19 @@ fn newsletters() {
             "<div>On day {q} someone wrote:<blockquote><p>reply {q}<p>more"
         ));
     }
-    show("40 nested quotes", &chain);
+    run("40 nested quotes", || chain.clone());
 
     // Lists with unclosed <li> and unclosed <p> inside.
     let mut lists = String::new();
     for l in 0..200 {
         lists.push_str(&format!("<ul><li><p>a {l}<li><p>b<li>c</ul>"));
     }
-    show("200 lists unclosed li/p", &lists);
+    run("200 lists unclosed li/p", || lists.clone());
+
+    // A long newsletter near the HTML cap: the MJML sections repeated to 4 MiB.
+    let reps = (4 * 1024 * 1024) / mjml.len();
+    run("mjml repeated to 4 MiB", || mjml.repeat(reps));
+    run("legacy repeated to 4 MiB", || {
+        legacy.repeat((4 * 1024 * 1024) / legacy.len())
+    });
 }

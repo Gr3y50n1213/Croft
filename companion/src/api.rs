@@ -1199,6 +1199,12 @@ async fn admin_set_disabled(app: &App, actor: Caller, id: i64, disabled: bool) -
     })
     .await??
     {
+        // A disabled user's mail stops syncing at once (T26); it starts again on next use.
+        if disabled {
+            if let Some(mail) = app.mail.clone() {
+                let _ = tokio::task::spawn_blocking(move || mail.close(id)).await;
+            }
+        }
         Ok(ok())
     } else {
         Err(ApiError::NotFound)
@@ -1241,3 +1247,7 @@ mod tests;
 #[cfg(test)]
 #[path = "oidc_tests.rs"]
 mod oidc_tests;
+
+#[cfg(test)]
+#[path = "mail_tests.rs"]
+mod mail_tests;

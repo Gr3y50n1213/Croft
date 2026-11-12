@@ -20,7 +20,7 @@ use crate::crypto::Key;
 use crate::store::{Store, StoreError};
 
 /// The purpose a user's mail database key is derived for.
-const MAIL_DB_KEY: &[u8] = b"croft-companion/mail-db/v1";
+pub(crate) const MAIL_DB_KEY: &[u8] = b"croft-companion/mail-db/v1";
 
 /// Why a user's mail could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,0 +1,26 @@
+# This Source Code Form is subject to the terms of the GNU Affero General Public License,
+# version 3 or later. See LICENSE-AGPL-3.0 at the repository root.
+#
+# An example only: copy it, set your own address, and put a TLS reverse proxy in front.
+# First run:   docker compose run --rm companion init
+# Then:        docker compose up -d
+services:
+  companion:
+    image: croft-companion:latest
+    build:
+      context: ..
+      dockerfile: companion/Dockerfile
+    environment:
+      CROFT_COMPANION_PUBLIC_URL: "https://mail.example.org"
+      # Keep the master key on a different volume from the data, and back it up separately.
+      CROFT_COMPANION_MASTER_KEY_FILE: "/keys/master.key"
+    volumes:
+      - companion-data:/data
+      - companion-keys:/keys
+    ports:
+      # Only the reverse proxy on this machine should reach it.
+      - "127.0.0.1:8480:8480"
+    restart: unless-stopped
+volumes:
+  companion-data:
+  companion-keys:

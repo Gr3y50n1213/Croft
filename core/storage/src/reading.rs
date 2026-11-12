@@ -296,6 +296,20 @@ pub fn has_body(conn: &Connection, account_id: i64, message_id: i64) -> Result<b
         .is_some())
 }
 
+/// Whether the stored body of a message of this account waits for its HTML (stored with
+/// `html_pending`). Reads no content.
+pub fn html_pending(conn: &Connection, account_id: i64, message_id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT b.html_pending FROM message_body b JOIN message m ON m.id = b.message_id
+              WHERE m.account_id = ?1 AND m.id = ?2",
+            params![account_id, message_id],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
 /// The fetched message of a message of this account, if it was fetched.
 pub fn raw(conn: &Connection, account_id: i64, message_id: i64) -> Result<Option<Vec<u8>>> {
     Ok(conn

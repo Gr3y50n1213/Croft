@@ -657,6 +657,12 @@ impl Core {
         }
     }
 
+    /// The latest change's sequence number, without waiting (Rust callers only, such as the
+    /// Companion's JMAP states; not part of the app bindings).
+    pub fn change_seq(&self) -> u64 {
+        *self.inner.hub.subscribe().borrow()
+    }
+
     /// `discover` with a given discoverer (tests use one with a fake network), still run on the
     /// core's runtime like the real call.
     /// The hub, for tests that inject an engine change.

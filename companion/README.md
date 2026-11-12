@@ -5,7 +5,8 @@ search; phones work without it. Licence: AGPL-3.0-or-later (see `LICENSES.md`).
 
 **Status:** the foundation (T23), sign-in (T24, T25: passkeys, an authenticator app with recovery codes, OIDC, tokens for the apps,
 the admin's user management) and mail accounts (T26: each user's own IMAP/SMTP or JMAP accounts, synced by the same core the phones
-run). The JMAP API for the web app and the phones comes next; see `docs/tasks/PHASE-2.md`.
+run) and a JMAP API for the apps (T27: reading and organising; sending, push and attachments come next); see
+`docs/tasks/PHASE-2.md`.
 
 ## Run it with Docker
 
@@ -123,6 +124,16 @@ allows one). Each user can have up to 20 accounts; an account is added only afte
 server later refuses is not tried again until the user gives a new one.
 
 Each user with mail runs a small sync engine of its own (two threads): fine for a household or a small company.
+
+## JMAP for the apps
+
+The web app (and later the phones) read and organise mail through a standard JMAP API (RFC 8620 and 8621): `GET /jmap/session` and
+`POST /jmap/api`, with the bearer token of a full sign-in. Each of the user's mail accounts is a JMAP account. Supported so far:
+`Core/echo`, `Mailbox/get`, `Email/query` (one mailbox, or flagged; newest first), `Email/get` (with the core's text and sanitised HTML
+bodies; remote content stays blocked), `Email/set` (read, flag, move, delete: to Trash, or for good when already in Trash), `Thread/get`,
+`Identity/get`, and `/changes` (no changes from the current state, otherwise `cannotCalculateChanges`, so the client fetches again).
+Sending, drafts, uploads, downloads and push come with later tasks. Limits: 600 requests a minute and 4 at once per user, 16 calls
+per request, 64 emails per `Email/get` (16 with bodies), and 4 MB for all of one request's answers.
 
 ## Commands
 

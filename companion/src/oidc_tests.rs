@@ -46,11 +46,19 @@ struct Knobs {
     discovery_issuer: Option<String>,
     /// The token endpoint the discovery document gives, instead of the real one.
     token_endpoint: Option<String>,
+    /// `code_challenge_methods_supported` in the discovery document.
+    pkce_methods: Option<Value>,
+    /// Sign with HS256, using the public key's JWK text as the HMAC secret (algorithm confusion).
+    hmac_forgery: bool,
 }
 
 struct Fake {
     issuer: String,
-    signer: TestSigner,
+    redirect_uri: String,
+    signer: Mutex<TestSigner>,
+    /// Every ID token issued and code minted (the secrets test looks for them).
+    issued: Mutex<Vec<String>>,
+    discovery_fetches: AtomicUsize,
     knobs: Mutex<Knobs>,
     /// code -> (nonce, PKCE challenge)
     codes: Mutex<HashMap<String, (String, String)>>,
@@ -63,19 +71,24 @@ fn b64(b: &[u8]) -> String {
 }
 
 async fn discovery(AxState(f): AxState<Arc<Fake>>) -> axum::Json<Value> {
+    f.discovery_fetches.fetch_add(1, Ordering::SeqCst);
     let k = f.knobs.lock().unwrap().clone();
-    axum::Json(json!({
+    let mut doc = json!({
         "issuer": k.discovery_issuer.unwrap_or_else(|| f.issuer.clone()),
         "authorization_endpoint": format!("{}/authorize", f.issuer),
         "token_endpoint": k.token_endpoint.unwrap_or_else(|| format!("{}/token", f.issuer)),
         "jwks_uri": format!("{}/jwks", f.issuer),
         "token_endpoint_auth_methods_supported": ["client_secret_basic"],
-    }))
+    });
+    if let Some(m) = k.pkce_methods {
+        doc["code_challenge_methods_supported"] = m;
+    }
+    axum::Json(doc)
 }
 
 async fn jwks(AxState(f): AxState<Arc<Fake>>) -> axum::Json<Value> {
     f.jwks_fetches.fetch_add(1, Ordering::SeqCst);
-    axum::Json(json!({ "keys": [f.signer.jwk("k1")] }))
+    axum::Json(json!({ "keys": [f.signer.lock().unwrap().jwk("k1")] }))
 }
 
 async fn token(
@@ -96,10 +109,7 @@ async fn token(
         return (StatusCode::BAD_REQUEST, "{\"error\":\"invalid_grant\"}").into_response();
     };
     let verifier = form.get("code_verifier").cloned().unwrap_or_default();
-    if s256(&verifier) != challenge
-        || form.get("redirect_uri").map(String::as_str)
-            != Some("https://companion.test/oidc/callback")
-    {
+    if s256(&verifier) != challenge || form.get("redirect_uri") != Some(&f.redirect_uri) {
         return (StatusCode::BAD_REQUEST, "{\"error\":\"invalid_grant\"}").into_response();
     }
     let k = f.knobs.lock().unwrap().clone();
@@ -118,7 +128,17 @@ async fn token(
             }
         }
     }
-    let id_token = if k.unsigned {
+    let signer = f.signer.lock().unwrap();
+    let id_token = if k.hmac_forgery {
+        let header = b64(json!({"alg": "HS256", "kid": "k1"}).to_string().as_bytes());
+        let input = format!("{header}.{}", b64(claims.to_string().as_bytes()));
+        let secret = signer.jwk("k1").to_string();
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+        format!(
+            "{input}.{}",
+            b64(ring::hmac::sign(&key, input.as_bytes()).as_ref())
+        )
+    } else if k.unsigned {
         format!(
             "{}.{}.",
             b64(json!({"alg": "none"}).to_string().as_bytes()),
@@ -127,9 +147,11 @@ async fn token(
     } else {
         let header = k
             .header
-            .unwrap_or_else(|| json!({"alg": f.signer.alg(), "kid": "k1"}));
-        f.signer.sign(&header, &claims)
+            .unwrap_or_else(|| json!({"alg": signer.alg(), "kid": "k1"}));
+        signer.sign(&header, &claims)
     };
+    drop(signer);
+    f.issued.lock().unwrap().push(id_token.clone());
     axum::Json(json!({"access_token": "made-up", "token_type": "Bearer", "id_token": id_token}))
         .into_response()
 }
@@ -143,13 +165,20 @@ struct H {
 }
 
 async fn h_with(create_users: bool) -> H {
+    h_full(create_users, ORIGIN).await
+}
+
+async fn h_full(create_users: bool, public_url: &str) -> H {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let issuer = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let clock = Arc::new(AtomicI64::new(T0));
     let clock_s = Arc::new(AtomicI64::new(T0 / 1000));
     let fake = Arc::new(Fake {
         issuer: issuer.clone(),
-        signer: TestSigner::es256(),
+        redirect_uri: format!("{public_url}/oidc/callback"),
+        signer: Mutex::new(TestSigner::es256()),
+        issued: Mutex::new(Vec::new()),
+        discovery_fetches: AtomicUsize::new(0),
         knobs: Mutex::new(Knobs::default()),
         codes: Mutex::new(HashMap::new()),
         jwks_fetches: AtomicUsize::new(0),
@@ -182,7 +211,7 @@ async fn h_with(create_users: bool) -> H {
         Arc::new(move || c.load(Ordering::SeqCst)),
     )
     .unwrap()
-    .with_oidc(Provider::for_tests(settings, SECRET, ORIGIN));
+    .with_oidc(Provider::for_tests(settings, SECRET, public_url));
     let app = App::new(store, auth);
     H {
         router: router(app.clone()),
@@ -322,6 +351,7 @@ impl H {
         assert_eq!(q["code_challenge_method"], "S256");
         assert_eq!(q["response_type"], "code");
         let code = crate::auth::random_token().unwrap().to_string();
+        self.fake.issued.lock().unwrap().push(code.clone());
         self.fake.codes.lock().unwrap().insert(
             code.clone(),
             (q["nonce"].clone(), q["code_challenge"].clone()),
@@ -533,9 +563,9 @@ async fn every_bad_id_token_is_refused() {
             },
         ),
         (
-            "HS256",
+            "HS256 keyed with the public key",
             Knobs {
-                header: Some(json!({"alg": "HS256", "kid": "k1"})),
+                hmac_forgery: true,
                 ..Knobs::default()
             },
         ),
@@ -869,6 +899,7 @@ async fn no_code_secret_or_token_is_stored_or_audited() {
         v["access_token"].as_str().unwrap().into(),
         v["refresh_token"].as_str().unwrap().into(),
     ];
+    secrets.extend(h.fake.issued.lock().unwrap().iter().cloned());
     secrets.retain(|s| s.len() > 8);
     let store = h.store();
     for (table, _) in store.tables_and_user_scope().unwrap() {
@@ -896,4 +927,232 @@ async fn no_code_secret_or_token_is_stored_or_audited() {
     // The provider's Debug never shows the secret.
     let dbg = format!("{:?}", h.app.auth.oidc.as_ref().unwrap());
     assert!(!dbg.contains(SECRET));
+}
+
+// ---- Regression tests for the independent review's findings ----
+
+/// M1: with a `public_url` that has a path, dot segments (`/../`, `%2e%2e`) took the browser,
+/// and the hand-over code, out of the Companion's path.
+#[tokio::test]
+async fn an_app_redirect_with_dot_segments_or_another_path_is_refused() {
+    let h = h_full(false, "https://companion.test/croft").await;
+    let p = h.app.auth.oidc.clone().unwrap();
+    for bad in [
+        "https://companion.test/croft/../mallory/",
+        "https://companion.test/croft/%2e%2e/mallory/",
+        "https://companion.test/croft/.%2E/mallory/",
+        "https://companion.test/croft/a/../../mallory/",
+        "https://companion.test/croft/./app",
+        "https://companion.test/croft%2f..%2fmallory",
+        "https://companion.test/croftx/app",
+        "https://companion.test/other",
+        "https://companion.test/croft",
+        "https://companion.test:443/croft/app",
+        "https://COMPANION.test/croft/app",
+        "https://companion.test/croft//evil.example/",
+    ] {
+        assert!(!p.app_redirect_ok(bad), "{bad}");
+    }
+    for good in [
+        "https://companion.test/croft/app",
+        "https://companion.test/croft/app/signed-in?x=1",
+    ] {
+        assert!(p.app_redirect_ok(good), "{good}");
+    }
+    // And end to end: the whole flow under a path still works.
+    let ann = h.user("ann");
+    h.link(ann, "made-up-sub-ann");
+    let app = app_side();
+    let path = format!(
+        "/api/sign-in/oidc/start?app_challenge={}&app_redirect=https%3A%2F%2Fcompanion.test%2Fcroft%2Fapp",
+        app.challenge
+    );
+    let (s, loc, _) = h.raw(Method::GET, &path, None, None).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    let (_, back) = h.browse(&loc.unwrap()).await;
+    let back = back.unwrap();
+    assert!(
+        back.starts_with("https://companion.test/croft/app?code="),
+        "{back}"
+    );
+}
+
+async fn enrol_with_a_passkey(h: &H, user_id: i64) {
+    use webauthn_authenticator_rs::softpasskey::SoftPasskey;
+    use webauthn_authenticator_rs::WebauthnAuthenticator;
+    let now = h.now();
+    let token = h
+        .store()
+        .create_enrolment(user_id, None, now)
+        .unwrap()
+        .to_string();
+    let (s, _, start) = h
+        .raw(
+            Method::POST,
+            "/api/enrol/start",
+            None,
+            Some(json!({"token": token})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let ccr: webauthn_rs::prelude::CreationChallengeResponse =
+        serde_json::from_value(start["options"].clone()).unwrap();
+    let cred = SoftPasskey::new(true)
+        .do_registration(webauthn_rs::prelude::Url::parse(ORIGIN).unwrap(), ccr)
+        .unwrap();
+    let (s, _, _) = h
+        .raw(
+            Method::POST,
+            "/api/enrol/finish",
+            None,
+            Some(json!({"token": token, "ceremony": start["ceremony"], "credential": cred})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+/// M2: an identity linked with a stolen session still signed in after re-enrolment, the
+/// documented way to cut off a lost device.
+#[tokio::test]
+async fn re_enrolment_removes_a_linked_identity() {
+    let h = h_with(false).await;
+    let ann = h.user("ann");
+    let stolen = h.session(ann);
+    // The thief links their own provider account.
+    h.knobs(Knobs {
+        claims: json!({"sub": "made-up-sub-mallory"}),
+        ..Knobs::default()
+    });
+    let app = app_side();
+    let (_, _, v) = h
+        .raw(
+            Method::POST,
+            "/api/oidc/link/start",
+            Some(&stolen),
+            Some(json!({"app_challenge": app.challenge, "app_redirect": APP_REDIRECT})),
+        )
+        .await;
+    let (_, loc) = h.browse(v["url"].as_str().unwrap()).await;
+    let code = query_of(&loc.unwrap())["code"].clone();
+    let (s, _, _) = h
+        .raw(
+            Method::POST,
+            "/api/oidc/link/finish",
+            Some(&stolen),
+            Some(json!({"code": code, "verifier": app.verifier})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // It is visible to Ann and to the admin.
+    let (_, _, me) = h.raw(Method::GET, "/api/me", Some(&stolen), None).await;
+    assert_eq!(me["oidc_linked"], true);
+    // The admin re-enrols Ann: every way in is replaced, the planted identity included.
+    enrol_with_a_passkey(&h, ann).await;
+    assert_eq!(
+        h.raw(Method::GET, "/api/me", Some(&stolen), None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let back = h.sign_in_redirect(&app_side()).await;
+    assert_eq!(back.get("error").map(String::as_str), Some("not_linked"));
+    assert!(h
+        .store()
+        .audit_entries(Some(ann), 50)
+        .unwrap()
+        .iter()
+        .any(|e| e.action == "oidc.unlink"));
+}
+
+/// M2: linking needs a recent sign-in, not just any live session.
+#[tokio::test]
+async fn linking_needs_a_recent_sign_in() {
+    let h = h_with(false).await;
+    let ann = h.user("ann");
+    let t = h.session(ann);
+    h.advance(crate::api::oidc_api::LINK_FRESH_MS + 1);
+    let app = app_side();
+    let (s, _, _) = h
+        .raw(
+            Method::POST,
+            "/api/oidc/link/start",
+            Some(&t),
+            Some(json!({"app_challenge": app.challenge, "app_redirect": APP_REDIRECT})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}
+
+/// Low: a key rotated under the same key id was never picked up.
+#[tokio::test]
+async fn a_key_rotated_under_the_same_id_is_picked_up() {
+    let h = h_with(false).await;
+    let ann = h.user("ann");
+    h.link(ann, "made-up-sub-ann");
+    assert!(h.sign_in_redirect(&app_side()).await.contains_key("code"));
+    *h.fake.signer.lock().unwrap() = TestSigner::es256();
+    h.advance(61_000);
+    let back = h.sign_in_redirect(&app_side()).await;
+    assert!(back.contains_key("code"), "{back:?}");
+    assert_eq!(h.fake.jwks_fetches.load(Ordering::SeqCst), 2);
+}
+
+/// Low: a provider that lists its PKCE methods without S256 is refused; a provider that is down
+/// is not asked again on every start.
+#[tokio::test]
+async fn pkce_must_be_s256_and_a_failed_discovery_waits_before_the_next_try() {
+    let h = h_with(false).await;
+    let path = format!(
+        "/api/sign-in/oidc/start?app_challenge={}&app_redirect=https%3A%2F%2Fcompanion.test%2Fapp",
+        app_side().challenge
+    );
+    h.knobs(Knobs {
+        pkce_methods: Some(json!(["plain"])),
+        ..Knobs::default()
+    });
+    assert_eq!(
+        h.raw(Method::GET, &path, None, None).await.0,
+        StatusCode::BAD_GATEWAY
+    );
+    let fetched = h.fake.discovery_fetches.load(Ordering::SeqCst);
+    h.knobs(Knobs::default());
+    assert_eq!(
+        h.raw(Method::GET, &path, None, None).await.0,
+        StatusCode::BAD_GATEWAY,
+        "waits"
+    );
+    assert_eq!(h.fake.discovery_fetches.load(Ordering::SeqCst), fetched);
+    h.advance(31_000);
+    assert_eq!(
+        h.raw(Method::GET, &path, None, None).await.0,
+        StatusCode::SEE_OTHER
+    );
+    h.knobs(Knobs {
+        pkce_methods: Some(json!(["S256", "plain"])),
+        ..Knobs::default()
+    });
+    assert_eq!(
+        h.raw(Method::GET, &path, None, None).await.0,
+        StatusCode::SEE_OTHER
+    );
+}
+
+/// Low: a new user's name may not differ from an existing one only by case.
+#[tokio::test]
+async fn a_created_name_never_differs_from_another_only_by_case() {
+    let h = h_with(true).await;
+    h.store().add_user(&h.master, "Ann", Role::Admin).unwrap();
+    let app = app_side();
+    let back = h.sign_in_redirect(&app).await;
+    let (_, v) = h.exchange(&back["code"], &app.verifier).await;
+    let (_, _, me) = h
+        .raw(
+            Method::GET,
+            "/api/me",
+            Some(v["access_token"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (me["name"].as_str(), me["role"].as_str()),
+        (Some("ann-2"), Some("user"))
+    );
 }

@@ -94,8 +94,8 @@ If you run Authelia, Authentik, Keycloak or Microsoft Entra ID, people can sign 
    # required_group = "mail"
    ```
 
-- People are matched by the provider's (issuer, subject) pair, never by e-mail. A user links their identity once while signed in (a
-  settings page of the web app); an admin can unlink it. With `create_users`, a member of `required_group` who signs in for the first
+- People are matched by the provider's (issuer, subject) pair, never by e-mail. A user links their identity once, from the web app,
+  within ten minutes of signing in; an admin can unlink it, and a re-enrolment (`user enrol`) removes it. With `create_users`, a member of `required_group` who signs in for the first
   time gets a new user (role `user`).
 - The provider's answer is handed to the app as a one-time code that only the app that started the sign-in can use (PKCE), so a sign-in
   started by someone else cannot end in your session.

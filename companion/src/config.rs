@@ -225,6 +225,16 @@ fn oidc_settings(
     if client_id.trim().is_empty() || client_id.len() > 256 {
         return Err(ConfigError::Invalid("oidc.client_id is empty or too long"));
     }
+    // Absolute and without `..`, so the comparison with the data folder means what it says.
+    if !client_secret_file.is_absolute()
+        || client_secret_file
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
+        return Err(ConfigError::Invalid(
+            "oidc.client_secret_file must be an absolute path without ..",
+        ));
+    }
     if client_secret_file.starts_with(data_dir) {
         return Err(ConfigError::Invalid(
             "oidc.client_secret_file must be outside data_dir",
@@ -434,6 +444,8 @@ mod tests {
             "public_url = \"https://x.example\"\n[oidc]\nissuer = \"https://id.example\"\n",
             &full.replace("https://id.example/realms/a", "http://id.example"),
             &full.replace("/keys/oidc", "/data/oidc"),
+            &full.replace("/keys/oidc", "keys/oidc"),
+            &full.replace("/keys/oidc", "/keys/../data/oidc"),
             &format!("{full}create_users = true\n"),
             &format!("{full}unknown = 1\n"),
         ] {

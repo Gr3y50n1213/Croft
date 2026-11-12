@@ -28,6 +28,9 @@ use crate::limits;
 use crate::oidc::{with_query, OidcError, Outcome, Provider, Purpose};
 use crate::store::StoreError;
 
+/// How recent a sign-in must be to link an identity.
+pub const LINK_FRESH_MS: i64 = 10 * 60 * 1000;
+
 fn provider(app: &App) -> Result<std::sync::Arc<Provider>, ApiError> {
     app.auth.oidc.clone().ok_or(ApiError::NotFound)
 }
@@ -113,10 +116,12 @@ pub async fn callback(
     let now = app.auth.now();
     let Some(flow) = q.state.as_deref().and_then(|s| p.take_flow(s, now)) else {
         failed(&app, ip);
+        let _ = with_store(&app, move |s| s.record_failure(None, now, false)).await;
         return Err(ApiError::Invalid);
     };
     let back = |pairs: &[(&str, &str)]| see_other(&with_query(flow.app_redirect(), pairs));
     if q.error.is_some() {
+        let _ = with_store(&app, move |s| s.record_failure(None, now, false)).await;
         return Ok(back(&[("error", "provider")]));
     }
     let Some(code) = q.code.map(Zeroizing::new) else {
@@ -208,7 +213,13 @@ pub async fn exchange(
     let (code, verifier) = (Zeroizing::new(req.code), Zeroizing::new(req.verifier));
     match p.redeem(&code, &verifier, app.auth.now()) {
         Ok(Outcome::SignIn { user_id }) => {
-            start_session(&app, user_id, device_name(req.device), false).await
+            let res = start_session(&app, user_id, device_name(req.device), false).await;
+            if res.is_ok() {
+                // Marks the sign-in as made through the provider.
+                let _ =
+                    with_store(&app, move |s| s.audit(Some(user_id), "sign_in.oidc", "ok")).await;
+            }
+            res
         }
         _ => {
             failed(&app, ip);
@@ -235,6 +246,13 @@ pub async fn link_start(
     limit(&app, peer, &headers)?;
     let req = body(req)?;
     let p = provider(&app)?;
+    let now = app.auth.now();
+    // Linking adds a way in, so it needs a sign-in from the last minutes, not just any live
+    // session (T25 review: a stolen session could plant the thief's identity).
+    let started = with_store(&app, move |s| s.session_started(c.user_id, c.session_id)).await??;
+    if started.is_none_or(|t| now - t > LINK_FRESH_MS) {
+        return Err(ApiError::Forbidden);
+    }
     let url = p
         .start(
             Owner::User(c.user_id),
@@ -285,7 +303,11 @@ pub async fn link_finish(
         if !s.session_live(user_id, session_id)? {
             return Err(StoreError::NoSuchUser);
         }
-        s.link_identity(user_id, &issuer, &subject, now)
+        let linked = s.link_identity(user_id, &issuer, &subject, now);
+        if matches!(linked, Err(StoreError::Conflict)) {
+            s.audit(Some(user_id), "oidc.link", "conflict")?;
+        }
+        linked
     })
     .await?
     .map_err(|e| match e {

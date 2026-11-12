@@ -951,14 +951,23 @@ async fn refresh(
 // ---- The signed-in user ----
 
 async fn me(State(app): State<App>, Signed(c): Signed) -> ApiResult {
-    let user = with_store(&app, move |s| s.user_by_id(c.user_id))
-        .await??
-        .ok_or(ApiError::Unauthorized)?;
+    let issuer = app.auth.oidc.as_ref().map(|p| p.settings().issuer.clone());
+    let (user, linked) = with_store(&app, move |s| {
+        let user = s.user_by_id(c.user_id)?;
+        let linked = match &issuer {
+            Some(i) => s.has_identity(c.user_id, i)?,
+            None => false,
+        };
+        Ok::<_, StoreError>((user, linked))
+    })
+    .await??;
+    let user = user.ok_or(ApiError::Unauthorized)?;
     Ok(Json(json!({
         "id": user.id,
         "name": user.name,
         "role": role_str(user.role),
         "recovery": c.recovery,
+        "oidc_linked": linked,
     }))
     .into_response())
 }
@@ -1129,7 +1138,15 @@ async fn own_audit(State(app): State<App>, Full(c): Full) -> ApiResult {
 // ---- Admin ----
 
 async fn admin_users(State(app): State<App>, Admin(_): Admin) -> ApiResult {
-    let users = with_store(&app, |s| s.users()).await??;
+    let issuer = app.auth.oidc.as_ref().map(|p| p.settings().issuer.clone());
+    let (users, linked) = with_store(&app, move |s| {
+        let linked = match &issuer {
+            Some(i) => s.users_with_identity(i)?,
+            None => Default::default(),
+        };
+        Ok::<_, StoreError>((s.users()?, linked))
+    })
+    .await??;
     let items: Vec<Value> = users
         .iter()
         .map(|u| {
@@ -1139,6 +1156,7 @@ async fn admin_users(State(app): State<App>, Admin(_): Admin) -> ApiResult {
                 "role": role_str(u.role),
                 "created_ms": u.created_ms,
                 "disabled": u.disabled,
+                "oidc_linked": linked.contains(&u.id),
             })
         })
         .collect();
@@ -1186,7 +1204,7 @@ async fn admin_audit(State(app): State<App>, Admin(_): Admin) -> ApiResult {
 }
 
 #[path = "oidc_api.rs"]
-mod oidc_api;
+pub(crate) mod oidc_api;
 
 #[cfg(test)]
 #[path = "api_tests.rs"]

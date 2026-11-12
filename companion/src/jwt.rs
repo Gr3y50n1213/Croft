@@ -287,15 +287,18 @@ pub fn check_claims(v: &Verified, want: &Expected<'_>) -> Result<Identity, JwtEr
         _ => {}
     }
     let exp = number("exp").ok_or(JwtError::Claim("exp"))?;
-    if exp + LEEWAY_S <= want.now_s {
+    if exp.saturating_add(LEEWAY_S) <= want.now_s {
         return Err(JwtError::Claim("exp"));
     }
     let iat = number("iat").ok_or(JwtError::Claim("iat"))?;
-    if iat > want.now_s + LEEWAY_S {
+    if iat > want.now_s.saturating_add(LEEWAY_S) {
         return Err(JwtError::Claim("iat"));
     }
     if let Some(nbf) = c.get("nbf") {
-        if nbf.as_i64().is_none_or(|n| n > want.now_s + LEEWAY_S) {
+        if nbf
+            .as_i64()
+            .is_none_or(|n| n > want.now_s.saturating_add(LEEWAY_S))
+        {
             return Err(JwtError::Claim("nbf"));
         }
     }

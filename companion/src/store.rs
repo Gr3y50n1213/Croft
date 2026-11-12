@@ -331,9 +331,11 @@ pub(crate) fn insert_user(
     }
     check_key(tx, master)?;
     let taken: bool = tx
-        .query_row("SELECT 1 FROM user WHERE name = ?1", params![name], |_| {
-            Ok(true)
-        })
+        .query_row(
+            "SELECT 1 FROM user WHERE name = ?1 COLLATE NOCASE",
+            params![name],
+            |_| Ok(true),
+        )
         .optional()?
         .unwrap_or(false);
     if taken {

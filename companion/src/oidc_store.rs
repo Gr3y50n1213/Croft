@@ -172,6 +172,36 @@ impl Store {
         Ok(user.id)
     }
 
+    /// The ids of the users with a linked identity at `issuer` (the admin's user list).
+    pub fn users_with_identity(
+        &self,
+        issuer: &str,
+    ) -> Result<std::collections::HashSet<i64>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT user_id FROM oidc_identity WHERE issuer = ?1")?;
+        let ids = stmt
+            .query_map(params![issuer], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
+    /// When the user's live session began (to ask for a fresh sign-in before linking).
+    pub fn session_started(
+        &self,
+        user_id: i64,
+        session_id: i64,
+    ) -> Result<Option<i64>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT created_ms FROM session WHERE id = ?1 AND user_id = ?2 AND revoked_ms IS NULL",
+                params![session_id, user_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Whether the session is live (not revoked, user not disabled): a link finished in the
     /// browser checks the session that started it.
     pub fn session_live(&self, user_id: i64, session_id: i64) -> Result<bool, StoreError> {

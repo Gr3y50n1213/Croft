@@ -423,7 +423,8 @@ impl Store {
     }
 
     /// Finishes an enrolment: uses up the link (once, checked inside the transaction), replaces the
-    /// user's passkeys, TOTP secret and recovery codes, and ends every session they had (a
+    /// user's passkeys, TOTP secret and recovery codes, removes any linked OIDC identity, and ends
+    /// every session they had (a
     /// re-enrolment is how a lost device is cut off). `None` if the link is no longer valid.
     pub fn finish_enrolment(
         &mut self,
@@ -452,6 +453,15 @@ impl Store {
             params![user_id],
         )?;
         tx.execute("DELETE FROM totp WHERE user_id = ?1", params![user_id])?;
+        // A linked provider identity is a way in too (T25 review: one linked with a stolen
+        // session survived re-enrolment).
+        if tx.execute(
+            "DELETE FROM oidc_identity WHERE user_id = ?1",
+            params![user_id],
+        )? > 0
+        {
+            audit(&tx, now, Some(user_id), None, "oidc.unlink", "ok")?;
+        }
         tx.execute(
             "DELETE FROM sign_in_failure WHERE user_id = ?1",
             params![user_id],

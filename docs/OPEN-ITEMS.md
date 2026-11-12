@@ -44,3 +44,7 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 - During this session the owner allowed `dl.google.com`, `maven.google.com`, `www.mozilla.org`, `www.gnu.org`, `docs.rs` and `downloads.gradle.org` on the Default environment.
 
 - **Benchmark build type (T14 follow-up):** the `benchmark` build type does not add `src/release/kotlin`, so it probably no longer compiles since the debug-only test hooks moved to `src/debug` with release stubs (T17c). Fix it the same way as `preview` before the macrobenchmark is run again.
+
+## Companion (phase 2)
+- **Real passkeys and identity providers are untested (T24, T25).** The Companion's sign-in was tested with a software passkey and a fake OIDC provider only. To try on a real host: passkeys on a phone, a computer and a security key; OIDC against your own Authelia, Authentik, Keycloak or Entra ID (README, "Signing in through your identity provider").
+- **An identity provider with a private certificate authority (T25 review):** the Companion trusts the public roots only; a home-lab provider signed by its own CA cannot be used yet. A setting for an extra CA file is a later task if needed.

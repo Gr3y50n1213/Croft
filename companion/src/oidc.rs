@@ -36,8 +36,15 @@ pub const FLOW_TTL_MS: i64 = 10 * 60 * 1000;
 pub const HANDOVER_TTL_MS: i64 = 60 * 1000;
 /// How long discovery is cached.
 const DISCOVERY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
-/// The key set is fetched again for an unknown key id at most this often.
+/// The key set is fetched again (unknown key id, a signature that fails, a failed fetch) at most
+/// this often.
 const JWKS_REFETCH_MS: i64 = 60 * 1000;
+/// The key set is fetched again after this long in any case (a key rotated under the same id, or
+/// withdrawn, is noticed within a day).
+const JWKS_MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
+/// After a failed discovery, the next attempt waits this long (a provider that is down does not
+/// hold every sign-in start for the full request time).
+const DISCOVERY_RETRY_MS: i64 = 30 * 1000;
 /// Largest discovery document, key set or token answer read.
 const MAX_DOCUMENT: usize = 256 * 1024;
 
@@ -142,7 +149,7 @@ pub struct Provider {
     redirect_uri: String,
     public_url: String,
     allow_loopback_http: bool,
-    discovery: tokio::sync::Mutex<Option<Discovery>>,
+    discovery: tokio::sync::Mutex<(Option<Discovery>, i64)>,
     jwks: tokio::sync::Mutex<(Vec<Jwk>, i64)>,
     flows: Mutex<Ceremonies<Flow>>,
     handovers: Mutex<Ceremonies<Handover>>,
@@ -203,7 +210,7 @@ impl Provider {
             settings,
             secret,
             allow_loopback_http: false,
-            discovery: tokio::sync::Mutex::new(None),
+            discovery: tokio::sync::Mutex::new((None, i64::MIN / 2)),
             jwks: tokio::sync::Mutex::new((Vec::new(), i64::MIN / 2)),
             flows: Mutex::new(Ceremonies::with_ttl(FLOW_TTL_MS)),
             handovers: Mutex::new(Ceremonies::with_ttl(HANDOVER_TTL_MS)),
@@ -227,25 +234,51 @@ impl Provider {
         url.starts_with("https://") || (self.allow_loopback_http && fetch::is_loopback_http(url))
     }
 
-    /// Whether the app's redirect is acceptable: an address under the Companion's own
-    /// `public_url` (the web app), with nothing that could make it leave that origin.
+    /// Whether the app's redirect is acceptable: an address on the Companion's own origin, under
+    /// its `public_url` path, written in normal form. The URL is parsed as a browser does (WHATWG)
+    /// and must read back exactly as given, so dot segments (`/../`, `%2e%2e`), backslashes,
+    /// user names, a fragment or another port, which a browser would resolve elsewhere, are
+    /// refused (review finding: `/croft/%2e%2e/page` left the Companion's path with the code).
     pub fn app_redirect_ok(&self, url: &str) -> bool {
-        let prefix = format!("{}/", self.public_url);
-        url.len() <= 512
-            && url.starts_with(&prefix)
-            && !url[prefix.len()..].starts_with('/')
-            && !url.contains(['\\', '#', '@'])
-            && url.bytes().all(|b| (0x21..=0x7e).contains(&b))
+        if url.len() > 512 || !url.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+            return false;
+        }
+        let (Ok(parsed), Ok(public)) = (url::Url::parse(url), url::Url::parse(&self.public_url))
+        else {
+            return false;
+        };
+        let lower = url.to_ascii_lowercase();
+        let base = public.path().trim_end_matches('/');
+        parsed.as_str() == url
+            && !lower.contains("%2e")
+            && !lower.contains("%2f")
+            && !lower.contains("%5c")
+            && parsed.origin() == public.origin()
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && parsed.fragment().is_none()
+            && parsed.path().starts_with(&format!("{base}/"))
+            && !parsed.path().contains("//")
+            && !parsed
+                .path()
+                .split('/')
+                .any(|seg| seg == "." || seg == "..")
     }
 
     async fn discovery(&self, now: i64) -> Result<Discovery, OidcError> {
         let mut cached = self.discovery.lock().await;
         if let Some(d) = cached
+            .0
             .as_ref()
             .filter(|d| now - d.fetched_ms < DISCOVERY_TTL_MS)
         {
             return Ok(d.clone());
         }
+        if now - cached.1 < DISCOVERY_RETRY_MS {
+            return Err(OidcError::Unreachable);
+        }
+        // Counted as a failure until it succeeds.
+        cached.1 = now;
         let url = format!(
             "{}/.well-known/openid-configuration",
             self.settings.issuer.trim_end_matches('/')
@@ -276,6 +309,18 @@ impl Provider {
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
         let basic_auth = methods.is_empty() || methods.contains(&"client_secret_basic");
+        // A provider that lists its PKCE methods must offer S256 (one that ignored PKCE would
+        // leave only the nonce).
+        if let Some(pkce) = doc
+            .get("code_challenge_methods_supported")
+            .and_then(Value::as_array)
+        {
+            if !pkce.iter().any(|m| m.as_str() == Some("S256")) {
+                return Err(OidcError::Discovery(
+                    "the provider does not support PKCE with S256",
+                ));
+            }
+        }
         if !basic_auth && !methods.contains(&"client_secret_post") {
             return Err(OidcError::Discovery(
                 "the provider supports neither client_secret_basic nor client_secret_post",
@@ -288,23 +333,30 @@ impl Provider {
             basic_auth,
             fetched_ms: now,
         };
-        *cached = Some(d.clone());
+        *cached = (Some(d.clone()), i64::MIN / 2);
         Ok(d)
     }
 
+    /// The provider's keys. Fetched again when they are older than a day, when the token names a
+    /// key id they lack, or when `failed_with_these` says a signature did not verify with them;
+    /// never more than once a minute (a failed fetch counts).
     async fn keys(
         &self,
         jwks_uri: &str,
         kid: Option<&str>,
+        failed_with_these: bool,
         now: i64,
     ) -> Result<Vec<Jwk>, OidcError> {
         let mut cache = self.jwks.lock().await;
         let known = kid.is_none_or(|k| cache.0.iter().any(|j| j.kid() == Some(k)));
-        let stale = cache.0.is_empty() || !known;
-        if stale && now - cache.1 >= JWKS_REFETCH_MS {
-            let answer = fetch::get(jwks_uri, MAX_DOCUMENT).await?;
-            if answer.status == 200 {
-                *cache = (jwt::parse_jwks(&answer.body), now);
+        let old = now - cache.1 >= JWKS_MAX_AGE_MS;
+        let wanted = cache.0.is_empty() || !known || old || failed_with_these;
+        if wanted && now - cache.1 >= JWKS_REFETCH_MS {
+            cache.1 = now;
+            if let Ok(answer) = fetch::get(jwks_uri, MAX_DOCUMENT).await {
+                if answer.status == 200 {
+                    cache.0 = jwt::parse_jwks(&answer.body);
+                }
             }
         }
         Ok(cache.0.clone())
@@ -390,10 +442,11 @@ impl Provider {
         let basic;
         let authorization = if d.basic_auth {
             // RFC 6749 2.3.1: the id and secret are form-encoded before Basic.
+            let escaped = Zeroizing::new(query_escape(&self.secret));
             let user_pass = Zeroizing::new(format!(
                 "{}:{}",
                 query_escape(&self.settings.client_id),
-                query_escape(&self.secret)
+                escaped.as_str()
             ));
             basic = Zeroizing::new(format!(
                 "Basic {}",
@@ -411,17 +464,26 @@ impl Provider {
         if answer.status != 200 {
             return Err(OidcError::TokenRefused);
         }
-        let doc: Value =
+        // Only the ID token is read; the other fields (the access token among them) are skipped
+        // without being copied.
+        #[derive(serde::Deserialize)]
+        struct TokenAnswer {
+            id_token: String,
+        }
+        let answer: TokenAnswer =
             serde_json::from_slice(&answer.body).map_err(|_| OidcError::TokenRefused)?;
-        let id_token = Zeroizing::new(
-            doc.get("id_token")
-                .and_then(Value::as_str)
-                .ok_or(OidcError::TokenRefused)?
-                .to_owned(),
-        );
+        let id_token = Zeroizing::new(answer.id_token);
         let kid = jwt::key_id(&id_token);
-        let keys = self.keys(&d.jwks_uri, kid.as_deref(), now).await?;
-        let verified = jwt::verify_signature(&id_token, &keys).map_err(OidcError::Token)?;
+        let keys = self.keys(&d.jwks_uri, kid.as_deref(), false, now).await?;
+        let verified = match jwt::verify_signature(&id_token, &keys) {
+            // A key rotated under the same id: one fresh look at the key set.
+            Err(JwtError::Signature | JwtError::UnknownKey) => {
+                let keys = self.keys(&d.jwks_uri, kid.as_deref(), true, now).await?;
+                jwt::verify_signature(&id_token, &keys)
+            }
+            other => other,
+        }
+        .map_err(OidcError::Token)?;
         jwt::check_claims(
             &verified,
             &jwt::Expected {

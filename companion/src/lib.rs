@@ -28,11 +28,13 @@ mod tests {
     #[test]
     fn the_core_patches_are_in_force() {
         let lock = include_str!("../Cargo.lock");
-        let entry = lock
+        let entries: Vec<&str> = lock
             .split("[[package]]")
-            .find(|p| p.contains("name = \"async-imap\""))
-            .unwrap_or_default();
-        assert!(!entry.is_empty(), "async-imap is not in the lock file");
-        assert!(!entry.contains("source ="), "the stock async-imap is built");
+            .filter(|p| p.contains("name = \"async-imap\""))
+            .collect();
+        assert!(!entries.is_empty(), "async-imap is not in the lock file");
+        for entry in entries {
+            assert!(!entry.contains("source ="), "a stock async-imap is built");
+        }
     }
 }

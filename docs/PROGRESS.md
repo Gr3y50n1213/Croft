@@ -5,6 +5,63 @@ unverified, the next step.
 
 ---
 
+## T18b: conversation and message screens (12 November 2026)
+
+**Status:** draft pull request #22 on `task/t18b` (CI only; not merged). T18 Part A on Android: S20 Conversation and S21 Message,
+on the core of T18a (FFI 9) and the compose screens of T18d (merged, including its review fixes). No Rust change.
+
+**Built.** A tap on a row of any folder opens S20. Messages oldest first; older ones collapsed to sender, date and snippet (a tap or
+the TalkBack action "Expand message" opens them); the opened message and the newest expanded. Action bar: archive, delete (Delete
+forever with a confirmation in Trash and Spam), mark unread, overflow with Mark as unread, Move to (S30 sheet) and Report spam (Not
+spam in Spam). They run through the Inbox's own `RowActions` on the messages of the opened folder, close the screen and hand the Inbox
+the Undo notice. Reply bar: Reply, Reply all (only when more than one other person is on the message, as docs/UX.md says), Forward,
+through `ComposeStart`. Mark read after the S49 delay counted from when the body is shown; `load_body` never marks. The sample mailbox
+shows "Not saved to server". Offline: "Not downloaded yet. It will load when you're online." with Retry, retried by itself when the
+account changes. Every `ReadError` has plain-language copy (`strings_reading.xml`, `ReadCopyTest`).
+S21: plain text in a selectable `Text`; HTML in one hardened WebView fed `html_sanitised` only; "Remote images blocked" bar (count, Show
+images, Always for this sender under Known senders, a sentence and nothing that loads under Never); a quiet note when only the text
+version is shown; attachment chips in every state; executables labelled "Blocked for your safety" and never saved or opened;
+attachments open through a FileProvider (see below). S49: Remote images and Mark as read rows, and the known senders list.
+
+**Decisions.** Mark-read default is After 2 s (docs/ux/customisation.md), not Immediately. Dark theme: HTML mail is never recoloured; it
+sits on a light card (docs/UX.md); the simple-mail inversion is not built. Zoom: no rule in the docs; the page fits the width, pinch
+zoom on, no zoom buttons, text size follows the system and S52 text size. Show original, unsubscribe, Snooze, Mute thread, Print and
+Block sender are not offered (no FFI call or later phase), no disabled placeholders. The reading font applies to plain text only.
+`data:` and `about:` requests pass `shouldInterceptRequest` in both modes (they never leave the device).
+
+**WebView settings (exact).** `javaScriptEnabled=false`, `allowFileAccess=false`, `allowContentAccess=false`,
+`allowFileAccessFromFileURLs=false`, `allowUniversalAccessFromFileURLs=false`, `blockNetworkLoads=!remote_allowed`,
+`blockNetworkImage=!remote_allowed`, `safeBrowsingEnabled=true`, geolocation off, `saveFormData=false`, `domStorageEnabled=false`,
+`databaseEnabled=false`, multiple windows off, `mixedContentMode=NEVER_ALLOW`, `cacheMode=LOAD_NO_CACHE`, `forceDark=OFF`,
+`textZoom` from the font scale; no `addJavascriptInterface`, no `WebChromeClient`; `shouldOverrideUrlLoading` always true (both
+overloads); `shouldInterceptRequest` answers 403 with an empty body for everything while blocked and for everything but `https` when
+allowed. Links: http, https and mailto show a dialog with the real address (hidden characters written out) and open only on confirm
+(browser chooser; mailto in Croft's compose); anything else is ignored.
+
+**FileProvider.** `androidx.core.content.FileProvider`, authority `<applicationId>.attachments`, `exported=false`,
+`grantUriPermissions=true`; `res/xml/shared_attachment_paths.xml` has one entry: `<cache-path name="shared_attachments"
+path="shared-attachments/"/>`. The core saves into `cacheDir/shared-attachments/`; the viewer gets `ACTION_VIEW` + MIME + a chooser with
+`FLAG_GRANT_READ_URI_PERMISSION` only. The folder is emptied at app start, when the viewer returns and when the screen is left.
+`check-release-manifest.py` now fails on any provider with `grantUriPermissions` that is not allowlisted by authority, not exported
+`false`, or with another paths file (`uri-grant-providers`). T18d's own-provider check covers this authority (test in `SharedAttachmentsTest`).
+
+**Checks.** Locally (host Rust 1.99 through `RUSTUP_TOOLCHAIN`): `:mailtests` reading tests against the in-process IMAP server and the
+sample mailbox (conversation, body not marked read until `mark_seen`, remote blocked, Show images, allowed, Never wins, known senders,
+attachment saved into the folder, a blocked executable refused through a draft appended to Drafts, every `ReadException` variant has a
+`ReadProblem`) and `ReadingRulesTest` (links, requests, reply-all rule) pass; `python3 -m unittest discover -s android/tools` passes;
+the app and its unit tests compile. Robolectric and screenshot tests cannot run here (Maven Central refuses the container), so they ran on CI only.
+
+**CI.** First run (`c1b4ec3`): 6 of 7 green; `android` had 13 failed tests, 2 of them T18d's (fixed by its `210f52f`, merged) and 11 of mine (merged semantics on three nodes, Safe Browsing asserted on a recording settings object because Robolectric's is a stub, the FileProvider static path cache cleared per test, a folder out of view in the Move to sheet, a state change with a paused clock). Second run (`123393f`): all 7 jobs green (`design`, `schema`, `core`, `sqlcipher`, `integration`, `android`, `android-release`).
+
+**Unverified (needs a device).** How real HTML mail renders and scrolls inside the conversation (WebView under Robolectric draws
+nothing; the screenshots show an empty light card), pinch zoom and nested scrolling, the chooser and real viewer apps, TalkBack reading
+order, the WebView's own Safe Browsing interstitial.
+
+**Next.** Tablet list and detail (T01), simple-mail dark inversion, Show original when the core has a call, per-message Save and Share
+from the chip menu.
+
+---
+
 ## T18a: reading in the core (11 November 2026)
 
 **Status:** draft pull request #18 on `task/t18a` (CI only; not merged). Part A of T18, core side only: no screens.

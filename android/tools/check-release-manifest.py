@@ -5,7 +5,10 @@
 """Fails when the release merged manifest has a permission or an exported component that is not on the allowlist.
 
 Usage: check-release-manifest.py <AndroidManifest.xml> [allowlist.json]
-Also fails on android:debuggable="true". The allowlist defaults to manifest-allowlist.json next to this script.
+Also fails on android:debuggable="true", and on a content provider that grants URI permissions (android:grantUriPermissions="true", which
+is how an app hands one file to another app) unless it is listed under "uri-grant-providers" by authority, is not exported, and is the class
+the allowlist names.
+The allowlist defaults to manifest-allowlist.json next to this script.
 In the allowlist, ${applicationId} is the manifest's package (the application id, which the preview build gives a suffix) and
 ${namespace} is the code's namespace, where the app's own classes live (environment variable CROFT_NAMESPACE, default: the package).
 """
@@ -30,6 +33,7 @@ def check(manifest_path, allowlist_path):
     allowed_perms = {sub(k) for k in allow["uses-permission"]}
     allowed_decl = {sub(k) for k in allow.get("permission", {})}
     allowed_exp = {sub(k): v for k, v in allow["exported"].items()}
+    allowed_grant = {sub(k): v for k, v in allow.get("uri-grant-providers", {}).items()}
     errors = []
 
     for el in root.iter():
@@ -54,6 +58,9 @@ def check(manifest_path, allowlist_path):
             name = el.get(A + "name") or ""
             if name.startswith("."):
                 name = namespace + name
+            # A provider can grant URI permissions with the attribute or with <grant-uri-permission> children; both are checked.
+            if el.tag == "provider" and (el.get(A + "grantUriPermissions") == "true" or el.find("grant-uri-permission") is not None):
+                errors.extend(check_grant_provider(el, name, allowed_grant, sub))
             exported = el.get(A + "exported")
             # Without the attribute a component is exported when it has an intent filter (older targetSdk rule).
             is_exported = exported == "true" or (exported is None and el.find("intent-filter") is not None)
@@ -69,6 +76,26 @@ def check(manifest_path, allowlist_path):
                 )
             else:
                 errors.extend(check_filters(key, el, entry))
+    return errors
+
+
+def check_grant_provider(el, name, allowed, sub):
+    """A provider that can hand out URI permissions: allowlisted by authority, never exported, the class the allowlist names, and (as a
+    FileProvider) with a paths file, so that what it exposes is decided in one reviewed place."""
+    errors = []
+    authority = el.get(A + "authorities") or ""
+    entry = allowed.get(authority)
+    if entry is None:
+        return [f"provider {name} grants URI permissions and its authority is not on the allowlist: {authority}"]
+    if el.get(A + "exported") != "false":
+        errors.append(f"provider {name} grants URI permissions and must have android:exported=\"false\"")
+    if entry.get("class") and entry["class"] != name:
+        errors.append(f"provider {authority} is class {name}, allowlist says {entry['class']}")
+    if entry.get("paths-resource"):
+        wanted = "@xml/" + entry["paths-resource"]
+        resources = [m.get(A + "resource") for m in el.findall("meta-data") if m.get(A + "name") == "android.support.FILE_PROVIDER_PATHS"]
+        if resources != [wanted]:
+            errors.append(f"provider {authority} must use the paths file {wanted}, found {resources}")
     return errors
 
 

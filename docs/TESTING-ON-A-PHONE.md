@@ -44,16 +44,16 @@ Artifacts are kept for 30 days. If the page says the artifact has expired, ask f
 
 ## What to test
 
-Tick these off as you go. Items marked (*) need the next update to be merged. Until then they are not in the build.
+Tick these off as you go.
 
 - [ ] Your mail appears in the Inbox. Scroll through it.
-- [ ] Open a message and read it. (*)
-- [ ] A message with pictures shows "Remote images blocked". Pictures stay hidden until you tap **Show images**. (*)
-- [ ] Reply to a message. (*)
-- [ ] Add an attachment to a message you write. (*)
-- [ ] Send a message to yourself. It arrives. (*)
-- [ ] Tap **Undo** right after sending, before the time runs out. The message is not sent. (*)
-- [ ] Open **Outbox**. A message waiting to go out is listed there. (*)
+- [ ] Open a message and read it.
+- [ ] A message with pictures shows "Remote images blocked". Pictures stay hidden until you tap **Show images**.
+- [ ] Reply to a message.
+- [ ] Add an attachment to a message you write.
+- [ ] Send a message to yourself. It arrives.
+- [ ] Tap **Undo** right after sending, before the time runs out. The message is not sent.
+- [ ] Open **Outbox**. A message waiting to go out is listed there.
 - [ ] Archive or delete a message, then tap **Undo**.
 - [ ] Add a second account, then remove it: **Settings → Accounts → Remove**.
 - [ ] Last: **About and diagnostics → Erase all Croft data on this device**. Everything on the phone is deleted and Croft starts fresh.

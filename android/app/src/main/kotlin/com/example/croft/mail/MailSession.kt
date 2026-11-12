@@ -9,6 +9,7 @@ import com.example.croft.mail.compose.ComposeBackend
 import com.example.croft.mail.compose.CursorMemory
 import com.example.croft.mail.compose.EncryptionPolicy
 import com.example.croft.mail.compose.NoEncryptionPolicy
+import com.example.croft.mail.reading.ReadingRepository
 import java.time.ZoneId
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -48,6 +49,8 @@ class MailSession(
     val encryptionPolicy: EncryptionPolicy = NoEncryptionPolicy,
     /** Where the cursor was in each draft of this session, for Undo. In memory only. */
     val cursors: CursorMemory = CursorMemory(),
+    /** The reading calls (S20, S21): conversations, bodies, remote content, attachments, known senders. Null where there is no core (tests of other screens): the conversation screen then says the message cannot be shown. */
+    val reading: ReadingRepository? = null,
 ) {
     private val cache = HashMap<String, CachedList>()
 

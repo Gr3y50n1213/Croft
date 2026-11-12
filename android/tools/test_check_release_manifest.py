@@ -64,6 +64,42 @@ class ManifestCheck(unittest.TestCase):
             p.write_text(manifest % ("", ""))
             self.assertEqual(crm.check(p, ALLOW), [])
 
+    GRANT = (
+        '<provider android:name="androidx.core.content.FileProvider" android:authorities="com.example.croft.attachments" '
+        'android:exported="false" android:grantUriPermissions="true">'
+        '<meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shared_attachment_paths" /></provider>'
+    )
+
+    def test_the_attachment_file_provider_of_t18b_passes(self):
+        self.assertEqual(run(extra_app=self.GRANT), [])
+
+    def test_an_exported_file_provider_fails(self):
+        errs = run(extra_app=self.GRANT.replace('android:exported="false"', 'android:exported="true"'))
+        self.assertTrue(any("must have android:exported" in e for e in errs), errs)
+        self.assertTrue(any("exported component" in e for e in errs), errs)
+
+    def test_a_provider_with_an_unlisted_authority_fails(self):
+        errs = run(extra_app=self.GRANT.replace("com.example.croft.attachments", "com.example.croft.everything"))
+        self.assertEqual(len(errs), 1)
+        self.assertIn("authority is not on the allowlist", errs[0])
+
+    def test_a_file_provider_with_another_paths_file_fails(self):
+        errs = run(extra_app=self.GRANT.replace("@xml/shared_attachment_paths", "@xml/all_paths"))
+        self.assertEqual(len(errs), 1)
+        self.assertIn("paths file", errs[0])
+
+    def test_a_provider_granting_through_child_elements_is_checked_too(self):
+        child = (
+            '<provider android:name="com.example.Leaky" android:authorities="com.example.croft.leaky" android:exported="false">'
+            '<grant-uri-permission android:pathPrefix="/" /></provider>'
+        )
+        errs = run(extra_app=child)
+        self.assertTrue(any("authority is not on the allowlist" in e for e in errs), errs)
+
+    def test_a_provider_that_does_not_grant_uri_permissions_is_not_checked(self):
+        # The startup provider of the base manifest is such a provider and passes.
+        self.assertEqual(run(), [])
+
     def test_a_browsable_web_link_filter_fails(self):
         manifest = BASE.replace(
             '<intent-filter><action android:name="android.intent.action.MAIN" /></intent-filter>',

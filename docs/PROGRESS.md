@@ -5,6 +5,16 @@ unverified, the next step.
 
 ---
 
+## Preview build for phone testing (12 November 2026)
+
+**Status:** draft pull request `task/preview` (CI only; not merged).
+
+**What was built:** a `preview` build type in `android/app/build.gradle.kts`: `initWith(release)` (R8 and resource shrinking, not debuggable), signed with the Android debug key (made by the build tools, never committed), `applicationIdSuffix = ".preview"`, app name "Croft Preview" (`app/src/preview/res/values/strings.xml`). The release stubs (`src/release`: `TestHooks`, `DebugGallery`) are shared with the preview source set in place (a source set is named after its build type, so `initWith` alone does not bring them; `src/debug` is never included). `checkPreviewSourceSets` fails the build if that wiring is lost, and `checkPreviewMapping` and the keep-rules check apply to preview too. The Rust library is the same release build for both ABIs. CI: the `android-release` job also runs `:app:assemblePreview`, runs `tools/check-release-outputs.sh` with `CROFT_VARIANT=preview` (debug-key signature, not debuggable, manifest allowlist, 16 KB alignment, no test-server code, no debug test hooks) and uploads `croft-preview-apk` (30 days). The guide for the owner is `docs/TESTING-ON-A-PHONE.md`. No new permission, no new dependency.
+
+**Unverified:** the Gradle build was not run here (Maven Central refuses the container); CI is the check. The guide marks the reading and compose steps as depending on the next update.
+
+---
+
 ## T18c: compose and sending in the core (11 November 2026)
 
 **Status:** draft pull request `task/t18c` (CI only; not merged). Part B of T18, core side only: no screens. **FFI API version 8** (T18a may also bump it; whoever merges second takes the next number).

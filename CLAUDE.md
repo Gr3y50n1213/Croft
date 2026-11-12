@@ -11,10 +11,14 @@ Design values are in `design/tokens.json`. Store rules are in `docs/store/READIN
 a background service, an account feature or any data that leaves the device.
 
 ## How to work
-You are the orchestrator. Plan the work, then delegate
-parts of it to subagents instead of doing everything yourself.
+Do the work yourself by default. Subagents burn through tokens,
+so use them only when it is clearly worth it: large independent
+jobs that truly benefit from running in parallel, or an
+independent review of security-sensitive code (a reviewer that
+did not write the code). Watch CI, make small fixes and run
+routine checks yourself, not through agents.
 
-For each subagent, write a full, self-contained brief:
+When you do use a subagent, write a full, self-contained brief:
 - the goal and why it matters
 - the exact files, commands and context it needs
 - clear steps, spelled out plainly

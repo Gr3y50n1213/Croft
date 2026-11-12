@@ -9,7 +9,7 @@
     "${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION": "The declaration paired with the uses-permission above; must stay protectionLevel=signature."
   },
   "exported": {
-    "activity:${applicationId}.MainActivity": {
+    "activity:${namespace}.MainActivity": {
       "why": "The launcher activity.",
       "permission": null
     },

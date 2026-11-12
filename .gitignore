@@ -8,3 +8,5 @@ target/
 /android/build/
 node_modules/
 __pycache__/
+*.jks
+*.keystore

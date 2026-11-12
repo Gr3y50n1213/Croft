@@ -12,7 +12,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::crypto::{self, CryptoError, Key, MASTER_CHECK_AAD};
 
 /// The migrations, in order. `PRAGMA user_version` is how many have run.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_sign_in.sql"),
+];
 
 /// The plaintext of the master key check value.
 const MASTER_CHECK: &[u8] = b"croft-companion master key";
@@ -161,6 +164,11 @@ impl Store {
             tx.commit()?;
         }
         Ok(())
+    }
+
+    /// The connection, for the sign-in module (T24), which keeps its own queries scoped by user.
+    pub(crate) fn conn(&mut self) -> &mut Connection {
+        &mut self.conn
     }
 
     /// Answers when the database does (`/healthz`).

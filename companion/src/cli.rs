@@ -335,6 +335,7 @@ mod tests {
             trusted_proxies: Vec::new(),
             oidc: None,
             mail_allowed_networks: Vec::new(),
+            web_dir: None,
         }
     }
 

@@ -1,0 +1,93 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* Every colour, length and motion comes from the generated tokens (design/generated/css). */
+
+:root {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--croft-color-on-surface);
+  background: var(--croft-color-surface);
+  --radius: var(--croft-swipe-card-radius-dp-standard);
+  --gap: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+.app-root {
+  display: contents;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--croft-color-primary);
+  outline-offset: 2px;
+}
+
+.button {
+  min-height: var(--croft-touch-min-target-dp);
+  padding: 0 24px;
+  border: none;
+  border-radius: calc(var(--croft-touch-min-target-dp) / 2);
+  background: var(--croft-color-primary);
+  color: var(--croft-color-on-primary);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--croft-motion-effects-fast-easing-duration)
+    var(--croft-motion-effects-fast-easing);
+}
+
+.button.tonal {
+  background: var(--croft-color-secondary-container);
+  color: var(--croft-color-on-secondary-container);
+}
+
+.button.text {
+  background: transparent;
+  color: var(--croft-color-primary);
+  padding: 0 12px;
+}
+
+.button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+}
+
+.field input {
+  min-height: var(--croft-touch-min-target-dp);
+  padding: 0 16px;
+  border: 1px solid var(--croft-color-outline);
+  border-radius: 8px;
+  background: var(--croft-color-surface-container-lowest);
+}
+
+.error {
+  color: var(--croft-color-error);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+  }
+}

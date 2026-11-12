@@ -51,6 +51,34 @@ jobs:
       # The image builds (it is not pushed anywhere).
       - run: docker build -f Dockerfile -t croft-companion:ci ..
 
+  # The web app (T30): types, unit tests and the build; then end to end against a real Companion
+  # serving it, signed in with Chromium's virtual authenticator.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: companion
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - name: Build the Companion
+        working-directory: companion
+        run: cargo build --locked
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+
   gateway:
     runs-on: ubuntu-latest
     defaults:

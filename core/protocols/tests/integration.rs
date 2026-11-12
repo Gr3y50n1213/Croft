@@ -508,3 +508,62 @@ async fn dovecot_oauth_token_is_refused_as_auth() {
     let b = ImapBackend::new(cfg, Credential::oauth2("someone", "bogus-token")).unwrap();
     assert!(matches!(b.list_folders().await, Err(BackendError::Auth(_))));
 }
+
+/// T19: server search on GreenMail finds the expected UIDs by sender, subject and body text.
+#[tokio::test]
+async fn greenmail_server_search_by_from_subject_and_body() {
+    // Its own new folder, so the suites running at the same time on this user are not disturbed.
+    let t = greenmail_plain("test");
+    let b = t.backend();
+    let folder = unique("Search");
+    b.create_folder(&folder).await.unwrap();
+    let word = unique("zq");
+    let raw = |from: &str, subject: &str, body: &str| {
+        format!(
+            "From: {from}\r\nTo: search@localhost\r\nSubject: {subject}\r\nMessage-ID: <{}@x>\r\n\
+             Date: Mon, 02 Mar 2026 09:30:00 +0000\r\n\r\n{body}\r\n",
+            unique("s")
+        )
+    };
+    let a = b
+        .append_message(
+            &folder,
+            &[],
+            &raw("Ann <ann@example.org>", &format!("Plan {word}"), "x"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let c = b
+        .append_message(
+            &folder,
+            &[],
+            &raw(
+                "Ben <ben@example.org>",
+                "Other",
+                &format!("about {word} here"),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let found = |o: SearchOutcome| match o {
+        SearchOutcome::Found(u) => u,
+        SearchOutcome::Unsupported => panic!("GreenMail can search"),
+    };
+    let q = |f: fn(&mut ServerQuery, &str), w: &str| {
+        let mut q = ServerQuery::default();
+        f(&mut q, w);
+        q
+    };
+    let text = q(|q, w| q.text = vec![w.into()], &word);
+    assert_eq!(
+        found(b.search(&folder, &text).await.unwrap()),
+        vec![c, a],
+        "subject and body"
+    );
+    let subject = q(|q, w| q.subject = vec![w.into()], &word);
+    assert_eq!(found(b.search(&folder, &subject).await.unwrap()), vec![a]);
+    let from = q(|q, _| q.from = vec!["ben@example.org".into()], "");
+    assert_eq!(found(b.search(&folder, &from).await.unwrap()), vec![c]);
+}

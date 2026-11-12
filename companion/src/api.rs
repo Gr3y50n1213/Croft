@@ -109,6 +109,11 @@ impl Auth {
         self
     }
 
+    /// The master key (to open users' data keys).
+    pub(crate) fn master(&self) -> &Key {
+        &self.master
+    }
+
     /// The system clock.
     pub fn system_clock() -> Clock {
         Arc::new(crate::store::now_ms)
@@ -495,6 +500,26 @@ pub fn routes() -> Vec<Route> {
         ),
         route(Method::GET, "/api/admin/audit", A, get(admin_audit)),
         route(Method::GET, "/api/oidc", P, get(oidc_api::info)),
+        route(
+            Method::POST,
+            "/api/accounts/discover",
+            F,
+            post(mail_api::discover),
+        ),
+        route(
+            Method::POST,
+            "/api/accounts/verify",
+            F,
+            post(mail_api::verify),
+        ),
+        route(Method::POST, "/api/accounts", F, post(mail_api::add)),
+        route(Method::GET, "/api/accounts", F, get(mail_api::list)),
+        route(
+            Method::DELETE,
+            "/api/accounts/{id}",
+            F,
+            delete(mail_api::remove),
+        ),
         route(
             Method::GET,
             "/api/sign-in/oidc/start",
@@ -1205,6 +1230,9 @@ async fn admin_audit(State(app): State<App>, Admin(_): Admin) -> ApiResult {
 
 #[path = "oidc_api.rs"]
 pub(crate) mod oidc_api;
+
+#[path = "mail_api.rs"]
+pub(crate) mod mail_api;
 
 #[cfg(test)]
 #[path = "api_tests.rs"]

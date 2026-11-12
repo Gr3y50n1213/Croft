@@ -67,6 +67,7 @@ pub struct App {
     pub(crate) store: Arc<Mutex<Store>>,
     pub(crate) auth: Arc<Auth>,
     pub(crate) body_read_timeout: Duration,
+    pub(crate) mail: Option<Arc<crate::mail::MailCores>>,
 }
 
 impl App {
@@ -76,7 +77,30 @@ impl App {
             store: Arc::new(Mutex::new(store)),
             auth: Arc::new(auth),
             body_read_timeout: BODY_READ_TIMEOUT,
+            mail: None,
         }
+    }
+
+    /// Opens the core of every enabled user who has mail accounts (at start; blocking).
+    pub fn open_all_mail(&self) {
+        let Some(mail) = &self.mail else {
+            return;
+        };
+        let users = self
+            .store
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .users_with_mail()
+            .unwrap_or_default();
+        for user_id in users {
+            let _ = mail.core(&self.store, self.auth.master(), user_id);
+        }
+    }
+
+    /// The same, with users' mail (T26).
+    pub fn with_mail(mut self, mail: crate::mail::MailCores) -> Self {
+        self.mail = Some(Arc::new(mail));
+        self
     }
 
     /// The same, with another body read timeout (tests).

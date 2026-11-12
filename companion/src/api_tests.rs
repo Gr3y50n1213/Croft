@@ -1030,6 +1030,14 @@ async fn every_route_checks_who_calls_and_no_user_reaches_another_users_data() {
         StatusCode::FORBIDDEN
     );
     covered.insert(("POST".to_owned(), "/api/admin/users/{id}/oidc/unlink"));
+    // Mail accounts live in each user's own core, so another user's account id names nothing
+    // (the mail tests check it with accounts on both sides).
+    assert_eq!(
+        h.status(Method::DELETE, "/api/accounts/1", Some(&a_t.access))
+            .await,
+        StatusCode::NOT_FOUND
+    );
+    covered.insert(("DELETE".to_owned(), "/api/accounts/{id}"));
     for action in ["disable", "enable"] {
         let p = format!("/api/admin/users/{}/{action}", b.id);
         assert_eq!(

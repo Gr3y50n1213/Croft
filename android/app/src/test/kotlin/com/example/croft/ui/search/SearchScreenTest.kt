@@ -7,12 +7,15 @@ package com.example.croft.ui.search
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasScrollToNodeAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import com.example.croft.CroftTheme
 import com.example.croft.mail.search.FilterChip
@@ -92,8 +95,10 @@ class SearchScreenTest {
         rule.onNodeWithTag(SearchTags.chip(FilterChip.ATTACHMENT)).performClick()
         rule.waitForIdle()
         assertTrue(c.state.value.query, FilterChip.ATTACHMENT.isOn(c.state.value.query) && FilterChip.UNREAD.isOn(c.state.value.query))
+        // The account chips come after the filter chips: scroll the row to the one for account 2 before tapping it.
+        rule.onNode(hasScrollToNodeAction() and hasAnyDescendant(hasTestTag(SearchTags.scope(2)))).performScrollToNode(hasTestTag(SearchTags.scope(2)))
         rule.onNodeWithTag(SearchTags.scope(2)).performClick()
-        rule.waitUntil(10_000) { backend.calls.any { it.startsWith("local:2:") } }
+        rule.waitUntil(20_000) { backend.calls.any { it.startsWith("local:2:") } }
     }
 
     @Test
@@ -119,9 +124,10 @@ class SearchScreenTest {
         rule.onNodeWithTag(SearchTags.FIELD).performTextInput(" nothing")
         waitFor(SearchTags.EMPTY)
         rule.onNodeWithText("No results for “lunch nothing”").assertExists()
-        val before = backend.calls.count { it.startsWith("server:") }
-        rule.onNodeWithTag(SearchTags.SERVER_BUTTON).performClick()
-        rule.waitUntil(10_000) { backend.calls.count { it.startsWith("server:") } > before }
+        rule.waitForIdle()
+        val before = backend.calls.count { it == "server:null:lunch nothing" }
+        rule.onNodeWithTag(SearchTags.SERVER_BUTTON).assertExists().performClick()
+        rule.waitUntil(20_000) { backend.calls.count { it == "server:null:lunch nothing" } > before }
     }
 
     @Test

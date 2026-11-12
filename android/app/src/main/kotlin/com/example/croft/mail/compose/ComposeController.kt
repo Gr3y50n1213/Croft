@@ -117,9 +117,9 @@ class ComposeController(
     private suspend fun openFresh(wanted: AccountId?, fill: ComposeFill) {
         val account = defaultAccount(wanted) ?: throw ComposeFailure(ComposeProblem.NO_SUCH_ACCOUNT)
         val identities = backend.identities(account)
-        val to = chipsOf(fill.to)
-        val cc = chipsOf(fill.cc)
-        val bcc = chipsOf(fill.bcc)
+        val to = chipsOfText(fill.to)
+        val cc = chipsOfText(fill.cc)
+        val bcc = chipsOfText(fill.bcc)
         mutable.update {
             it.copy(
                 phase = ComposeState.Phase.EDITING, account = account, identities = identities,
@@ -181,7 +181,7 @@ class ComposeController(
 
     private fun chipsOf(list: List<FfiAddress>): List<RecipientChipData> = list.map { RecipientChipData(it, tools.isValid(it.address)) }
 
-    private fun chipsOf(texts: List<String>): List<RecipientChipData> =
+    private fun chipsOfText(texts: List<String>): List<RecipientChipData> =
         texts.flatMap { parseChips(it) }.distinctBy { it.address.address.lowercase() }
 
     private fun parseChips(text: String): List<RecipientChipData> {
@@ -307,6 +307,9 @@ class ComposeController(
             synchronized(intakeJobs) { intakeJobs += job }
         }
     }
+
+    /** Adds one picked file and returns when it is in the draft (or refused). The screen uses [addFiles], which does not wait. */
+    suspend fun addFromFile(file: PickedFile) = attachOne(file)
 
     /** Content URIs of a share or a `mailto:`, copied as soon as compose opens. */
     suspend fun addFromUris(uris: List<String>) {

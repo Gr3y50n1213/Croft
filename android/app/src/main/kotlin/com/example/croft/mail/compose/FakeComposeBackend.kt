@@ -179,7 +179,7 @@ class FakeComposeBackend(
     fun addOutboxItem(account: AccountId, item: OutboxItem) { outbox += account to item }
 
     companion object {
-        private const val MB = 1024UL * 1024UL
+        private val MB: ULong = 1024UL * 1024UL
 
         fun emptyContent() = DraftContent(null, emptyList(), emptyList(), emptyList(), "", "", null, emptyList())
     }

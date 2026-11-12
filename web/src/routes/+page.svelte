@@ -26,6 +26,8 @@
   let noAccounts = $state(false);
   let help = $state(false);
   let picking = $state(false);
+  /** An action that deletes for good, waiting for the person to confirm it. */
+  let confirming: { action: MailAction; ids: string[] } | null = $state(null);
   const keys = new Shortcuts();
 
   onMount(() => {
@@ -84,13 +86,29 @@
     await goto('/sign-in', { replaceState: true });
   }
 
-  function act(a: MailAction, ids?: string[]) {
+  function act(a: MailAction, ids: string[] = mail.targets()) {
+    if (mail.destroys(a, ids)) {
+      confirming = { action: a, ids };
+      return;
+    }
     void mail.act(a, ids).catch((e) => (error = explainMail(e)));
+  }
+
+  function confirmed() {
+    const c = confirming;
+    confirming = null;
+    if (c) void mail.act(c.action, c.ids).catch((e) => (error = explainMail(e)));
+  }
+
+  /** The reading pane's toolbar acts on the email it shows, never on the rows ticked in the list. */
+  function actOnOpen(a: MailAction) {
+    if (mail.open) act(a, [mail.open.id]);
   }
 
   function moveTo(target: Mailbox) {
     picking = false;
-    void mail.act('move', undefined, target);
+    const ids = mail.open ? [mail.open.id] : mail.targets();
+    void mail.act('move', ids, target);
   }
 
   function run(c: Command) {
@@ -133,9 +151,11 @@
   }
 
   function keydown(e: KeyboardEvent) {
-    if (!me || help || picking) return;
+    if (!me || help || picking || confirming) return;
     const t = e.target as HTMLElement | null;
     const typing = !!t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) && (t as HTMLInputElement).type !== 'checkbox';
+    // Enter and Space on a focused button or link are that control's own.
+    if ((e.key === 'Enter' || e.key === ' ') && t && ['BUTTON', 'A'].includes(t.tagName)) return;
     const c = keys.press({
       key: e.key,
       shift: e.shiftKey,
@@ -224,8 +244,8 @@
     <ReadingPane
       email={mail.open}
       loading={mail.opening}
-      can={(a) => mail.can(a)}
-      onact={(a) => act(a)}
+      can={(a) => mail.open !== null && mail.can(a, [mail.open.id])}
+      onact={actOnOpen}
       onmove={() => (picking = true)}
       onclose={() => mail.close()}
     />
@@ -253,6 +273,13 @@
           {/each}
         </tbody>
       </table>
+    </Dialog>
+  {/if}
+
+  {#if confirming}
+    <Dialog title="Delete for good?" onclose={() => (confirming = null)}>
+      <p>{confirming.ids.length === 1 ? 'This email' : `These ${confirming.ids.length} emails`} will be deleted for good. This can't be undone.</p>
+      <button type="button" class="button danger" onclick={confirmed}>Delete for good</button>
     </Dialog>
   {/if}
 

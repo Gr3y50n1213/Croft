@@ -3,6 +3,20 @@
   License, v. 2.0. If a copy of the MPL was not distributed with this
   file, You can obtain one at https://mozilla.org/MPL/2.0/.
 -->
+<script lang="ts" module>
+  /**
+   * The page requires Trusted Types (its CSP): the email frame's document goes through a policy of
+   * its own, named in the CSP and used for nothing else. The frame's sandbox (no script, opaque
+   * origin) is what keeps the email's HTML harmless; the policy only lets this one sink take it.
+   */
+  interface TrustedTypesLike {
+    createPolicy(name: string, rules: { createHTML: (s: string) => string }): { createHTML(s: string): unknown };
+  }
+  const tt = (globalThis as { trustedTypes?: TrustedTypesLike }).trustedTypes;
+  const policy = tt?.createPolicy('croft-mail-srcdoc', { createHTML: (s: string) => s });
+  const trusted = (doc: string): string => (policy ? policy.createHTML(doc) : doc) as string;
+</script>
+
 <script lang="ts">
   import IconButton from './IconButton.svelte';
   import type { EmailBody } from '../jmap/client.ts';
@@ -35,7 +49,9 @@
    */
   const doc = $derived(
     email?.html
-      ? `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><base target="_blank"></head><body>${email.html}</body></html>`
+      ? trusted(
+          `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><base target="_blank"></head><body>${email.html}</body></html>`
+        )
       : null
   );
 </script>

@@ -9,7 +9,7 @@
  */
 
 import { Jmap, explainMail, type Account, type EmailBody, type EmailSummary, type Mailbox } from '../jmap/client.ts';
-import { applied, plan, type Change, type MailAction } from './actions.ts';
+import { applied, destroys, plan, type Change, type MailAction } from './actions.ts';
 
 /** Emails per page. */
 export const PAGE = 50;
@@ -41,7 +41,7 @@ export class MailState {
   #snackId = 0;
   /** The latest open request: a slower earlier one never replaces it. */
   #opens = 0;
-  /** The last undoable action, for `z` and the snackbar. */
+  /** The Undo of the snackbar showing, for `z` and its button (null when none shows). */
   #lastUndo: (() => Promise<void>) | null = null;
 
   constructor(jmap: Jmap) {
@@ -65,6 +65,7 @@ export class MailState {
   }
 
   async openAccount(id: string): Promise<void> {
+    this.#opens++;
     this.account = id;
     this.mailboxes = await this.#jmap.mailboxes(id);
     const inbox = this.mailboxes.find((m) => m.role === 'inbox') ?? this.mailboxes[0];
@@ -78,6 +79,8 @@ export class MailState {
 
   async openMailbox(id: string): Promise<void> {
     if (!this.account) return;
+    // An email still opening belongs to the folder being left: it must not open in this one.
+    this.#opens++;
     this.mailbox = id;
     this.open = null;
     this.cursor = 0;
@@ -132,11 +135,13 @@ export class MailState {
     const at = this.emails.findIndex((e) => e.id === id);
     if (at >= 0) this.cursor = at;
     const request = ++this.#opens;
+    const [account, mailbox] = [this.account, this.mailbox];
     this.opening = true;
     try {
-      const body = await this.#jmap.body(this.account, id);
-      // Only the latest request opens (moving the keyboard meanwhile does not cancel it).
-      if (request !== this.#opens) return;
+      const body = await this.#jmap.body(account, id);
+      // Only the latest request opens (moving the keyboard meanwhile does not cancel it; changing
+      // folder or account does), and only in the folder it was asked from.
+      if (request !== this.#opens || this.account !== account || this.mailbox !== mailbox) return;
       this.open = body;
     } finally {
       if (request === this.#opens) this.opening = false;
@@ -167,6 +172,14 @@ export class MailState {
     if (this.selected.size > 0) return [...this.selected];
     const id = this.open?.id ?? this.focused?.id;
     return id ? [id] : [];
+  }
+
+  /** Whether `action` on `ids` would delete for good (the page asks first). */
+  destroys(action: MailAction, ids: string[]): boolean {
+    const emails = ids
+      .map((id) => this.emails.find((e) => e.id === id) ?? (this.open?.id === id ? this.open : null))
+      .filter((e): e is EmailSummary => e !== null);
+    return destroys(action, emails, this.mailboxes);
   }
 
   /** Whether `action` applies to the current targets (for the toolbar and hover buttons). */
@@ -215,6 +228,7 @@ export class MailState {
       this.#show(explainMail(e), null);
     }
     if (refused.length > 0) {
+      this.#lastUndo = null;
       // Put back what the server refused, where it was.
       this.#restore(plans.filter((p) => refused.includes(p.email.id)), mailbox);
       this.#show(`Couldn't ${verb(action)}. Try again.`, null);
@@ -230,7 +244,8 @@ export class MailState {
             await this.#jmap.update(account, updates).catch(() => this.#show("Couldn't undo.", null));
           }
         : null;
-    this.#lastUndo = undo;
+    // Only an action with a snackbar can be undone (`z` or its button), and only while it shows: an
+    // automatic mark-read must never replace the archive the snackbar offers to undo.
     if (message) this.#show(message, undo);
   }
 
@@ -250,11 +265,10 @@ export class MailState {
     this.emails = list;
   }
 
-  /** `z`: undoes the last action, once. */
+  /** `z` or the snackbar's button: undoes the action the snackbar shows, once, while it shows. */
   async undo(): Promise<void> {
     const u = this.#lastUndo;
-    this.#lastUndo = null;
-    this.snack = null;
+    this.dismiss();
     if (u) await u();
   }
 
@@ -262,13 +276,16 @@ export class MailState {
     clearTimeout(this.#snackTimer);
     const id = ++this.#snackId;
     this.snack = { message, undo, id };
+    this.#lastUndo = undo;
     this.#snackTimer = setTimeout(() => {
-      if (this.snack?.id === id) this.snack = null;
+      if (this.snack?.id === id) this.dismiss();
     }, UNDO_MS);
   }
 
   dismiss(): void {
+    clearTimeout(this.#snackTimer);
     this.snack = null;
+    this.#lastUndo = null;
   }
 }
 

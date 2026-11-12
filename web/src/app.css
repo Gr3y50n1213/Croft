@@ -57,6 +57,11 @@ input {
   color: var(--croft-color-on-secondary-container);
 }
 
+.button.danger {
+  background: var(--croft-color-error);
+  color: var(--croft-color-on-error);
+}
+
 .button.text {
   background: transparent;
   color: var(--croft-color-primary);

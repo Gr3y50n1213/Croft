@@ -7,7 +7,9 @@ unverified, the next step.
 
 ## T31a: The web inbox, W01 (12 November 2026)
 
-**Status:** on `task/t31`, its own pull request. The reading pane's isolation was reviewed by an independent agent (below).
+**Status:** draft pull request #56 on `task/t31` (CI green before the review fixes, run 43327566934); an independent review focused
+on the reading pane: 1 high, 3 medium, 1 low, all fixed with end-to-end tests (DECISIONS). Merged with the pull request that
+carries this entry.
 
 **What was built** (`web/`, on the Companion's JMAP API of T27):
 - **A JMAP client** (`src/lib/jmap`): the session, batched calls with result references, folders, pages, bodies, changes.
@@ -24,7 +26,10 @@ unverified, the next step.
 real Companion with 30 messages on the test server: the folders and Inbox, opening an email (body shown, marked read), the
 keyboard (move, open, archive, Undo with `z`, star, `?`), hover delete with Undo, an archive arriving in Archive, a trackpad swipe
 marking read and back, and `axe-core` with no violation on W01 (it found a missing `main`, a missing `h1` and a contrast failure,
-all fixed). No CSP violation or script error. `svelte-check` and clippy (also with `test-mail`) are clean.
+all fixed). After the review: an HTML email (with a script, an event handler, a remote image and a form) opens in its frame and
+does nothing to the app; the pane's toolbar acts on the email shown; the snackbar's Undo undoes its own action; deleting from
+Trash asks first. 15 Playwright tests in all, each with a Companion and a mailbox of its own; 69 web unit tests. No CSP violation
+or script error. `svelte-check` and clippy (also with `test-mail`) are clean.
 
 **Not verified here:** real mail servers through the web app, Safari and Firefox, a real trackpad's wheel events.
 

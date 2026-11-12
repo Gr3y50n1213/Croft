@@ -52,7 +52,12 @@ export function plan(
   mailboxes: Mailbox[],
   target?: Mailbox
 ): Planned | null {
-  const here = mailboxes.find((m) => m.id === current) ?? null;
+  void current;
+  // Where the email is, not which folder is shown: an email is in Trash only by its own mailboxes.
+  const isIn = (role: Role) => {
+    const m = roleOf(mailboxes, role);
+    return m !== null && email.mailboxIds[m.id] === true;
+  };
   const seen = email.keywords['$seen'] === true;
   const flagged = email.keywords['$flagged'] === true;
   const keyword = (k: string, on: boolean): Planned => ({
@@ -64,21 +69,21 @@ export function plan(
   switch (action) {
     case 'archive': {
       const archive = roleOf(mailboxes, 'archive');
-      if (!archive || here?.id === archive.id) return null;
+      if (!archive || isIn('archive')) return null;
       return move(email, archive, 'Archived');
     }
     case 'spam': {
       const junk = roleOf(mailboxes, 'junk');
-      if (!junk || here?.id === junk.id) return null;
+      if (!junk || isIn('junk')) return null;
       return move(email, junk, 'Moved to Spam');
     }
     case 'move':
-      if (!target || target.id === current) return null;
+      if (!target || email.mailboxIds[target.id] === true) return null;
       return move(email, target, `Moved to ${target.name}`);
     case 'delete': {
       const trash = roleOf(mailboxes, 'trash');
-      // In Trash, delete is for good: no Undo (the phone asks first; here the toolbar asks).
-      if (here?.role === 'trash' || !trash) {
+      // In Trash, delete is for good: no Undo, so the page asks first (`destroys`).
+      if (isIn('trash') || !trash) {
         return { change: { kind: 'destroy' }, undo: null, removesRow: true, message: 'Deleted for good' };
       }
       return move(email, trash, 'Moved to Trash');
@@ -107,4 +112,11 @@ export function applied(email: EmailSummary, change: Change): EmailSummary {
     }
   }
   return next;
+}
+
+/** Whether `action` would delete any of `emails` for good (the page then asks first). */
+export function destroys(action: MailAction, emails: EmailSummary[], mailboxes: Mailbox[]): boolean {
+  if (action !== 'delete') return false;
+  const trash = roleOf(mailboxes, 'trash');
+  return emails.some((e) => !trash || e.mailboxIds[trash.id] === true);
 }

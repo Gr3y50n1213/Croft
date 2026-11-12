@@ -15,6 +15,28 @@ fn main() {
         .unwrap_or(30);
     let password = "made-up-test-mail-password";
     let server = croft_ffi::TestImapServer::start(count, password.into());
+    // One HTML message, newest, with everything an email must not be able to do: a script, an
+    // event handler, a remote image, a form and a link (the reading pane must still show it).
+    server.inject_raw(
+        "INBOX".into(),
+        [
+            "From: Hollis Printing <proofs@example.org>",
+            "To: alice@example.test",
+            "Subject: Your proof is ready",
+            "Date: Tue, 03 Mar 2026 10:00:00 +0000",
+            "Message-ID: <html-1@test.invalid>",
+            "MIME-Version: 1.0",
+            "Content-Type: text/html; charset=utf-8",
+            "",
+            "<p>Hello, <b>your proof</b> is ready.</p>",
+            "<script>parent.document.body.textContent = 'escaped'</script>",
+            "<img src=x onerror=\"parent.document.title='escaped'\">",
+            "<img src=\"https://tracker.example/pixel.png\" alt=\"\">",
+            "<form action=\"https://evil.example/\"><input name=q></form>",
+            "<p><a href=\"https://example.org/proof\">Open the proof</a></p>",
+        ]
+        .join("\r\n"),
+    );
     println!(
         "{}",
         serde_json::json!({

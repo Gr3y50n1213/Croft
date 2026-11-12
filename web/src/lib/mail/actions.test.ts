@@ -65,3 +65,13 @@ test('a change applies to the shown email before the server confirms it', () => 
   assert.deepEqual(back.keywords, { $flagged: true });
   assert.deepEqual(applied(email(), { kind: 'update', patch: { mailboxIds: { f2: true } } }).mailboxIds, { f2: true });
 });
+
+test('delete for good is decided by where the email is, not the folder shown', async () => {
+  const { destroys } = await import('./actions.ts');
+  // An Inbox email shown while Trash is the folder (a race): moved to Trash, not destroyed.
+  const p = plan('delete', email(), 'f3', boxes)!;
+  assert.equal(p.change.kind, 'update');
+  assert.equal(destroys('delete', [email()], boxes), false);
+  assert.equal(destroys('delete', [email({ mailboxIds: { f3: true } })], boxes), true);
+  assert.equal(destroys('archive', [email({ mailboxIds: { f3: true } })], boxes), false);
+});

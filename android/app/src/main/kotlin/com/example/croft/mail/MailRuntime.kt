@@ -11,6 +11,7 @@ import com.example.croft.mail.accounts.AccountSweep
 import com.example.croft.mail.accounts.AppFiles
 import com.example.croft.mail.compose.AttachmentFolder
 import com.example.croft.mail.compose.CoreComposeBackend
+import com.example.croft.mail.reading.CoreReadingRepository
 import com.example.croft.openCore
 import com.example.croft.secrets.AccountSecrets
 import com.example.croft.secrets.AppSecrets
@@ -18,6 +19,7 @@ import com.example.croft.secrets.SecretStoreCredentials
 import com.example.croft.secrets.SignInNeeded
 import com.example.croft.secrets.createAppSecrets
 import com.example.croft.ui.compose.ComposeFiles
+import com.example.croft.ui.reading.SharedAttachments
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -109,6 +111,7 @@ object MailRuntime {
     fun afterErase(context: Context): Boolean {
         forgetCore()
         try { ComposeFiles.directory(context.applicationContext).deleteRecursively() } catch (e: SecurityException) { /* cleared at the next start */ }
+        try { SharedAttachments.directory(context.applicationContext).deleteRecursively() } catch (e: SecurityException) { /* cleared at the next start */ }
         return AppFiles.eraseMailFiles(context.applicationContext.noBackupFilesDir).isEmpty()
     }
 
@@ -134,6 +137,7 @@ object MailRuntime {
             rowActions = CoreRowActions(repository, mapping),
             folderMapping = mapping,
             compose = CoreComposeBackend(open.core),
+            reading = CoreReadingRepository(open.core),
         )
     }
 
@@ -168,6 +172,18 @@ object MailRuntime {
         }
     }
 
+    /**
+     * Empties the folder of opened attachments (`cacheDir/shared-attachments`) at the start of the app: what a crash or an earlier run left
+     * is not kept. If that fails nothing else is affected; the folder is made again when an attachment is opened.
+     */
+    private fun clearSharedAttachments(context: Context) {
+        try {
+            SharedAttachments.prepare(context)
+        } catch (e: Exception) {
+            // Cleared at the next start.
+        }
+    }
+
     private class SecretsForSweep(private val open: OpenedCore) : AccountSweep.Secrets {
         override fun storedIds() = open.secrets.secrets.accountIds()
         override fun deleteSecrets(id: Long) = open.secrets.secrets.removeAccount(id)
@@ -183,6 +199,7 @@ object MailRuntime {
         val accountSecrets = AccountSecrets(secrets.secrets, signIn)
         val open = OpenedCore(core, secrets, accountSecrets, signIn)
         registerAttachmentFolder(context, core)
+        clearSharedAttachments(context)
         sweepOrphans(context, open)
         return open.also { opened = it }
     }

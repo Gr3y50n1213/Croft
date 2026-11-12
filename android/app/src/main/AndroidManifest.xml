@@ -55,5 +55,18 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <!-- T18b: the FileProvider that gives a viewer app read access to one attachment the person opened (store rule: never file://).
+             Not exported; access only through a temporary URI grant (FLAG_GRANT_READ_URI_PERMISSION) that Croft puts on the intent. Its paths file
+             exposes only cacheDir/shared-attachments/. Compose refuses content: URIs of this authority as share input (ComposeFiles). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.attachments"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shared_attachment_paths" />
+        </provider>
     </application>
 </manifest>

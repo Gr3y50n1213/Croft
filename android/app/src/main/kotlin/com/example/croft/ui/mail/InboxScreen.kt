@@ -74,6 +74,7 @@ import com.example.croft.mail.compose.LocalDraftMatch
 import com.example.croft.swipe.SwipeAction
 import com.example.croft.swipe.SwipeDirection
 import com.example.croft.theme.ListStyle
+import com.example.croft.ui.reading.ConversationNotice
 import com.example.croft.theme.LocalMotionLevel
 import com.example.croft.theme.LocalThemeSettings
 import com.example.croft.theme.MotionLevel
@@ -130,6 +131,9 @@ fun InboxScreen(
     onNoticeShown: () -> Unit = {},
     /** Undo of a send took the message back: reopen compose on its draft with the cursor where it was. */
     onUndoSend: (ComposeStart.Draft) -> Unit = {},
+    /** What the conversation (S20) left behind when an action closed it ("Archived", with Undo): shown once. */
+    conversationNotice: ConversationNotice? = null,
+    onConversationNoticeShown: () -> Unit = {},
     /** The Outbox (S26), from the drawer. Null hides the entry. */
     onOpenOutbox: (() -> Unit)? = null,
     /** A draft of this device was tapped in the Drafts folder. */
@@ -144,6 +148,10 @@ fun InboxScreen(
     val onUndoNow by rememberUpdatedState(onUndoSend)
     LaunchedEffect(notice) {
         if (notice != null) { controller.showNotice(notice.closed) { onUndoNow(it) }; onNoticeShown() }
+    }
+
+    LaunchedEffect(conversationNotice) {
+        if (conversationNotice != null) { controller.showConversationNotice(conversationNotice.text, conversationNotice.ops); onConversationNoticeShown() }
     }
 
     val scope = rememberCoroutineScope()

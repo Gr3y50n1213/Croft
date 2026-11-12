@@ -10,6 +10,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.core.DataStoreFactory
 import androidx.datastore.core.Serializer
 import com.example.croft.design.CroftTokens
+import com.example.croft.mail.reading.MarkReadDelay
+import com.example.croft.mail.reading.RemoteImages
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -23,12 +25,18 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 
 /**
- * The mail settings that exist so far (S49, "Inbox and categories": only the Undo time until the rest is built): how long the Undo
- * button of a move, delete or spam stays, and how long the core waits before it sends the change. 3, 5 or 10 seconds
- * (`tokens.json`, `swipe.undoWindowSeconds`). The app keeps the choice and hands it to the core ([MessageRepository.setUndoWindowMs])
- * at every start and at every change; the core keeps it in memory.
+ * The mail settings that exist so far (S49, "Inbox and categories" and the privacy row of S57; the rest is built later):
+ * - [undoSeconds]: how long the Undo button of a move, delete or spam stays, and how long the core waits before it sends the change.
+ *   3, 5 or 10 seconds (`tokens.json`, `swipe.undoWindowSeconds`). The app keeps the choice and hands it to the core
+ *   ([MessageRepository.setUndoWindowMs]) at every start and at every change; the core keeps it in memory.
+ * - [remoteImages]: Ask, Known senders or Never (default Ask, docs/ux/customisation.md). Passed to the core on every body load.
+ * - [markRead]: Immediately, After 2 s or Never (default After 2 s, docs/ux/customisation.md). The reading screen waits that long.
  */
-data class MailSettings(val undoSeconds: Int = CroftTokens.Swipe.UndoWindowSeconds.default) {
+data class MailSettings(
+    val undoSeconds: Int = CroftTokens.Swipe.UndoWindowSeconds.default,
+    val remoteImages: RemoteImages = RemoteImages.ASK,
+    val markRead: MarkReadDelay = MarkReadDelay.AFTER_2_SECONDS,
+) {
     /** The undo window in milliseconds. */
     val undoWindowMs: Long get() = undoSeconds * 1000L
 
@@ -41,7 +49,11 @@ data class MailSettings(val undoSeconds: Int = CroftTokens.Swipe.UndoWindowSecon
 /** The settings for composables below the app, so the screens show the time they will really have. */
 val LocalMailSettings = staticCompositionLocalOf { MailSettings() }
 
-/** The stored shape (`croft-mail.json`): a version and the undo time in seconds. A damaged file, or a value that S49 does not offer, reads as the default. */
+/**
+ * The stored shape (`croft-mail.json`): a version, the undo time in seconds, and the keys of the remote-images and mark-read choices. A
+ * damaged file, or a value that S49 does not offer, reads as the default, field by field; a file from before the two later fields has them
+ * as defaults (the version stays 1: the fields are optional).
+ */
 object MailSettingsJson {
     /** Written by this build. */
     const val VERSION = 1
@@ -49,7 +61,14 @@ object MailSettingsJson {
     /** The canonical file text. */
     fun encode(s: MailSettings): String = Json { prettyPrint = true; prettyPrintIndent = "  " }.encodeToString(
         JsonObject.serializer(),
-        JsonObject(linkedMapOf("version" to JsonPrimitive(VERSION), "undoSeconds" to JsonPrimitive(s.undoSeconds))),
+        JsonObject(
+            linkedMapOf(
+                "version" to JsonPrimitive(VERSION),
+                "undoSeconds" to JsonPrimitive(s.undoSeconds),
+                "remoteImages" to JsonPrimitive(s.remoteImages.key),
+                "markRead" to JsonPrimitive(s.markRead.key),
+            ),
+        ),
     ) + "\n"
 
     /** The settings in [text], or the defaults for whatever cannot be read. */
@@ -58,7 +77,12 @@ object MailSettingsJson {
         val version = (obj["version"] as? JsonPrimitive)?.intOrNull ?: VERSION
         if (version > VERSION) return MailSettings()
         val seconds = (obj["undoSeconds"] as? JsonPrimitive)?.intOrNull
-        return if (seconds != null && seconds in MailSettings.UndoChoices) MailSettings(seconds) else MailSettings()
+        val defaults = MailSettings()
+        return MailSettings(
+            undoSeconds = if (seconds != null && seconds in MailSettings.UndoChoices) seconds else defaults.undoSeconds,
+            remoteImages = RemoteImages.fromKey((obj["remoteImages"] as? JsonPrimitive)?.takeIf { it.isString }?.content),
+            markRead = MarkReadDelay.fromKey((obj["markRead"] as? JsonPrimitive)?.takeIf { it.isString }?.content),
+        )
     }
 }
 

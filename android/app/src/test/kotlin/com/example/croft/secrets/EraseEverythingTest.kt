@@ -175,11 +175,11 @@ class EraseEverythingTest {
     @Test
     fun aDeleteThatFailsStopsTheEraseBeforeTheKeystoreKeyIsDiscardedAndARetryFinishesIt() {
         val phone = Phone("failing")
-        phone.withAnEarlierDatabaseInTheQuarantine().databaseKey().close()
+        val s = phone.withAnEarlierDatabaseInTheQuarantine()
+        // The person signed in again (a live secret; without one the next start would put the earlier database back at once).
+        s.secrets.put(5, SecretKind.PASSWORD, NEW_PASSWORD.toByteArray())
         // The database "file" cannot be deleted: a folder with something in it.
         phone.db.mkdirs(); File(phone.db, "x").writeText("x")
-        phone.secrets().secrets.put(5, SecretKind.PASSWORD, NEW_PASSWORD.toByteArray())
-        val s = phone.secrets()
         try {
             s.eraseEverything()
             fail("expected STORAGE_ERROR")

@@ -30,9 +30,17 @@
       })) as PublicKeyCredential | null;
       if (!cred) throw new DOMException('cancelled', 'NotAllowedError');
       await api.call('POST', '/api/passkeys/finish', { ceremony: start.ceremony, credential: attestationJson(cred) });
-      done = true;
-      // A recovery sign-in only lets you add a passkey: sign in again with it.
-      await api.signOut();
+            done = true;
+      // A recovery sign-in only lets you add a passkey: sign in again with it. The sign-out is
+      // tried again if it fails (offline), so the recovery session never lingers.
+      for (let i = 0; i < 3; i++) {
+        try {
+          await api.signOut();
+          break;
+        } catch {
+          await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+        }
+      }
     } catch (e) {
       error = explain(e);
     } finally {
@@ -49,7 +57,8 @@
       <a class="button" href="/sign-in">Sign in</a>
     {:else}
       <h1>Make a new passkey</h1>
-      <p>You signed in with a recovery code. Make a passkey on this device to sign in from now on.</p>
+            <p>You signed in with a recovery code. Make a passkey on this device to sign in from now on.</p>
+      <p class="note">Stay on this page until it's done: reloading it ends this sign-in, and your recovery code is used up.</p>
       <button class="button" type="button" disabled={busy} onclick={make}>Make a passkey</button>
     {/if}
     <p class="error" role="alert">{error}</p>
@@ -74,6 +83,11 @@
     margin: 0;
     font-size: 28px;
     font-weight: 500;
+  }
+
+    .note {
+    color: var(--croft-color-on-surface-variant);
+    font-size: 14px;
   }
 
   a.button {

@@ -26,7 +26,8 @@ an empty, signed-in shell drawn with Croft's design tokens. The browser never ho
   and not the API (`/api/`, `/oidc/`, `/enrol`, `/healthz`, `/version`) get the app's page. Without `web_dir` the Companion serves
   no app, as before.
 - **A strict CSP for the app**: `default-src 'none'`, scripts and styles from `'self'` only (SvelteKit's inline start-up script
-  allowed by its hash, computed by the Companion from the page it serves), `connect-src 'self'`, `img-src 'self' data:`,
+  allowed by its hash, computed by the Companion from the page it serves; after the review, scripts only from the app's folders and
+  Trusted Types), style attributes allowed (SvelteKit's announcer), `connect-src 'self'`, `img-src 'self' data:`,
   `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`; the other security headers as today.
 - **Sessions for browsers.** The sign-in finishes (passkey, recovery, OIDC exchange) take `"web": true`: the refresh token is then
   set as a cookie (`__Host-croft_refresh`, `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, the refresh token's lifetime) and
@@ -34,7 +35,8 @@ an empty, signed-in shell drawn with Croft's design tokens. The browser never ho
   cookie and returns a new access token; it needs the header `X-Croft-Web: 1` (a request a page on another origin cannot send
   without a preflight) and the cookie. `POST /api/web/sign-out` signs the session out and clears the cookie. A refresh token reused
   after rotation revokes the session, as for apps. Plain `http` on this machine (tests, development) uses a cookie without
-  `__Host-` and `Secure`.
+  `__Host-` and `Secure`. After the review: a refresh without a cookie is not a failed sign-in; refreshes are serialised across
+  tabs; a recovery cookie lives 15 minutes; `web_dir` needs a `public_url` without a path.
 - **Sign-in screens**: a passkey (with the browser's passkey list: a discoverable credential, no user name needed), single sign-on
   when the Companion has OIDC (PKCE: the verifier in `sessionStorage` only for the round trip, the redirect back to the app's own
   `/oidc/back` page), and a recovery sign-in (user name, TOTP, recovery code), which leads to adding a passkey. Errors in plain

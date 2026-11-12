@@ -247,6 +247,10 @@ async fn guard(State(app): State<App>, req: Request<Body>, next: Next) -> Respon
     }
     set(h, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     set(h, header::REFERRER_POLICY, "no-referrer");
+    // Over https, browsers keep to https (T30 review: the web app's cookie must never go out plainly).
+    if app.auth.public_url().starts_with("https://") {
+        set(h, header::STRICT_TRANSPORT_SECURITY, "max-age=31536000");
+    }
     set(h, header::X_FRAME_OPTIONS, "DENY");
     set(
         h,

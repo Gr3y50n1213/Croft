@@ -121,3 +121,71 @@ test('signing out forgets the token even when the request fails', async () => {
   assert.equal(api.session, null);
   void f;
 });
+
+test('a rate limit or a server error keeps the session; only a 401 ends it', async () => {
+  let status = 429;
+  const f = fake({ '/api/web/refresh': () => json({ error: 'x' }, status) });
+  const api = new Api(f.fn, () => 0);
+  api.adopt({ access_token: 'a', access_expires_ms: 10, recovery: false });
+  assert.equal((await api.renew())?.accessToken, 'a');
+  status = 503;
+  assert.equal((await api.renew())?.accessToken, 'a');
+  status = 401;
+  assert.equal(await api.renew(), null);
+});
+
+test('a signed-out page asks the Companion once, not on every page', async () => {
+  const f = fake({ '/api/web/refresh': () => json({ error: 'invalid' }, 401) });
+  const api = new Api(f.fn, () => 0);
+  assert.equal(await api.current(), null);
+  assert.equal(await api.current(), null);
+  assert.equal(f.calls.length, 1);
+  // A sign-in clears it.
+  api.adopt({ access_token: 'a', access_expires_ms: 10 ** 12, recovery: false });
+  assert.equal((await api.current())?.accessToken, 'a');
+});
+
+/**
+ * Two tabs sharing one cookie jar, against a Companion that rotates the cookie and ends the session
+ * when a spent one comes back (as `/api/web/refresh` does). The request reads the cookie when it
+ * starts and the new one is stored when the answer arrives.
+ */
+function twoTabs(exclusive: import('./api.ts').Exclusive) {
+  const jar = { cookie: 'c0' };
+  const spent = new Set<string>();
+  let n = 0;
+  let revoked = false;
+  const fn = (async (_input: RequestInfo | URL, _init?: RequestInit) => {
+    const sent = jar.cookie;
+    await new Promise((r) => setTimeout(r, 5));
+    if (revoked || spent.has(sent)) {
+      revoked = true;
+      return json({ error: 'invalid' }, 401);
+    }
+    spent.add(sent);
+    jar.cookie = `c${++n}`;
+    return json({ access_token: `t${n}`, access_expires_ms: 10 ** 12, recovery: false });
+  }) as typeof fetch;
+  const a = new Api(fn, () => 0, exclusive);
+  const b = new Api(fn, () => 0, exclusive);
+  return { a, b, revoked: () => revoked };
+}
+
+test('without a shared lock two tabs refreshing at once end the session; with it both keep it', async () => {
+  const bare = twoTabs((fn) => fn());
+  await Promise.all([bare.a.renew(), bare.b.renew()]);
+  assert.equal(bare.revoked(), true, 'the race this guards against');
+
+  // A lock shared by the tabs (navigator.locks in the browser).
+  let tail: Promise<unknown> = Promise.resolve();
+  const lock: import('./api.ts').Exclusive = (fn) => {
+    const run = tail.then(fn, fn);
+    tail = run.catch(() => {});
+    return run;
+  };
+  const tabs = twoTabs(lock);
+  const [sa, sb] = await Promise.all([tabs.a.renew(), tabs.b.renew()]);
+  assert.equal(tabs.revoked(), false);
+  assert.ok(sa && sb);
+  assert.notEqual(sa.accessToken, sb.accessToken);
+});

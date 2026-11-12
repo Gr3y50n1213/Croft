@@ -154,6 +154,10 @@ browser and sign in with your passkey, single sign-on or a recovery code. The bu
 exact path; the page's Content-Security-Policy allows only the app's own scripts. A browser's sign-in keeps its refresh token in an
 `HttpOnly`, `SameSite=Strict` cookie (`__Host-croft_refresh`) that no script can read, and the 15-minute access token in memory only.
 
+The web app needs a host name of its own (`public_url` without a path, such as `https://mail.example.org`), and that host must
+serve nothing else on any port: browsers share cookies across a host's ports, so another service there could plant one. Put
+`Strict-Transport-Security` on that host at the reverse proxy too (the Companion sends it on its own answers).
+
 ## Commands
 
 ```

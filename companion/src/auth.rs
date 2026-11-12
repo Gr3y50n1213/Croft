@@ -926,8 +926,9 @@ impl Store {
         Ok(tokens)
     }
 
-    /// The (user, session) of a refresh token that is current (not yet exchanged, not expired, its
-    /// session live): for signing a browser out by its cookie (T30).
+    /// The (user, session) of a refresh token that has not expired and whose session is live, also
+    /// when it was already exchanged (an answer lost on the way still names its session): for
+    /// signing a browser out by its cookie (T30).
     pub fn session_of_refresh(
         &self,
         refresh: &str,
@@ -939,7 +940,7 @@ impl Store {
             .query_row(
                 "SELECT r.user_id, r.session_id FROM refresh_token r
                  JOIN session s ON s.id = r.session_id AND s.user_id = r.user_id
-                 WHERE r.token_hash = ?1 AND r.rotated_ms IS NULL AND r.expires_ms > ?2
+                                  WHERE r.token_hash = ?1 AND r.expires_ms > ?2
                    AND s.revoked_ms IS NULL",
                 params![&hash[..], now],
                 |r| Ok((r.get(0)?, r.get(1)?)),

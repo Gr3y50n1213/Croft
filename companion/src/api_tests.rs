@@ -1580,6 +1580,19 @@ impl H {
     ) -> (StatusCode, axum::http::HeaderMap, Value) {
         static N: AtomicI64 = AtomicI64::new(1);
         let n = N.fetch_add(1, Ordering::SeqCst);
+        let ip = format!("10.77.{}.{}", (n >> 8) & 255, n & 255);
+        self.call_raw_from(&ip, method, path, headers, body).await
+    }
+
+    /// The same from a given address.
+    async fn call_raw_from(
+        &self,
+        ip: &str,
+        method: Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<Value>,
+    ) -> (StatusCode, axum::http::HeaderMap, Value) {
         let mut req = Request::builder().method(method).uri(path);
         for (k, v) in headers {
             req = req.header(*k, *v);
@@ -1591,11 +1604,8 @@ impl H {
                 .unwrap(),
             None => req.body(Body::empty()).unwrap(),
         };
-        req.extensions_mut().insert(Peer(
-            format!("10.77.{}.{}:40000", (n >> 8) & 255, n & 255)
-                .parse()
-                .unwrap(),
-        ));
+        req.extensions_mut()
+            .insert(Peer(format!("{ip}:40000").parse().unwrap()));
         let res = self.router.clone().oneshot(req).await.unwrap();
         let status = res.status();
         let headers = res.headers().clone();
@@ -1880,7 +1890,7 @@ async fn the_web_app_is_served_with_its_own_csp_and_caching_behind_the_api() {
     let router = router(
         h.app
             .clone()
-            .with_web(crate::webapp::WebApp::load(dir.path()).unwrap()),
+            .with_web(crate::webapp::WebApp::load(dir.path(), ORIGIN).unwrap()),
     );
     let get = |path: &str| {
         let router = router.clone();
@@ -1896,7 +1906,16 @@ async fn the_web_app_is_served_with_its_own_csp_and_caching_behind_the_api() {
     let (s, hd) = get("/inbox").await;
     assert_eq!(s, StatusCode::OK);
     let csp = hd["content-security-policy"].to_str().unwrap();
-    assert!(csp.contains("script-src 'self' 'sha256-") && csp.contains("frame-ancestors 'none'"));
+    assert!(
+        csp.contains("script-src https://companion.test/_app/immutable/ https://companion.test/theme.js 'sha256-")
+            && csp.contains("frame-ancestors 'none'")
+            && csp.contains("require-trusted-types-for 'script'"),
+        "{csp}"
+    );
+    assert!(hd["strict-transport-security"]
+        .to_str()
+        .unwrap()
+        .starts_with("max-age="));
     assert_eq!(hd["cache-control"], "no-store");
     assert_eq!(hd["x-frame-options"], "DENY");
     let (s, hd) = get("/_app/immutable/a.1.js").await;
@@ -1915,4 +1934,171 @@ async fn the_web_app_is_served_with_its_own_csp_and_caching_behind_the_api() {
         h.status(Method::GET, "/inbox", None).await,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn a_signed_out_browser_opening_the_app_never_locks_its_address_out() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    // Many visits without a session: each asks for a refresh without a cookie.
+    for _ in 0..25 {
+        let (s, _, _) = h
+            .call_raw_from("192.0.2.80", Method::POST, "/api/web/refresh", WEB, None)
+            .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        h.advance(3_000);
+    }
+    // The address can still sign in.
+    let (c, cred) = h.assertion(&mut ann).await;
+    let (s, _, v) = h
+        .call_raw_from(
+            "192.0.2.80",
+            Method::POST,
+            "/api/sign-in/passkey/finish",
+            WEB,
+            Some(json!({ "ceremony": c, "credential": cred, "web": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn only_the_web_apps_own_requests_refresh_and_old_browsers_without_fetch_headers_work() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let (_, cookie) = h.web_sign_in(&mut ann).await;
+    let c = format!("__Host-croft_refresh={cookie}");
+    for (headers, want) in [
+        (
+            vec![
+                ("x-croft-web", "1"),
+                ("origin", "https://evil.test"),
+                ("cookie", c.as_str()),
+            ],
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            vec![
+                ("x-croft-web", "1"),
+                ("sec-fetch-site", "cross-site"),
+                ("cookie", c.as_str()),
+            ],
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            vec![
+                ("x-croft-web", "1"),
+                ("sec-fetch-site", "same-site"),
+                ("cookie", c.as_str()),
+            ],
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            vec![("x-croft-web", "2"), ("cookie", c.as_str())],
+            StatusCode::FORBIDDEN,
+        ),
+        // Only the header: a browser that sends no Origin or fetch metadata on a same-origin POST.
+        (
+            vec![("x-croft-web", "1"), ("cookie", c.as_str())],
+            StatusCode::OK,
+        ),
+    ] {
+        let (s, _, _) = h
+            .call_raw(Method::POST, "/api/web/refresh", &headers, None)
+            .await;
+        assert_eq!(s, want, "{headers:?}");
+    }
+}
+
+#[tokio::test]
+async fn two_cookies_of_the_name_in_one_header_are_refused() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let (_, cookie) = h.web_sign_in(&mut ann).await;
+    let both = format!("__Host-croft_refresh=planted; other=1; __Host-croft_refresh={cookie}");
+    let mut headers: Vec<(&str, &str)> = WEB.to_vec();
+    headers.push(("cookie", &both));
+    let (s, _, _) = h
+        .call_raw(Method::POST, "/api/web/refresh", &headers, None)
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn signing_out_with_an_already_exchanged_cookie_still_ends_the_session() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let (_, first) = h.web_sign_in(&mut ann).await;
+    // The refresh happened, but its answer (the new cookie) never reached the browser.
+    let (s, _, v) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/refresh",
+            &refs(&with_cookie(&first)),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let access = v["access_token"].as_str().unwrap().to_owned();
+    let (s, _, _) = h
+        .call_raw(
+            Method::POST,
+            "/api/web/sign-out",
+            &refs(&with_cookie(&first)),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        h.status(Method::GET, "/api/me", Some(&access)).await,
+        StatusCode::UNAUTHORIZED,
+        "the session ended"
+    );
+}
+
+#[tokio::test]
+async fn a_web_recovery_cookie_lives_no_longer_than_its_access_token_and_needs_the_web_request() {
+    let h = h();
+    let ann = h.person("ann", Role::User).await;
+    let code = ann.recovery_codes[0].clone();
+    // Not the web app's request: refused before the code is looked at, so it is not spent.
+    let (s, _, _) = h
+        .call_raw(
+            Method::POST,
+            "/api/sign-in/recovery",
+            &[("origin", ORIGIN)],
+            Some(json!({ "user": ann.name, "totp": h.totp_now(&ann), "recovery_code": code, "web": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, hd, v) = h
+        .call_raw(
+            Method::POST,
+            "/api/sign-in/recovery",
+            WEB,
+            Some(json!({ "user": ann.name, "totp": h.totp_now(&ann), "recovery_code": code, "web": true })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "the same code still works: {v}");
+    assert!(
+        set_cookie(&hd).contains("Max-Age=900"),
+        "{}",
+        set_cookie(&hd)
+    );
+}
+
+#[tokio::test]
+async fn the_web_sign_out_is_rate_limited() {
+    let h = h();
+    let mut limited = false;
+    for _ in 0..80 {
+        let (s, _, _) = h
+            .call_raw_from("192.0.2.81", Method::POST, "/api/web/sign-out", WEB, None)
+            .await;
+        if s == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited);
 }

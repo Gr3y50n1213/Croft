@@ -16,7 +16,7 @@ use serde_json::json;
 use zeroize::Zeroizing;
 
 use super::{failed, limit, ApiError, ApiResult, MaybePeer};
-use crate::auth::{RefreshError, Tokens, REFRESH_TTL_MS};
+use crate::auth::{RefreshError, Tokens, ACCESS_TTL_MS, REFRESH_TTL_MS};
 use crate::http::App;
 
 /// The header a web request must carry.
@@ -105,7 +105,14 @@ pub(crate) fn tokens_response(app: &App, tokens: &Tokens, recovery: bool, web: b
         "recovery": recovery,
     }))
     .into_response();
-    match set_cookie(app, &tokens.refresh, REFRESH_TTL_MS / 1000) {
+    // A recovery sign-in only lets the person add a passkey within its access token's life: its
+    // cookie lasts no longer (T30 review).
+    let life_ms = if recovery {
+        ACCESS_TTL_MS
+    } else {
+        REFRESH_TTL_MS
+    };
+    match set_cookie(app, &tokens.refresh, life_ms / 1000) {
         Some(c) => {
             res.headers_mut().insert(header::SET_COOKIE, c);
             res
@@ -143,8 +150,9 @@ pub async fn refresh(
     if !from_web_app(&app, &headers) {
         return ApiError::Forbidden.into_response();
     }
+    // No cookie is not a failed sign-in: it is a signed-out browser opening the app (T30 review: it
+    // counted, and a few visits locked the address out of sign-in).
     let Some(token) = cookie(&app, &headers) else {
-        failed(&app, ip);
         return cleared(&app, ApiError::Invalid.into_response());
     };
     let now = app.auth.now();
@@ -158,9 +166,14 @@ pub async fn refresh(
     }
 }
 
-/// `POST /api/web/sign-out`: ends the browser's session (named by its cookie) and clears the
-/// cookie. Answers `ok` also when there was no session.
-pub async fn sign_out(State(app): State<App>, headers: HeaderMap) -> ApiResult {
+/// `POST /api/web/sign-out`: ends the browser's session (named by its cookie, also one already
+/// exchanged) and clears the cookie. Answers `ok` also when there was no session.
+pub async fn sign_out(
+    State(app): State<App>,
+    MaybePeer(peer): MaybePeer,
+    headers: HeaderMap,
+) -> ApiResult {
+    limit(&app, peer, &headers)?;
     if !from_web_app(&app, &headers) {
         return Err(ApiError::Forbidden);
     }

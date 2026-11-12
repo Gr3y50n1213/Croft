@@ -32,6 +32,16 @@ export interface Session {
 
 export type Fetch = typeof fetch;
 
+/**
+ * Runs `fn` holding a lock that every tab of this origin shares (`navigator.locks`). Refreshes
+ * must not overlap across tabs: they share one cookie, and two refreshes with the same cookie look
+ * like a stolen token, which ends the session. Serialised, the second tab's refresh starts after
+ * the first one's new cookie is stored, and simply rotates it again.
+ */
+export type Exclusive = <T>(fn: () => Promise<T>) => Promise<T>;
+
+const unlocked: Exclusive = (fn) => fn();
+
 /** Renew this long before the access token expires. */
 export const RENEW_BEFORE_MS = 60_000;
 
@@ -39,12 +49,16 @@ export const RENEW_BEFORE_MS = 60_000;
 export class Api {
   #fetch: Fetch;
   #session: Session | null = null;
-  #renewing: Promise<Session | null> | null = null;
+    #renewing: Promise<Session | null> | null = null;
+  /** The Companion said this browser has no session: no need to ask again until a sign-in. */
+  #signedOut = false;
   #now: () => number;
+  #exclusive: Exclusive;
 
-  constructor(fetchFn: Fetch, now: () => number = () => Date.now()) {
+  constructor(fetchFn: Fetch, now: () => number = () => Date.now(), exclusive: Exclusive = unlocked) {
     this.#fetch = fetchFn;
     this.#now = now;
+    this.#exclusive = exclusive;
   }
 
   get session(): Session | null {
@@ -52,14 +66,16 @@ export class Api {
   }
 
   /** Takes a sign-in's answer (the refresh cookie is already set by the browser). */
-  adopt(answer: unknown): Session {
+    adopt(answer: unknown): Session {
     const s = toSession(answer);
     this.#session = s;
+    this.#signedOut = false;
     return s;
   }
 
   forget(): void {
     this.#session = null;
+    this.#signedOut = true;
   }
 
   /** A request to the API. Signed in, it carries the access token (renewed first when due). */
@@ -103,19 +119,23 @@ export class Api {
   async current(): Promise<Session | null> {
     const s = this.#session;
     if (s && !s.recovery && s.expiresMs - RENEW_BEFORE_MS > this.#now()) return s;
-    if (s?.recovery) return s.expiresMs > this.#now() ? s : null;
+        if (s?.recovery) return s.expiresMs > this.#now() ? s : null;
+    // Known to be signed out (the app asked a moment ago, on another of its pages): no request,
+    // which a signed-out browser would otherwise make on every page.
+    if (!s && this.#signedOut) return null;
     return this.renew();
   }
 
   /** Renews through the cookie now. */
-  renew(): Promise<Session | null> {
+    renew(): Promise<Session | null> {
     if (!this.#renewing) {
-      this.#renewing = this.raw('POST', '/api/web/refresh')
+      this.#renewing = this.#exclusive(() => this.raw('POST', '/api/web/refresh'))
         .then((a) => this.adopt(a))
         .catch((e: unknown) => {
-          // Only a refusal ends the session; a network failure keeps what we have.
-          if (e instanceof ApiError && e.status !== 0) {
-            this.#session = null;
+          // Only the Companion saying "no session" (401) ends it. A network failure, a rate limit
+          // or a server error keeps what we have, to try again later.
+          if (e instanceof ApiError && e.status === 401) {
+            this.forget();
             return null;
           }
           return this.#session;
@@ -128,10 +148,10 @@ export class Api {
   }
 
   async signOut(): Promise<void> {
-    try {
+        try {
       await this.raw('POST', '/api/web/sign-out');
     } finally {
-      this.#session = null;
+      this.forget();
     }
   }
 }

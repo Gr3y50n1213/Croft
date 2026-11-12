@@ -87,3 +87,44 @@ test('wrong recovery details say so in plain words', async ({ page }) => {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText(/didn't work/);
 });
+
+test('two tabs opening the app at once both stay signed in', async ({ page, context }) => {
+  await virtualAuthenticator(page);
+  await enrol(page, 'cat');
+  await page.goto(`${companion.url}/sign-in`);
+  await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
+  await expect(page.getByTestId('user')).toHaveText('cat');
+  // Two new tabs: each has no access token yet and refreshes through the shared cookie at once.
+  const [a, b] = await Promise.all([context.newPage(), context.newPage()]);
+  await Promise.all([a.goto(`${companion.url}/`), b.goto(`${companion.url}/`)]);
+  await expect(a.getByTestId('user')).toHaveText('cat');
+  await expect(b.getByTestId('user')).toHaveText('cat');
+  // And the session is still alive for a third.
+  const c = await context.newPage();
+  await c.goto(`${companion.url}/`);
+  await expect(c.getByTestId('user')).toHaveText('cat');
+});
+
+test('opening the app signed out, again and again, never locks the browser out of signing in', async ({ page }) => {
+  // A Companion of its own: the per-minute request limit is shared by the other tests' address.
+  const own = await Companion.start();
+  try {
+    const errors = watchForErrors(page);
+    await virtualAuthenticator(page);
+    await page.goto(own.addUser('dan'));
+    await page.getByRole('button', { name: /passkey/i }).click();
+    await expect(page.locator('#step-backup')).toBeVisible();
+    await page.context().clearCookies();
+    // Twelve signed-out visits: before the fix each counted twice as a failed sign-in, and twenty
+    // failures lock the address for 15 minutes.
+    for (let i = 0; i < 12; i++) {
+      await page.goto(`${own.url}/`);
+      await expect(page).toHaveURL(/\/sign-in$/);
+    }
+    await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
+    await expect(page.getByTestId('user')).toHaveText('dan');
+    expect(errors).toEqual([]);
+  } finally {
+    own.stop();
+  }
+});

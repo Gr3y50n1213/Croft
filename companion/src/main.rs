@@ -64,8 +64,8 @@ fn run(args: &[String]) -> Result<String, CliError> {
             );
             // T30: the web app, read once from its folder.
             if let Some(dir) = &config.web_dir {
-                let web =
-                    croft_companion::webapp::WebApp::load(dir).map_err(std::io::Error::other)?;
+                let web = croft_companion::webapp::WebApp::load(dir, &config.public_url)
+                    .map_err(std::io::Error::other)?;
                 app = app.with_web(web);
             }
             // The cores of users who have mail accounts start syncing at once.

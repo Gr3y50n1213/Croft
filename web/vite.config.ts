@@ -16,7 +16,7 @@ export default defineConfig({
   ],
   server: {
     // The design tokens are read in place from design/generated (never copied).
-    fs: { allow: ['..'] },
+        fs: { allow: ['../design/generated'] },
     // Development: the API of a Companion on this machine.
     proxy: {
       '/api': 'http://127.0.0.1:8480',

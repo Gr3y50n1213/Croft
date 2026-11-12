@@ -114,8 +114,10 @@ pub async fn callback(
     let Query(q) = q.map_err(|_| ApiError::BadRequest)?;
     let p = provider(&app)?;
     let now = app.auth.now();
+    // An unknown or spent `state` is not a guess at anything (the flow it names is random and
+    // single-use): it does not count against the address, or any page could embed this address
+    // and lock its visitors out of sign-in (T30 review). It is still audited.
     let Some(flow) = q.state.as_deref().and_then(|s| p.take_flow(s, now)) else {
-        failed(&app, ip);
         let _ = with_store(&app, move |s| s.record_failure(None, now, false)).await;
         return Err(ApiError::Invalid);
     };

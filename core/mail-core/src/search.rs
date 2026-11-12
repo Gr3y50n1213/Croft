@@ -29,8 +29,8 @@ pub const MAX_TERM_CHARS: usize = 200;
 
 const DAY_MS: i64 = 86_400_000;
 
-/// One piece of free text.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One piece of free text. `Debug` prints the kind only: what a person searches for is never logged.
+#[derive(Clone, PartialEq, Eq)]
 pub enum TextTerm {
     /// A single word: matches words that start with it (search as you type).
     Word(String),
@@ -38,8 +38,8 @@ pub enum TextTerm {
     Phrase(String),
 }
 
-/// A parsed query. Empty fields mean "no condition".
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A parsed query. Empty fields mean "no condition". `Debug` prints counts only, never the text.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SearchQuery {
     /// Free text, matched in the subject, the sender and the stored body.
     pub text: Vec<TextTerm>,
@@ -62,6 +62,34 @@ pub struct SearchQuery {
     pub before_ms: Option<i64>,
     /// `after:` as Unix milliseconds (UTC midnight of that day): only messages on or after it.
     pub after_ms: Option<i64>,
+}
+
+impl std::fmt::Debug for TextTerm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Word(_) => "Word",
+            Self::Phrase(_) => "Phrase",
+        })
+    }
+}
+
+impl std::fmt::Debug for SearchQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchQuery")
+            .field("text", &self.text.len())
+            .field("from", &self.from.len())
+            .field("subject", &self.subject.len())
+            .field("to", &self.to.len())
+            .field("unread", &self.unread)
+            .field("starred", &self.starred)
+            .field("has_attachment", &self.has_attachment)
+            .field("folder", &self.folder.is_some())
+            .field(
+                "dates",
+                &(self.before_ms.is_some() || self.after_ms.is_some()),
+            )
+            .finish()
+    }
 }
 
 /// Why a query cannot be used.
@@ -416,6 +444,15 @@ mod tests {
         assert_eq!(word.chars().count(), MAX_TERM_CHARS);
         let many = "a ".repeat(500);
         assert_eq!(parse(&many).unwrap().text.len(), MAX_TERMS);
+    }
+
+    #[test]
+    fn debug_never_prints_the_query() {
+        let q = parse("from:secretperson \"hidden phrase\" to:who@example.org in:Private").unwrap();
+        let printed = format!("{q:?} {:?}", q.text);
+        for word in ["secretperson", "hidden", "who@", "Private"] {
+            assert!(!printed.contains(word), "{printed}");
+        }
     }
 
     #[test]

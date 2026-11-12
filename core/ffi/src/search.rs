@@ -265,12 +265,18 @@ impl Core {
             let rows = list::rows_for(conn, &scope, &ids)?;
             let hits = rows
                 .into_iter()
-                .map(|row| {
+                .map(|mut row| {
                     let h = found.iter().find(|h| h.message_id == row.id);
-                    let subject_ranges = h
-                        .and_then(|h| h.subject_marked.as_deref())
-                        .map(|m| unmark(m).1)
-                        .unwrap_or_default();
+                    // The ranges are counted on the subject with the marks removed; the row shows that same text, so a
+                    // subject that itself carried a mark character cannot shift the highlights.
+                    let subject_ranges =
+                        match h.and_then(|h| h.subject_marked.as_deref()).map(unmark) {
+                            Some((text, ranges)) => {
+                                row.subject = text;
+                                ranges
+                            }
+                            None => Vec::new(),
+                        };
                     let (snippet, snippet_ranges) =
                         match h.and_then(|h| h.snippet_marked.as_deref()).map(unmark) {
                             Some((s, r)) => (Some(s), r),

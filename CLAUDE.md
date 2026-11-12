@@ -102,6 +102,9 @@ in the main folder and in a task worktree): a push from one leaves the other's f
 ## Where things stand
 Progress, task by task, is in `docs/PROGRESS.md` (newest first); choices in `docs/DECISIONS.md`; what waits on the
 owner in `docs/OPEN-ITEMS.md`; security-sensitive code to read by hand in `docs/REVIEW-QUEUE.md`.
-Done and tested: storage (SQLite, SQLCipher, migrations 0001-0004), persisted operation queue, IMAP adapter (vendored
-async-imap), JMAP adapter, account discovery, SMTP sender and outbox in the engine, sync engine (`core/engine`), FFI
-surface v3 for the app, design tokens, first Android screen. Next tasks are T11-T21 in `docs/tasks/` (the Android app).
+Done and tested: the Rust core (storage with SQLCipher, migrations 0001-0007; persisted operation queue; IMAP with a
+vendored async-imap, JMAP, discovery, SMTP and the Outbox; the sync engine; reading with a vendored html5ever and ammonia
+under a measured work budget; compose, drafts and sending; FFI v9) and the Android app through T18: sign-in and accounts
+(T17), Inbox and actions (T16), conversation and message (T18b), compose and Outbox (T18d), and a `preview` build for
+phone testing (`docs/TESTING-ON-A-PHONE.md`). Next tasks are T19-T21 in `docs/tasks/` (search, background sync and
+notifications, bring-your-own OAuth).

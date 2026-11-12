@@ -32,6 +32,12 @@ interface FolderMapping {
     /** Whether [decline] was called for [account] and [role], and no folder was chosen since. */
     fun isDeclined(account: AccountId, role: FolderRole): Boolean
 
+    /** Forgets everything remembered about [account] (it was removed): its folder choices, its declined roles and its recent destinations. */
+    fun forgetAccount(account: AccountId)
+
+    /** The accounts something is remembered for (the start-up sweep drops those the core no longer lists). */
+    fun accounts(): Set<AccountId>
+
     /** The last folders [account]'s mail was moved to, newest first, at most [MAX_RECENT]. */
     fun recents(account: AccountId): List<FolderId>
 
@@ -59,6 +65,16 @@ open class InMemoryFolderMapping : FolderMapping {
     @Synchronized override fun remember(account: AccountId, role: FolderRole, folder: FolderId) { roles[account to role] = folder; declined.remove(account to role); changed() }
 
     @Synchronized override fun forget(account: AccountId, role: FolderRole) { roles.remove(account to role); changed() }
+
+    @Synchronized override fun forgetAccount(account: AccountId) {
+        roles.keys.removeAll { it.first == account }
+        declined.removeAll { it.first == account }
+        recent.remove(account)
+        changed()
+    }
+
+    @Synchronized override fun accounts(): Set<AccountId> =
+        roles.keys.map { it.first }.toSet() + declined.map { it.first } + recent.keys
 
     @Synchronized override fun recents(account: AccountId): List<FolderId> = recent[account].orEmpty()
 

@@ -500,6 +500,63 @@ class AppSecrets internal constructor(
         }
     }
 
+    /**
+     * The first step of "Erase all Croft data on this device": deletes the whole quarantine (every earlier database, wrapped secrets and
+     * wrapped key, `superseded/` too), the key-lost notice and the loss-suspected file, and stops offering a restore. **Before the first
+     * account is removed**, so that a kill at any later step cannot leave an older database waiting to be restored by a start that finds no
+     * account secret (the case in which the app restores at once). Verified: throws [SecureStorageException] (STORAGE_ERROR) when anything
+     * of the quarantine is left; the call can be repeated.
+     */
+    fun eraseQuarantine() {
+        assertNotMainThread()
+        withLock { wipeQuarantine() }
+    }
+
+    private fun wipeQuarantine() {
+        if (!quarantine.deleteAll()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+        for (f in listOf(File(dir, KEY_LOST_MARKER), File(dir, SUSPICION_FILE))) {
+            if (f.exists() && !f.delete()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+        }
+        keyLoss.acknowledge()
+        quarantineRestore.set(false)
+        offered = null
+        incidentThisStart = null
+    }
+
+    /**
+     * "Erase all Croft data on this device", the rest: after [eraseQuarantine], deletes the database and its side files (**close the core
+     * first**), every account secret, the wrapped database key, and then the wrapping key in the Keystore. Under the process lock. The
+     * order is chosen so that a kill at any point leaves nothing a start would restore: the quarantine goes first (also here, again), the
+     * database's side files before the database, the database before the wrapped key. Everything is **checked** before the Keystore key
+     * is discarded: if anything survived, [SecureStorageException] (STORAGE_ERROR) is thrown and the wrapping key is kept, so that what
+     * is still there stays usable (a discarded key with data left would make the next start declare a key loss and quarantine it).
+     * Afterwards the next [databaseKey] is a first run. Repeat the call after a failure.
+     */
+    fun eraseEverything() {
+        assertNotMainThread()
+        withLock {
+            wipeQuarantine()
+            val siblings = databaseSiblings()
+            for (f in siblings.drop(1) + siblings.first()) {
+                if (f.exists() && !f.delete()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            }
+            try {
+                secrets.clear()
+                if (secrets.hasAny()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            } catch (e: IOException) {
+                throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            }
+            if (keyFile.exists() && !keyFile.delete()) throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            // Verified before the Keystore key goes.
+            if (quarantine.incidents().isNotEmpty() || databaseExists() || keyFile.exists()) {
+                throw SecureStorageException(SecureStorageException.Reason.STORAGE_ERROR)
+            }
+            try { keys.discard() } catch (e: SecretBoxException) { /* replaced at the next first run (`WrappingKeySource.create`) */ }
+            restoreChecked = false
+            startCounted = false
+        }
+    }
+
     internal fun restoreFromQuarantine() {
         assertNotMainThread()
         withLock {

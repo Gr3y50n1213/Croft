@@ -20,6 +20,9 @@ import com.example.croft.mail.LocalMailSettings
 import com.example.croft.mail.MailSession
 import com.example.croft.mail.MailSettings
 import com.example.croft.mail.MailSettingsStore
+import com.example.croft.mail.accounts.AccountOps
+import com.example.croft.mail.accounts.AccountPrefs
+import com.example.croft.mail.accounts.AccountPrefsStore
 import com.example.croft.mail.followConnectivity
 import com.example.croft.swipe.SwipeSettings
 import com.example.croft.theme.ThemeSettings
@@ -50,6 +53,10 @@ fun CroftApp(
     connectivity: Connectivity? = null,
     /** The sign-in flow's parts (the real core and secret store); none in tests of the other screens. */
     onboarding: OnboardingEnvironment? = null,
+    /** What Accounts (S44), Account (S45) and About (S60) change in the core and the secret store, and the core's sample mailbox; none in tests of other screens. */
+    accountOps: AccountOps? = null,
+    /** The app's own account order, names and colours; defaults when null. */
+    accountPrefsStore: AccountPrefsStore? = null,
 ) {
     // The session the Inbox shows: the one given, until the first account is added; then the one over the core.
     var active by remember(session) { mutableStateOf(session) }
@@ -67,11 +74,14 @@ fun CroftApp(
     }
     // Whether the device has a network: the core shows Offline and sends nothing while it does not.
     if (connectivity != null) LaunchedEffect(active, connectivity) { active.followConnectivity(connectivity) }
+    var accountPrefs by remember { mutableStateOf<AccountPrefs?>(null) }
+    LaunchedEffect(accountPrefsStore) { accountPrefs = accountPrefsStore?.prefs?.first() ?: AccountPrefs() }
     val scope = rememberCoroutineScope()
+    val prefsNow = accountPrefs
     val swipeNow = swipe
     val themeNow = settings
     val mailNow = mail
-    if (themeNow != null && swipeNow != null && mailNow != null) {
+    if (themeNow != null && swipeNow != null && mailNow != null && prefsNow != null) {
         CroftTheme(themeNow) {
             CompositionLocalProvider(LocalSwipeSettings provides swipeNow, LocalMailSettings provides mailNow) {
                 CroftNavHost(
@@ -87,6 +97,22 @@ fun CroftApp(
                     onMailSettingsChange = { next -> mail = next; scope.launch { mailStore?.set(next) } },
                     onboarding = onboarding,
                     onAccountReady = { onboarding?.let { active = it.openSession() } },
+                    accountOps = accountOps,
+                    accountPrefs = prefsNow,
+                    onAccountPrefsChange = { next -> accountPrefs = next; scope.launch { accountPrefsStore?.set(next) } },
+                    // The removal path waits for this: the entries of a removed account are gone from the stored prefs when it returns.
+                    removeAccountPrefs = { id ->
+                        accountPrefs = accountPrefs?.without(id)
+                        accountPrefsStore?.update { it.without(id) }
+                    },
+                    // "Erase all Croft data": the core and the secrets are already gone; the settings stores go back to their defaults too.
+                    onErased = {
+                        store.set(ThemeSettings.Default); swipeStore?.set(SwipeSettings.Default); mailStore?.set(MailSettings()); accountPrefsStore?.set(AccountPrefs())
+                        settings = ThemeSettings.Default; swipe = SwipeSettings.Default; mail = MailSettings(); accountPrefs = AccountPrefs()
+                        // No core is opened here: an erase leaves no Croft file, and the next one is made when the person adds an account (the
+                        // sign-in flow and "Try with sample mail" open the core when they first need it, then `onAccountReady` builds the session).
+                        active = MailSession.unavailable()
+                    },
                 )
             }
         }

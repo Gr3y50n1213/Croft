@@ -9,13 +9,19 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import com.example.croft.mail.MailRuntime
+import java.io.File
+import kotlinx.coroutines.flow.first
 import com.example.croft.ui.mail.InboxTags
 import com.example.croft.ui.nav.SettingsTags
 import com.example.croft.ui.onboarding.OnboardingTags
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,13 +56,16 @@ class HelloScreenTest {
 @RunWith(CroftRobolectricRunner::class)
 @Config(sdk = [35])
 class MainActivityTest {
-    @get:Rule
+    @get:Rule(order = 0)
+    val secrets = InMemorySecretsRule()
+
+    @get:Rule(order = 1)
     val rule = createAndroidComposeRule<MainActivity>()
 
     /**
      * The stored theme is read before anything is drawn, so the first screen appears a moment after the activity starts. With no
-     * account (as in a fresh install) that screen is S01 Welcome (T17b); "Try with sample mail" opens the sample Inbox that
-     * these tests go on from.
+     * account (as in a fresh install) that screen is S01 Welcome (T17b); "Try with sample mail" adds the core's own sample account
+     * (T17c: the real core, with an in-memory wrapping key, see [InMemorySecretsRule]) and opens the Inbox that these tests go on from.
      */
     private fun waitForStart() {
         rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
@@ -88,5 +97,111 @@ class MainActivityTest {
         rule.activityRule.scenario.recreate()
         rule.waitUntil(10_000) { rule.onAllNodesWithTag(SettingsTags.SCREEN).fetchSemanticsNodes().isNotEmpty() }
         rule.onNodeWithTag(SettingsTags.SCREEN).assertIsDisplayed()
+    }
+
+    @Test
+    fun trySampleMailOnTheRealCoreWithoutNetworkReachesTheInboxThenSettingsAndAccounts() {
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
+        // Airplane mode, the app's own flag: the sample mailbox needs no network.
+        kotlinx.coroutines.runBlocking { MailRuntime.openedCore(rule.activity.applicationContext).core.setNetworkAvailable(false) }
+        rule.onNodeWithTag(OnboardingTags.SAMPLE_BUTTON).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+        // The sample messages come from the core and each row says it is not saved to a server.
+        rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(com.example.croft.ui.components.ROW_NOT_SAVED_TAG), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(InboxTags.MENU_BUTTON).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("drawer-settings").performScrollTo().performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(SettingsTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(SettingsTags.ACCOUNTS).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Sample mail")).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test
+    fun eraseAllOnTheRealCoreLeavesNoCroftFileAndTheNextCoreIsEmpty() {
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(OnboardingTags.SAMPLE_BUTTON).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+        val app = rule.activity.applicationContext
+        val noBackup = app.noBackupFilesDir
+        assertTrue("the sample account made the database", noBackup.list()!!.any { it.startsWith("croft") })
+        rule.onNodeWithTag(InboxTags.MENU_BUTTON).performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("drawer-settings").performScrollTo().performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(SettingsTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(SettingsTags.ABOUT).performScrollTo().performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(com.example.croft.ui.accounts.AccountsTags.ABOUT)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(com.example.croft.ui.accounts.AccountsTags.ERASE_ALL).performScrollTo().performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(com.example.croft.ui.accounts.AccountsTags.ERASE_DIALOG)).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Erase everything").performClick()
+        rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
+        // The real path (`LazyAccountOps`, `CoreAccountOps`, `AppSecrets.eraseEverything`, `MailRuntime.afterErase`): no Croft file is left
+        // in the no-backup folder, and nothing opened the core again by itself.
+        assertEquals(emptyList<String>(), noBackup.list()!!.filter { it.startsWith("croft") })
+        // A core opened now is a new, empty app: no account.
+        assertEquals(0, kotlinx.coroutines.runBlocking { MailRuntime.accountCount(app) })
+    }
+}
+
+/**
+ * A restart with the sample mailbox already added: the app opens the Inbox, not S01 (an account, the sample one, exists).
+ */
+@RunWith(CroftRobolectricRunner::class)
+@Config(sdk = [35])
+class SampleMailRestartTest {
+    @get:Rule(order = 0)
+    val secrets = InMemorySecretsRule()
+
+    @get:Rule(order = 1)
+    val rule = androidx.compose.ui.test.junit4.createEmptyComposeRule()
+
+    @Test
+    fun afterARestartTheAppOpensTheInboxBecauseTheSampleAccountExists() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        kotlinx.coroutines.runBlocking { MailRuntime.openedCore(app).core.addDemoAccount() }
+        // The process ends: the core is closed and forgotten. The activity then opens it again from the file, with the same wrapping key,
+        // as a restart does, and finds the account that is stored there.
+        MailRuntime.forgetCore()
+        androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use {
+            rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(InboxTags.SCREEN)).fetchSemanticsNodes().isNotEmpty() }
+            assertTrue(rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isEmpty())
+        }
+    }
+}
+
+/**
+ * The start-up sweep is wired: a secret, a folder choice, a list position and a pref left for an account the core does not list (a removal
+ * a crash cut short) are gone once the app has started.
+ */
+@RunWith(CroftRobolectricRunner::class)
+@Config(sdk = [35])
+class StartupSweepTest {
+    @get:Rule(order = 0)
+    val secrets = InMemorySecretsRule()
+
+    @get:Rule(order = 1)
+    val rule = androidx.compose.ui.test.junit4.createEmptyComposeRule()
+
+    @Test
+    fun leftoversOfAnAccountTheCoreDoesNotListAreSweptAtStart() {
+        val app = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        // A first start makes the database and the key; then the leftovers of "account 99" are put in place and the process ends.
+        val open = kotlinx.coroutines.runBlocking { MailRuntime.openedCore(app) }
+        open.secrets.secrets.put(99, com.example.croft.secrets.SecretKind.PASSWORD, "made-up-password".toByteArray())
+        val folders = File(app.noBackupFilesDir, "croft-folders.txt")
+        com.example.croft.mail.FileFolderMapping(folders).remember(99, com.example.croft.mail.FolderRole.ARCHIVE, 9901)
+        val anchors = File(app.noBackupFilesDir, "croft-list-anchors-core.json")
+        com.example.croft.mail.FileAnchorStore(anchors).also { it.save("folder:99:9901", com.example.croft.mail.ListAnchor(1, 1000, 0f)); it.flush() }
+        val prefsStore = com.example.croft.mail.accounts.AccountPrefsStore.shared(app)
+        kotlinx.coroutines.runBlocking { prefsStore.set(com.example.croft.mail.accounts.AccountPrefs(order = listOf(99), names = mapOf(99L to "Gone"))) }
+        MailRuntime.forgetCore()
+
+        androidx.test.core.app.ActivityScenario.launch(MainActivity::class.java).use {
+            rule.waitUntil(20_000) { rule.onAllNodes(hasTestTag(OnboardingTags.WELCOME)).fetchSemanticsNodes().isNotEmpty() }
+            val reopened = kotlinx.coroutines.runBlocking { MailRuntime.openedCore(app) }
+            assertTrue("the secret is swept", !reopened.secrets.secrets.has(99, com.example.croft.secrets.SecretKind.PASSWORD))
+            assertTrue("the folder choice is swept", com.example.croft.mail.FileFolderMapping(folders).accounts().isEmpty())
+            assertTrue("the list position is swept", com.example.croft.mail.FileAnchorStore(anchors).accounts().isEmpty())
+            assertEquals("the pref is swept", com.example.croft.mail.accounts.AccountPrefs(), kotlinx.coroutines.runBlocking { prefsStore.prefs.first() })
+        }
     }
 }

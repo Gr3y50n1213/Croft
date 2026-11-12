@@ -63,6 +63,17 @@ internal class Quarantine(
         if (target.exists()) syncDirectory(target)
     }
 
+    /**
+     * Deletes the whole quarantine, every incident with its `superseded/` folder. Part of "Erase all Croft data": nothing of an earlier
+     * database, its wrapped secrets or its wrapped key may stay behind to be restored at the next start. Returns false when something
+     * could not be deleted (the caller then stops: see `AppSecrets.eraseQuarantine`).
+     */
+    fun deleteAll(): Boolean {
+        val ok = !root.exists() || root.deleteRecursively()
+        syncDirectory(root.absoluteFile.parentFile ?: return ok)
+        return ok && !root.exists()
+    }
+
     /** The incident folders now kept, oldest first. */
     fun incidents(): List<File> =
         root.listFiles { f -> f.isDirectory && timestampOf(f) != null }

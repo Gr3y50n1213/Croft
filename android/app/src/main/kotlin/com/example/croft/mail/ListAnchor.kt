@@ -29,7 +29,17 @@ interface AnchorStore {
 
     /** Remember [anchor] for [scopeKey]; null forgets it (the list was left at the top). */
     fun save(scopeKey: String, anchor: ListAnchor?)
+
+    /** Forgets the anchors of [account]'s folders (the account was removed). The unified Inbox's anchor is a message id and date: it stays. */
+    fun forgetAccount(account: AccountId)
+
+    /** The accounts some folder anchor is kept for. */
+    fun accounts(): Set<AccountId>
 }
+
+/** The account of a folder anchor key (`folder:<account>:<folder>`), or null for another key (the unified Inbox). */
+internal fun accountOfAnchorKey(key: String): AccountId? =
+    key.split(':').takeIf { it.size == 3 && it[0] == "folder" }?.get(1)?.toLongOrNull()
 
 /** An anchor store that lives as long as the process. */
 class InMemoryAnchorStore : AnchorStore {
@@ -40,6 +50,10 @@ class InMemoryAnchorStore : AnchorStore {
     @Synchronized override fun save(scopeKey: String, anchor: ListAnchor?) {
         if (anchor == null) map.remove(scopeKey) else map[scopeKey] = anchor
     }
+
+    @Synchronized override fun forgetAccount(account: AccountId) { map.keys.removeAll { accountOfAnchorKey(it) == account } }
+
+    @Synchronized override fun accounts(): Set<AccountId> = map.keys.mapNotNull { accountOfAnchorKey(it) }.toSet()
 }
 
 /**
@@ -68,9 +82,21 @@ class FileAnchorStore(private val file: File) : AnchorStore {
 
     @Synchronized override fun load(scopeKey: String): ListAnchor? { ensureLoaded(); return map[scopeKey] }
 
+    @Synchronized override fun forgetAccount(account: AccountId) {
+        ensureLoaded()
+        if (map.keys.removeAll { accountOfAnchorKey(it) == account }) write()
+    }
+
+    @Synchronized override fun accounts(): Set<AccountId> { ensureLoaded(); return map.keys.mapNotNull { accountOfAnchorKey(it) }.toSet() }
+
     @Synchronized override fun save(scopeKey: String, anchor: ListAnchor?) {
         ensureLoaded()
         if (anchor == null) map.remove(scopeKey) else map[scopeKey] = anchor
+        write()
+    }
+
+    /** Queues the current map to be written. */
+    private fun write() {
         val json = JsonObject(map.mapValues { (_, a) ->
             JsonObject(mapOf("id" to JsonPrimitive(a.messageId), "date" to JsonPrimitive(a.dateMs), "offset" to JsonPrimitive(a.offsetDp)))
         }).toString()

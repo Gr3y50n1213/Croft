@@ -35,11 +35,12 @@ object SettingsTags {
     const val INBOX = "settings-inbox"
     const val GALLERY = "settings-gallery"
     const val ABOUT = "settings-about"
+    const val ACCOUNTS = "settings-accounts"
 }
 
 /**
- * The settings list as far as it exists: Appearance (S50) and, in debug builds only, the component gallery. The real
- * settings screens (S43 onwards) will fill it in.
+ * The settings list as far as it exists: Accounts (S44), Appearance (S50), Swipe actions, Inbox, About and diagnostics (S60) and, in
+ * debug builds only, the component gallery. The other settings screens (S43 onwards) will fill it in.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,6 +54,10 @@ fun SettingsHomeScreen(
     onOpenSwipeActions: (() -> Unit)? = null,
     /** S49 Inbox and categories; the entry is hidden when null. */
     onOpenInbox: (() -> Unit)? = null,
+    /** S44 Accounts; the entry is hidden when null. */
+    onOpenAccounts: (() -> Unit)? = null,
+    /** S60 About and diagnostics; the About line is plain text when null. */
+    onOpenAbout: (() -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.testTag(SettingsTags.SCREEN),
@@ -67,6 +72,13 @@ fun SettingsHomeScreen(
         },
     ) { inner ->
         Column(Modifier.padding(inner).verticalScroll(rememberScrollState())) {
+            if (onOpenAccounts != null) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_accounts)) },
+                    supportingContent = { Text(stringResource(R.string.settings_accounts_hint)) },
+                    modifier = Modifier.testTag(SettingsTags.ACCOUNTS).clickable(role = Role.Button, onClick = onOpenAccounts),
+                )
+            }
             ListItem(
                 headlineContent = { Text(stringResource(R.string.settings_appearance)) },
                 supportingContent = { Text(stringResource(R.string.settings_appearance_hint)) },
@@ -94,7 +106,7 @@ fun SettingsHomeScreen(
                         else stringResource(R.string.core_unavailable),
                     )
                 },
-                modifier = Modifier.testTag(SettingsTags.ABOUT),
+                modifier = Modifier.testTag(SettingsTags.ABOUT).then(if (onOpenAbout != null) Modifier.clickable(role = Role.Button, onClick = onOpenAbout) else Modifier),
             )
             if (onOpenGallery != null) {
                 ListItem(

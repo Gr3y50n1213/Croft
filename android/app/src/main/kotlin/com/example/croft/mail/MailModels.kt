@@ -79,6 +79,8 @@ data class MessageRowData(
     val encrypted: Boolean = false,
     /** Recipients (names, else addresses, joined), for the Sent and Drafts folders; null when the core has none stored. */
     val recipients: String? = null,
+    /** The row is in the sample mailbox: every change stays on this device, and the row says "Not saved to server" (docs/ux/server-contract.md, read-only mailbox). */
+    val localOnly: Boolean = false,
 ) {
     /** What the list shows as the name: the sender's name, else the address. */
     val displayName: String get() = senderName?.takeIf { it.isNotBlank() } ?: senderAddress.orEmpty()
@@ -106,6 +108,8 @@ data class AccountInfo(
     val email: String,
     val status: AccountState,
     val lastSyncedMs: Long? = null,
+    /** The sample mailbox ("Try with sample mail"): fictional mail from the core, no server, no password. */
+    val isDemo: Boolean = false,
 ) {
     // The address is shown on screen but never logged (CLAUDE.md).
     override fun toString(): String = "AccountInfo(id=$id, status=$status)"

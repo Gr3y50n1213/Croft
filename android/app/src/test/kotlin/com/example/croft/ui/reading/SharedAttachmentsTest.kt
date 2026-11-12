@@ -132,6 +132,19 @@ class SharedAttachmentsTest {
         assertEquals(0, SharedAttachments.directory(context).listFiles()!!.size)
     }
 
+    /** The viewer sees a type from the file's extension; the intent says the same, or "any file" when the sender's claim disagrees. */
+    @Test
+    fun theOpenedTypeFollowsTheFileName_andAMismatchOpensAsAnyFile() {
+        val types = mapOf("pdf" to "application/pdf", "xml" to "text/xml", "png" to "image/png")
+        val lookup: (String) -> String? = { types[it] }
+        assertEquals("application/pdf", SharedAttachments.viewType("report.pdf", "application/pdf", lookup))
+        assertEquals("application/octet-stream", SharedAttachments.viewType("invoice.xml", "application/pdf", lookup))
+        assertEquals("application/octet-stream", SharedAttachments.viewType("photo.png", "text/html", lookup))
+        assertEquals("application/octet-stream", SharedAttachments.viewType("noextension", "application/pdf", lookup))
+        assertEquals("application/octet-stream", SharedAttachments.viewType("data.unknownext", "application/pdf", lookup))
+        assertEquals("image/png", SharedAttachments.viewType("PHOTO.PNG", "Image/PNG; name=x", lookup))
+    }
+
     @Test
     fun aClaimedMimeTypeIsOnlyUsedWhenItLooksLikeOne() {
         assertEquals("application/pdf", SharedAttachments.safeMimeType("Application/PDF; name=x.pdf"))

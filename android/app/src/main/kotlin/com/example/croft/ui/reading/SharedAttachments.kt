@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
+import android.webkit.MimeTypeMap
 import androidx.activity.ComponentActivity
 import androidx.core.content.FileProvider
 import java.io.File
@@ -81,6 +82,18 @@ object SharedAttachments {
         return if (MIME.matches(plain) && plain != "*/*") plain else FALLBACK_MIME
     }
 
+    /**
+     * The type to open a saved file with. The viewer that reads Croft's FileProvider URI sees a type worked out from the file's
+     * extension, so the intent must say the same: the type for [fileName]'s extension ([typeForExtension]) when the sender's [claimed]
+     * type agrees with it, otherwise `application/octet-stream` (the chooser then offers apps that open any file, and nothing is
+     * rendered as a type the sender only claimed).
+     */
+    fun viewType(fileName: String, claimed: String, typeForExtension: (String) -> String?): String {
+        val ext = fileName.substringAfterLast('.', missingDelimiterValue = "").lowercase()
+        val byName = ext.takeIf { it.isNotEmpty() }?.let(typeForExtension)?.let(::safeMimeType) ?: return FALLBACK_MIME
+        return if (byName == safeMimeType(claimed)) byName else FALLBACK_MIME
+    }
+
     private val MIME = Regex("""[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*""")
     private const val FALLBACK_MIME = "application/octet-stream"
 }
@@ -95,7 +108,8 @@ fun interface AttachmentOpener {
 class ChooserAttachmentOpener(private val context: Context, private val chooserTitle: String) : AttachmentOpener {
     override fun open(file: File, mimeType: String): Boolean {
         val uri = SharedAttachments.uriFor(context, file) ?: return false
-        val intent = SharedAttachments.chooser(context, SharedAttachments.viewIntent(uri, mimeType), chooserTitle)
+        val type = SharedAttachments.viewType(file.name, mimeType) { MimeTypeMap.getSingleton().getMimeTypeFromExtension(it) }
+        val intent = SharedAttachments.chooser(context, SharedAttachments.viewIntent(uri, type), chooserTitle)
         return try {
             context.startActivity(intent)
             true

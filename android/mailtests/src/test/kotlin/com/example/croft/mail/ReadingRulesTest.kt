@@ -27,7 +27,8 @@ class ReadingRulesTest {
     fun onlyWebAndMailtoLinksAreAskedAbout_everythingElseIsIgnored() {
         assertEquals(LinkAction.Web("https://example.org/a?b=1#c"), LinkRules.classify("https://example.org/a?b=1#c"))
         assertEquals(LinkAction.Web("http://example.org"), LinkRules.classify("  http://example.org  "))
-        assertEquals(LinkAction.Web("HTTPS://EXAMPLE.ORG/"), LinkRules.classify("HTTPS://EXAMPLE.ORG/"))
+        // Web links come back in canonical form (scheme and host in lower case), the one string shown and opened.
+        assertEquals(LinkAction.Web("https://example.org/"), LinkRules.classify("HTTPS://EXAMPLE.ORG/"))
         assertEquals(LinkAction.Mail("mailto:ann@example.org"), LinkRules.classify("mailto:ann@example.org"))
         for (bad in listOf(
             null, "", " ", "javascript:alert(1)", "JaVaScRiPt:alert(1)", "file:///etc/passwd", "content://x/y", "intent://x#Intent;end", "tel:+1555", "sms:1",
@@ -47,6 +48,43 @@ class ReadingRulesTest {
         assertEquals("a.example", LinkRules.hostOf("https://a.example?x=1"))
         assertNull(LinkRules.hostOf("https://"))
         assertNull(LinkRules.hostOf("mailto:a@b.example"))
+    }
+
+    /**
+     * The link the dialog shows is the link the browser opens: browsers read `\` as `/` in http(s) addresses, decode the host and map
+     * it to ASCII, so the shown host must be worked out the same way, from the same string that is opened.
+     */
+    @Test
+    fun theShownDestinationIsTheOneTheBrowserOpens() {
+        fun web(url: String) = (LinkRules.classify(url) as LinkAction.Web).url
+        fun host(url: String) = LinkRules.hostOf(web(url))
+        // Backslash: a browser goes to evil.example, so the dialog must say so (not bank.com).
+        assertEquals("evil.example", host("https://evil.example\\@bank.com/login"))
+        assertEquals("https://evil.example/@bank.com/login", web("https://evil.example\\@bank.com/login"))
+        assertEquals("evil.example", host("https:\\\\evil.example\\path"))
+        // User info is dropped from what is opened, so it cannot pose as the host.
+        assertEquals("https://evil.example/login", web("https://bank.com@evil.example/login"))
+        assertEquals("https://evil.example:443/", web("https://bank.com:secret@evil.example:443/"))
+        // Percent-encoded host: decoded the way a browser decodes it.
+        assertEquals("bank.com.evil.example", host("https://bank.com%2Eevil.example/"))
+        // Full-width and ideographic dots are dots.
+        assertEquals("bank.com.evil.example", host("https://bank.com．evil.example/"))
+        assertEquals("bank.com.evil.example", host("https://bank.com。evil.example/"))
+        // A look-alike letter (Cyrillic a) shows as punycode, never as apple.com.
+        assertTrue(host("https://аpple.com/")!!.startsWith("xn--"))
+        assertEquals("xn--mnchen-3ya.example", host("https://münchen.example/ü"))
+        // Upper case; extra or missing slashes are not tappable.
+        assertEquals("https://example.org/a", web("HTTPS://EXAMPLE.ORG/a"))
+        assertEquals(LinkAction.Ignore, LinkRules.classify("https:///example.org/a"))
+        assertEquals(LinkAction.Ignore, LinkRules.classify("https:example.org/a"))
+        // IPv6 and ports are kept; a bad port or a broken escape is refused.
+        assertEquals("http://[::1]:8080/x", web("http://[::1]:8080/x"))
+        for (bad in listOf("https://example.org:80a/", "https://ex%ZZample.org/", "https://ex%E2ample.org/", "https://exa mple.org/", "https://[::1/", "https://%2F/")) {
+            assertEquals("refused: $bad", LinkAction.Ignore, LinkRules.classify(bad))
+        }
+        // A link found in plain text opens exactly what the dialog shows.
+        val span = LinkRules.linkSpans("see https://evil.example\\@bank.com/login now").single()
+        assertEquals("evil.example", host(span.url))
     }
 
     @Test
@@ -80,6 +118,10 @@ class ReadingRulesTest {
         }
         assertFalse(LinkRules.requestAllowed(null, remoteAllowed = true))
         assertTrue(LinkRules.requestAllowed("https://img.example.org/p.png", remoteAllowed = true))
+        // Even with remote content allowed: never a new page, never anything but GET (defence in depth under the sanitiser).
+        assertFalse(LinkRules.requestAllowed("https://evil.example/", remoteAllowed = true, method = "GET", mainFrame = true))
+        assertFalse(LinkRules.requestAllowed("https://evil.example/p", remoteAllowed = true, method = "POST", mainFrame = false))
+        assertTrue(LinkRules.requestAllowed("about:blank", remoteAllowed = false, method = "GET", mainFrame = true))
         for (url in listOf("http://img.example.org/p.png", "file:///x", "content://a/b", "ftp://h", "ws://h", "jar:file:///x!/y", "blob:https://x/y")) {
             assertFalse("not https: $url", LinkRules.requestAllowed(url, remoteAllowed = true))
         }

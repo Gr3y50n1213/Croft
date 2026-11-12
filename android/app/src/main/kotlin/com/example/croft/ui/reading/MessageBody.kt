@@ -28,6 +28,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
@@ -260,7 +262,10 @@ fun HtmlBody(id: MessageId, html: String, remoteAllowed: Boolean, onLink: (LinkA
     val card = htmlCardColour()
     val onLinkNow by rememberUpdatedState(onLink)
     val view: WebView? = remember(context) { try { MailWebViewFactory.create(context) } catch (e: RuntimeException) { null } }
-    if (view == null) {
+    // A renderer that died is never used again: the WebView leaves the screen (and is destroyed) and the note below is shown.
+    var crashed by remember(view) { mutableStateOf(false) }
+    (view?.tag as? MailWebViewClient)?.onCrash = { crashed = true }
+    if (view == null || crashed) {
         Text(stringResource(R.string.reading_body_failed), modifier.testTag(BodyTags.html(id)), style = MaterialTheme.typography.bodyMedium)
         return
     }

@@ -53,7 +53,8 @@ def check(manifest_path, allowlist_path):
             name = el.get(A + "name") or ""
             if name.startswith("."):
                 name = app_id + name
-            if el.tag == "provider" and el.get(A + "grantUriPermissions") == "true":
+            # A provider can grant URI permissions with the attribute or with <grant-uri-permission> children; both are checked.
+            if el.tag == "provider" and (el.get(A + "grantUriPermissions") == "true" or el.find("grant-uri-permission") is not None):
                 errors.extend(check_grant_provider(el, name, allowed_grant, sub))
             exported = el.get(A + "exported")
             # Without the attribute a component is exported when it has an intent filter (older targetSdk rule).

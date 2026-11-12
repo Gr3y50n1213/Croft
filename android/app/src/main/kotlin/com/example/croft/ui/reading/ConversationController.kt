@@ -598,6 +598,8 @@ class ConversationController(
     fun leave() {
         readJobs.values.forEach { it.cancel() }
         clearSharedFiles()
+        // A save cancelled here can still finish in the core afterwards; empty the whole folder, not only the files this screen knows.
+        attachmentDir?.let { dir -> try { SharedAttachments.clearContents(dir) } catch (e: SecurityException) { /* emptied at the next start */ } }
     }
 
     /** Whether the person's setting allows the "Always for this sender" button. */

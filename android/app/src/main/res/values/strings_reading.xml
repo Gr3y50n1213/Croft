@@ -98,7 +98,7 @@
     <string name="reading_settings_remote_ask">Ask</string>
     <string name="reading_settings_remote_known">Known senders</string>
     <string name="reading_settings_remote_never">Never</string>
-    <string name="reading_settings_remote_hint">Pictures in email can tell the sender that you read it. Ask keeps them blocked until you tap Show images. Known senders also shows them for the senders you chose with Always for this sender.</string>
+    <string name="reading_settings_remote_hint">Pictures in email can tell the sender that you read it. Ask keeps them blocked until you tap Show images. Known senders also shows them for the senders you chose with Always for this sender. A sender\'s address can be faked, so Known senders is a convenience, not a protection.</string>
     <string name="reading_settings_markread_title">Mark as read when opened</string>
     <string name="reading_settings_markread_now">Immediately</string>
     <string name="reading_settings_markread_2s">After 2 s</string>

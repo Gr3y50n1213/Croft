@@ -129,12 +129,20 @@ class MailWebViewClient : WebViewClient() {
         return true
     }
 
-    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? = intercept(request?.url?.toString())
+    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? =
+        intercept(request?.url?.toString(), request?.method, request?.isForMainFrame == true)
 
     @Deprecated("Called on API 20 and older; kept so that no path loads without the check.")
-    override fun shouldInterceptRequest(view: WebView?, url: String?): WebResourceResponse? = intercept(url)
+    override fun shouldInterceptRequest(view: WebView?, url: String?): WebResourceResponse? = intercept(url, "GET", false)
 
-    override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean = true
+    /** Called on the main thread when the page's renderer died; the screen then drops this WebView and shows a note instead. */
+    @Volatile var onCrash: () -> Unit = {}
+
+    /** The renderer died (a crash or the system reclaimed it). The app survives: the screen removes this WebView, never uses it again. */
+    override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+        onCrash()
+        return true
+    }
 
     override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
         handler?.cancel()
@@ -145,8 +153,8 @@ class MailWebViewClient : WebViewClient() {
     }
 
     /** `null` lets the page load the request (a picture of its own, over `https`, after the person allowed remote content); anything else is answered with nothing. */
-    private fun intercept(url: String?): WebResourceResponse? {
-        if (LinkRules.requestAllowed(url, remoteAllowed)) return null
+    private fun intercept(url: String?, method: String?, mainFrame: Boolean): WebResourceResponse? {
+        if (LinkRules.requestAllowed(url, remoteAllowed, method, mainFrame)) return null
         blockedRequests++
         return emptyResponse()
     }

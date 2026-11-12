@@ -88,6 +88,14 @@ class ManifestCheck(unittest.TestCase):
         self.assertEqual(len(errs), 1)
         self.assertIn("paths file", errs[0])
 
+    def test_a_provider_granting_through_child_elements_is_checked_too(self):
+        child = (
+            '<provider android:name="com.example.Leaky" android:authorities="com.example.croft.leaky" android:exported="false">'
+            '<grant-uri-permission android:pathPrefix="/" /></provider>'
+        )
+        errs = run(extra_app=child)
+        self.assertTrue(any("authority is not on the allowlist" in e for e in errs), errs)
+
     def test_a_provider_that_does_not_grant_uri_permissions_is_not_checked(self):
         # The startup provider of the base manifest is such a provider and passes.
         self.assertEqual(run(), [])

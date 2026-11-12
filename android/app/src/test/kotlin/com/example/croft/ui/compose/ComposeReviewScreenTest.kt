@@ -18,13 +18,16 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
@@ -171,17 +174,20 @@ class ComposeIntentsReviewTest {
     @Test
     fun aMediaStoreItemCroftSavedItselfIsRefused() {
         val context = RuntimeEnvironment.getApplication()
-        val resolver = shadowOf(context.contentResolver)
         val mine = Uri.parse("content://media/external/images/media/1")
         val theirs = Uri.parse("content://media/external/images/media/2")
-        fun owner(pkg: String) = org.robolectric.fakes.RoboCursor().apply {
-            setColumnNames(listOf(MediaStore.MediaColumns.OWNER_PACKAGE_NAME))
-            setResults(arrayOf(arrayOf<Any>(pkg)))
+        val unknown = Uri.parse("content://media/external/images/media/3")
+        // What MediaStore says about who owns the item (`OWNER_PACKAGE_NAME`).
+        val owner: (android.content.Context, Uri) -> String? = { _, uri ->
+            when (uri) { mine -> context.packageName; theirs -> "com.other.app"; else -> null }
         }
-        resolver.setCursor(mine, owner(context.packageName))
-        resolver.setCursor(theirs, owner("com.other.app"))
-        assertFalse(ComposeFiles.isForeign(context, mine))
-        assertTrue(ComposeFiles.isForeign(context, theirs))
+        assertFalse(ComposeFiles.isForeign(context, mine, owner))
+        assertTrue(ComposeFiles.isForeign(context, theirs, owner))
+        assertTrue("an owner that cannot be told is accepted (documented gap)", ComposeFiles.isForeign(context, unknown, owner))
+        // A user id in front of the authority changes nothing.
+        assertFalse(ComposeFiles.isForeign(context, Uri.parse("content://0@media/external/images/media/1"), { _, _ -> context.packageName }))
+        // Other authorities never ask MediaStore.
+        assertTrue(ComposeFiles.isForeign(context, Uri.parse("content://com.other.app.files/x"), { _, _ -> error("not asked") }))
     }
 
     @Test
@@ -217,6 +223,22 @@ class ComposeReviewUiTest {
         rule.onNodeWithText("boss@corp.com <attacker@evil.example>").assertExists()
     }
 
+    // ---- M6 ----
+
+    @Test
+    fun anAddressTypedInToAndNotYetAChipIsSentWithTheMessage() {
+        val f = ComposeFixture()
+        open(f, ComposeStart.New(1))
+        rule.onNodeWithContentDescription("To").performTextInput("ann@example.org")
+        rule.onNodeWithTag(ComposeTags.SUBJECT).performTextInput("Typed")
+        // The button counts the typed address as a recipient.
+        rule.waitUntil(10_000) { runCatching { rule.onNodeWithTag(ComposeTags.SEND).assertIsEnabled() }.isSuccess }
+        rule.onNodeWithTag(ComposeTags.SEND).performClick()
+        rule.waitUntil(10_000) { f.closed.isNotEmpty() }
+        assertTrue(f.closed.single() is ComposeClosed.Sent)
+        assertEquals(listOf("ann@example.org"), runBlocking { f.backend.loadDraft(1, 1) }.content.to.map { it.address })
+    }
+
     // ---- L3 ----
 
     @Test
@@ -239,7 +261,8 @@ class ComposeReviewUiTest {
         }
         open(f, start)
         rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(ComposeTags.attachment(0))).fetchSemanticsNodes().isNotEmpty() }
-        rule.onNodeWithTag(ComposeTags.attachment(0)).performClick()
+        // The chip is below the body in a scrolling column: scroll to it, or the tap lands outside the window.
+        rule.onNodeWithTag(ComposeTags.attachment(0)).performScrollTo().performClick()
         rule.waitForText("Attachment removed")
         rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(ComposeTags.attachment(0))).fetchSemanticsNodes().isEmpty() }
         assertFalse("not removed for good yet", f.backend.calls.contains("removeAttachment"))

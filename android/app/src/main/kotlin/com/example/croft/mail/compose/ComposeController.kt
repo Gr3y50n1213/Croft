@@ -264,8 +264,13 @@ class ComposeController(
 
     /** The screen's text for [field] that is not a chip yet (kept here so that Send and Back can turn it into chips). */
     fun setPendingRecipientText(field: RecipientField, text: String) {
+        val before = hasPendingText()
         synchronized(pendingText) { if (text.isBlank()) pendingText.remove(field) else pendingText[field] = text }
+        // An address typed and not yet a chip counts as a recipient for the Send button: it becomes a chip when Send is tapped.
+        if (before != hasPendingText() && state.value.phase == ComposeState.Phase.EDITING) scope.launch { ops.withLock { refreshStatus() } }
     }
+
+    private fun hasPendingText(): Boolean = synchronized(pendingText) { pendingText.isNotEmpty() }
 
     /** Turns the text still in the recipient fields into chips (an address typed and not followed by a comma must not be lost on Send or Back). */
     private suspend fun commitPendingRecipients() {
@@ -361,6 +366,14 @@ class ComposeController(
                 pending = it.pending + PendingAttachment(id), attachmentError = null,
                 sendState = if (SendRules.isDisabled(it.sendState) || it.sendState == SendState.SENDING) it.sendState else SendState.UPLOADING,
             )
+        }
+        // Cancelled before it ever ran (the person tapped Cancel at once, or Back came first): its body, and so its own bookkeeping, never runs.
+        job.invokeOnCompletion { cause ->
+            if (cause != null) {
+                synchronized(intakeJobs) { pendingJobs.remove(id) }
+                mutable.update { st -> st.copy(pending = st.pending.filter { p -> p.id != id }) }
+                scope.launch { ops.withLock { refreshStatus() } }
+            }
         }
         job.start()
         return job
@@ -545,14 +558,16 @@ class ComposeController(
         if (id == null) {
             mutable.update {
                 it.copy(
-                    sendState = SendRules.beforeFirstSave(it.allRecipients, it.subject.isBlank(), it.body.isBlank(), it.attachmentsBusy > 0, warn, offline),
+                    sendState = SendRules.beforeFirstSave(
+                        it.allRecipients + pendingAsChips(), it.subject.isBlank(), it.body.isBlank(), it.attachmentsBusy > 0, warn, offline,
+                    ),
                     offlineOrSignIn = offline, encryptionWarning = warn,
                 )
             }
             return
         }
         try {
-            val check = withoutRemoved(backend.checkDraft(s.account, id))
+            val check = withPendingText(withoutRemoved(backend.checkDraft(s.account, id)))
             lastCheck = check
             mutable.update {
                 it.copy(
@@ -564,6 +579,14 @@ class ComposeController(
             // Keep what the button showed.
         }
     }
+
+    /** The text typed in the recipient fields, as chips that have not been checked yet (they are checked when they become chips). */
+    private fun pendingAsChips(): List<RecipientChipData> =
+        synchronized(pendingText) { pendingText.values.toList() }.map { RecipientChipData(FfiAddress(null, it.trim()), true) }
+
+    /** Text still in a recipient field is a recipient to come: "no recipient" is not a reason to disable Send. */
+    private fun withPendingText(check: uniffi.croft_ffi.DraftCheck): uniffi.croft_ffi.DraftCheck =
+        if (hasPendingText()) check.copy(problems = check.problems.filter { it != uniffi.croft_ffi.DraftProblem.NO_RECIPIENT }) else check
 
     /** The core still holds an attachment that was removed and can be taken back: the button is shown as if it were gone already. */
     private fun withoutRemoved(check: uniffi.croft_ffi.DraftCheck): uniffi.croft_ffi.DraftCheck {

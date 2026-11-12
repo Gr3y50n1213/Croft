@@ -398,6 +398,11 @@ pub(crate) fn write_into(
         return Err(ReadError::BadDestination);
     }
     let safe = files::safe_file_name(Some(name), mime_type);
+    // The name is checked again as it will be written: an executable is never written, whatever
+    // the stored flag said.
+    if files::is_executable(&safe, mime_type) {
+        return Err(ReadError::AttachmentBlocked);
+    }
     let (stem, ext) = match safe.rfind('.') {
         Some(i) if i > 0 => (&safe[..i], &safe[i..]),
         _ => (safe.as_str(), ""),
@@ -408,6 +413,9 @@ pub(crate) fn write_into(
         } else {
             format!("{stem} ({n}){ext}")
         };
+        if files::is_executable(&candidate, mime_type) {
+            return Err(ReadError::AttachmentBlocked);
+        }
         let path = dir.join(&candidate);
         // One plain component, directly in `dir`.
         if path.parent() != Some(dir.as_path())
@@ -699,7 +707,8 @@ mod tests {
             "",
             "a/../../b.txt",
             "nul",
-            "\u{202E}txt.exe",
+            "\u{202E}fdp.txt",
+            "../\u{2800}/x.txt",
         ] {
             let path = write_into(dir.path(), name, "text/plain", b"x").unwrap();
             assert_eq!(path.parent(), Some(root.as_path()), "{name:?} -> {path:?}");
@@ -708,6 +717,29 @@ mod tests {
         // Nothing appeared next to the folder.
         let parent = root.parent().unwrap();
         assert!(!parent.join("escape.txt").exists());
+    }
+
+    #[test]
+    fn an_executable_name_is_never_written_even_when_a_cut_reveals_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = format!("{}.apk.{}", "A".repeat(115), "b".repeat(200));
+        assert_eq!(
+            write_into(dir.path(), &name, "application/octet-stream", b"x"),
+            Err(ReadError::AttachmentBlocked)
+        );
+        assert_eq!(
+            write_into(dir.path(), "setup.exe\u{2800}", "application/octet-stream", b"x"),
+            Err(ReadError::AttachmentBlocked)
+        );
+        assert_eq!(
+            write_into(dir.path(), "\u{202E}txt.exe", "text/plain", b"x"),
+            Err(ReadError::AttachmentBlocked)
+        );
+        assert_eq!(
+            write_into(dir.path(), "notes.txt", "text/html", b"x"),
+            Err(ReadError::AttachmentBlocked)
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

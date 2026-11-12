@@ -17,9 +17,6 @@ base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 # The CSS tokenizer ammonia already uses (same version, so no new crate): finds `url()` and the
 # other image functions in `style` attributes. MPL-2.0.
 cssparser = { version = "0.38.0", default-features = false }
-# The HTML tokenizer ammonia already uses (same version, so no new crate): a first pass that finds
-# tracking pixels, which need the whole tag (size and address) at once.
-html5ever = "0.40.1"
 # MIME parser. Apache-2.0 OR MIT. `full_encoding` adds the multi-byte charsets (Shift_JIS,
 # GB18030, EUC-KR, ...) through encoding_rs, which croft-protocols already uses.
 mail-parser = { version = "1.0.1", features = ["full_encoding"] }

@@ -126,6 +126,8 @@ fn a_stored_body_reads_back_for_its_account_only_and_is_searchable() {
         b"From: ann@example.org\r\n\r\nhello"
     );
     assert!(reading::raw(c, a2, m).unwrap().is_none());
+    assert!(reading::has_raw(c, a1, m).unwrap() && reading::has_body(c, a1, m).unwrap());
+    assert!(!reading::has_raw(c, a2, m).unwrap() && !reading::has_body(c, a2, m).unwrap());
 
     let row = messages::get(c, a1, m).unwrap().unwrap();
     assert_eq!(row.body_state, "full");
@@ -285,4 +287,49 @@ fn a_conversation_spans_folders_oldest_first_without_trash_or_duplicates() {
 
     let rows = reading::conversation(c, a1, b).unwrap();
     assert_eq!(rows[1].folder_special_use, "sent");
+}
+
+#[test]
+fn a_forged_copy_of_a_message_id_never_replaces_the_real_message() {
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    let a1 = account(c, "one@example.org");
+    let inbox = folder(c, a1, "INBOX", SpecialUse::Inbox);
+    let junk = folder(c, a1, "Junk", SpecialUse::Junk);
+    let all = folder(c, a1, "All Mail", SpecialUse::All);
+    let real = message(c, a1, inbox, 1, "r@x", &[], 100);
+    // Same Message-ID, another sender, a later date: a forgery, not a copy.
+    let forged = messages::upsert(
+        c,
+        a1,
+        inbox,
+        &RemoteHeader {
+            uid: 2,
+            message_id: Some("<r@x>".into()),
+            references: vec![],
+            subject: "Plans".into(),
+            from_name: None,
+            from_addr: Some("mallory@example.net".into()),
+            date_ms: 150,
+            size: 100,
+            flags: Flags::default(),
+        },
+    )
+    .unwrap();
+    let copy = message(c, a1, all, 1, "r@x", &[], 100);
+    let in_junk = message(c, a1, junk, 1, "r@x", &[], 100);
+    let ids = |opened: i64| -> Vec<i64> {
+        reading::conversation(c, a1, opened)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.message.id)
+            .collect()
+    };
+    // Opened from either, both stay: different senders are different messages.
+    assert_eq!(ids(real), [real, forged]);
+    assert_eq!(ids(forged), [real, forged]);
+    // A real copy (same sender and date) in All Mail is folded into the Inbox one.
+    assert_eq!(ids(copy), [copy, forged]);
+    // Opened from Junk, the Junk copy is the one listed, and the forgery still shows apart.
+    assert_eq!(ids(in_junk), [in_junk, forged]);
 }

@@ -13,10 +13,13 @@
 /// Longest file name produced, in bytes (most file systems allow 255).
 const MAX_NAME_BYTES: usize = 120;
 
-/// Extensions of programs, scripts, installers and disk images: never opened, shown as blocked.
+/// Extensions of programs, scripts, installers, disk images, Office files with macros and local
+/// web pages (HTML, SVG, MHT, CHM: phishing pages that run in a browser): never opened, shown as
+/// blocked.
 pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "aab",
     "apk",
+    "apkm",
     "apks",
     "app",
     "appimage",
@@ -26,6 +29,7 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "bat",
     "bin",
     "cab",
+    "chm",
     "cmd",
     "com",
     "cpl",
@@ -33,9 +37,13 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "dex",
     "dll",
     "dmg",
+    "docm",
+    "dotm",
     "exe",
     "gadget",
     "hta",
+    "htm",
+    "html",
     "img",
     "inf",
     "ins",
@@ -46,6 +54,8 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "jse",
     "ksh",
     "lnk",
+    "mht",
+    "mhtml",
     "msc",
     "msi",
     "msix",
@@ -54,6 +64,10 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "mst",
     "pif",
     "pkg",
+    "potm",
+    "ppam",
+    "ppsm",
+    "pptm",
     "ps1",
     "ps1xml",
     "ps2",
@@ -68,6 +82,9 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "sct",
     "sh",
     "shb",
+    "shtml",
+    "svg",
+    "svgz",
     "sys",
     "url",
     "vb",
@@ -80,7 +97,12 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "wsf",
     "wsh",
     "xapk",
+    "xht",
+    "xhtml",
+    "xlam",
     "xll",
+    "xlsm",
+    "xltm",
 ];
 
 /// MIME types of programs and scripts, blocked whatever the name says.
@@ -97,24 +119,44 @@ const EXECUTABLE_TYPES: &[&str] = &[
     "application/x-msi",
     "application/x-sh",
     "application/x-shellscript",
+    "application/x-mimearchive",
+    "application/vnd.ms-htmlhelp",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/html",
     "text/javascript",
 ];
 
-/// Names Windows reserves for devices (`CON`, `NUL`, `COM1`, ...), with or without an extension.
+/// Names Windows reserves for devices (`CON`, `NUL`, `COM1`, `LPT²`, ...), with or without an
+/// extension.
 fn reserved(stem: &str) -> bool {
-    let s = stem.to_ascii_uppercase();
-    matches!(s.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((s.starts_with("COM") || s.starts_with("LPT"))
-            && s.len() == 4
-            && s.as_bytes()[3].is_ascii_digit())
+    let s = stem.trim_end().to_ascii_uppercase();
+    if matches!(
+        s.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    let Some(rest) = s.strip_prefix("COM").or_else(|| s.strip_prefix("LPT")) else {
+        return false;
+    };
+    let mut chars = rest.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some('0'..='9' | '\u{B9}' | '\u{B2}' | '\u{B3}'), None)
+    )
 }
 
-/// Characters that only change how text is shown: bidirectional controls and zero-width
-/// characters. Removed from names so what the person sees is what the name is.
+/// Characters that only change how text is shown, or show as nothing: bidirectional controls,
+/// zero-width characters, the soft hyphen, and the blank-looking fillers (Braille blank, Hangul
+/// fillers). Removed from names so what the person sees is what the name is, and so
+/// `report.exe\u{2800}` cannot hide its real extension.
 fn invisible(c: char) -> bool {
     matches!(c,
         '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}' | '\u{180E}')
+        | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{061C}' | '\u{180E}' | '\u{00AD}'
+        | '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{2800}'
+        | '\u{3164}' | '\u{FFA0}' | '\u{FE00}'..='\u{FE0F}')
 }
 
 /// An extension for a nameless part of this type.
@@ -163,7 +205,14 @@ pub fn safe_file_name(name: Option<&str>, mime_type: &str) -> String {
         clean = format!("_{clean}");
     }
     let ext = split_extension(&clean).1.to_owned();
-    shorten(&clean, &ext)
+    // Cutting can leave a name ending in dots or spaces (`...x.apk.`): trim them again, so the
+    // name checked for executables is the name the file system keeps.
+    let short = shorten(&clean, &ext);
+    let trimmed = trim_end_dots(&short);
+    if trimmed.is_empty() {
+        return format!("attachment{}", extension_for(mime_type));
+    }
+    trimmed.to_owned()
 }
 
 /// `name` cut to [`MAX_NAME_BYTES`] at a character boundary, keeping `ext` (with its dot).
@@ -183,6 +232,12 @@ fn shorten(name: &str, ext: &str) -> String {
         cut -= 1;
     }
     format!("{}{ext}", stem[..cut].trim_end())
+}
+
+/// Removes the dots and spaces a name may end with (file systems drop them, which could reveal
+/// an extension that was hidden behind them, as in `x.apk.`).
+fn trim_end_dots(name: &str) -> &str {
+    name.trim_end_matches(|c: char| c == '.' || c.is_whitespace())
 }
 
 /// The stem and the extension (with its dot; empty when there is none).
@@ -264,6 +319,64 @@ mod tests {
         let long = format!("{}.pdf", "é".repeat(200));
         let name = safe_file_name(Some(&long), "application/pdf");
         assert!(name.len() <= 120 && name.ends_with(".pdf"), "{name}");
+    }
+
+    #[test]
+    fn a_name_cut_to_length_never_ends_in_a_dot_that_hid_an_extension() {
+        let name = format!("{}.apk.{}", "A".repeat(115), "b".repeat(200));
+        let safe = safe_file_name(Some(&name), "application/octet-stream");
+        assert!(!safe.ends_with('.') && !safe.ends_with(' '), "{safe}");
+        assert!(safe.ends_with(".apk"), "{safe}");
+        assert!(is_executable(&safe, "application/octet-stream"));
+        assert_eq!(safe_file_name(Some("x . . "), "text/plain"), "x");
+    }
+
+    #[test]
+    fn superscript_device_names_are_reserved() {
+        for n in ["COM\u{B9}", "lpt\u{B2}.txt", "Com\u{B3}", "COM0", "CONIN$"] {
+            assert!(
+                safe_file_name(Some(n), "text/plain").starts_with('_'),
+                "{n}"
+            );
+        }
+        assert!(!safe_file_name(Some("COM12"), "text/plain").starts_with('_'));
+    }
+
+    #[test]
+    fn blank_looking_characters_cannot_hide_an_extension() {
+        for blank in [
+            '\u{2800}', '\u{3164}', '\u{115F}', '\u{1160}', '\u{FFA0}', '\u{200B}', '\u{202E}',
+            '\u{00AD}',
+        ] {
+            let safe = safe_file_name(Some(&format!("photo.exe{blank}")), "image/jpeg");
+            assert_eq!(safe, "photo.exe", "{blank:?}");
+            assert!(is_executable(&safe, "image/jpeg"));
+        }
+    }
+
+    #[test]
+    fn local_web_pages_macros_and_android_bundles_are_blocked() {
+        for name in [
+            "page.html",
+            "page.HTM",
+            "x.xhtml",
+            "logo.svg",
+            "saved.mht",
+            "saved.mhtml",
+            "help.chm",
+            "report.docm",
+            "sheet.xlsm",
+            "deck.pptm",
+            "app.apkm",
+            "app.apks",
+            "app.xapk",
+        ] {
+            assert!(is_executable(name, "application/octet-stream"), "{name}");
+        }
+        for mime in ["text/html", "image/svg+xml", "application/xhtml+xml"] {
+            assert!(is_executable("file.txt", mime), "{mime}");
+        }
+        assert!(!is_executable("report.docx", "application/octet-stream"));
     }
 
     #[test]

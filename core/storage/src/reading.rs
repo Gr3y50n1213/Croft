@@ -247,6 +247,33 @@ pub fn body(conn: &Connection, account_id: i64, message_id: i64) -> Result<Optio
         .optional()?)
 }
 
+/// Whether the message of this account has its fetched copy stored. Reads no content (the copy
+/// can be 50 MiB, and callers ask this while holding the engine's lock).
+pub fn has_raw(conn: &Connection, account_id: i64, message_id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM message_raw r JOIN message m ON m.id = r.message_id
+              WHERE r.account_id = ?1 AND m.account_id = ?1 AND m.id = ?2",
+            params![account_id, message_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Whether the message of this account has a stored body. Reads no content.
+pub fn has_body(conn: &Connection, account_id: i64, message_id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM message_body b JOIN message m ON m.id = b.message_id
+              WHERE m.account_id = ?1 AND m.id = ?2",
+            params![account_id, message_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 /// The fetched message of a message of this account, if it was fetched.
 pub fn raw(conn: &Connection, account_id: i64, message_id: i64) -> Result<Option<Vec<u8>>> {
     Ok(conn
@@ -417,8 +444,12 @@ fn conversation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationRow> 
 /// - **Trash and Junk are left out**, unless the conversation is opened from a message in that
 ///   folder. **Drafts** likewise (drafts are edited in the composer, not read here).
 /// - Rows hidden while a move or delete waits for the server are left out, except the opened one.
-/// - The same message in two folders (one `Message-ID`, say Inbox and Gmail's All Mail) is listed
-///   once: the copy in the opened message's folder, else one not in an `all` folder.
+/// - The same message in two folders (Inbox and Gmail's All Mail, say) is listed once: copies
+///   are rows with the same `Message-ID`, **the same sender address (case ignored) and the same
+///   date**; the one kept is the opened one, else the one in the opened message's folder, else one
+///   not in Junk or Trash, else one not in an `all` folder. A row with a borrowed `Message-ID` but
+///   another sender or date is a different message and is always listed, so a forged copy can
+///   never stand in for the real one.
 /// - At most [`MAX_CONVERSATION`] messages (the newest).
 ///
 /// Empty when the message is not one of this account.
@@ -501,12 +532,15 @@ pub fn conversation(
         }
     });
 
-    // One copy per Message-ID: the opened one, else in the opened folder, else not in All Mail.
+    // One row per copy of a message (same Message-ID, sender and date): the opened one, else in
+    // the opened folder, else not in Junk or Trash, else not in All Mail.
     let rank = |r: &ConversationRow| {
         if r.message.id == opened.message.id {
             0
         } else if r.message.folder_id == opened_folder {
             1
+        } else if matches!(r.folder_special_use.as_str(), "junk" | "trash") {
+            4
         } else if r.folder_special_use != "all" {
             2
         } else {
@@ -514,9 +548,18 @@ pub fn conversation(
         }
     };
     found.sort_by_key(|r| (rank(r), r.message.id));
-    let mut ids_kept: HashSet<String> = HashSet::new();
+    let mut copies_kept: HashSet<(String, String, i64)> = HashSet::new();
     found.retain(|r| match &r.message.message_id_hdr {
-        Some(id) if !id.trim().is_empty() => ids_kept.insert(id.clone()),
+        Some(id) if !id.trim().is_empty() => copies_kept.insert((
+            id.clone(),
+            r.message
+                .from_addr
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase(),
+            r.message.date_ts,
+        )),
         _ => true,
     });
 

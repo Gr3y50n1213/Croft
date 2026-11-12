@@ -529,7 +529,6 @@ dependencies = [
  "ammonia",
  "base64",
  "cssparser",
- "html5ever",
  "mail-parser",
 ]
 

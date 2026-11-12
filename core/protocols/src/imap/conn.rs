@@ -1433,14 +1433,10 @@ fn header_from(attrs: &[AttributeValue<'_>]) -> Option<RemoteHeader> {
             _ => {}
         }
     }
-    let mut references = extra;
-    if let Some(env_irt) = in_reply_to_env {
-        for id in reference_ids(format!("In-Reply-To: {env_irt}\r\n").as_bytes()) {
-            if !references.contains(&id) {
-                references.push(id);
-            }
-        }
-    }
+    let in_reply_to = in_reply_to_env
+        .map(|irt| reference_ids(format!("In-Reply-To: {irt}\r\n").as_bytes()))
+        .unwrap_or_default();
+    let references = super::text::unique_ids(extra.into_iter().chain(in_reply_to));
     Some(RemoteHeader {
         uid: uid?,
         message_id,

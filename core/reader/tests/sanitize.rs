@@ -212,11 +212,142 @@ fn a_deep_or_huge_document_is_refused_quickly_instead_of_parsed() {
     let deep = "<div>".repeat(100_000) + "x" + &"</div>".repeat(100_000);
     let out = clean(&deep, false);
     assert!(out.too_complex && out.html.is_empty());
-    let wide = "<br>".repeat(croft_reader::sanitize::MAX_HTML_ELEMENTS + 1);
+    let wide = "<br>".repeat(croft_reader::sanitize::MAX_HTML_TAGS + 1);
     assert!(clean(&wide, false).too_complex);
     assert!(start.elapsed() < std::time::Duration::from_secs(30));
     // Just inside the limits it renders.
     let ok = "<div>".repeat(croft_reader::sanitize::MAX_HTML_DEPTH) + "x";
     let out = clean(&ok, false);
     assert!(!out.too_complex && out.html.contains('x'));
+}
+
+#[test]
+fn the_slow_inputs_from_the_review_are_refused_before_any_parser_runs() {
+    // H1 and H2: each took 35-60 s in html5ever (release build). The byte scan refuses them
+    // (it can only over-count), so they never reach the parser.
+    let attributes: String = (0..200_000).map(|n| format!(" a{n}")).collect();
+    let inputs = [
+        "<div/>".repeat(100_000),
+        format!("<svg><plaintext></svg>{}", "<div>".repeat(110_000)),
+        "<div></x>".repeat(20_000),
+        format!("<p{attributes}>"),
+        // Tags hidden inside one long quoted value.
+        format!("<a b=\"{}\">", "<x c ".repeat(200_000)),
+    ];
+    let start = std::time::Instant::now();
+    for html in &inputs {
+        let out = clean(html, false);
+        assert!(
+            out.too_complex && out.html.is_empty(),
+            "{} bytes",
+            html.len()
+        );
+    }
+    // Generous even for a debug build: the decision is a linear byte scan.
+    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+}
+
+#[test]
+fn deep_legacy_layouts_and_long_newsletters_still_render() {
+    // Unclosed <td>, <tr>, <p> and <font> in 300 nested layout rows (depth about 1200 as counted).
+    let mut legacy = String::from("<table width=600>");
+    for r in 0..300 {
+        legacy.push_str(&format!(
+            "<tr><td valign=top><font face=Arial size=2><p>Item {r}<br>Price<p>More</font>\
+             <td><table><tr><td><img src=https://x.example/{r}.gif width=100 height=100>\
+             <td>caption {r}</table>"
+        ));
+    }
+    legacy.push_str("</table>");
+    let out = clean(&legacy, false);
+    assert!(!out.too_complex);
+    assert_eq!(out.blocked_remote, 300);
+    // 2000 Outlook paragraphs.
+    let outlook =
+        "<p class=MsoNormal><span style='font-size:11.0pt'>Line<o:p></o:p></span></p>".repeat(2000);
+    assert!(!clean(&outlook, false).too_complex);
+}
+
+#[test]
+fn one_inline_image_referenced_many_times_cannot_grow_the_html_without_bound() {
+    // H4: a 1 MiB image referenced 40 times used to be written 40 times.
+    let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+    data.resize(1024 * 1024, 7);
+    let images = HashMap::from([(
+        "a".to_owned(),
+        croft_reader::InlineImage {
+            mime_type: "image/png".into(),
+            data,
+        },
+    )]);
+    let html = "<img src=\"cid:a\">".repeat(40);
+    let out = sanitize_html(&html, false, &images);
+    assert!(
+        out.html.len() <= croft_reader::sanitize::MAX_INLINE_DATA_BYTES + 64 * 1024,
+        "{} bytes",
+        out.html.len()
+    );
+    assert!(out.html.contains("data:image/png;base64,"));
+    assert!(
+        out.html.contains(BLOCKED_IMAGE_PLACEHOLDER),
+        "past the budget: placeholders"
+    );
+    assert_eq!(out.cids_used, ["a"]);
+}
+
+#[test]
+fn tracking_pixels_are_found_on_the_tree_the_renderer_gets() {
+    // M1: each of these hid a pixel from the old tokenizer pass (foreign content, odd spelling,
+    // srcset only). Remote content allowed: only a pixel could still load.
+    let pixel = r#"src="https://t.example/a" width=1 height=1"#;
+    let cases = [
+        format!("<svg><style><img {pixel}></style></svg>"),
+        format!("<svg><textarea><img {pixel}></textarea></svg>"),
+        format!("<svg><script><img {pixel}></script></svg>"),
+        format!("<math><xmp><img {pixel}></xmp></math>"),
+        format!("<svg><plaintext></svg><img {pixel}>"),
+        r#"<img srcset="https://t.example/a 1x" width="1">"#.to_owned(),
+        r#"<img src="https://img.example/x.png" srcset="https://t.example/open.gif 2x">"#
+            .to_owned(),
+        r#"<img src="https://t.example/a" style="width/**/:1px">"#.to_owned(),
+        r#"<img src="https://t.example/a" style="width:0.01em;height:0.01em">"#.to_owned(),
+        r#"<img src="https://t.example/a" width="0%">"#.to_owned(),
+        r#"<img src="https://t.example/a" style="opacity:0">"#.to_owned(),
+        r#"<img src="https://t.example/a" style="display : none">"#.to_owned(),
+    ];
+    for html in &cases {
+        let out = clean(html, true);
+        assert!(!out.html.contains("t.example"), "{html}\n -> {}", out.html);
+        assert!(
+            !out.html.contains("img.example"),
+            "{html}\n -> {}",
+            out.html
+        );
+        assert_eq!(out.trackers_removed, 1, "{html}\n -> {}", out.html);
+        assert_eq!(out.blocked_remote, 0, "{html}");
+    }
+    // A real image next to a pixel keeps its src and srcset (http upgraded).
+    let out = clean(
+        r#"<img src="https://img.example/a.png" srcset="http://img.example/b.png 2x" width="600"><img src="https://t.example/p" width=1>"#,
+        true,
+    );
+    assert!(
+        out.html.contains(r#"src="https://img.example/a.png""#),
+        "{}",
+        out.html
+    );
+    assert!(
+        out.html
+            .contains(r#"srcset="https://img.example/b.png 2x""#),
+        "{}",
+        out.html
+    );
+    assert_eq!(out.trackers_removed, 1);
+    // Blocked: one count per image, srcset-only images included.
+    let out = clean(
+        r#"<img src="https://img.example/a.png" srcset="https://img.example/b.png 2x"><img srcset="https://img.example/c.png 1x">"#,
+        false,
+    );
+    assert_eq!(out.blocked_remote, 2, "{}", out.html);
+    assert!(!out.html.contains("img.example"));
 }

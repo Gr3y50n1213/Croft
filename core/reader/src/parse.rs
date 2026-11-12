@@ -4,7 +4,7 @@
 
 //! Parsing a fetched message into what the conversation screen shows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use mail_parser::{Message, MessageParser, MessagePart, MessageRef, PartFlags, PartKind};
@@ -41,16 +41,29 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 const SNIPPET_CHARS: usize = 200;
 /// Most recipients kept per header (To, Cc).
 const MAX_ADDRESSES: usize = 500;
+/// `References` ids kept from each end of the list (threading needs the first, the root, and the
+/// last few; a longer list is cut in the middle).
+pub const MAX_REFERENCES_EACH_END: usize = 100;
 
-/// Image types drawn inline from `cid:` references, as `data:` URIs. SVG is not on the list: it is
-/// a document format that can carry script and links.
-const INLINE_IMAGE_TYPES: &[&str] = &[
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/bmp",
-];
+/// The image type of `data` from its first bytes (PNG, JPEG, GIF, WebP, BMP), or `None`. Only
+/// these are drawn inline from `cid:` references, as `data:` URIs, and the type written is the
+/// one found here, never the one the sender declared (an SVG, which can carry script and links,
+/// sent as `image/png` is not drawn).
+pub fn sniff_image(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if data.starts_with(b"BM") && data.len() >= 26 {
+        Some("image/bmp")
+    } else {
+        None
+    }
+}
 
 /// Why a message could not be read. Fixed wording: never message content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,7 +344,10 @@ fn bracket(id: &str) -> String {
     format!("<{id}>")
 }
 
+/// `References` then `In-Reply-To`, without duplicates (in linear time: a hostile header can hold
+/// hundreds of thousands of ids), cut to [`MAX_REFERENCES_EACH_END`] from each end.
 fn references(root: &MessageRef<'_>) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     let lists = [root.references(), root.in_reply_to()];
     for id in lists.iter().flatten().flat_map(|l| l.iter()) {
@@ -339,9 +355,12 @@ fn references(root: &MessageRef<'_>) -> Vec<String> {
             continue;
         }
         let id = bracket(id);
-        if !out.contains(&id) {
+        if seen.insert(id.clone()) {
             out.push(id);
         }
+    }
+    if out.len() > 2 * MAX_REFERENCES_EACH_END {
+        out.drain(MAX_REFERENCES_EACH_END..out.len() - MAX_REFERENCES_EACH_END);
     }
     out
 }
@@ -402,10 +421,6 @@ fn inline_images(message: &Message<'_>) -> HashMap<String, InlineImage> {
         let Some(cid) = part.content_id().map(str::trim).filter(|c| !c.is_empty()) else {
             continue;
         };
-        let mime_type = mime_type_of(&part);
-        if !INLINE_IMAGE_TYPES.contains(&mime_type.as_str()) {
-            continue;
-        }
         let size = part.decoded_len();
         if size == 0
             || size > MAX_INLINE_IMAGE_BYTES
@@ -413,11 +428,21 @@ fn inline_images(message: &Message<'_>) -> HashMap<String, InlineImage> {
         {
             continue;
         }
+        if out.contains_key(cid) {
+            continue;
+        }
+        let data = part.decoded().into_owned();
+        let Some(mime_type) = sniff_image(&data) else {
+            continue;
+        };
         total += size;
-        out.entry(cid.to_owned()).or_insert_with(|| InlineImage {
-            mime_type,
-            data: part.decoded().into_owned(),
-        });
+        out.insert(
+            cid.to_owned(),
+            InlineImage {
+                mime_type: mime_type.to_owned(),
+                data,
+            },
+        );
     }
     out
 }
@@ -425,6 +450,25 @@ fn inline_images(message: &Message<'_>) -> HashMap<String, InlineImage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_types_come_from_the_bytes_not_the_label() {
+        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\nrest"), Some("image/png"));
+        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(sniff_image(b"GIF89a...."), Some("image/gif"));
+        assert_eq!(sniff_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        assert_eq!(
+            sniff_image(&[
+                b'B', b'M', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ]),
+            Some("image/bmp")
+        );
+        assert_eq!(
+            sniff_image(b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
+            None
+        );
+        assert_eq!(sniff_image(b""), None);
+    }
 
     #[test]
     fn snippets_collapse_whitespace_and_stop_at_200_characters() {

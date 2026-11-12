@@ -266,13 +266,27 @@ pub(crate) fn reference_ids(raw_headers: &[u8]) -> Vec<String> {
             rest = &rest[open + len + 1..];
         }
     }
-    let mut all = references;
-    for id in in_reply_to {
-        if !all.contains(&id) {
-            all.push(id);
+    unique_ids(references.into_iter().chain(in_reply_to))
+}
+
+/// Message ids kept from each end of a long `References` list: threading needs the first (the
+/// root) and the last few.
+const IDS_EACH_END: usize = 100;
+
+/// `ids` without duplicates, in order, in linear time (a hostile header can hold hundreds of
+/// thousands of ids), and cut in the middle to [`IDS_EACH_END`] from each end.
+pub(crate) fn unique_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for id in ids {
+        if seen.insert(id.clone()) {
+            out.push(id);
         }
     }
-    all
+    if out.len() > 2 * IDS_EACH_END {
+        out.drain(IDS_EACH_END..out.len() - IDS_EACH_END);
+    }
+    out
 }
 
 /// Puts angle brackets around a Message-ID if it has none.
@@ -288,6 +302,21 @@ pub(crate) fn bracketed_message_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_huge_references_header_is_deduplicated_quickly_and_cut_in_the_middle() {
+        let mut header = String::from("References:");
+        for n in 0..200_000 {
+            header.push_str(&format!(" <r{n}@x>"));
+        }
+        header.push_str("\r\nIn-Reply-To: <r0@x> <last@x>\r\n");
+        let start = std::time::Instant::now();
+        let ids = reference_ids(header.as_bytes());
+        assert!(start.elapsed() < std::time::Duration::from_secs(20));
+        assert_eq!(ids.len(), 2 * IDS_EACH_END);
+        assert_eq!(ids[0], "<r0@x>", "the root stays first");
+        assert_eq!(ids.last().map(String::as_str), Some("<last@x>"));
+    }
 
     #[test]
     fn utf7_matches_the_rfc_example() {

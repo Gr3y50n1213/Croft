@@ -246,3 +246,40 @@ fn bytes_that_are_not_a_message_are_refused_plainly() {
     let err = render(b"", false).unwrap_err().to_string();
     assert!(!err.contains('@'));
 }
+
+#[test]
+fn a_huge_references_header_is_handled_in_linear_time_and_cut() {
+    // H3: 200 000 ids took 36 s with a quadratic duplicate check.
+    let ids: String = (0..200_000)
+        .map(|n| format!(" <r{n}@example.org>"))
+        .collect();
+    let raw =
+        format!("From: x@example.org\r\nSubject: Long thread\r\nReferences:{ids}\r\n\r\nbody\r\n");
+    let start = std::time::Instant::now();
+    let r = render(raw.as_bytes(), false).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(20));
+    assert_eq!(
+        r.references.len(),
+        2 * croft_reader::MAX_REFERENCES_EACH_END
+    );
+    assert_eq!(r.references[0], "<r0@example.org>");
+    assert_eq!(r.references.last().unwrap(), "<r199999@example.org>");
+}
+
+#[test]
+fn inline_images_are_typed_by_their_bytes_and_svg_is_never_drawn() {
+    // L1: an SVG labelled image/png is not drawn; a PNG labelled image/gif is drawn as PNG.
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let raw = format!(
+        "From: x@example.org\r\nSubject: Images\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/related; boundary=R\r\n\r\n--R\r\nContent-Type: text/html\r\n\r\n\
+         <img src=\"cid:fake\"><img src=\"cid:real\">\r\n--R\r\nContent-Type: image/png\r\n\
+         Content-ID: <fake>\r\n\r\n<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"/>\r\n\
+         --R\r\nContent-Type: image/gif\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <real>\r\n\r\n\
+         {png}\r\n--R--\r\n"
+    );
+    let html = render(raw.as_bytes(), false).unwrap().html.unwrap();
+    assert_eq!(html.matches("data:").count(), 1, "{html}");
+    assert!(html.contains("data:image/png;base64,iVBORw0KGgo"), "{html}");
+    assert!(!html.contains("svg") && !html.contains("alert"), "{html}");
+}

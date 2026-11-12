@@ -154,8 +154,8 @@ impl EngineHandle {
             let q = shared.lock();
             let conn = q.store().db().connection();
             let m = messages::get(conn, account, message)?.ok_or(BodyError::NoSuchMessage)?;
-            if reading::raw(conn, account, message)?.is_some()
-                && reading::body(conn, account, message)?.is_some()
+            if reading::has_raw(conn, account, message)?
+                && reading::has_body(conn, account, message)?
             {
                 return Ok(());
             }

@@ -36,32 +36,43 @@
 //!   size) and counted in [`Sanitized::blocked_remote`]; `srcset` is dropped.
 //! - **Remote images while allowed**: `https` is kept and `http` is upgraded to `https` (an image
 //!   is never fetched in clear text); `srcset` is kept only when every candidate is `http(s)`.
-//! - **Tracking pixels, in every mode**: an `img` with a remote `src` whose `width` or `height`
-//!   is at most 1 (attribute or inline style), or that is hidden by its style (`display:none`,
-//!   `visibility:hidden`), or whose address matches one of the few well-known open-tracking
-//!   patterns in [`TRACKER_PATTERNS`], loses its `src` and is counted in
-//!   [`Sanitized::trackers_removed`], not in `blocked_remote` (showing images will not load it).
-//!   The pixels are found by a first pass with the html5ever tokenizer, because the decision
-//!   needs the whole tag; it may count a pixel inside an element that is removed anyway.
+//! - **Tracking pixels, in every mode**: an `img` with a remote `src` or `srcset` whose `width`
+//!   or `height` (attribute or inline style, any unit) is at most 1 (`1`, `1px`, `0%`,
+//!   `0.01em`), or that its style hides (`display:none`, `visibility:hidden`, `opacity` at most
+//!   0.1), or one of whose addresses (`src` or any `srcset` candidate) matches one of the few
+//!   well-known open-tracking patterns in [`TRACKER_PATTERNS`], loses its `src` and `srcset` and
+//!   is counted in [`Sanitized::trackers_removed`], not in `blocked_remote` (showing images will
+//!   not load it).
 //!
-//! Known limits: `blocked_remote` counts `img` elements with a remote `src`; an image with only
-//! a remote `srcset` is blocked but not counted. Protocol-relative addresses (`//host/x.png`) are
-//! relative and therefore removed, not counted.
+//! The image decisions are made **inside the ammonia pass, on the tree it outputs**: ammonia
+//! hands every attribute of one `img` to the filter in a row, ending with a marker attribute the
+//! core adds (and removes again), so the whole tag is known when it is decided. Remote addresses
+//! are first written as unguessable tokens (a random value per call) and replaced by the decided
+//! value (or removed) in the serialised output; anything unexpected there drops the HTML.
+//!
+//! # Limits (time and memory)
+//!
+//! Before any parser runs, [`crate::shape`] measures the body with a byte scan that can only
+//! over-count. Past [`MAX_HTML_TAGS`] tags, [`MAX_HTML_DEPTH`] levels, a parsing cost of
+//! [`MAX_HTML_COST`] or [`MAX_ATTRIBUTES_PER_TAG`] attributes on one tag the HTML is not rendered
+//! ([`Sanitized::too_complex`]; the screen shows the text). The `data:` URIs written for `cid:`
+//! images share a budget of [`MAX_INLINE_DATA_BYTES`] per document: past it a reference gets the
+//! placeholder.
+//!
+//! Known limit: protocol-relative addresses (`//host/x.png`) are relative and therefore removed,
+//! not counted.
 
-use std::cell::RefCell;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ammonia::{Builder, UrlRelative};
 use base64::Engine as _;
 use cssparser::{Parser, Token};
-use html5ever::tendril::StrTendril;
-use html5ever::tokenizer::states::RawKind;
-use html5ever::tokenizer::{
-    BufferQueue, Tag, TagKind, Token as HtmlToken, TokenSink, TokenSinkResult, Tokenizer,
-    TokenizerOpts,
-};
+
+use crate::shape::{self, Limits};
 
 /// What a remote image's `src` becomes while remote content is blocked: a 1×1 grey GIF, built
 /// here (no network). The app may style `img` elements with this exact `src` as placeholders.
@@ -274,18 +285,22 @@ pub const TRACKER_PATTERNS: &[&str] = &[
     "/beacon/",
 ];
 
-/// Deepest element nesting accepted (counted from the tags as written). HTML parsers spend time
-/// that grows with the square of the depth, so a message nested deeper than any real one (browsers
-/// stop at 512 too) is not rendered as HTML: the screen shows its text instead.
-pub const MAX_HTML_DEPTH: usize = 512;
-/// Most start tags accepted in one HTML body (real newsletters have a few thousand).
-pub const MAX_HTML_ELEMENTS: usize = 100_000;
-
-/// Elements that never have content (no end tag).
-const VOID: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
-    "track", "wbr",
-];
+/// Deepest element nesting accepted, as [`crate::shape`] counts it (an over-count).
+pub const MAX_HTML_DEPTH: usize = 2048;
+/// Largest parsing cost accepted: the sum of the depth at every tag, as [`crate::shape`] counts
+/// it (an over-count). html5ever's time follows it; see `docs/DECISIONS.md` (T18a) for the
+/// measured worst cases.
+pub const MAX_HTML_COST: usize = 40_000_000;
+/// Most tags accepted in one HTML body (start and end tags, comments; real newsletters have a few
+/// thousand).
+pub const MAX_HTML_TAGS: usize = 50_000;
+/// Most attributes accepted on one tag (the tokenizer's duplicate check takes time that grows
+/// with the square of this).
+pub const MAX_ATTRIBUTES_PER_TAG: usize = 256;
+/// Most bytes of `data:` URIs written for `cid:` images in one document (the base64 of
+/// [`crate::MAX_INLINE_TOTAL_BYTES`] and a little more). A message that references one image many
+/// times cannot make the HTML huge.
+pub const MAX_INLINE_DATA_BYTES: usize = 21 * 1024 * 1024;
 
 /// Link schemes kept on `a href`; `cid` is here only so that `img src="cid:..."` reaches the
 /// resolver (a `cid:` link loses its `href` there).
@@ -322,8 +337,9 @@ pub struct Sanitized {
     pub styles_removed: u32,
     /// The Content-IDs whose images were drawn (written as `data:` URIs).
     pub cids_used: Vec<String>,
-    /// True when the HTML was nested deeper than [`MAX_HTML_DEPTH`] or had more than
-    /// [`MAX_HTML_ELEMENTS`] tags: `html` is then empty and the message is shown as text.
+    /// True when the HTML was past one of the limits ([`MAX_HTML_TAGS`], [`MAX_HTML_DEPTH`],
+    /// [`MAX_HTML_COST`], [`MAX_ATTRIBUTES_PER_TAG`]): `html` is then empty and the message is
+    /// shown as text.
     pub too_complex: bool,
 }
 
@@ -340,13 +356,45 @@ impl fmt::Debug for Sanitized {
     }
 }
 
-/// What the attribute filter counts while ammonia walks the document.
+/// A remote address of an `img`, kept aside until the whole tag has been seen.
+enum Deferred {
+    Src(String),
+    Srcset(String),
+}
+
+/// The `img` whose attributes the filter is going through.
 #[derive(Default)]
-struct Counts {
+struct ImgDraft {
+    /// Deferred addresses of this `img` (indexes into [`State::deferred`]).
+    tokens: Vec<usize>,
+    width: Option<String>,
+    height: Option<String>,
+    style: Option<String>,
+}
+
+/// What the attribute filter keeps while ammonia walks the document.
+#[derive(Default)]
+struct State {
     blocked_remote: u32,
     trackers_removed: u32,
     styles_removed: u32,
     cids_used: Vec<String>,
+    /// Bytes of `data:` URIs written so far.
+    inline_bytes: usize,
+    img: ImgDraft,
+    deferred: Vec<Deferred>,
+    /// The decided value of each deferred address (`None`: the attribute goes).
+    decided: Vec<Option<String>>,
+}
+
+/// What the filter needs besides its state.
+struct Context {
+    remote_allowed: bool,
+    /// Prefix of the tokens written for deferred addresses.
+    nonce: String,
+    /// The marker attribute added as the last attribute of every `img`.
+    marker: String,
+    images: HashMap<String, InlineImage>,
 }
 
 /// The allowed attributes of each tag (besides [`GENERIC_ATTRIBUTES`]).
@@ -405,6 +453,20 @@ fn attributes() -> HashMap<&'static str, HashSet<&'static str>> {
         .collect()
 }
 
+/// A random value for this call: the tokens and the marker cannot be guessed by a sender.
+fn random_hex() -> String {
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(0x5afe_c0de);
+    format!("{:016x}", h.finish())
+}
+
+fn too_complex() -> Sanitized {
+    Sanitized {
+        too_complex: true,
+        ..Sanitized::default()
+    }
+}
+
 /// Sanitises `html` (see the module documentation). `remote_allowed` keeps remote images
 /// (`https`, `http` upgraded); everything else is the same in both modes. `images` are the
 /// message's own images by Content-ID, for `cid:` references.
@@ -413,17 +475,32 @@ pub fn sanitize_html(
     remote_allowed: bool,
     images: &HashMap<String, InlineImage>,
 ) -> Sanitized {
-    let (trackers, shape) = find_trackers(html);
-    if shape.max_depth > MAX_HTML_DEPTH || shape.elements > MAX_HTML_ELEMENTS {
-        return Sanitized {
-            too_complex: true,
-            ..Sanitized::default()
-        };
+    let shape = shape::measure(
+        html,
+        Limits {
+            tags: MAX_HTML_TAGS,
+            depth: MAX_HTML_DEPTH,
+            attributes: MAX_ATTRIBUTES_PER_TAG,
+            cost: MAX_HTML_COST,
+        },
+    );
+    if shape.over {
+        return too_complex();
     }
-    let trackers = Arc::new(trackers);
-    let images = Arc::new(images.clone());
-    let counts = Arc::new(Mutex::new(Counts::default()));
-    let filter_counts = counts.clone();
+    let mut id = random_hex();
+    while html.contains(id.as_str()) {
+        id = random_hex();
+    }
+    let context = Arc::new(Context {
+        remote_allowed,
+        // A scheme, so that ammonia's relative-address rule (which runs after the filter) keeps
+        // the token.
+        nonce: format!("croftimg{id}:"),
+        marker: format!("croftend{id}"),
+        images: images.clone(),
+    });
+    let state = Arc::new(Mutex::new(State::default()));
+    let (filter_context, filter_state) = (context.clone(), state.clone());
 
     let mut builder = Builder::default();
     builder
@@ -432,6 +509,7 @@ pub fn sanitize_html(
         .generic_attributes(GENERIC_ATTRIBUTES.iter().copied().collect())
         .tag_attributes(attributes())
         .tag_attribute_values(HashMap::new())
+        .set_tag_attribute_value("img", context.marker.as_str(), "1")
         .url_schemes(URL_SCHEMES.iter().copied().collect())
         .url_relative(UrlRelative::Deny)
         .link_rel(Some("noopener noreferrer"))
@@ -439,98 +517,191 @@ pub fn sanitize_html(
         .id_prefix(None)
         .filter_style_properties(CSS_PROPERTIES.iter().copied().collect())
         .attribute_filter(move |element, attribute, value| {
-            let mut counts = filter_counts.lock().unwrap_or_else(PoisonError::into_inner);
-            filter_attribute(
-                element,
-                attribute,
-                value,
-                remote_allowed,
-                &trackers,
-                &images,
-                &mut counts,
-            )
+            let mut state = filter_state.lock().unwrap_or_else(PoisonError::into_inner);
+            filter_attribute(element, attribute, value, &filter_context, &mut state)
         });
     let html = builder.clean(html).to_string();
-    let counts = std::mem::take(&mut *counts.lock().unwrap_or_else(PoisonError::into_inner));
+    let state = std::mem::take(&mut *state.lock().unwrap_or_else(PoisonError::into_inner));
+    let Some(html) = substitute(&html, &context.nonce, &state.decided) else {
+        return too_complex();
+    };
     Sanitized {
         html,
-        blocked_remote: counts.blocked_remote,
-        trackers_removed: counts.trackers_removed,
-        styles_removed: counts.styles_removed,
-        cids_used: counts.cids_used,
+        blocked_remote: state.blocked_remote,
+        trackers_removed: state.trackers_removed,
+        styles_removed: state.styles_removed,
+        cids_used: state.cids_used,
         too_complex: false,
     }
 }
 
+/// Puts the decided values in place of the tokens written for deferred addresses: the attribute
+/// ` src="<token>"` (or `srcset`) becomes ` src="<value>"`, or goes. `None` when a token stands
+/// anywhere else (it never should: the tokens are random).
+fn substitute(html: &str, nonce: &str, decided: &[Option<String>]) -> Option<String> {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(pos) = rest.find(nonce) {
+        let (before, after) = rest.split_at(pos);
+        let (cut, name) = if before.ends_with(" src=\"") {
+            (before.len() - 6, "src")
+        } else if before.ends_with(" srcset=\"") {
+            (before.len() - 9, "srcset")
+        } else {
+            return None;
+        };
+        let after = &after[nonce.len()..];
+        let digits = after.find(|c: char| !c.is_ascii_digit())?;
+        let index: usize = after[..digits].parse().ok()?;
+        rest = after[digits..].strip_prefix('"')?;
+        out.push_str(&before[..cut]);
+        if let Some(Some(value)) = decided.get(index) {
+            out.push(' ');
+            out.push_str(name);
+            out.push_str("=\"");
+            for c in value.chars() {
+                match c {
+                    '&' => out.push_str("&amp;"),
+                    '"' => out.push_str("&quot;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Keeps a remote address aside (see [`Deferred`]) and returns the token written in its place.
+fn defer(deferred: Deferred, context: &Context, state: &mut State) -> Cow<'static, str> {
+    let index = state.deferred.len();
+    state.deferred.push(deferred);
+    state.decided.push(None);
+    state.img.tokens.push(index);
+    Cow::Owned(format!("{}{index}", context.nonce))
+}
+
+/// The addresses of a `srcset` value (the first word of each candidate).
+fn srcset_urls(value: &str) -> impl Iterator<Item = &str> {
+    value.split(',').filter_map(|c| c.split_whitespace().next())
+}
+
+/// The whole `img` has been seen (its marker attribute came): decides its remote addresses.
+fn decide_img(context: &Context, state: &mut State) {
+    let img = std::mem::take(&mut state.img);
+    if img.tokens.is_empty() {
+        return;
+    }
+    let mut urls = img.tokens.iter().flat_map(|&t| match &state.deferred[t] {
+        Deferred::Src(u) => vec![u.as_str()],
+        Deferred::Srcset(v) => srcset_urls(v).collect(),
+    });
+    let pattern = urls.any(|u| {
+        let lower = u.to_ascii_lowercase();
+        TRACKER_PATTERNS.iter().any(|p| lower.contains(p))
+    });
+    let pixel = pattern
+        || img.width.as_deref().is_some_and(tiny)
+        || img.height.as_deref().is_some_and(tiny)
+        || img.style.as_deref().is_some_and(style_hides);
+    if pixel {
+        state.trackers_removed += 1;
+        return;
+    }
+    if !context.remote_allowed {
+        state.blocked_remote += 1;
+    }
+    for t in img.tokens {
+        state.decided[t] = match (&state.deferred[t], context.remote_allowed) {
+            (Deferred::Src(_), false) => Some(BLOCKED_IMAGE_PLACEHOLDER.to_owned()),
+            (Deferred::Srcset(_), false) => None,
+            (Deferred::Src(u), true) => https_only(u).map(Cow::into_owned),
+            (Deferred::Srcset(v), true) => checked_srcset(v),
+        };
+    }
+}
+
+/// A `srcset` with every candidate `http(s)` (upgraded to `https`) and plain descriptors, or
+/// `None`.
+fn checked_srcset(value: &str) -> Option<String> {
+    let mut out = Vec::new();
+    for candidate in value.split(',') {
+        let candidate = candidate.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        let (url, descriptor) = match candidate.split_once(char::is_whitespace) {
+            Some((u, d)) => (u, d.trim()),
+            None => (candidate, ""),
+        };
+        if !is_remote(url) {
+            return None;
+        }
+        let url = https_only(url)?;
+        if !descriptor
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ' ')
+        {
+            return None;
+        }
+        out.push(if descriptor.is_empty() {
+            url.into_owned()
+        } else {
+            format!("{url} {descriptor}")
+        });
+    }
+    (!out.is_empty()).then(|| out.join(", "))
+}
+
+/// Presentational values are plain: numbers and sizes.
+fn plain_size(value: &str) -> bool {
+    value
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | '%' | '*' | 'p' | 'x' | ' ' | '-' | '+'))
+}
+
 /// The attribute filter: runs after ammonia's allow-lists (so `element` and `attribute` are
-/// allowed ones, and a URL attribute ammonia checks has an allowed scheme). `None` drops the
-/// attribute.
+/// allowed ones, and a URL attribute ammonia checks has an allowed scheme), and sees every
+/// attribute of one element in a row. `None` drops the attribute.
 fn filter_attribute<'u>(
     element: &str,
     attribute: &str,
     value: &'u str,
-    remote_allowed: bool,
-    trackers: &HashSet<String>,
-    images: &HashMap<String, InlineImage>,
-    counts: &mut Counts,
-) -> Option<std::borrow::Cow<'u, str>> {
-    use std::borrow::Cow;
+    context: &Context,
+    state: &mut State,
+) -> Option<Cow<'u, str>> {
     match (element, attribute) {
+        ("img", a) if a == context.marker => {
+            decide_img(context, state);
+            None
+        }
         ("img", "src") => {
             if let Some(cid) = cid_of(value) {
-                return resolve_cid(&cid, images, counts).map(Cow::Owned);
+                return resolve_cid(&cid, &context.images, state).map(Cow::Owned);
             }
-            if !is_remote(value) {
-                return None;
-            }
-            if trackers.contains(value) {
-                counts.trackers_removed += 1;
-                return None;
-            }
-            if remote_allowed {
-                https_only(value)
-            } else {
-                counts.blocked_remote += 1;
-                Some(Cow::Borrowed(BLOCKED_IMAGE_PLACEHOLDER))
-            }
+            is_remote(value).then(|| defer(Deferred::Src(value.to_owned()), context, state))
         }
-        ("img", "srcset") => {
-            if !remote_allowed {
-                return None;
-            }
-            let mut out = Vec::new();
-            for candidate in value.split(',') {
-                let candidate = candidate.trim();
-                if candidate.is_empty() {
-                    continue;
-                }
-                let (url, descriptor) = match candidate.split_once(char::is_whitespace) {
-                    Some((u, d)) => (u, d.trim()),
-                    None => (candidate, ""),
-                };
-                if !is_remote(url) || trackers.contains(url) {
-                    return None;
-                }
-                let url = https_only(url)?;
-                if !descriptor
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ' ')
-                {
-                    return None;
-                }
-                out.push(if descriptor.is_empty() {
-                    url.into_owned()
-                } else {
-                    format!("{url} {descriptor}")
-                });
-            }
-            (!out.is_empty()).then(|| Cow::Owned(out.join(", ")))
+        ("img", "srcset") => (srcset_urls(value).next().is_some())
+            .then(|| defer(Deferred::Srcset(value.to_owned()), context, state)),
+        ("img", "width") => {
+            state.img.width = Some(value.to_owned());
+            plain_size(value).then_some(Cow::Borrowed(value))
+        }
+        ("img", "height") => {
+            state.img.height = Some(value.to_owned());
+            plain_size(value).then_some(Cow::Borrowed(value))
         }
         // A link keeps its destination as written; a `cid:` link goes nowhere.
         (_, "href") => (cid_of(value).is_none()).then_some(Cow::Borrowed(value)),
         (_, "style") => {
+            if element == "img" {
+                state.img.style = Some(value.to_owned());
+            }
             let (kept, removed) = filter_style(value);
-            counts.styles_removed += removed;
+            state.styles_removed += removed;
             (!kept.is_empty()).then_some(Cow::Owned(kept))
         }
         // Presentational values are plain: numbers and sizes, colours, font names. Anything else
@@ -539,12 +710,7 @@ fn filter_attribute<'u>(
             _,
             "width" | "height" | "border" | "cellpadding" | "cellspacing" | "hspace" | "vspace"
             | "span" | "colspan" | "rowspan" | "size" | "start" | "value",
-        ) => value
-            .chars()
-            .all(|c| {
-                c.is_ascii_digit() || matches!(c, '.' | '%' | '*' | 'p' | 'x' | ' ' | '-' | '+')
-            })
-            .then_some(Cow::Borrowed(value)),
+        ) => plain_size(value).then_some(Cow::Borrowed(value)),
         (_, "color" | "bgcolor") => value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '#')
@@ -558,8 +724,7 @@ fn filter_attribute<'u>(
 }
 
 /// `https://...` as it is, `http://...` with the scheme upgraded; anything else `None`.
-fn https_only(url: &str) -> Option<std::borrow::Cow<'_, str>> {
-    use std::borrow::Cow;
+fn https_only(url: &str) -> Option<Cow<'_, str>> {
     let trimmed = url.trim();
     if starts_with_ignore_case(trimmed, "https://") {
         Some(Cow::Borrowed(trimmed))
@@ -610,20 +775,28 @@ fn cid_of(url: &str) -> Option<String> {
     )
 }
 
-/// The `data:` URI for a `cid:` image, if the message has that image.
+/// The `data:` URI for a `cid:` image, if the message has that image; the placeholder once the
+/// document's budget of [`MAX_INLINE_DATA_BYTES`] is spent.
 fn resolve_cid(
     cid: &str,
     images: &HashMap<String, InlineImage>,
-    counts: &mut Counts,
+    state: &mut State,
 ) -> Option<String> {
     let (key, image) = images
         .get_key_value(cid)
         .or_else(|| images.iter().find(|(k, _)| k.eq_ignore_ascii_case(cid)))?;
-    if !counts.cids_used.contains(key) {
-        counts.cids_used.push(key.clone());
+    let prefix = format!("data:{};base64,", image.mime_type);
+    let size = prefix.len() + image.data.len().div_ceil(3) * 4;
+    if state.inline_bytes.saturating_add(size) > MAX_INLINE_DATA_BYTES {
+        return Some(BLOCKED_IMAGE_PLACEHOLDER.to_owned());
     }
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&image.data);
-    Some(format!("data:{};base64,{encoded}", image.mime_type))
+    state.inline_bytes += size;
+    if !state.cids_used.contains(key) {
+        state.cids_used.push(key.clone());
+    }
+    let mut uri = prefix;
+    base64::engine::general_purpose::STANDARD.encode_string(&image.data, &mut uri);
+    Some(uri)
 }
 
 /// CSS functions allowed in a kept declaration: colours, arithmetic and gradients, none of which
@@ -723,112 +896,83 @@ fn finish(declaration: &str, bad: bool, kept: &mut Vec<String>, removed: &mut u3
 }
 
 // ---------------------------------------------------------------------------------------------
-// Tracking pixels: a first pass over the tokens
+// Tracking pixels
 // ---------------------------------------------------------------------------------------------
 
-/// How deep and how big the document is, from the tags as written.
-#[derive(Default, Clone, Copy)]
-struct Shape {
-    depth: usize,
-    max_depth: usize,
-    elements: usize,
-}
-
-/// Collects the `src` of every `img` that looks like a tracking pixel, and the document's
-/// [`Shape`].
-#[derive(Default)]
-struct PixelFinder {
-    found: RefCell<HashSet<String>>,
-    shape: RefCell<Shape>,
-}
-
-impl TokenSink for PixelFinder {
-    type Handle = ();
-
-    fn process_token(&self, token: HtmlToken, _line: u64) -> TokenSinkResult<()> {
-        let HtmlToken::TagToken(tag) = token else {
-            return TokenSinkResult::Continue;
-        };
-        {
-            let mut shape = self.shape.borrow_mut();
-            if tag.kind == TagKind::EndTag {
-                shape.depth = shape.depth.saturating_sub(1);
-                return TokenSinkResult::Continue;
-            }
-            shape.elements += 1;
-            if !tag.self_closing && !VOID.contains(&&*tag.name) {
-                shape.depth += 1;
-                shape.max_depth = shape.max_depth.max(shape.depth);
-            }
-        }
-        // Follow the tree builder into raw text where it would go, so markup inside a <style>
-        // or <textarea> is not taken for tags.
-        match &*tag.name {
-            "img" => {
-                if let Some(src) = pixel_src(&tag) {
-                    self.found.borrow_mut().insert(src);
-                }
-                TokenSinkResult::Continue
-            }
-            "style" | "xmp" | "iframe" | "noembed" | "noframes" => {
-                TokenSinkResult::RawData(RawKind::Rawtext)
-            }
-            "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
-            "script" => TokenSinkResult::RawData(RawKind::ScriptData),
-            "plaintext" => TokenSinkResult::Plaintext,
-            _ => TokenSinkResult::Continue,
-        }
-    }
-}
-
-/// A size of at most one pixel (`0`, `1`, `1px`, `0.5`).
+/// A size of at most one (in any unit, or none): `0`, `1`, `1px`, `0.5`, `0%`, `0.01em`.
 fn tiny(value: &str) -> bool {
-    let v = value.trim().to_ascii_lowercase();
-    let v = v.trim_end_matches("px").trim();
-    v.parse::<f64>().is_ok_and(|n| n <= 1.0)
+    let v = value.trim();
+    let end = v
+        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+')))
+        .unwrap_or(v.len());
+    v[..end].parse::<f64>().is_ok_and(|n| n <= 1.0)
 }
 
-/// The `src` of a tracking-pixel `img`, if it is one.
-fn pixel_src(tag: &Tag) -> Option<String> {
-    let get = |name: &str| {
-        tag.attrs
-            .iter()
-            .find(|a| &*a.name.local == name)
-            .map(|a| a.value.to_string())
-    };
-    let src = get("src")?;
-    if !is_remote(&src) {
-        return None;
-    }
-    let mut pixel =
-        get("width").is_some_and(|w| tiny(&w)) || get("height").is_some_and(|h| tiny(&h));
-    if let Some(style) = get("style") {
-        for declaration in style.split(';') {
-            let Some((name, value)) = declaration.split_once(':') else {
+/// True when an `img` style makes it invisible or at most one unit wide or high. Read with the CSS
+/// tokenizer, so comments and odd spacing (`width/**/:1px`) do not hide anything.
+fn style_hides(style: &str) -> bool {
+    let mut p = Parser::new(style);
+    loop {
+        let name = match p.next() {
+            Ok(Token::Ident(n)) => n.to_ascii_lowercase(),
+            Ok(Token::Semicolon) => continue,
+            Ok(_) => {
+                if !skip_declaration(&mut p) {
+                    return false;
+                }
                 continue;
-            };
-            let name = name.trim().to_ascii_lowercase();
-            let value = value.trim().to_ascii_lowercase();
-            pixel |= matches!(
-                name.as_str(),
-                "width" | "height" | "max-width" | "max-height"
-            ) && tiny(&value);
-            pixel |= name == "display" && value.starts_with("none");
-            pixel |= name == "visibility" && value.starts_with("hidden");
+            }
+            Err(_) => return false,
+        };
+        match p.next() {
+            Ok(Token::Colon) => {}
+            Ok(Token::Semicolon) => continue,
+            Ok(_) => {
+                if !skip_declaration(&mut p) {
+                    return false;
+                }
+                continue;
+            }
+            Err(_) => return false,
+        }
+        let size = matches!(
+            name.as_str(),
+            "width" | "height" | "max-width" | "max-height"
+        );
+        let hides = match p.next() {
+            Ok(Token::Dimension { value, .. }) | Ok(Token::Number { value, .. }) => {
+                (size && *value <= 1.0) || (name == "opacity" && *value <= 0.1)
+            }
+            Ok(Token::Percentage { unit_value, .. }) => {
+                (size && *unit_value <= 0.01) || (name == "opacity" && *unit_value <= 0.1)
+            }
+            Ok(Token::Ident(v)) => {
+                (name == "display" && v.eq_ignore_ascii_case("none"))
+                    || (name == "visibility"
+                        && (v.eq_ignore_ascii_case("hidden") || v.eq_ignore_ascii_case("collapse")))
+            }
+            Ok(Token::Semicolon) => continue,
+            Ok(_) => false,
+            Err(_) => return false,
+        };
+        if hides {
+            return true;
+        }
+        if !skip_declaration(&mut p) {
+            return false;
         }
     }
-    let lower = src.to_ascii_lowercase();
-    pixel |= TRACKER_PATTERNS.iter().any(|p| lower.contains(p));
-    pixel.then_some(src)
 }
 
-fn find_trackers(html: &str) -> (HashSet<String>, Shape) {
-    let tokenizer = Tokenizer::new(PixelFinder::default(), TokenizerOpts::default());
-    let input = BufferQueue::default();
-    input.push_back(StrTendril::from(html));
-    let _ = tokenizer.feed(&input);
-    tokenizer.end();
-    (tokenizer.sink.found.take(), tokenizer.sink.shape.take())
+/// Skips to the end of the declaration; false at the end of the input.
+fn skip_declaration(p: &mut Parser<'_>) -> bool {
+    loop {
+        match p.next() {
+            Ok(Token::Semicolon) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -870,18 +1014,58 @@ mod tests {
     }
 
     #[test]
-    fn pixels_are_found_by_size_style_and_address() {
-        let html = r#"<img src="https://a.example/1" width="1" height="1">
-            <img src="https://a.example/2" style="width:1px;height:1px">
-            <img src="https://a.example/3" style="display: none">
-            <img src="https://a.example/track/open?u=1">
-            <img src="https://a.example/real.png" width="600">
-            <style><img src="https://a.example/in-style" width=1></style>"#;
-        let (found, _) = find_trackers(html);
-        for n in ["1", "2", "3", "track/open?u=1"] {
-            assert!(found.contains(&format!("https://a.example/{n}")), "{n}");
+    fn sizes_and_styles_that_make_a_pixel() {
+        for t in ["0", "1", "1px", " 0.5 ", "0%", "1%", "0.01em", "-3"] {
+            assert!(tiny(t), "{t}");
         }
-        assert!(!found.contains("https://a.example/real.png"));
-        assert!(!found.contains("https://a.example/in-style"));
+        for t in ["2", "100%", "600", "", "auto", "x"] {
+            assert!(!tiny(t), "{t}");
+        }
+        for s in [
+            "width:1px",
+            "width/**/:1px",
+            "height : 0",
+            "width:0.01em",
+            "max-height:0%",
+            "display:none",
+            "DISPLAY: None",
+            "visibility:hidden",
+            "opacity:0",
+            "opacity:5%",
+            "color:red; width:1px",
+        ] {
+            assert!(style_hides(s), "{s}");
+        }
+        for s in [
+            "width:600px",
+            "opacity:1",
+            "display:block",
+            "color:red",
+            "",
+            ";;",
+            "width:",
+        ] {
+            assert!(!style_hides(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn tokens_are_replaced_only_in_src_and_srcset() {
+        let decided = vec![Some("https://a/b?x=1&y=\"".to_owned()), None];
+        let out = substitute(
+            r#"<img src="Nn0" alt="x"><img srcset="Nn1">"#,
+            "Nn",
+            &decided,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            r#"<img src="https://a/b?x=1&amp;y=&quot;" alt="x"><img>"#
+        );
+        assert_eq!(substitute("<p>Nn0</p>", "Nn", &decided), None);
+        assert_eq!(
+            substitute("<p>plain</p>", "Nn", &decided).as_deref(),
+            Some("<p>plain</p>")
+        );
     }
 }

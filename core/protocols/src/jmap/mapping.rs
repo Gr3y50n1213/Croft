@@ -303,18 +303,13 @@ impl RawEmail {
             .or_else(|| self.received_at.as_deref().and_then(parse_date_ms))
             .unwrap_or(0);
         let message_id = self.message_id();
-        let mut references: Vec<String> = Vec::new();
-        for id in self
-            .references
-            .iter()
-            .chain(self.in_reply_to.iter())
-            .flatten()
-        {
-            let id = bracket(id);
-            if !references.contains(&id) {
-                references.push(id);
-            }
-        }
+        let references = crate::imap::text::unique_ids(
+            self.references
+                .iter()
+                .chain(self.in_reply_to.iter())
+                .flatten()
+                .map(|id| bracket(id)),
+        );
         let from = self.from.as_ref().and_then(|v| v.first());
         RemoteHeader {
             uid,

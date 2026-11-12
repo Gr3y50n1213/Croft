@@ -11,6 +11,7 @@ import com.example.croft.mail.accounts.AccountSweep
 import com.example.croft.mail.accounts.AppFiles
 import com.example.croft.mail.compose.AttachmentFolder
 import com.example.croft.mail.compose.CoreComposeBackend
+import com.example.croft.mail.reading.CoreReadingRepository
 import com.example.croft.openCore
 import com.example.croft.secrets.AccountSecrets
 import com.example.croft.secrets.AppSecrets
@@ -134,6 +135,7 @@ object MailRuntime {
             rowActions = CoreRowActions(repository, mapping),
             folderMapping = mapping,
             compose = CoreComposeBackend(open.core),
+            reading = CoreReadingRepository(open.core),
         )
     }
 

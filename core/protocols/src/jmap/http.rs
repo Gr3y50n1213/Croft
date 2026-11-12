@@ -101,6 +101,9 @@ pub(crate) struct HttpRequest<'a> {
     pub extra_time: Duration,
     /// Also read the body of a 4xx answer (an OAuth token endpoint puts its error code there).
     pub error_body: bool,
+    /// More headers (T28: Web Push's `TTL`, `Urgency`, `Content-Encoding`). Names and values are
+    /// the caller's own constants and encodings; a value with a line break is refused.
+    pub extra_headers: &'a [(&'a str, &'a str)],
 }
 
 /// The HTTP side of one account: how to trust the server and how long to wait.
@@ -112,6 +115,9 @@ pub(crate) struct Http {
     /// Skips the process's address policy: only for the Companion's OIDC provider, which its admin
     /// configures (no user chooses where it connects).
     admin_configured: bool,
+    /// Refuses every internal address whatever the process's policy allows (T28: push endpoints
+    /// never reach networks an admin opened for mail servers).
+    internet_only: bool,
 }
 
 impl Http {
@@ -123,7 +129,14 @@ impl Http {
             timeout,
             deadline,
             admin_configured: false,
+            internet_only: false,
         }
+    }
+
+    /// The same, reaching public addresses only (see `internet_only`).
+    pub fn internet_only(mut self) -> Self {
+        self.internet_only = true;
+        self
     }
 
     /// The same for an address the server's admin configured, which the address policy (meant for
@@ -147,6 +160,14 @@ impl Http {
                 "refusing to send to an address that is not https".into(),
             )
             .into());
+        }
+        let breaks = |t: &str| t.contains(['\r', '\n']);
+        if req
+            .extra_headers
+            .iter()
+            .any(|(n, v)| breaks(n) || breaks(v) || n.is_empty())
+        {
+            return Err(BackendError::Permanent("a header is malformed".into()).into());
         }
         let allowance = Duration::from_secs((req.body.len() / (256 * 1024)) as u64)
             .saturating_add(req.extra_time);
@@ -207,7 +228,12 @@ impl Http {
             return Err(unreachable());
         }
         // T26: the process's address policy (the Companion refuses its own network).
-        let addrs = if self.admin_configured {
+        let addrs = if self.internet_only {
+            addrs
+                .into_iter()
+                .filter(|a| !crate::netpolicy::is_internal(a.ip()))
+                .collect()
+        } else if self.admin_configured {
             addrs
         } else {
             crate::netpolicy::filter(addrs)
@@ -272,6 +298,12 @@ fn request_head(req: &HttpRequest<'_>) -> Zeroizing<String> {
         head.push_str(ct);
         head.push_str("\r\n");
     }
+    for (name, value) in req.extra_headers {
+        head.push_str(name);
+        head.push_str(": ");
+        head.push_str(value);
+        head.push_str("\r\n");
+    }
     if req.method == "POST" {
         // Written piecewise: `format!` would build the line in a separate, unwiped string.
         head.push_str("Content-Length: ");
@@ -295,6 +327,11 @@ fn head_capacity(req: &HttpRequest<'_>, host: &str) -> usize {
         + host.len()
         + req.authorization.map_or(0, str::len)
         + req.content_type.map_or(0, str::len)
+        + req
+            .extra_headers
+            .iter()
+            .map(|(n, v)| n.len() + v.len() + 4)
+            .sum::<usize>()
 }
 
 /// Classifies an I/O error from the handshake: a certificate or protocol problem keeps its own
@@ -652,8 +689,11 @@ mod tests {
             max_response: 10,
             extra_time: Duration::ZERO,
             error_body: false,
+            extra_headers: &[("TTL", "3600"), ("Urgency", "normal")],
         };
         let head = request_head(&req);
+        assert!(head.contains("TTL: 3600\r\nUrgency: normal\r\n"));
+        assert!(head.len() <= head_capacity(&req, &req.url.host_header()));
         assert!(head.starts_with("POST /jmap/ HTTP/1.1\r\nHost: mail.example.org:8443\r\n"));
         assert!(head.contains("Authorization: Basic c2VjcmV0\r\n"));
         assert!(head.contains("Content-Length: 2\r\n"));
@@ -673,6 +713,7 @@ mod tests {
             max_response: 10,
             extra_time: Duration::ZERO,
             error_body: false,
+            extra_headers: &[],
         };
         let head = request_head(&req);
         assert!(head.contains(&format!("\r\nAuthorization: {auth}\r\n")));
@@ -696,6 +737,7 @@ mod tests {
             max_response: 10,
             extra_time: Duration::ZERO,
             error_body: false,
+            extra_headers: &[],
         };
         let err = http.send(&req).await.unwrap_err();
         assert!(matches!(err.error, BackendError::Permanent(_)));

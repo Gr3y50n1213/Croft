@@ -107,6 +107,9 @@ pub struct MailCores {
     data_dir: PathBuf,
     slots: Mutex<HashMap<i64, Slot>>,
     max_accounts: usize,
+    /// Bumped when a core is closed: whoever holds a core while waiting on it (the push relay's
+    /// watchers) lets it go, so the core is dropped where its threads are waited for.
+    closing: tokio::sync::watch::Sender<u64>,
 }
 
 impl std::fmt::Debug for MailCores {
@@ -122,6 +125,7 @@ impl MailCores {
             data_dir,
             slots: Mutex::new(HashMap::new()),
             max_accounts: MAX_ACCOUNTS_PER_USER,
+            closing: tokio::sync::watch::channel(0).0,
         }
     }
 
@@ -129,6 +133,11 @@ impl MailCores {
     pub fn with_max_accounts(mut self, max: usize) -> Self {
         self.max_accounts = max;
         self
+    }
+
+    /// A signal that a core is being closed (see `closing`).
+    pub fn closing(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.closing.subscribe()
     }
 
     /// The most accounts one user may have.
@@ -223,8 +232,52 @@ impl MailCores {
     pub fn close(&self, user_id: i64) {
         let slot = self.slot(user_id);
         let core = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-        drop(core);
+        self.release(core.into_iter().map(|(c, _)| c).collect());
     }
+
+    /// Asks every holder to let the cores go, waits a moment until they have, and drops them
+    /// where their threads are waited for.
+    fn release(&self, cores: Vec<Arc<Core>>) {
+        if cores.is_empty() {
+            return;
+        }
+        self.closing.send_modify(|n| *n += 1);
+        for _ in 0..200 {
+            if cores.iter().all(|c| Arc::strong_count(c) == 1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop_off_runtime(cores);
+    }
+}
+
+impl Drop for MailCores {
+    fn drop(&mut self) {
+        let slots: Vec<Slot> = self
+            .slots
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .drain()
+            .map(|(_, s)| s)
+            .collect();
+        let cores = slots
+            .iter()
+            .filter_map(|s| s.lock().unwrap_or_else(PoisonError::into_inner).take())
+            .map(|(c, _)| c)
+            .collect();
+        self.release(cores);
+    }
+}
+
+/// Drops cores on a thread of their own, where no async runtime is current: a core dropped there
+/// waits (briefly) for its threads to finish, instead of leaving them running into the database
+/// while the process goes on, or exits (T28: a test process crashed at exit in SQLCipher).
+fn drop_off_runtime(cores: Vec<Arc<Core>>) {
+    if cores.is_empty() {
+        return;
+    }
+    let _ = std::thread::spawn(move || drop(cores)).join();
 }
 
 #[cfg(test)]

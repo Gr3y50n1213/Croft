@@ -49,13 +49,7 @@ pub const JMAP_CONCURRENT: usize = 4;
 
 /// The caller's core and its epoch.
 async fn core(app: &App, user_id: i64) -> Result<(Arc<Core>, u64), ApiError> {
-    let mail = app.mail.clone().ok_or(ApiError::NotFound)?;
-    let store = app.store.clone();
-    let auth = app.auth.clone();
-    tokio::task::spawn_blocking(move || mail.core_and_epoch(&store, auth.master(), user_id))
-        .await
-        .map_err(|_| ApiError::Server)?
-        .map_err(|_| ApiError::Server)
+    app.user_core(user_id).await
 }
 
 fn state(core: &Core, epoch: u64) -> String {

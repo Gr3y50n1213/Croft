@@ -45,6 +45,8 @@ html5ever = { path = "../core/vendor/html5ever" }
 ammonia = { path = "../core/vendor/ammonia" }
 
 [dev-dependencies]
+# RFC 8291's example uses fixed keys, which ring cannot load for key agreement (tests only).
+p256 = { version = "0.14.0", features = ["ecdh"] }
 # The core's in-process IMAP, SMTP and JMAP test servers (tests only).
 croft-ffi = { path = "../core/ffi", features = ["sqlcipher", "test-server"] }
 # The fake OIDC provider in the tests reads a form.

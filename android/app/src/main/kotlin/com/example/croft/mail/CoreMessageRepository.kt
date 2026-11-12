@@ -44,6 +44,29 @@ class CoreMessageRepository(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MessageId, AccountId>): Boolean = size > MAX_KNOWN_MESSAGES
     }
 
+    /** The accounts seen so far and which of them is the sample mailbox (`is_demo`): its rows say "Not saved to server". */
+    private val knownAccounts = HashSet<AccountId>()
+    private val sampleAccounts = HashSet<AccountId>()
+
+    private fun learnAccounts(accounts: List<CoreAccountInfo>) = synchronized(knownAccounts) {
+        knownAccounts.clear(); sampleAccounts.clear()
+        accounts.forEach { knownAccounts += it.id; if (it.isDemo) sampleAccounts += it.id }
+    }
+
+    /**
+     * Whether [account] is the sample mailbox. An account not seen yet is looked up once (a local read); if that read fails the rows
+     * are simply not marked (the mark is a hint on a row, never a reason to fail a list).
+     */
+    private fun isSample(account: AccountId): Boolean {
+        synchronized(knownAccounts) { if (account in knownAccounts) return account in sampleAccounts }
+        try {
+            learnAccounts(core.listAccounts())
+        } catch (e: Exception) {
+            return false
+        }
+        return synchronized(knownAccounts) { account in sampleAccounts }
+    }
+
     /** What an operation was, for Retry and for marking failed rows. */
     private class Call(val kind: Kind, val ids: List<MessageId>, val folder: FolderId?)
 
@@ -55,7 +78,7 @@ class CoreMessageRepository(
 
     // ---- Reading ----
 
-    override suspend fun listAccounts(): List<AccountInfo> = onIo { core.listAccounts().map { it.toApp() } }
+    override suspend fun listAccounts(): List<AccountInfo> = onIo { core.listAccounts().also { learnAccounts(it) }.map { it.toApp() } }
 
     override suspend fun listFolders(account: AccountId): List<FolderInfo> = onIo {
         core.listFolders(account).map { it.toApp(account) } +
@@ -65,7 +88,7 @@ class CoreMessageRepository(
     override suspend fun listMessages(scope: MessageScope, before: RowCursor?, limit: Int): MessagePage = onIo {
         val page = core.listMessages(scope.toCore(), before?.let { CoreRowCursor(it.dateMs, it.id) }, limit.coerceIn(0, MAX_PAGE).toUInt())
         synchronized(accountOf) { page.rows.forEach { accountOf[it.id] = it.account } }
-        MessagePage(page.rows.map { it.toApp() }, page.next?.let { RowCursor(it.dateMs, it.id) })
+        MessagePage(page.rows.map { it.toApp(isSample(it.account)) }, page.next?.let { RowCursor(it.dateMs, it.id) })
     }
 
     override suspend fun nextChange(after: Long): ChangeBatch {
@@ -188,6 +211,10 @@ class CoreMessageRepository(
         throw e
     } catch (e: MailException) {
         throw e
+    } catch (e: IllegalStateException) {
+        // The core was closed (an erase) while a call was on its way: not a crash. Any other IllegalStateException is a bug and passes.
+        if (e.message?.contains("destroyed", ignoreCase = true) != true) throw e
+        throw MailException(MailError.FAILED)
     } catch (e: CoreException) {
         throw MailException(
             when (e) {
@@ -199,7 +226,7 @@ class CoreMessageRepository(
         )
     }
 
-    private fun CoreAccountInfo.toApp() = AccountInfo(id, label, email, status.toApp(), lastSyncedMs)
+    private fun CoreAccountInfo.toApp() = AccountInfo(id, label, email, status.toApp(), lastSyncedMs, isDemo)
 
     private fun CoreAccountStatus.toApp() = when (this) {
         CoreAccountStatus.OK -> AccountState.OK
@@ -217,11 +244,11 @@ class CoreMessageRepository(
             if (VirtualFolders.isVirtual(folderId)) CoreMessageScope.Starred(account) else CoreMessageScope.Folder(account, folderId)
     }
 
-    private fun CoreMessageRow.toApp() = MessageRowData(
+    private fun CoreMessageRow.toApp(localOnly: Boolean) = MessageRowData(
         id = id, account = account, folder = folder, senderName = senderName, senderAddress = senderAddress,
         subject = subject, snippet = snippet, dateMs = dateMs, seen = seen, flagged = flagged,
         hasAttachments = hasAttachments, pending = pending, threadCount = threadCount.toInt().coerceAtLeast(1),
-        recipients = recipients.joinToString(", ").ifBlank { null },
+        recipients = recipients.joinToString(", ").ifBlank { null }, localOnly = localOnly,
     )
 
     private fun CoreChangeBatch.toApp() = ChangeBatch(

@@ -58,11 +58,19 @@ fun OnboardingHost(
     onFinished: (accountId: Long) -> Unit,
     modifier: Modifier = Modifier,
     showCompanion: Boolean = OnboardingFlags.COMPANION_ENTRY,
+    /** The first screen: S01, or S02 when Accounts (S44) adds another account. */
+    startAt: Step = Step.WELCOME,
+    /** Back on the first screen when it is not S01 (Accounts): leaves the flow. On S01 Back is left to the system. */
+    onExit: () -> Unit = {},
+    /** S01 says the sample mailbox could not be opened. */
+    sampleProblem: Boolean = false,
+    /** S01's privacy policy link (a view intent); no link when null. */
+    onPrivacyPolicy: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     val flow = rememberSaveable(
         saver = Saver<OnboardingFlow, ArrayList<String>>(save = { it.snapshot() }, restore = { OnboardingFlow(environment.backend, scope, it) }),
-    ) { OnboardingFlow(environment.backend, scope) }
+    ) { OnboardingFlow(environment.backend, scope, startAt = startAt) }
     DisposableEffect(flow) { onDispose { flow.close() } }
     val state by flow.state.collectAsState()
 
@@ -72,7 +80,7 @@ fun OnboardingHost(
     val fire: (Long) -> Unit = { id -> if (fired.compareAndSet(false, true)) onFinished(id) }
     val finish = { state.addedAccount?.let(fire) ?: Unit }
     // S01: no handler, so the system leaves the app. S09: Back is Continue in background. Elsewhere: one step back.
-    BackHandler(enabled = state.step != Step.WELCOME) { if (state.step == Step.FIRST_SYNC) finish() else flow.back() }
+    BackHandler(enabled = state.step != Step.WELCOME) { if (state.step == Step.FIRST_SYNC) finish() else if (!flow.back()) onExit() }
 
     val level = LocalMotionLevel.current
     val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
@@ -81,10 +89,10 @@ fun OnboardingHost(
         transitionSpec = { sharedAxisX(level, forward = targetState.ordinal > initialState.ordinal, rtl = rtl) },
     ) { step ->
         when (step) {
-            Step.WELCOME -> WelcomeScreen(onAddAccount = flow::openAddAccount, onTrySampleMail = onTrySampleMail, showCompanion = showCompanion)
+            Step.WELCOME -> WelcomeScreen(onAddAccount = flow::openAddAccount, onTrySampleMail = onTrySampleMail, showCompanion = showCompanion, sampleProblem = sampleProblem, onPrivacyPolicy = onPrivacyPolicy)
             Step.ADD_ACCOUNT -> AddAccountScreen(
                 email = state.email, rejected = state.emailRejected, onEmailChange = flow::setEmail, onShortcut = flow::applyShortcut,
-                onContinue = flow::continueWithEmail, onBack = { flow.back() },
+                onContinue = flow::continueWithEmail, onBack = { if (!flow.back()) onExit() },
             )
             Step.FINDING -> FindingScreen(
                 email = state.email, probes = state.probes, lookup = state.lookup, onRetry = flow::retryLookup,

@@ -85,6 +85,8 @@ data class MessageRowState(
     val encryption: EncryptionMark = EncryptionMark.NONE,
     /** A small clock beside the time: the action waits for the network. */
     val pendingOffline: Boolean = false,
+    /** The row is in the sample mailbox: its changes stay on this device, and it says "Not saved to server" (the read-only mailbox rule). */
+    val localOnly: Boolean = false,
     /** A permanent refusal: the row returns with a red edge. */
     val failed: Boolean = false,
     /** Just arrived: a tint that fades over 1.2 s. The caller sets it only while the row is on screen. */
@@ -183,6 +185,7 @@ fun MessageRow(
             EncryptionMark.NONE -> Unit
         }
         if (state.pendingOffline) append(stringResource(R.string.row_pending)).append(". ")
+        if (state.localOnly) append(stringResource(R.string.row_not_saved)).append(". ")
         if (state.failed) append(stringResource(R.string.row_failed)).append(". ")
         append(preview)
     }
@@ -262,6 +265,9 @@ fun MessageRow(
                         if (density.previewLines > 0) {
                             Text(preview, Modifier.testTag(ROW_PREVIEW_TAG), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant, maxLines = density.previewLines, overflow = TextOverflow.Ellipsis)
                         }
+                        if (state.localOnly) {
+                            Text(stringResource(R.string.row_not_saved), Modifier.testTag(ROW_NOT_SAVED_TAG), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant, maxLines = 1)
+                        }
                     }
                     if (state.starred || state.hasAttachment || state.encryption != EncryptionMark.NONE) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -289,6 +295,9 @@ private const val BIG_TEXT_FROM_FONT_SCALE = 1.3f
 
 /** The preview is cut to the Show previews setting on purpose; tests that look for clipped text skip it. */
 const val ROW_PREVIEW_TAG = "row-preview"
+
+/** Test tag of the "Not saved to server" line of a sample-mailbox row. */
+const val ROW_NOT_SAVED_TAG = "row-not-saved"
 
 private fun Modifier.matchParentSizeTint(colour: androidx.compose.ui.graphics.Color): Modifier =
     this.fillMaxWidth().fillMaxHeight().background(colour)

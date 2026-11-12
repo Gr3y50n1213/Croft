@@ -71,6 +71,10 @@ fun WelcomeScreen(
     modifier: Modifier = Modifier,
     showCompanion: Boolean = OnboardingFlags.COMPANION_ENTRY,
     onCompanion: () -> Unit = {},
+    /** The sample mailbox could not be opened (the core or its secure storage is not available): a plain line says so. */
+    sampleProblem: Boolean = false,
+    /** Opens the privacy policy (a view intent); the link is not drawn when null. */
+    onPrivacyPolicy: (() -> Unit)? = null,
 ) {
     Box(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag(OnboardingTags.WELCOME), contentAlignment = Alignment.Center) {
         Column(
@@ -100,10 +104,22 @@ fun WelcomeScreen(
                 stringResource(R.string.onb_try_sample), onTrySampleMail,
                 Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(OnboardingTags.SAMPLE_BUTTON), kind = ButtonKind.TEXT,
             )
+            if (sampleProblem) {
+                Text(
+                    stringResource(R.string.onb_sample_problem), Modifier.testTag(OnboardingTags.SAMPLE_PROBLEM), style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center,
+                )
+            }
             Text(
                 stringResource(R.string.onb_no_account_needed), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
             )
+            if (onPrivacyPolicy != null) {
+                CroftButton(
+                    stringResource(R.string.about_privacy_policy), onPrivacyPolicy,
+                    Modifier.heightIn(min = 48.dp).testTag(OnboardingTags.PRIVACY_LINK), kind = ButtonKind.TEXT,
+                )
+            }
         }
     }
 }

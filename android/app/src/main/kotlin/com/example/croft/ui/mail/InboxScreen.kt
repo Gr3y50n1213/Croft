@@ -116,6 +116,10 @@ fun InboxScreen(
     startSwitcherOpen: Boolean = false,
     onOpenMessage: (MessageId) -> Unit = {},
     onCompose: () -> Unit = {},
+    /** "Add another account" of the switcher (S02); a note that it comes later shows when null (tests of the Inbox alone). */
+    onAddAccount: (() -> Unit)? = null,
+    /** "Manage accounts" of the switcher (S44); a note shows when null. */
+    onManageAccounts: (() -> Unit)? = null,
 ) {
     val controller = rememberInboxController(session, startScope)
     controller.haptics = LocalHaptics.current
@@ -193,8 +197,8 @@ fun InboxScreen(
                     else -> Unit
                 }
             },
-            onAddAccount = { controller.snackbar.show(laterMessage) },
-            onManageAccounts = { controller.snackbar.show(laterMessage) },
+            onAddAccount = { if (onAddAccount != null) { switcherOpen = false; onAddAccount() } else controller.snackbar.show(laterMessage) },
+            onManageAccounts = { if (onManageAccounts != null) { switcherOpen = false; onManageAccounts() } else controller.snackbar.show(laterMessage) },
             onClose = { switcherOpen = false },
         )
     }
@@ -509,6 +513,7 @@ private fun LazyItemScope.RowItem(
         starred = row.flagged,
         encryption = if (row.encrypted) EncryptionMark.ENCRYPTED else EncryptionMark.NONE,
         pendingOffline = row.pending,
+        localOnly = row.localOnly,
         failed = row.id in controller.failedRows,
         isNew = row.id in controller.arrived,
         hasAttachment = row.hasAttachments,

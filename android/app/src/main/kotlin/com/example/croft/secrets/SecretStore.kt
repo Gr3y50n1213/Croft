@@ -45,7 +45,7 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
 
     /**
      * Stores the first secret of a new account: first deletes every entry under this id (the core
-     * never reuses an id, so there should be none; a leftover of a crash must not be mistaken for
+     * does not reuse an id while its database exists, and an erase deletes every secret with the database, so there should be none; a leftover of a crash must not be mistaken for
      * the new account's), then stores [secret]. Throws [SecretBoxException] when it cannot be sealed.
      */
     fun putForNewAccount(accountId: Long, kind: SecretKind, secret: ByteArray) {
@@ -97,9 +97,10 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     }
 
     /**
-     * Deletes every entry of an account. Call it **before** `Core.removeAccount` (a crash in
-     * between leaves an account that only needs a sign-in; the other order could leave a secret
-     * that a later account with the same id would find).
+     * Deletes every entry of an account. Account removal calls it **after** `Core.removeAccount` (which stops the account's task, so
+     * nothing new is sent with this account's secret after it has returned): a crash in between leaves a secret for an id the core no
+     * longer lists, which the sweep at the next start deletes. An id is not given to another account while the database exists (the core
+     * keeps a high-water mark); after "Erase all Croft data" the database and every secret are gone together.
      */
     @Synchronized
     fun removeAccount(accountId: Long) {
@@ -111,11 +112,17 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     fun hasAny(): Boolean =
         (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets")).isNotEmpty()
 
-    /** Deletes every account secret (key loss). */
+    /** Deletes every account secret (key loss, and "Erase all Croft data"). A file that cannot be deleted stays: check [hasAny] afterwards. */
     @Synchronized
     fun clear() {
         dir.listFiles { f -> f.name.startsWith(PREFIX) }?.forEach { it.delete() }
     }
+
+    /** The ids that have at least one stored secret. */
+    @Synchronized
+    fun accountIds(): Set<Long> =
+        (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets"))
+            .mapNotNull { it.name.removePrefix(PREFIX).substringBefore('.').toLongOrNull() }.toSet()
 
     private fun file(accountId: Long, kind: SecretKind) = File(dir, "$PREFIX$accountId.${kind.wireName}.v1")
 

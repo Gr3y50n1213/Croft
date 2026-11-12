@@ -10,6 +10,7 @@
     <string name="onb_welcome_tagline">Mail that lives on your own server.</string>
     <string name="onb_add_account">Add an account</string>
     <string name="onb_try_sample">Try with sample mail</string>
+    <string name="onb_sample_problem">Croft couldn\'t open the sample mail. Try again.</string>
     <string name="onb_companion">I run a Companion</string>
     <string name="onb_no_account_needed">No Croft account is needed. Your mail goes straight to your server.</string>
 

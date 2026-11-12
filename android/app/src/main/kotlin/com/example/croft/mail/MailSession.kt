@@ -4,9 +4,7 @@
 
 package com.example.croft.mail
 
-import android.content.Context
 import com.example.croft.design.CroftTokens
-import java.io.File
 import java.time.ZoneId
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,10 +19,9 @@ sealed interface MailEvent {
 }
 
 /**
- * What the mail screens share for the life of the process: the repository (the real core, or the fake sample mailbox while no
- * account exists), the persisted scroll anchors, the clock and time zone (injected, so tests and screenshots see the same
+ * What the mail screens share for the life of the process: the repository (the real core; the sample mailbox is one of its accounts), the persisted scroll anchors, the clock and time zone (injected, so tests and screenshots see the same
  * times), the per-folder cache, the folder mapping, the Undo time and the events the screens raise. The activity creates one
- * ([MailRuntime.session], or [shared] for the sample mailbox); tests build their own.
+ * ([MailRuntime.session]); tests build their own.
  */
 class MailSession(
     val repository: MessageRepository,
@@ -35,8 +32,12 @@ class MailSession(
     val rowActions: RowActions = RepositoryRowActions(repository),
     /** What the person chose once for an account without an Archive, Trash or Spam folder, and the recent Move to folders. */
     val folderMapping: FolderMapping = InMemoryFolderMapping(),
-    /** True for the app's fake-data sample mailbox (no account yet): the rows are made up in Kotlin. Not the core's sample account (`AccountInfo.is_demo`), which is a real core account. */
-    val usesFakeData: Boolean = false,
+    /**
+     * True for the empty stand-in session used only while the Rust core could not be opened (secure storage not ready, data from a
+     * newer Croft): the app then shows the sign-in screens, which say so, and never this session's Inbox. The old Kotlin fake-data
+     * Inbox is gone from the running app: "Try with sample mail" is the core's own sample account (`AccountInfo.is_demo`).
+     */
+    val coreUnavailable: Boolean = false,
 ) {
     private val cache = HashMap<String, CachedList>()
 
@@ -61,18 +62,14 @@ class MailSession(
     @Synchronized fun remember(scopeKey: String, rows: List<MessageRowData>, next: RowCursor?) { cache[scopeKey] = CachedList(rows, next) }
 
     companion object {
-        /** The rows of the app's own demo mailbox: 5,000, as T14 asks. The real core's session replaces it once an account exists. */
-        const val DEMO_ROWS = 5_000
+        @Volatile private var unavailable: MailSession? = null
 
-        @Volatile private var shared: MailSession? = null
-
-        /** The sample mailbox of this process: the fake repository with [DEMO_ROWS] rows, anchors in `noBackupFilesDir`. Shown until the first account exists (onboarding is T17). */
-        fun shared(context: Context): MailSession = shared ?: synchronized(this) {
-            shared ?: run {
-                val now = System.currentTimeMillis()
-                val repo = FakeMessageRepository(FakeData.rows(DEMO_ROWS, now), System::currentTimeMillis, FakeData.accounts(now))
-                MailSession(repo, FileAnchorStore(File(context.applicationContext.noBackupFilesDir, "croft-list-anchors.json")), usesFakeData = true)
-            }.also { shared = it }
+        /** The stand-in session while the core cannot be opened: no accounts, no rows ([coreUnavailable]). One per process. */
+        fun unavailable(): MailSession = unavailable ?: synchronized(this) {
+            unavailable ?: MailSession(
+                FakeMessageRepository(emptyList(), System::currentTimeMillis, emptyList()),
+                coreUnavailable = true,
+            ).also { unavailable = it }
         }
     }
 }

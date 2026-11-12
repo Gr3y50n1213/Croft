@@ -152,6 +152,8 @@ class SecretStoreCredentialsTest {
         }
 
         override fun signInNeeded(accountId: Long) = inner.signInNeeded(accountId)
+
+        override fun saveTokens(accountId: Long, secret: ByteArray) = inner.saveTokens(accountId, secret)
     }
 
     private fun accounts() = AccountSecrets(store, signIns)

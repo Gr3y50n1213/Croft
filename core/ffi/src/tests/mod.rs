@@ -11,6 +11,7 @@ mod background;
 mod demo;
 mod encrypted;
 mod local;
+mod oauth;
 mod readd;
 mod reading;
 mod search;
@@ -60,6 +61,7 @@ pub(crate) fn block_for<F: Future>(limit: Duration, f: F) -> Option<F::Output> {
 /// stored (`store`, which a test calls right after `add_account` returns, as the app does).
 #[derive(Default)]
 pub(crate) struct MemProvider {
+    saved: Mutex<Vec<i64>>,
     stored: Mutex<HashMap<i64, Arc<FfiCredential>>>,
     asked: Mutex<Vec<i64>>,
     sign_ins: Mutex<Vec<i64>>,
@@ -85,6 +87,11 @@ impl MemProvider {
         self.sign_ins.lock().unwrap().clone()
     }
 
+    /// The accounts whose OAuth secret the core handed back for saving (a rotation).
+    pub(crate) fn saved(&self) -> Vec<i64> {
+        self.saved.lock().unwrap().clone()
+    }
+
     pub(crate) fn asked(&self) -> Vec<i64> {
         self.asked.lock().unwrap().clone()
     }
@@ -105,6 +112,16 @@ impl CredentialProvider for MemProvider {
 
     fn sign_in_needed(&self, account_id: i64) -> Result<(), ProviderError> {
         self.sign_ins.lock().unwrap().push(account_id);
+        Ok(())
+    }
+
+    fn save_tokens(&self, account_id: i64, secret: Vec<u8>) -> Result<(), ProviderError> {
+        // Like the app: the new secret replaces the stored one.
+        self.stored
+            .lock()
+            .unwrap()
+            .insert(account_id, FfiCredential::oauth_stored(secret));
+        self.saved.lock().unwrap().push(account_id);
         Ok(())
     }
 }

@@ -40,6 +40,8 @@ class MemoryCredentials : CredentialProvider {
     @Synchronized override fun credential(accountId: Long): FfiCredential? = stored[accountId]?.let { FfiCredential.password(it.toByteArray()) }
 
     override fun signInNeeded(accountId: Long) { signInCalls += accountId }
+
+    override fun saveTokens(accountId: Long, secret: ByteArray) { secret.fill(0) }
 }
 
 /** Polls [check] every 50 ms until it returns non-null (or true), failing after [timeoutMs]. */

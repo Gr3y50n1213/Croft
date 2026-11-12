@@ -301,3 +301,92 @@ mod tests {
         server.stop();
     }
 }
+
+#[uniffi::export]
+impl TestImapServer {
+    /// Changes the accepted password (and XOAUTH2 access token), as when a token expires (T21).
+    pub fn set_password(&self, password: String) {
+        self.with(|s| s.set_password(&password));
+    }
+}
+
+/// A fake OAuth token endpoint on `127.0.0.1` for the JVM tests of the sign-in (T21). Starting
+/// it makes the core send its token requests there instead of to Google or Microsoft (host builds
+/// only: this feature never reaches Android). Every token is made up.
+#[derive(uniffi::Object)]
+pub struct TestTokenEndpoint {
+    rt: Runtime,
+    fake: croft_test_support::oauth::FakeTokenEndpoint,
+}
+
+fn query_param(url: &str, name: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    let raw = query
+        .split('&')
+        .find_map(|p| p.strip_prefix(&format!("{name}=")))?;
+    Some(raw.replace("%3A", ":").replace("%2F", "/"))
+}
+
+#[uniffi::export]
+impl TestTokenEndpoint {
+    /// Starts it and points the core's token requests at it.
+    #[uniffi::constructor]
+    pub fn start() -> Arc<Self> {
+        #[allow(clippy::expect_used)]
+        let rt = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a runtime for the token endpoint");
+        let fake = rt.block_on(croft_test_support::oauth::FakeTokenEndpoint::start());
+        crate::oauth::set_token_endpoint_for_tests(Some(fake.url()));
+        Arc::new(Self { rt, fake })
+    }
+
+    /// Plays the browser after the person agreed on the provider's page: registers `code` for the
+    /// PKCE challenge in `auth_url` (which gives `refresh_token`) and opens the redirect with the
+    /// code and the `state`. Returns false when the URL has no loopback redirect.
+    pub fn complete_sign_in(&self, auth_url: String, code: String, refresh_token: String) -> bool {
+        let (Some(redirect), Some(state), Some(challenge)) = (
+            query_param(&auth_url, "redirect_uri"),
+            query_param(&auth_url, "state"),
+            query_param(&auth_url, "code_challenge"),
+        ) else {
+            return false;
+        };
+        let Some(port) = redirect
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+        else {
+            return false;
+        };
+        self.fake.add_code(&code, &challenge, &refresh_token);
+        let target = format!("/?state={state}&code={code}");
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                let _ = write!(s, "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+                let mut page = String::new();
+                let _ = s.read_to_string(&mut page);
+            }
+        });
+        true
+    }
+
+    /// Each refresh gives a new refresh token.
+    pub fn set_rotation(&self, on: bool) {
+        self.fake.set_rotation(on);
+    }
+
+    /// The form bodies received.
+    pub fn requests(&self) -> Vec<String> {
+        self.fake.requests()
+    }
+
+    /// Stops sending the core's token requests here.
+    pub fn stop(&self) {
+        crate::oauth::set_token_endpoint_for_tests(None);
+        let _ = &self.rt;
+    }
+}

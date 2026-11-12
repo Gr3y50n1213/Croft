@@ -40,6 +40,8 @@ import kotlinx.coroutines.delay
 class OnboardingEnvironment(
     val backend: OnboardingBackend,
     val firstSync: FirstSyncSource,
+    /** T21: "Use your own client" on S04 for Gmail and Outlook. None: S04 offers only the password (tests of other parts). */
+    val oauth: com.example.croft.mail.onboarding.OAuthBackend? = null,
     val openSession: suspend () -> MailSession,
 )
 
@@ -98,10 +100,39 @@ fun OnboardingHost(
                 email = state.email, probes = state.probes, lookup = state.lookup, onRetry = flow::retryLookup,
                 onEnterManually = flow::openServerSettings, onBack = { flow.back() },
             )
-            Step.SIGN_IN -> SignInScreen(
-                state = state, onSignIn = flow::signIn, onServerSettings = flow::openServerSettings, onTrust = flow::trustServer,
-                onCancelTrust = flow::cancelTrust, onPasswordEdited = flow::dismissFailure, onBack = { flow.back() },
-            )
+            Step.SIGN_IN -> {
+                val choice = com.example.croft.mail.onboarding.OAuthProviderChoice.of(state.discovered?.provider)
+                val oauthBackend = environment.oauth
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val oauthScope = androidx.compose.runtime.rememberCoroutineScope()
+                // One sign-in controller while S04 shows; leaving S04 ends a pending browser sign-in quietly.
+                val oauth = remember(oauthBackend, choice) {
+                    if (oauthBackend == null || choice == null) null
+                    else com.example.croft.mail.onboarding.OAuthSignIn(
+                        oauthBackend, oauthScope,
+                        openTab = { url -> openInBrowserTab(context, url) },
+                        onSignedIn = { secret -> flow.signInWithOAuth(secret) },
+                        onReturned = { returnToCroft(context) },
+                    )
+                }
+                androidx.compose.runtime.DisposableEffect(oauth) { onDispose { oauth?.cancel() } }
+                SignInScreen(
+                    state = state, onSignIn = flow::signIn, onServerSettings = flow::openServerSettings, onTrust = flow::trustServer,
+                    onCancelTrust = flow::cancelTrust, onPasswordEdited = flow::dismissFailure, onBack = { flow.back() },
+                    ownClient = if (oauth != null && choice != null && oauthBackend != null) ({
+                        val phase by oauth.phase.collectAsState()
+                        var remembered by remember(choice) { mutableStateOf<String?>(null) }
+                        LaunchedEffect(choice) { remembered = oauthBackend.rememberedClientId(choice) }
+                        val donePage = androidx.compose.ui.res.stringResource(com.example.croft.R.string.onb_own_client_done_page)
+                        OwnClientSection(
+                            provider = choice, phase = phase, rememberedClientId = remembered,
+                            onStart = { id, secret -> oauth.start(choice, id, secret, state.email, donePage) },
+                            onCancel = oauth::cancel, onEdited = oauth::clearFailure,
+                            enabled = state.attempt !is com.example.croft.mail.onboarding.Attempt.Working,
+                        )
+                    }) else null,
+                )
+            }
             Step.SERVER_SETTINGS -> ServerSettingsScreen(
                 state = state, onFormChange = flow::updateForm, onTest = flow::testConnection, onAdd = flow::addFromSettings,
                 onTrust = flow::trustServer, onCancelTrust = flow::cancelTrust, onBack = { flow.back() },

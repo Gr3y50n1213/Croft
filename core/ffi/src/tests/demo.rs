@@ -45,6 +45,10 @@ impl CredentialProvider for NeverAsked {
         Err(ProviderError::Failed)
     }
 
+    fn save_tokens(&self, _: i64, _: Vec<u8>) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     fn sign_in_needed(&self, _: i64) -> Result<(), ProviderError> {
         self.sign_in.store(true, Ordering::SeqCst);
         Err(ProviderError::Failed)

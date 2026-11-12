@@ -69,6 +69,8 @@ fun SignInScreen(
     onPasswordEdited: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** T21: Gmail and Outlook only, the "Use your own client" section ([OwnClientSection]); drawn under the password's Sign in. */
+    ownClient: (@Composable () -> Unit)? = null,
 ) {
     val imap = state.discovered?.imap
     var username by rememberSaveable(imap?.username) { mutableStateOf(imap?.username ?: state.email) }
@@ -111,6 +113,7 @@ fun SignInScreen(
         if (failure != null && !failure.isPasswordProblem) {
             FailureNotice(failure, serverDetails(imap), Modifier.testTag(OnboardingTags.SIGN_IN_FAILURE))
         }
+        ownClient?.invoke()
         CroftButton(
             stringResource(R.string.onb_server_settings_link), onServerSettings,
             Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(OnboardingTags.SIGN_IN_SETTINGS), kind = ButtonKind.TEXT, enabled = !working,

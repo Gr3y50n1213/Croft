@@ -31,7 +31,7 @@ async fn endpoint() -> (FakeTokenEndpoint, TokenEndpoint) {
 async fn a_code_is_exchanged_with_the_verifier_and_no_secret() {
     let (fake, ep) = endpoint().await;
     let pkce = Pkce::generate().unwrap();
-    fake.add_code("code-1", &pkce.verifier, "refresh-0");
+    fake.add_code("code-1", &pkce.challenge, "refresh-0");
     let t = ep
         .exchange_code(&client(), "code-1", "http://127.0.0.1:1", &pkce.verifier, 0)
         .await
@@ -55,7 +55,11 @@ async fn a_code_is_exchanged_with_the_verifier_and_no_secret() {
             .unwrap_err(),
         OAuthError::InvalidGrant
     );
-    fake.add_code("code-2", "the-right-one", "refresh-x");
+    fake.add_code(
+        "code-2",
+        &croft_protocols::oauth::challenge("the-right-one"),
+        "refresh-x",
+    );
     assert_eq!(
         ep.exchange_code(&client(), "code-2", "http://127.0.0.1:1", "a-wrong-one", 0)
             .await

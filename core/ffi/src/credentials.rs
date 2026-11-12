@@ -20,6 +20,8 @@ use croft_protocols::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::oauth::{OAuthSession, StoredOAuth};
+
 /// What proves who the person is, as the app hands it over: build one with [`FfiCredential::password`]
 /// or [`FfiCredential::oauth2`].
 ///
@@ -39,13 +41,15 @@ pub struct FfiCredential {
     kind: Kind,
 }
 
-/// The two shapes of credential. The secrets are wiped on drop.
+/// The shapes of credential. The secrets are wiped on drop.
 enum Kind {
     Password(Zeroizing<Vec<u8>>),
     OAuth2 {
         user: String,
         access_token: Zeroizing<Vec<u8>>,
     },
+    /// The sign-in secret of a bring-your-own OAuth account (T21, `oauth_finish`).
+    OAuthStored(Zeroizing<Vec<u8>>),
 }
 
 #[uniffi::export]
@@ -68,6 +72,15 @@ impl FfiCredential {
             },
         })
     }
+
+    /// The sign-in secret of an OAuth account, as `oauth_finish` gave it (or `save_tokens` last
+    /// handed it over). Opaque to the app.
+    #[uniffi::constructor]
+    pub fn oauth_stored(secret: Vec<u8>) -> Arc<Self> {
+        Arc::new(Self {
+            kind: Kind::OAuthStored(Zeroizing::new(secret)),
+        })
+    }
 }
 
 impl std::fmt::Debug for FfiCredential {
@@ -76,6 +89,7 @@ impl std::fmt::Debug for FfiCredential {
         match self.kind {
             Kind::Password(_) => f.write_str("FfiCredential::Password(***)"),
             Kind::OAuth2 { .. } => f.write_str("FfiCredential::OAuth2(***)"),
+            Kind::OAuthStored(_) => f.write_str("FfiCredential::OAuthStored(***)"),
         }
     }
 }
@@ -111,6 +125,21 @@ impl FfiCredential {
                     std::mem::take(&mut *token),
                 ))
             }
+            // Needs the token session: see `to_asked`.
+            Kind::OAuthStored(_) => None,
+        }
+    }
+
+    /// What this credential is for an account: a ready credential, an OAuth sign-in (refreshed
+    /// as needed), or nothing usable.
+    pub(crate) fn to_asked(&self) -> Asked {
+        match &self.kind {
+            Kind::OAuthStored(blob) => {
+                StoredOAuth::decode(blob).map_or(Asked::NoCredential, Asked::OAuth)
+            }
+            _ => self
+                .to_credential()
+                .map_or(Asked::NoCredential, Asked::Credential),
         }
     }
 }
@@ -169,12 +198,20 @@ pub trait CredentialProvider: Send + Sync {
     /// The account needs the person to sign in again (no credential, or the server refused it).
     /// Called once each time the account enters that state; `signed_in` ends it.
     fn sign_in_needed(&self, account_id: i64) -> Result<(), ProviderError>;
+
+    /// An OAuth account's sign-in secret changed (the provider rotated the refresh token): keep
+    /// `secret` in place of the stored one, and give it back from `credential` from now on. Only
+    /// for accounts whose credential was `FfiCredential::oauth_stored`. A failure is ignored (the
+    /// old secret may stop working; the account then needs a sign-in).
+    fn save_tokens(&self, account_id: i64, secret: Vec<u8>) -> Result<(), ProviderError>;
 }
 
 /// What the provider answered when asked for a stored account's credential.
 pub(crate) enum Asked {
     /// A credential.
     Credential(Credential),
+    /// An OAuth sign-in: the account gets a token session.
+    OAuth(StoredOAuth),
     /// None: no secret stored, a failure on the app's side, or a credential that is not UTF-8.
     NoCredential,
     /// The app's secure storage is not ready: ask again later, and do not call it a sign-in problem.
@@ -185,9 +222,7 @@ pub(crate) enum Asked {
 /// "no credential"; [`ProviderError::NotReady`] is kept apart.
 pub(crate) fn ask(provider: &dyn CredentialProvider, account: i64) -> Asked {
     match provider.credential(account) {
-        Ok(Some(c)) => c
-            .to_credential()
-            .map_or(Asked::NoCredential, Asked::Credential),
+        Ok(Some(c)) => c.to_asked(),
         Ok(None) | Err(ProviderError::Failed) => Asked::NoCredential,
         Err(ProviderError::NotReady) => Asked::NotReady,
     }
@@ -210,6 +245,12 @@ enum State {
     NotReady { retry_at: Instant, failures: u32 },
     /// Ready.
     Ready(Arc<ImapBackend>),
+    /// An OAuth account: the adapter is rebuilt with a new access token shortly before the old one
+    /// expires (and once when the server refuses it).
+    OAuth {
+        session: Arc<OAuthSession>,
+        adapter: Option<(Arc<ImapBackend>, i64)>,
+    },
     /// The settings are unusable: every call answers `Permanent`.
     Broken,
 }
@@ -304,6 +345,17 @@ impl AccountBackend {
                     Readiness::NotReady,
                 )
             }
+            Asked::OAuth(stored) => (
+                State::OAuth {
+                    session: Arc::new(crate::oauth::session(
+                        self.account,
+                        &stored,
+                        self.provider.clone(),
+                    )),
+                    adapter: None,
+                },
+                Readiness::Ready,
+            ),
             Asked::Credential(c) => match ImapBackend::new(self.config.clone(), c) {
                 Ok(b) => (State::Ready(Arc::new(b)), Readiness::Ready),
                 Err(_) => (State::Broken, Readiness::Broken),
@@ -352,7 +404,74 @@ impl AccountBackend {
                 *st = state;
             }
         }
-        self.ready()
+        self.ready_oauth(false).await
+    }
+
+    /// Whether the account signs in with OAuth.
+    fn is_oauth(&self) -> bool {
+        matches!(&*self.lock(), State::OAuth { .. })
+    }
+
+    /// The adapter; for an OAuth account, one with an access token that is not about to expire
+    /// (a new one when `force`: the server refused the last). A revoked sign-in (`invalid_grant`)
+    /// puts the account in the needs-sign-in state.
+    async fn ready_oauth(&self, force: bool) -> Result<Arc<ImapBackend>, BackendError> {
+        // The guard is dropped at the end of this statement: `ready` locks again.
+        let session = match &*self.lock() {
+            State::OAuth { session, adapter } => {
+                let fresh = adapter
+                    .as_ref()
+                    .filter(|(_, exp)| !force && exp - crate::oauth::now_ms_pub() > 60_000)
+                    .map(|(b, _)| b.clone());
+                Some((session.clone(), fresh))
+            }
+            _ => None,
+        };
+        let session = match session {
+            None => return self.ready(),
+            Some((_, Some(b))) => return Ok(b),
+            Some((session, None)) => session,
+        };
+        match session.credential(force).await {
+            Ok((credential, expires)) => {
+                let b = Arc::new(
+                    ImapBackend::new(self.config.clone(), credential)
+                        .map_err(|_| BackendError::Permanent("unusable server settings".into()))?,
+                );
+                let mut st = self.lock();
+                if let State::OAuth {
+                    session: s,
+                    adapter,
+                } = &mut *st
+                {
+                    if Arc::ptr_eq(s, &session) {
+                        *adapter = Some((b.clone(), expires));
+                    }
+                }
+                Ok(b)
+            }
+            Err(BackendError::Auth(m)) => {
+                let mut st = self.lock();
+                if matches!(&*st, State::OAuth { session: s, .. } if Arc::ptr_eq(s, &session)) {
+                    *st = State::NeedsSignIn;
+                }
+                Err(BackendError::Auth(m))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The SMTP credential of an OAuth account (the same token session as IMAP), or `None` for
+    /// an account that does not sign in with OAuth. `force` after the server refused the last.
+    pub(crate) async fn oauth_credential(
+        &self,
+        force: bool,
+    ) -> Option<Result<Credential, BackendError>> {
+        let session = match &*self.lock() {
+            State::OAuth { session, .. } => Some(session.clone()),
+            _ => None,
+        }?;
+        Some(session.credential(force).await.map(|(c, _)| c))
     }
 
     /// The account's IMAP adapter, for what the [`MailBackend`] trait does not offer (saving a
@@ -370,25 +489,43 @@ impl AccountBackend {
                 "secure storage is not ready".into(),
             )),
             State::Broken => Err(BackendError::Permanent("unusable server settings".into())),
+            // Reached only through `ready_oauth`, which handles it.
+            State::OAuth { .. } => Err(BackendError::Transient("signing in".into())),
         }
     }
 }
 
+/// Runs `$call` on the account's adapter; for an OAuth account whose server refused the access
+/// token, refreshes the token once and runs it once more before giving up (the account is then
+/// "needs sign-in").
+macro_rules! once_more_on_auth {
+    ($self:ident, |$b:ident| $call:expr) => {{
+        let $b = $self.current().await?;
+        match $call.await {
+            Err(BackendError::Auth(_)) if $self.is_oauth() => {
+                let $b = $self.ready_oauth(true).await?;
+                $call.await
+            }
+            r => r,
+        }
+    }};
+}
+
 impl MailBackend for AccountBackend {
     fn capabilities(&self) -> BackendFuture<'_, Capabilities> {
-        Box::pin(async move { self.current().await?.capabilities().await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.capabilities()) })
     }
 
     fn list_folders(&self) -> BackendFuture<'_, Vec<RemoteFolder>> {
-        Box::pin(async move { self.current().await?.list_folders().await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.list_folders()) })
     }
 
     fn folder_status<'a>(&'a self, folder: &'a str) -> BackendFuture<'a, FolderStatus> {
-        Box::pin(async move { self.current().await?.folder_status(folder).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.folder_status(folder)) })
     }
 
     fn snapshot<'a>(&'a self, folder: &'a str) -> BackendFuture<'a, RemoteSnapshot> {
-        Box::pin(async move { self.current().await?.snapshot(folder).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.snapshot(folder)) })
     }
 
     fn fetch_headers<'a>(
@@ -396,7 +533,7 @@ impl MailBackend for AccountBackend {
         folder: &'a str,
         uids: &'a [Uid],
     ) -> BackendFuture<'a, Vec<RemoteHeader>> {
-        Box::pin(async move { self.current().await?.fetch_headers(folder, uids).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.fetch_headers(folder, uids)) })
     }
 
     fn find_by_message_id<'a>(
@@ -404,12 +541,9 @@ impl MailBackend for AccountBackend {
         folder: &'a str,
         message_id: &'a str,
     ) -> BackendFuture<'a, Option<Uid>> {
-        Box::pin(async move {
-            self.current()
-                .await?
-                .find_by_message_id(folder, message_id)
-                .await
-        })
+        Box::pin(
+            async move { once_more_on_auth!(self, |b| b.find_by_message_id(folder, message_id)) },
+        )
     }
 
     fn set_flag<'a>(
@@ -418,7 +552,7 @@ impl MailBackend for AccountBackend {
         uids: &'a [Uid],
         change: FlagChange,
     ) -> BackendFuture<'a, ()> {
-        Box::pin(async move { self.current().await?.set_flag(folder, uids, change).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.set_flag(folder, uids, change)) })
     }
 
     fn move_to<'a>(
@@ -427,15 +561,15 @@ impl MailBackend for AccountBackend {
         uids: &'a [Uid],
         dest: &'a str,
     ) -> BackendFuture<'a, MoveOutcome> {
-        Box::pin(async move { self.current().await?.move_to(folder, uids, dest).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.move_to(folder, uids, dest)) })
     }
 
     fn delete_forever<'a>(&'a self, folder: &'a str, uids: &'a [Uid]) -> BackendFuture<'a, ()> {
-        Box::pin(async move { self.current().await?.delete_forever(folder, uids).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.delete_forever(folder, uids)) })
     }
 
     fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
-        Box::pin(async move { self.current().await?.fetch_body(folder, uid).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.fetch_body(folder, uid)) })
     }
 
     fn search<'a>(
@@ -443,6 +577,6 @@ impl MailBackend for AccountBackend {
         folder: &'a str,
         query: &'a ServerQuery,
     ) -> BackendFuture<'a, SearchOutcome> {
-        Box::pin(async move { self.current().await?.search(folder, query).await })
+        Box::pin(async move { once_more_on_auth!(self, |b| b.search(folder, query)) })
     }
 }

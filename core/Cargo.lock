@@ -557,8 +557,10 @@ dependencies = [
 name = "croft-test-support"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "rcgen",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-rustls",
 ]

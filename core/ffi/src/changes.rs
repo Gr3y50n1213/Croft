@@ -311,6 +311,9 @@ mod tests {
         fn sign_in_needed(&self, _: i64) -> Result<(), crate::ProviderError> {
             Ok(())
         }
+        fn save_tokens(&self, _: i64, _: Vec<u8>) -> Result<(), crate::ProviderError> {
+            Ok(())
+        }
     }
 
     fn hub() -> Arc<Hub> {

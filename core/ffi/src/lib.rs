@@ -49,6 +49,7 @@ mod core;
 mod credentials;
 mod error;
 mod list;
+mod oauth;
 mod reading;
 mod search;
 mod settings;
@@ -74,13 +75,14 @@ pub use error::{
     discover_error_default_message, discover_error_message_key, verify_failure_default_message,
     verify_failure_message_key, CoreError, DiscoverError, StorageReason, VerifyFailure,
 };
+pub use oauth::{OAuthFailure, OAuthSignedIn, OAuthStart};
 pub use reading::{
     AttachmentInfo, BodyState, Conversation, ConversationMessage, MailAddress, MessageBody,
     ReadError, RemoteImagesSetting,
 };
 pub use search::{LocalResults, SearchFailure, SearchHit, ServerResults, TextRange};
 #[cfg(feature = "test-server")]
-pub use test_server::TestImapServer;
+pub use test_server::{TestImapServer, TestTokenEndpoint};
 pub use types::*;
 
 uniffi::setup_scaffolding!();
@@ -113,7 +115,7 @@ uniffi::setup_scaffolding!();
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 11;
+pub const FFI_API_VERSION: u32 = 12;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

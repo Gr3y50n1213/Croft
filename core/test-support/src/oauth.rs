@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 
 #[derive(Default)]
 struct State {
-    /// code -> (verifier, refresh token to give).
+    /// code -> (PKCE challenge, refresh token to give).
     codes: HashMap<String, (String, String)>,
     /// Refresh tokens that work.
     refresh: HashSet<String>,
@@ -62,11 +62,12 @@ impl FakeTokenEndpoint {
         format!("http://127.0.0.1:{}/token", self.port)
     }
 
-    /// `code` is valid once, for `verifier`; it gives `refresh_token`.
-    pub fn add_code(&self, code: &str, verifier: &str, refresh_token: &str) {
+    /// `code` is valid once, for the verifier whose S256 challenge is `challenge` (as the
+    /// authorisation URL carried it); it gives `refresh_token`.
+    pub fn add_code(&self, code: &str, challenge: &str, refresh_token: &str) {
         self.st()
             .codes
-            .insert(code.into(), (verifier.into(), refresh_token.into()));
+            .insert(code.into(), (challenge.into(), refresh_token.into()));
     }
 
     /// `token` works as a refresh token.
@@ -99,6 +100,13 @@ impl FakeTokenEndpoint {
         let n = self.st().issued;
         (n > 0).then(|| format!("access-{n}"))
     }
+}
+
+fn s256(verifier: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()))
 }
 
 fn form(body: &str) -> HashMap<String, String> {
@@ -165,7 +173,9 @@ async fn serve(mut stream: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> std:
             Some("authorization_code") => {
                 let code = f.get("code").cloned().unwrap_or_default();
                 match s.codes.remove(&code) {
-                    Some((verifier, refresh)) if f.get("code_verifier") == Some(&verifier) => {
+                    Some((challenge, refresh))
+                        if f.get("code_verifier").is_some_and(|v| s256(v) == challenge) =>
+                    {
                         s.refresh.insert(refresh.clone());
                         s.issued += 1;
                         let n = s.issued;

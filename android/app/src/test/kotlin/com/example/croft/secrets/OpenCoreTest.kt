@@ -32,6 +32,8 @@ class OpenCoreTest {
         override fun credential(accountId: Long): FfiCredential? = null
 
         override fun signInNeeded(accountId: Long) {}
+
+        override fun saveTokens(accountId: Long, secret: ByteArray) { secret.fill(0) }
     }
 
     @Before

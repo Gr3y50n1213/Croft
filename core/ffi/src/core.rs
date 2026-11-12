@@ -19,7 +19,7 @@ use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{
     provider_for_host, verify, Discoverer, EmailAddress, ProbeUpdate, VerifyError, VerifyOptions,
 };
-use croft_protocols::{clean_host, CertFingerprint, Credential, DemoBackend};
+use croft_protocols::{clean_host, CertFingerprint, DemoBackend};
 use croft_storage::accounts::{self, Account, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
 use croft_storage::{folders, Db};
@@ -131,7 +131,7 @@ struct Added {
     provider: String,
     json: serde_json::Value,
     settings: StoredSettings,
-    credential: Credential,
+    credential: Asked,
     /// The certificate the person confirmed on the changed-certificate warning (see
     /// `Core::add_account`).
     confirmed: Option<CertFingerprint>,
@@ -306,7 +306,7 @@ impl Inner {
                 now_ms(),
             )?)
         })?;
-        if let Err(e) = self.start_account(id, &settings, Asked::Credential(credential)) {
+        if let Err(e) = self.start_account(id, &settings, credential) {
             let _ = self.handle.read(|db| accounts::delete(db.connection(), id));
             return Err(e);
         }
@@ -365,7 +365,7 @@ impl Inner {
             ..
         } = new;
         let started = match tokio::task::spawn_blocking(move || {
-            inner.start_account(id, &settings, Asked::Credential(credential))
+            inner.start_account(id, &settings, credential)
         })
         .await
         {
@@ -817,10 +817,15 @@ impl Core {
             .transpose()
             .map_err(|_| VerifyFailure::BadSettings)?;
         let settings = discovered.to_settings();
-        // Not valid UTF-8 (the bytes are wiped): no server would accept it as a password.
-        let credential = credential
-            .to_credential()
-            .ok_or(VerifyFailure::WrongPassword)?;
+        // Not valid UTF-8 (the bytes are wiped): no server would accept it as a password. An
+        // OAuth sign-in is checked with the access token it just got.
+        let credential = match credential.to_asked() {
+            Asked::Credential(c) => c,
+            Asked::OAuth(stored) => crate::oauth::one_off_credential(&stored)
+                .await
+                .map_err(|_| VerifyFailure::WrongPassword)?,
+            Asked::NoCredential | Asked::NotReady => return Err(VerifyFailure::WrongPassword),
+        };
         // What the stored account of this address would be compared with (servers only).
         let probe = discovered.imap.as_ref().map(|imap| StoredSettings {
             version: SETTINGS_VERSION,
@@ -948,8 +953,11 @@ impl Core {
             .map_or("generic", |p| p.db_name())
             .to_owned();
         let email = discovered.email;
-        // Not valid UTF-8 (the bytes are wiped): no server would accept it as a password.
-        let credential = credential.to_credential().ok_or(CoreError::NoCredential)?;
+        // Not valid UTF-8 (the bytes are wiped), or an OAuth secret this version cannot read.
+        let credential = match credential.to_asked() {
+            Asked::NoCredential | Asked::NotReady => return Err(CoreError::NoCredential),
+            usable => usable,
+        };
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {

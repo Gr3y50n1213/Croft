@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use mail_parser::{Message, MessageParser, MessagePart, MessageRef, PartFlags, PartKind};
 
@@ -36,11 +38,13 @@ pub const MAX_HTML_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_INLINE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// Most bytes of inline images drawn inside one message (15 MiB).
 pub const MAX_INLINE_TOTAL_BYTES: usize = 15 * 1024 * 1024;
-/// How long sanitising one message may take. Past it the message is shown as text (the
-/// sanitiser keeps running on its own thread until it ends, holding only that message, and its
-/// result is thrown away). Every known slow input is refused earlier by [`crate::shape`]; this
-/// bounds the ones nobody has found yet to one attempt of this length. Debug builds (tests) are
-/// about ten times slower and get ten times as long.
+/// How long sanitising one message may take: a backstop. The parser's work budget
+/// ([`crate::sanitize::MAX_PARSE_UNITS`]) already ends every parse within about half a second
+/// (release build), so this is only reached on a very loaded device. Past it the message is shown
+/// as text **for now** ([`Rendered::html_pending`], not stored as too complex: the next open tries
+/// again), and the sanitiser is cancelled: it stops at the parser's next charge, so its thread
+/// ends within milliseconds. Debug builds (tests) are about ten times slower and get ten times as
+/// long.
 pub const SANITIZE_DEADLINE: Duration = if cfg!(debug_assertions) {
     Duration::from_secs(30)
 } else {
@@ -171,11 +175,17 @@ pub struct Rendered {
     pub attachments: Vec<Attachment>,
     /// True when something was cut: a body over its limit, or more parts than [`MAX_PARTS`].
     pub truncated: bool,
-    /// True when the HTML was not rendered: past the sanitiser's limits, over
-    /// [`crate::sanitize::MAX_SANITIZED_MARKUP_BYTES`], or not done within [`SANITIZE_DEADLINE`].
+    /// True when the HTML is too complex to render (see
+    /// [`crate::sanitize::Sanitized::too_complex`]): the same bytes always give this answer.
     /// `html` is then `None`, `text` has the message's text, and `truncated` is set. Store it, so
     /// that later opens do not try again.
     pub too_complex: bool,
+    /// True when the HTML was not rendered **this time** for a reason that says nothing about the
+    /// message: the sanitiser was still busy with another message (one runs at a time), or its
+    /// deadline ([`SANITIZE_DEADLINE`]) passed on a loaded device. `html` is `None` and `text` has
+    /// the message's text, as with `too_complex`, but do **not** store a mark: try again on the
+    /// next open.
+    pub html_pending: bool,
 }
 
 impl fmt::Debug for Rendered {
@@ -187,6 +197,8 @@ impl fmt::Debug for Rendered {
             .field("trackers_removed", &self.trackers_removed)
             .field("attachments", &self.attachments.len())
             .field("truncated", &self.truncated)
+            .field("too_complex", &self.too_complex)
+            .field("html_pending", &self.html_pending)
             .finish_non_exhaustive()
     }
 }
@@ -211,38 +223,128 @@ fn parse_checked(raw: &[u8]) -> Result<Message<'_>, ParseError> {
 /// [`Rendered::blocked_remote`]; with it true they are kept (`https` only). Everything else the
 /// sanitiser removes is removed in both modes.
 pub fn render(raw: &[u8], remote_allowed: bool) -> Result<Rendered, ParseError> {
-    render_with(
-        raw,
+    render_with(raw, remote_allowed, SANITIZE_DEADLINE, sanitize_default)
+}
+
+fn sanitize_default(
+    html: &str,
+    remote_allowed: bool,
+    images: &HashMap<String, InlineImage>,
+    cancel: Arc<AtomicBool>,
+) -> sanitize::Sanitized {
+    sanitize::sanitize_html_with(
+        html,
         remote_allowed,
-        SANITIZE_DEADLINE,
-        sanitize::sanitize_html,
+        images,
+        &sanitize::Options {
+            cancel: Some(cancel),
+            ..sanitize::Options::default()
+        },
     )
 }
 
-/// The sanitiser `render` runs, as a plain function (a test can pass a slow one).
-pub type Sanitizer = fn(&str, bool, &HashMap<String, InlineImage>) -> sanitize::Sanitized;
+/// The sanitiser `render` runs, as a plain function (a test can pass a slow one). The flag is set
+/// when the deadline passes: the sanitiser should stop soon after.
+pub type Sanitizer =
+    fn(&str, bool, &HashMap<String, InlineImage>, Arc<AtomicBool>) -> sanitize::Sanitized;
 
-/// Runs `sanitizer` on its own thread and waits at most `deadline` for it. `None` when it did not
-/// finish in time (or the thread could not be started): the caller shows the text.
+/// True while a sanitiser thread runs: at most one runs per process.
+static SANITIZER_RUNNING: Mutex<bool> = Mutex::new(false);
+/// Signalled when the running sanitiser thread ends.
+static SANITIZER_DONE: Condvar = Condvar::new();
+
+/// The one sanitiser slot, held by the thread that runs and freed when that thread ends (also by
+/// a panic), never when its caller stops waiting: a cancelled sanitiser still holds it until it
+/// has really stopped.
+struct Slot;
+
+impl Slot {
+    /// Takes the slot, waiting until `until` at the latest for a running sanitiser to end (one
+    /// takes about half a second at most, so opening a conversation does not show its messages as
+    /// text one after the other). `None` when it is still running then.
+    fn take(until: Instant) -> Option<Self> {
+        let mut running = SANITIZER_RUNNING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while *running {
+            let left = until.checked_duration_since(Instant::now())?;
+            running = SANITIZER_DONE
+                .wait_timeout(running, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        *running = true;
+        Some(Self)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        *SANITIZER_RUNNING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = false;
+        SANITIZER_DONE.notify_all();
+    }
+}
+
+/// Whether a sanitiser thread is running now. For tests: after a deadline the thread must end
+/// within milliseconds.
+#[doc(hidden)]
+pub fn sanitizer_running() -> bool {
+    *SANITIZER_RUNNING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What one sanitising attempt gave.
+enum Attempt {
+    /// The sanitiser's answer.
+    Done(sanitize::Sanitized),
+    /// Another message is being sanitised, or the deadline passed (the sanitiser was cancelled),
+    /// or no thread could be started: show the text now, try again later.
+    NotNow,
+    /// The sanitiser panicked (the same input would again): too complex.
+    Failed,
+}
+
+/// Runs `sanitizer` on its own thread, the only one (waiting for a running one to end) and waits
+/// at most `deadline` in all; past it the cancel flag is set and this returns at once.
 fn sanitize_within(
     html: String,
     remote_allowed: bool,
     images: HashMap<String, InlineImage>,
     deadline: Duration,
     sanitizer: Sanitizer,
-) -> Option<sanitize::Sanitized> {
+) -> Attempt {
+    let start = Instant::now();
+    let until = start.checked_add(deadline).unwrap_or(start);
+    let Some(slot) = Slot::take(until) else {
+        return Attempt::NotNow;
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let started = std::thread::Builder::new()
         .name("croft-sanitize".into())
         .spawn(move || {
-            let out = sanitizer(&html, remote_allowed, &images);
+            let _slot = slot;
+            let out = sanitizer(&html, remote_allowed, &images, flag);
             // The receiver is gone when the deadline passed: the result is dropped.
             let _ = tx.send(out);
         });
     if started.is_err() {
-        return None;
+        // The closure (and the slot in it) was dropped with the error.
+        return Attempt::NotNow;
     }
-    rx.recv_timeout(deadline).ok()
+    match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+        Ok(out) if out.cancelled => Attempt::NotNow,
+        Ok(out) => Attempt::Done(out),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            cancel.store(true, Ordering::Relaxed);
+            Attempt::NotNow
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Attempt::Failed,
+    }
 }
 
 /// [`render`] with another deadline and sanitiser. For tests: the deadline path is checked with
@@ -325,16 +427,23 @@ pub fn render_with(
             }
         }
         let images = inline_images(&message);
-        let clean = sanitize_within(html.clone(), remote_allowed, images, deadline, sanitizer)
-            .unwrap_or_else(|| sanitize::Sanitized {
+        let clean = match sanitize_within(html.clone(), remote_allowed, images, deadline, sanitizer)
+        {
+            Attempt::Done(clean) => clean,
+            Attempt::Failed => sanitize::Sanitized {
                 too_complex: true,
                 ..sanitize::Sanitized::default()
-            });
+            },
+            Attempt::NotNow => {
+                out.html_pending = true;
+                sanitize::Sanitized::default()
+            }
+        };
         out.blocked_remote = clean.blocked_remote;
         out.trackers_removed = clean.trackers_removed;
         shown = clean.cids_used;
-        if clean.too_complex {
-            out.too_complex = true;
+        if clean.too_complex || out.html_pending {
+            out.too_complex = clean.too_complex;
             // Shown as text: the plain text body, else the HTML converted to text.
             out.truncated = true;
             if out.text.is_none() {

@@ -1,7 +1,7 @@
 {
  "version": 1,
  "inputs": {
-  "cargoLockSha256": "4c6702c3e81c72169b980c07d61bc8ae12842177d23a8ef424ce6060881ee381",
+  "cargoLockSha256": "d449cda7e7e3bd7ddbebff875cb0d4ebeb57d7962251b88675576176cd9d6033",
   "libsCatalogSha256": "97da1ae55696128da16e4d69a7a7f035085990a6070df4dfb05f950ff6b958f7"
  },
  "entries": [
@@ -871,13 +871,13 @@
   },
   {
    "name": "event-listener",
-   "version": "2.5.3",
+   "version": "5.4.2",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "event-listener",
-   "version": "5.4.2",
+   "version": "2.5.3",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -1261,13 +1261,13 @@
   },
   {
    "name": "nom",
-   "version": "7.1.3",
+   "version": "8.0.0",
    "licence": "MIT",
    "origin": "Rust"
   },
   {
    "name": "nom",
-   "version": "8.0.0",
+   "version": "7.1.3",
    "licence": "MIT",
    "origin": "Rust"
   },
@@ -1675,13 +1675,13 @@
   },
   {
    "name": "syn",
-   "version": "3.0.10",
+   "version": "2.0.119",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "syn",
-   "version": "2.0.119",
+   "version": "3.0.10",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

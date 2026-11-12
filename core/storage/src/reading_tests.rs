@@ -85,6 +85,7 @@ fn body<'a>(attachments: &'a [NewAttachment], text: &'a str) -> NewBody<'a> {
         trackers_removed: 1,
         truncated: false,
         too_complex: false,
+        html_pending: false,
         to_json: r#"[{"name":"Ben","address":"ben@example.com"}]"#,
         cc_json: "[]",
         snippet: "hello",
@@ -334,6 +335,147 @@ fn a_forged_copy_of_a_message_id_never_replaces_the_real_message() {
     assert_eq!(ids(copy), [copy, forged]);
     // Opened from Junk, the Junk copy is the one listed, and the forgery still shows apart.
     assert_eq!(ids(in_junk), [in_junk, forged]);
+}
+
+#[test]
+fn the_size_alone_folds_copies_only_while_neither_is_fetched() {
+    // Round 3 review L2: once one copy is fetched and the other is not, they are both listed
+    // (the unfetched one could be anything of that size).
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    let a1 = account(c, "one@example.org");
+    let inbox = folder(c, a1, "INBOX", SpecialUse::Inbox);
+    let all = folder(c, a1, "All Mail", SpecialUse::All);
+    let first = message(c, a1, inbox, 1, "same@x", &[], 100);
+    let second = message(c, a1, all, 1, "same@x", &[], 100);
+    let ids = |opened: i64| -> Vec<i64> {
+        let mut v: Vec<i64> = reading::conversation(c, a1, opened)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.message.id)
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(ids(first), [first], "neither fetched: folded by size");
+    assert!(reading::store_body(c, a1, first, &body(&[], "x")).unwrap());
+    assert_eq!(ids(first), [first, second], "one fetched: both listed");
+    assert_eq!(ids(second), [first, second]);
+    assert!(reading::store_body(c, a1, second, &body(&[], "x")).unwrap());
+    assert_eq!(ids(first), [first], "both fetched, same hash: folded");
+}
+
+#[test]
+fn a_pending_body_gets_its_html_later_and_keeps_its_attachment_ids() {
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    let (a1, a2) = (account(c, "one@example.org"), account(c, "two@example.org"));
+    let f1 = folder(c, a1, "INBOX", SpecialUse::Inbox);
+    let m = message(c, a1, f1, 1, "m1@example.org", &[], 10);
+    let logo = NewAttachment {
+        part_id: "2".into(),
+        file_name: "logo.png".into(),
+        mime_type: "image/png".into(),
+        size: 9,
+        content_id: Some("logo@x".into()),
+        shown_inline: false,
+        executable: false,
+    };
+    let attachments = [logo];
+    let mut b = body(&attachments, "text");
+    b.html_clean = None;
+    b.truncated = true;
+    b.html_pending = true;
+    reading::store_body(c, a1, m, &b).unwrap();
+    let stored = reading::body(c, a1, m).unwrap().unwrap();
+    assert!(stored.html_pending && !stored.too_complex && stored.html_clean.is_none());
+    let before = reading::attachments(c, a1, m).unwrap();
+    assert!(messages::get(c, a1, m).unwrap().unwrap().has_attachments);
+    let cids = ["logo@x".to_owned()];
+    let html = reading::RenderedHtml {
+        html_clean: Some("<img src=\"data:image/png;base64,AA==\">"),
+        remote_blocked: 3,
+        trackers_removed: 1,
+        truncated: false,
+        too_complex: false,
+        html_pending: false,
+        cids_used: &cids,
+    };
+    assert!(
+        !reading::store_html(c, a2, m, &html).unwrap(),
+        "another account's id"
+    );
+    assert!(reading::store_html(c, a1, m, &html).unwrap());
+    let stored = reading::body(c, a1, m).unwrap().unwrap();
+    assert!(!stored.html_pending && !stored.truncated && stored.html_clean.is_some());
+    assert_eq!(stored.remote_blocked, 3);
+    let after = reading::attachments(c, a1, m).unwrap();
+    assert_eq!(after[0].id, before[0].id, "the same attachment row");
+    assert!(after[0].shown_inline);
+    assert!(!messages::get(c, a1, m).unwrap().unwrap().has_attachments);
+    // A mark clears the pending state.
+    reading::store_body(c, a1, m, &b).unwrap();
+    assert!(reading::set_too_complex(c, a1, m).unwrap());
+    let stored = reading::body(c, a1, m).unwrap().unwrap();
+    assert!(stored.too_complex && !stored.html_pending);
+}
+
+/// Final review M1: a message whose HTML is pending every time (it always misses its deadline) is
+/// tried a bounded number of times, then marked too complex; a finished render resets the count.
+#[test]
+fn html_that_stays_pending_is_marked_too_complex_after_a_few_tries() {
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    let a1 = account(c, "one@example.org");
+    let f1 = folder(c, a1, "INBOX", SpecialUse::Inbox);
+    let m = message(c, a1, f1, 1, "m1@example.org", &[], 10);
+    let attachments = [];
+    let mut b = body(&attachments, "text");
+    b.html_clean = None;
+    b.html_pending = true;
+    reading::store_body(c, a1, m, &b).unwrap();
+    let pending = reading::RenderedHtml {
+        html_clean: None,
+        remote_blocked: 0,
+        trackers_removed: 0,
+        truncated: true,
+        too_complex: false,
+        html_pending: true,
+        cids_used: &[],
+    };
+    // The first fetch was attempt 1; each retry adds one.
+    for attempt in 2..reading::MAX_HTML_ATTEMPTS {
+        reading::store_html(c, a1, m, &pending).unwrap();
+        let s = reading::body(c, a1, m).unwrap().unwrap();
+        assert!(
+            s.html_pending && !s.too_complex,
+            "attempt {attempt} still pending"
+        );
+    }
+    reading::store_html(c, a1, m, &pending).unwrap();
+    let s = reading::body(c, a1, m).unwrap().unwrap();
+    assert!(
+        s.too_complex && !s.html_pending,
+        "the last attempt marks it"
+    );
+    assert!(
+        !reading::html_pending(c, a1, m).unwrap(),
+        "never retried again"
+    );
+
+    // A finished render in between resets the count.
+    reading::store_body(c, a1, m, &b).unwrap();
+    reading::store_html(c, a1, m, &pending).unwrap();
+    let done = reading::RenderedHtml {
+        html_clean: Some("<p>x</p>"),
+        truncated: false,
+        html_pending: false,
+        ..pending
+    };
+    reading::store_html(c, a1, m, &done).unwrap();
+    reading::store_html(c, a1, m, &pending).unwrap();
+    let s = reading::body(c, a1, m).unwrap().unwrap();
+    assert!(s.html_pending && !s.too_complex, "counted again from zero");
 }
 
 #[test]

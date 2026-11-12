@@ -630,9 +630,9 @@ fn copy_message(
     let new_id = tx.last_insert_rowid();
     tx.execute(
         "INSERT INTO message_body (message_id, headers_raw, text_plain, html_clean, remote_blocked,
-                                   trackers_removed, truncated, too_complex)
+                                   trackers_removed, truncated, too_complex, html_pending, html_attempts)
          SELECT ?3, b.headers_raw, b.text_plain, b.html_clean, b.remote_blocked,
-                b.trackers_removed, b.truncated, b.too_complex
+                b.trackers_removed, b.truncated, b.too_complex, b.html_pending, b.html_attempts
            FROM message_body b JOIN message m ON m.id = b.message_id
           WHERE m.account_id = ?1 AND m.id = ?2",
         params![account, source_id, new_id],

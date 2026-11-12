@@ -25,6 +25,9 @@
 //! | HTML given to the sanitiser | [`MAX_HTML_BYTES`] | cut, [`Rendered::truncated`] |
 //! | One inline image | [`MAX_INLINE_IMAGE_BYTES`] | not drawn (offered as an attachment) |
 //! | All inline images | [`MAX_INLINE_TOTAL_BYTES`] | the rest not drawn |
+//! | HTML parser's work | [`sanitize::MAX_PARSE_UNITS`], [`sanitize::MAX_REBUILT_BYTES`] (measured inside the parser) | shown as text, [`Rendered::too_complex`] |
+//! | Sanitised markup | [`sanitize::MAX_SANITIZED_MARKUP_BYTES`] (the serialiser stops there) | shown as text, [`Rendered::too_complex`] |
+//! | Sanitising time | [`SANITIZE_DEADLINE`] (a backstop; one sanitiser thread per process) | shown as text this time, [`Rendered::html_pending`] |
 //!
 //! Malformed MIME never panics: the parser reports damage instead of failing, and the fuzz-style
 //! test (`tests/fuzz.rs`) throws truncated and mutated messages at [`render`].
@@ -37,10 +40,14 @@ pub mod remote;
 pub mod sanitize;
 pub mod shape;
 
+#[doc(hidden)]
+pub use parse::sanitizer_running;
 pub use parse::{
     part_content, render, render_with, sniff_image, snippet, Address, Attachment, ParseError,
     Rendered, Sanitizer, MAX_DEPTH, MAX_HTML_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TOTAL_BYTES,
     MAX_MESSAGE_BYTES, MAX_PARTS, MAX_REFERENCES_EACH_END, MAX_TEXT_BYTES, SANITIZE_DEADLINE,
 };
 pub use remote::{normalise_address, remote_allowed, RemoteImages};
-pub use sanitize::{sanitize_html, InlineImage, Sanitized, BLOCKED_IMAGE_PLACEHOLDER};
+pub use sanitize::{
+    sanitize_html, sanitize_html_with, InlineImage, Options, Sanitized, BLOCKED_IMAGE_PLACEHOLDER,
+};

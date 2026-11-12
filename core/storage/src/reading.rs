@@ -42,8 +42,10 @@ pub struct NewBody<'a> {
     pub trackers_removed: u32,
     /// A body was cut at a limit.
     pub truncated: bool,
-    /// The HTML was not rendered (too complex, or past the sanitiser's deadline).
+    /// The HTML is too complex to render (a deterministic outcome: never tried again).
     pub too_complex: bool,
+    /// The HTML was not rendered this time (sanitiser busy, deadline missed): try again later.
+    pub html_pending: bool,
     /// Recipients for `message.to_json` (a JSON array of `{name, address}`).
     pub to_json: &'a str,
     /// Copy recipients for `message.cc_json`.
@@ -92,6 +94,8 @@ pub struct StoredBody {
     pub truncated: bool,
     /// The HTML was not rendered and must not be tried again.
     pub too_complex: bool,
+    /// The HTML was not rendered this time; the next open tries again ([`store_html`]).
+    pub html_pending: bool,
 }
 
 impl std::fmt::Debug for StoredBody {
@@ -187,8 +191,9 @@ pub fn store_body(
     )?;
     conn.execute(
         "INSERT INTO message_body (message_id, headers_raw, text_plain, html_clean, remote_blocked,
-                                   trackers_removed, truncated, too_complex)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                   trackers_removed, truncated, too_complex, html_pending,
+                                   html_attempts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
         params![
             message_id,
             body.headers_raw,
@@ -197,7 +202,8 @@ pub fn store_body(
             body.remote_blocked,
             body.trackers_removed,
             body.truncated,
-            body.too_complex
+            body.too_complex,
+            body.html_pending && !body.too_complex
         ],
     )?;
     conn.execute(
@@ -243,7 +249,7 @@ pub fn body(conn: &Connection, account_id: i64, message_id: i64) -> Result<Optio
     Ok(conn
         .query_row(
             "SELECT b.message_id, b.headers_raw, b.text_plain, b.html_clean, b.remote_blocked,
-                    b.trackers_removed, b.truncated, b.too_complex
+                    b.trackers_removed, b.truncated, b.too_complex, b.html_pending
                FROM message_body b JOIN message m ON m.id = b.message_id
               WHERE m.account_id = ?1 AND m.id = ?2",
             params![account_id, message_id],
@@ -257,6 +263,7 @@ pub fn body(conn: &Connection, account_id: i64, message_id: i64) -> Result<Optio
                     trackers_removed: r.get(5)?,
                     truncated: r.get(6)?,
                     too_complex: r.get(7)?,
+                    html_pending: r.get(8)?,
                 })
             },
         )
@@ -288,6 +295,20 @@ pub fn has_body(conn: &Connection, account_id: i64, message_id: i64) -> Result<b
         )
         .optional()?
         .is_some())
+}
+
+/// Whether the stored body of a message of this account waits for its HTML (stored with
+/// `html_pending`). Reads no content.
+pub fn html_pending(conn: &Connection, account_id: i64, message_id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT b.html_pending FROM message_body b JOIN message m ON m.id = b.message_id
+              WHERE m.account_id = ?1 AND m.id = ?2",
+            params![account_id, message_id],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
 }
 
 /// The fetched message of a message of this account, if it was fetched.
@@ -356,10 +377,86 @@ pub fn attachment(
 /// its text and never try the HTML again. Returns false when it has no stored body.
 pub fn set_too_complex(conn: &Connection, account_id: i64, message_id: i64) -> Result<bool> {
     Ok(conn.execute(
-        "UPDATE message_body SET too_complex = 1
+        "UPDATE message_body SET too_complex = 1, html_pending = 0
           WHERE message_id = (SELECT id FROM message WHERE account_id = ?1 AND id = ?2)",
         params![account_id, message_id],
     )? > 0)
+}
+
+/// How many renders in a row may leave a message's HTML pending (sanitiser busy or past its
+/// deadline) before it is marked too complex and shown as text from then on. Bounds the work a
+/// message that always misses its deadline costs: a few tries, never one on every open.
+pub const MAX_HTML_ATTEMPTS: i64 = 3;
+
+/// What a later render of a message whose HTML was pending gave (see [`store_html`]).
+/// `Debug` is not derived: it holds content.
+pub struct RenderedHtml<'a> {
+    /// The sanitised HTML with remote content blocked, or `None` when it still was not rendered.
+    pub html_clean: Option<&'a str>,
+    /// Remote images left out of `html_clean`.
+    pub remote_blocked: u32,
+    /// Tracking pixels removed.
+    pub trackers_removed: u32,
+    /// A body was cut at a limit.
+    pub truncated: bool,
+    /// The HTML is too complex to render: never tried again.
+    pub too_complex: bool,
+    /// Still not rendered this time: tried again on the next open.
+    pub html_pending: bool,
+    /// The Content-IDs drawn inside `html_clean` (their attachments get `shown_inline`).
+    pub cids_used: &'a [String],
+}
+
+/// Stores the outcome of rendering again a message whose HTML was pending (its body was stored
+/// with `html_pending`): the HTML and its counts, the marks, and which attachments are now drawn
+/// inline. Attachment rows keep their ids. Returns false when it has no stored body.
+pub fn store_html(
+    conn: &Connection,
+    account_id: i64,
+    message_id: i64,
+    html: &RenderedHtml<'_>,
+) -> Result<bool> {
+    if !owned(conn, account_id, message_id)? {
+        return Ok(false);
+    }
+    // A pending outcome counts one more attempt; the last allowed one marks the message too
+    // complex (the right-hand sides read the row's values before this update).
+    let updated = conn.execute(
+        "UPDATE message_body SET html_clean = ?2, remote_blocked = ?3, trackers_removed = ?4,
+                                 truncated = ?5,
+                                 too_complex = CASE WHEN ?6 OR (?7 AND html_attempts + 1 >= ?8)
+                                                    THEN 1 ELSE 0 END,
+                                 html_pending = CASE WHEN ?6 OR (?7 AND html_attempts + 1 >= ?8)
+                                                     THEN 0 ELSE ?7 END,
+                                 html_attempts = CASE WHEN ?7 THEN html_attempts + 1 ELSE 0 END
+          WHERE message_id = ?1",
+        params![
+            message_id,
+            html.html_clean,
+            html.remote_blocked,
+            html.trackers_removed,
+            html.truncated,
+            html.too_complex,
+            html.html_pending && !html.too_complex,
+            MAX_HTML_ATTEMPTS
+        ],
+    )?;
+    if updated == 0 {
+        return Ok(false);
+    }
+    let mut inline = conn.prepare_cached(
+        "UPDATE attachment SET shown_inline = 1 WHERE message_id = ?1 AND content_id = ?2",
+    )?;
+    for cid in html.cids_used {
+        inline.execute(params![message_id, cid])?;
+    }
+    conn.execute(
+        "UPDATE message SET has_attachments = EXISTS (
+             SELECT 1 FROM attachment WHERE message_id = ?2 AND shown_inline = 0)
+          WHERE account_id = ?1 AND id = ?2",
+        params![account_id, message_id],
+    )?;
+    Ok(true)
 }
 
 /// Records whether the person allowed remote content on a message of this account. Returns false
@@ -594,11 +691,15 @@ pub fn conversation(
                 r.message.date_ts,
             );
             let kept = copies_kept.entry(key).or_default();
+            // Round 3 review L2: the size alone counts only while neither copy is fetched; once
+            // one is, only the same hash folds (a fetched copy never stands in for an unfetched
+            // one, nor the other way round).
             let same = kept.iter().any(|(size, hash)| {
                 *size == r.message.size
                     && match (hash, &r.raw_sha256) {
                         (Some(a), Some(b)) => a == b,
-                        _ => true,
+                        (None, None) => true,
+                        _ => false,
                     }
             });
             if !same {

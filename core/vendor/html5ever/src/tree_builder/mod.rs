@@ -29,6 +29,7 @@ use std::collections::VecDeque;
 use std::iter::{Enumerate, Rev};
 use std::{fmt, slice};
 
+use crate::budget; // CROFT-PATCH: the work budget (CROFT-PATCHES.md, change 3).
 use crate::tokenizer::states::RawKind;
 use crate::tree_builder::tag_sets::*;
 use crate::util::str::to_escaped_string;
@@ -231,7 +232,7 @@ where
     ) -> tok_state::State {
         let context_elem = self.context_elem.borrow();
         let elem = context_elem.as_ref().expect("no context element");
-        let elem_name = self.sink.elem_name(elem);
+        let elem_name = self.charged_elem_name(elem);
         let name = match elem_name.expanded() {
             ExpandedName {
                 ns: &ns!(html),
@@ -296,7 +297,7 @@ where
         println!("dump_state on {label}");
         print!("    open_elems:");
         for node in self.open_elems.borrow().iter() {
-            let name = self.sink.elem_name(node);
+            let name = self.charged_elem_name(node);
             match *name.ns() {
                 ns!(html) => print!(" {}", name.local_name()),
                 _ => panic!(),
@@ -308,7 +309,7 @@ where
             match entry {
                 &FormatEntry::Marker => print!(" Marker"),
                 FormatEntry::Element(h, _) => {
-                    let name = self.sink.elem_name(h);
+                    let name = self.charged_elem_name(h);
                     match *name.ns() {
                         ns!(html) => print!(" {}", name.local_name()),
                         _ => panic!(),
@@ -329,6 +330,11 @@ where
         let mut more_tokens = VecDeque::new();
 
         loop {
+            // CROFT-PATCH: every token processed (and every reprocessing or split piece) costs
+            // one unit; once the budget is spent the rest is dropped.
+            if !budget::charge(1) {
+                return tokenizer::TokenSinkResult::Continue;
+            }
             let should_have_acknowledged_self_closing_flag = matches!(
                 token,
                 Token::Tag(Tag {
@@ -469,6 +475,11 @@ where
     type Handle = Handle;
 
     fn process_token(&self, token: tokenizer::Token, line_number: u64) -> TokenSinkResult<Handle> {
+        // CROFT-PATCH: once the work budget is spent (or cancelled) every further token is
+        // ignored at the cost of this one check (the tokenizer also stops reading).
+        if !budget::charge(1) {
+            return tokenizer::TokenSinkResult::Continue;
+        }
         if line_number != self.current_line.get() {
             self.sink.set_current_line(line_number);
         }
@@ -545,7 +556,7 @@ where
 
     fn adjusted_current_node_present_but_not_in_html_namespace(&self) -> bool {
         !self.open_elems.borrow().is_empty()
-            && *self.sink.elem_name(&self.adjusted_current_node()).ns() != ns!(html)
+            && *self.charged_elem_name(&self.adjusted_current_node()).ns() != ns!(html)
     }
 }
 
@@ -572,6 +583,11 @@ pub struct ActiveFormattingIter<'a, Handle: 'a> {
 impl<'a, Handle> Iterator for ActiveFormattingIter<'a, Handle> {
     type Item = (usize, &'a Handle, &'a Tag);
     fn next(&mut self) -> Option<(usize, &'a Handle, &'a Tag)> {
+        // CROFT-PATCH: every step over the list of active formatting elements is charged; once
+        // the budget is spent the walk ends early (every caller treats that as "not found").
+        if !budget::charge(1) {
+            return None;
+        }
         match self.iter.next() {
             None | Some((_, &FormatEntry::Marker)) => None,
             Some((i, FormatEntry::Element(h, t))) => Some((i, h, t)),
@@ -643,7 +659,7 @@ where
             .iter()
             .position(|n| match n {
                 FormatEntry::Marker => false,
-                FormatEntry::Element(ref handle, _) => self.sink.same_node(handle, element),
+                FormatEntry::Element(ref handle, _) => self.charged_same_node(handle, element),
             })
     }
 
@@ -695,7 +711,7 @@ where
     where
         TagSet: Fn(ExpandedName) -> bool,
     {
-        set(self.sink.elem_name(&self.current_node()).expanded())
+        set(self.charged_elem_name(&self.current_node()).expanded())
     }
 
     // Insert at the "appropriate place for inserting a node".
@@ -717,6 +733,11 @@ where
 
         // 2. 3. 4.
         for _ in 0..8 {
+            // CROFT-PATCH: stop once the budget is spent (one run can otherwise walk the stack
+            // once per formatting element).
+            if budget::spent() {
+                return;
+            }
             // 5.
             // We clone the Handle and Tag so they don't cause an immutable borrow of self.
             let maybe_fmt_entry = self
@@ -739,7 +760,7 @@ where
                 .open_elems
                 .borrow()
                 .iter()
-                .rposition(|n| self.sink.same_node(n, &fmt_elem))
+                .rposition(|n| self.charged_same_node(n, &fmt_elem))
             else {
                 self.sink
                     .parse_error(Borrowed("Formatting element not open"));
@@ -748,14 +769,14 @@ where
             };
 
             // 7.
-            if !self.in_scope(default_scope, |n| self.sink.same_node(&n, &fmt_elem)) {
+            if !self.in_scope(default_scope, |n| self.charged_same_node(&n, &fmt_elem)) {
                 self.sink
                     .parse_error(Borrowed("Formatting element not in scope"));
                 return;
             }
 
             // 8.
-            if !self.sink.same_node(&self.current_node(), &fmt_elem) {
+            if !self.charged_same_node(&self.current_node(), &fmt_elem) {
                 self.sink
                     .parse_error(Borrowed("Formatting element not current node"));
             }
@@ -791,6 +812,11 @@ where
             // 13.1.
             let mut inner_counter = 0;
             loop {
+                // CROFT-PATCH: stop once the budget is spent. The tree is left as it is (every
+                // node still has one parent); nothing reads it after a spent budget.
+                if budget::spent() {
+                    return;
+                }
                 // 13.2.
                 inner_counter += 1;
 
@@ -799,7 +825,7 @@ where
                 node = self.open_elems.borrow()[node_index].clone();
 
                 // 13.4.
-                if self.sink.same_node(&node, &fmt_elem) {
+                if self.charged_same_node(&node, &fmt_elem) {
                     break;
                 }
 
@@ -807,12 +833,16 @@ where
                 if inner_counter > 3 {
                     self.position_in_active_formatting(&node)
                         .map(|position| self.active_formatting.borrow_mut().remove(position));
+                    // CROFT-PATCH: the removal shifts the rest of the stack.
+                    budget::charge_shift(self.open_elems.borrow().len() - node_index);
                     self.open_elems.borrow_mut().remove(node_index);
                     continue;
                 }
 
                 let Some(node_formatting_index) = self.position_in_active_formatting(&node) else {
                     // 13.6.
+                    // CROFT-PATCH: the removal shifts the rest of the stack.
+                    budget::charge_shift(self.open_elems.borrow().len() - node_index);
                     self.open_elems.borrow_mut().remove(node_index);
                     continue;
                 };
@@ -820,13 +850,14 @@ where
                 // 13.7.
                 let tag = match self.active_formatting.borrow()[node_formatting_index] {
                     FormatEntry::Element(ref h, ref t) => {
-                        assert!(self.sink.same_node(h, &node));
+                        assert!(self.charged_same_node(h, &node));
                         t.clone()
                     },
                     FormatEntry::Marker => panic!("Found marker during adoption agency"),
                 };
                 // FIXME: Is there a way to avoid cloning the attributes twice here (once on their
                 // own, once as part of t.clone() above)?
+                self.charge_node(&tag.attrs, true); // CROFT-PATCH: a rebuilt element.
                 let new_element = create_element_with_flags(
                     &self.sink,
                     QualName::new(None, ns!(html), tag.name.clone()),
@@ -839,7 +870,7 @@ where
                 node = new_element;
 
                 // 13.8.
-                if self.sink.same_node(&last_node, &furthest_block) {
+                if self.charged_same_node(&last_node, &furthest_block) {
                     bookmark = Bookmark::InsertAfter(node.clone());
                 }
 
@@ -860,6 +891,7 @@ where
             // 15.
             // FIXME: Is there a way to avoid cloning the attributes twice here (once on their own,
             // once as part of t.clone() above)?
+            self.charge_node(&fmt_elem_tag.attrs, true); // CROFT-PATCH: a rebuilt element.
             let new_element = create_element_with_flags(
                 &self.sink,
                 QualName::new(None, ns!(html), fmt_elem_tag.name.clone()),
@@ -904,7 +936,7 @@ where
                 .open_elems
                 .borrow()
                 .iter()
-                .position(|n| self.sink.same_node(n, &furthest_block))
+                .position(|n| self.charged_same_node(n, &furthest_block))
                 .expect("furthest block missing from open element stack");
             self.open_elems
                 .borrow_mut()
@@ -934,7 +966,7 @@ where
             .open_elems
             .borrow()
             .iter()
-            .rposition(|x| self.sink.same_node(elem, x));
+            .rposition(|x| self.charged_same_node(elem, x));
         if let Some(position) = position {
             self.open_elems.borrow_mut().remove(position);
             self.sink.pop(elem);
@@ -949,7 +981,7 @@ where
                 .borrow()
                 .iter()
                 .rev()
-                .any(|n| self.sink.same_node(n, node)),
+                .any(|n| self.charged_same_node(n, node)),
         }
     }
 
@@ -976,6 +1008,11 @@ where
         // NOTE: We track the index of the element instead
         let mut entry_index = self.active_formatting.borrow().len() - 1;
         loop {
+            // CROFT-PATCH: each rewind step walks the stack of open elements; stop once the
+            // budget is spent (nothing has been changed yet).
+            if budget::spent() {
+                return;
+            }
             // Step 4. Rewind: If there are no entries before entry in the list of active formatting elements,
             // then jump to the step labeled create.
             if entry_index == 0 {
@@ -996,6 +1033,11 @@ where
         }
 
         loop {
+            // CROFT-PATCH: stop once the budget is spent; the entries rebuilt so far are
+            // complete, the others stay as they were.
+            if budget::spent() {
+                return;
+            }
             // Step 8. Create: Insert an HTML element for the token for which the element entry was created,
             // to obtain new element.
             let tag = match self.active_formatting.borrow()[entry_index] {
@@ -1004,6 +1046,8 @@ where
                     panic!("Found marker during formatting element reconstruction")
                 },
             };
+            // CROFT-PATCH: a rebuilt element: its attributes are copied again.
+            self.charge_node(&tag.attrs, true);
 
             // FIXME: Is there a way to avoid cloning the attributes twice here (once on their own,
             // once as part of t.clone() above)?
@@ -1056,7 +1100,7 @@ where
 
         for elem in self.open_elems.borrow().iter() {
             let error = {
-                let elem_name = self.sink.elem_name(elem);
+                let elem_name = self.charged_elem_name(elem);
                 let name = elem_name.expanded();
                 if body_end_ok(name) {
                     continue;
@@ -1084,7 +1128,7 @@ where
             if pred(node.clone()) {
                 return true;
             }
-            if scope(self.sink.elem_name(node).expanded()) {
+            if scope(self.charged_elem_name(node).expanded()) {
                 return false;
             }
         }
@@ -1094,15 +1138,46 @@ where
         false
     }
 
+    // CROFT-PATCH: every look at an element's name or identity from the tree builder goes
+    // through these two, so every step of every walk over the stack of open elements or the
+    // list of active formatting elements (scope checks, implied end tags, popping until, the
+    // adoption agency, foster parenting, reconstruction, ...) is charged one unit.
+    fn charged_elem_name<'a>(&'a self, target: &'a Handle) -> Sink::ElemName<'a> {
+        budget::charge(1);
+        self.sink.elem_name(target)
+    }
+
+    fn charged_same_node(&self, x: &Handle, y: &Handle) -> bool {
+        budget::charge(1);
+        self.sink.same_node(x, y)
+    }
+
+    // CROFT-PATCH: a new node costs `NODE_UNITS` plus `ATTRIBUTE_UNITS` per attribute. A
+    // rebuilt one (a copy of a formatting element) also charges the bytes of the attributes it
+    // copies, so a big attribute copied into every paragraph cannot fill the memory.
+    fn charge_node(&self, attrs: &[Attribute], rebuilt: bool) -> bool {
+        let units = budget::NODE_UNITS
+            .saturating_add((attrs.len() as u64).saturating_mul(budget::ATTRIBUTE_UNITS));
+        let go = budget::charge(units);
+        if rebuilt {
+            let bytes: usize = attrs
+                .iter()
+                .map(|a| a.name.local.len() + a.value.len())
+                .sum();
+            return budget::charge_bytes(bytes) && go;
+        }
+        go
+    }
+
     fn elem_in<TagSet>(&self, elem: &Handle, set: TagSet) -> bool
     where
         TagSet: Fn(ExpandedName) -> bool,
     {
-        set(self.sink.elem_name(elem).expanded())
+        set(self.charged_elem_name(elem).expanded())
     }
 
     fn html_elem_named(&self, elem: &Handle, name: LocalName) -> bool {
-        let elem_name = self.sink.elem_name(elem);
+        let elem_name = self.charged_elem_name(elem);
         *elem_name.ns() == ns!(html) && *elem_name.local_name() == name
     }
 
@@ -1135,7 +1210,7 @@ where
                 let Some(elem) = open_elems.last() else {
                     return;
                 };
-                let elem_name = self.sink.elem_name(elem);
+                let elem_name = self.charged_elem_name(elem);
                 if !set(elem_name.expanded()) {
                     return;
                 }
@@ -1177,7 +1252,7 @@ where
             match self.open_elems.borrow_mut().pop() {
                 None => break,
                 Some(elem) => {
-                    if pred(self.sink.elem_name(&elem).expanded()) {
+                    if pred(self.charged_elem_name(&elem).expanded()) {
                         break;
                     }
                 },
@@ -1264,7 +1339,7 @@ where
             if let (true, Some(ctx)) = (last, context_elem.as_ref()) {
                 node = ctx;
             }
-            let elem_name = self.sink.elem_name(node);
+            let elem_name = self.charged_elem_name(node);
             let name = match elem_name.expanded() {
                 ExpandedName {
                     ns: &ns!(html),
@@ -1317,12 +1392,14 @@ where
     }
 
     fn append_comment(&self, text: StrTendril) -> ProcessResult<Handle> {
+        self.charge_node(&[], false); // CROFT-PATCH: a new node.
         let comment = self.sink.create_comment(text);
         self.insert_appropriately(AppendNode(comment), None);
         ProcessResult::Done
     }
 
     fn append_comment_to_doc(&self, text: StrTendril) -> ProcessResult<Handle> {
+        self.charge_node(&[], false); // CROFT-PATCH: a new node.
         let comment = self.sink.create_comment(text);
         self.sink.append(&self.doc_handle, AppendNode(comment));
         ProcessResult::Done
@@ -1331,6 +1408,7 @@ where
     fn append_comment_to_html(&self, text: StrTendril) -> ProcessResult<Handle> {
         let open_elems = self.open_elems.borrow();
         let target = html_elem(&open_elems);
+        self.charge_node(&[], false); // CROFT-PATCH: a new node.
         let comment = self.sink.create_comment(text);
         self.sink.append(target, AppendNode(comment));
         ProcessResult::Done
@@ -1338,6 +1416,7 @@ where
 
     //§ creating-and-inserting-nodes
     fn create_root(&self, attrs: Vec<Attribute>) {
+        self.charge_node(&attrs, false); // CROFT-PATCH: a new node.
         let elem = create_element(
             &self.sink,
             QualName::new(None, ns!(html), local_name!("html")),
@@ -1387,6 +1466,7 @@ where
 
         // By checking whether the form is associatable first, then creating the element
         // we can avoid cloning the attributes.
+        self.charge_node(&attrs, false); // CROFT-PATCH: a new node.
         let elem = create_element_with_flags(&self.sink, qname, attrs, had_duplicate_attributes);
 
         if form_is_associatable {
@@ -1438,6 +1518,7 @@ where
     ) -> Handle {
         let adjusted_insertion_location = self.appropriate_place_for_insertion(None);
         let qname = QualName::new(None, ns, tag.name.clone());
+        self.charge_node(&tag.attrs, false); // CROFT-PATCH: a new node.
         let elem =
             create_element_with_flags(&self.sink, qname, tag.attrs, tag.had_duplicate_attributes);
 
@@ -1512,6 +1593,13 @@ where
         let mut first_match = None;
         let mut matches = 0usize;
         for (i, _, old_tag) in self.active_formatting_end_to_marker().iter() {
+            // CROFT-PATCH: comparing two tags of one name copies and sorts both attribute lists.
+            if tag.name == old_tag.name {
+                budget::charge(
+                    ((tag.attrs.len() + old_tag.attrs.len()) as u64)
+                        .saturating_mul(budget::COMPARE_UNITS_PER_ATTRIBUTE),
+                );
+            }
             if tag.equiv_modulo_attr_order(old_tag) {
                 first_match = Some(i);
                 matches += 1;
@@ -1539,6 +1627,7 @@ where
 
     fn clear_active_formatting_to_marker(&self) {
         loop {
+            budget::charge(1); // CROFT-PATCH: a step over the list.
             match self.active_formatting.borrow_mut().pop() {
                 None | Some(FormatEntry::Marker) => break,
                 _ => (),
@@ -1606,7 +1695,7 @@ where
         }
 
         let current = self.adjusted_current_node();
-        let elem_name = self.sink.elem_name(&current);
+        let elem_name = self.charged_elem_name(&current);
         let name = elem_name.expanded();
         if let ns!(html) = *name.ns {
             return false;

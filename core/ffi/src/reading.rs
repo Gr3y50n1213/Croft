@@ -548,11 +548,14 @@ impl Core {
                         let rendered =
                             croft_reader::render(&raw, true).map_err(|_| ReadError::Unreadable)?;
                         if rendered.too_complex {
-                            // Past a limit or the deadline with remote images: keep the stored
-                            // (blocked) HTML, and never try again.
+                            // Too complex with remote images (a deterministic outcome): keep the
+                            // stored (blocked) HTML, and never try again.
                             handle.read(|db| {
                                 reading::set_too_complex(db.connection(), account, id)
                             })?;
+                        } else if rendered.html_pending || rendered.html.is_none() {
+                            // The sanitiser was busy or past its deadline: the stored (blocked)
+                            // HTML for now, nothing marked; the next open tries again.
                         } else {
                             body.html_sanitised = rendered.html;
                             body.blocked_remote_count = rendered.blocked_remote;

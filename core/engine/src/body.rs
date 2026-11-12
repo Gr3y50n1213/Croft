@@ -18,7 +18,7 @@ use std::sync::atomic::Ordering;
 use croft_mail_core::AccountId;
 use croft_protocols::{BackendError, RawMessage};
 use croft_reader::{Address, ParseError, Rendered};
-use croft_storage::reading::{self, NewAttachment, NewBody};
+use croft_storage::reading::{self, NewAttachment, NewBody, RenderedHtml};
 use croft_storage::{folders, messages, StorageError};
 
 use crate::engine::{Change, Shared};
@@ -128,6 +128,7 @@ fn parse_and_store(
         trackers_removed: rendered.trackers_removed,
         truncated: rendered.truncated,
         too_complex: rendered.too_complex,
+        html_pending: rendered.html_pending,
         to_json: &to_json,
         cc_json: &cc_json,
         snippet: &snippet,
@@ -144,11 +145,47 @@ fn parse_and_store(
     Ok(stored)
 }
 
+/// Renders again a stored message whose HTML was pending (the sanitiser was busy or past its
+/// deadline the first time) and stores the outcome. A message deleted meanwhile is left alone.
+fn retry_html(shared: &Shared, account: AccountId, message: i64) -> Result<(), BodyError> {
+    let raw = {
+        let q = shared.lock();
+        reading::raw(q.store().db().connection(), account, message)?
+    };
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    let rendered = croft_reader::render(&raw, false).map_err(|_| BodyError::Unreadable)?;
+    let cids_used: Vec<String> = rendered
+        .attachments
+        .iter()
+        .filter(|a| a.shown_inline)
+        .filter_map(|a| a.content_id.clone())
+        .collect();
+    let html = RenderedHtml {
+        html_clean: rendered.html.as_deref(),
+        remote_blocked: rendered.blocked_remote,
+        trackers_removed: rendered.trackers_removed,
+        truncated: rendered.truncated,
+        too_complex: rendered.too_complex,
+        html_pending: rendered.html_pending,
+        cids_used: &cids_used,
+    };
+    let q = shared.lock();
+    reading::store_html(q.store().db().connection(), account, message, &html)?;
+    Ok(())
+}
+
 impl EngineHandle {
     /// Makes sure the message's body is stored: if it is not, fetches the whole message from the
     /// server, parses and sanitises it, and stores the raw copy, the text, the sanitised HTML
     /// (remote content blocked) and the attachment list. Returns at once when the body is already
     /// stored, also offline. **Waits for the network**: call it from a task, never the UI thread.
+    ///
+    /// A body stored while the sanitiser could not run it (busy with another message, or past its
+    /// deadline: `html_pending`) is rendered again from the stored message, offline. One message
+    /// is fetched and rendered by one call at a time: a second call for it waits for the first
+    /// and then finds the body stored.
     ///
     /// Never marks the message read on the server (see `MailBackend::fetch_body`). A refused
     /// sign-in pauses the account like any other ([`Change::SignInNeeded`]). The folder's rows are
@@ -156,15 +193,34 @@ impl EngineHandle {
     /// recipients and attachment flag come from it).
     pub async fn fetch_body(&self, account: AccountId, message: i64) -> Result<(), BodyError> {
         let shared = self.shared().clone();
+        let lock = shared.body_lock(account, message);
+        let _one_at_a_time = lock.lock().await;
+        // Stored already: done, unless its HTML waits for another try.
+        let stored = {
+            let q = shared.lock();
+            let conn = q.store().db().connection();
+            if reading::has_raw(conn, account, message)?
+                && reading::has_body(conn, account, message)?
+            {
+                Some(reading::html_pending(conn, account, message)?)
+            } else {
+                None
+            }
+        };
+        match stored {
+            Some(false) => return Ok(()),
+            Some(true) => {
+                let worker = shared.clone();
+                return tokio::task::spawn_blocking(move || retry_html(&worker, account, message))
+                    .await
+                    .map_err(|_| BodyError::Unreadable)?;
+            }
+            None => {}
+        }
         let (path, uid) = {
             let q = shared.lock();
             let conn = q.store().db().connection();
             let m = messages::get(conn, account, message)?.ok_or(BodyError::NoSuchMessage)?;
-            if reading::has_raw(conn, account, message)?
-                && reading::has_body(conn, account, message)?
-            {
-                return Ok(());
-            }
             let folder =
                 folders::get(conn, account, m.folder_id)?.ok_or(BodyError::NoSuchMessage)?;
             if q.queue().is_offline(account) {

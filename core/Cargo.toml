@@ -27,6 +27,9 @@ expect_used = "warn"
 # the LOGIN line (with the password) at trace level.
 [patch.crates-io]
 async-imap = { path = "vendor/async-imap" }
-# html5ever 0.40.1 with a linear-time serializer escape and no logging of message content. Do not
-# remove without reading vendor/html5ever/CROFT-PATCHES.md.
+# html5ever 0.40.1 with a linear-time serializer escape, no logging of message content and a work
+# budget that bounds every parse. Do not remove without reading vendor/html5ever/CROFT-PATCHES.md.
 html5ever = { path = "vendor/html5ever" }
+# ammonia 4.2.4 with the parser's work budget charged in its DOM and filters, and no list of parse
+# errors kept. Do not remove without reading vendor/ammonia/CROFT-PATCHES.md.
+ammonia = { path = "vendor/ammonia" }

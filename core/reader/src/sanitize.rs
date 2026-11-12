@@ -52,12 +52,25 @@
 //!
 //! # Limits (time and memory)
 //!
-//! Before any parser runs, [`crate::shape`] measures the body with a byte scan that can only
-//! over-count. Past [`MAX_HTML_TAGS`] tags, [`MAX_HTML_DEPTH`] levels, a parsing cost of
-//! [`MAX_HTML_COST`] or [`MAX_ATTRIBUTES_PER_TAG`] attributes on one tag the HTML is not rendered
-//! ([`Sanitized::too_complex`]; the screen shows the text). The `data:` URIs written for `cid:`
-//! images share a budget of [`MAX_INLINE_DATA_BYTES`] per document: past it a reference gets the
-//! placeholder.
+//! The parser's work is **measured, not predicted**. The vendored html5ever and ammonia
+//! (`core/vendor`, see their `CROFT-PATCHES.md`) charge every token, every step of every walk over
+//! the parser's stack and lists, every node created, every attribute byte copied into a rebuilt
+//! element and the CSS filters' work to a budget of [`MAX_PARSE_UNITS`] units and
+//! [`MAX_REBUILT_BYTES`] bytes (`html5ever::budget`). When it is spent the parser stops at once
+//! and the HTML is not rendered ([`Sanitized::too_complex`]; the screen shows the text). So time
+//! and memory are bounded for every input, including ones nobody has found yet. The markup is
+//! serialised into a writer that refuses more than [`MAX_SANITIZED_MARKUP_BYTES`] (plus the inline
+//! images), so an output bomb is never built either.
+//!
+//! Before parsing, CR and CRLF become LF and NUL becomes U+FFFD (what the parser's own input
+//! preprocessing does to almost all of them), and [`crate::shape`] runs a cheap byte scan that
+//! can only over-count: past [`MAX_HTML_TAGS`] tags, [`MAX_HTML_DEPTH`] levels, a cost of
+//! [`MAX_HTML_COST`], [`MAX_HTML_NODES`] rebuilt nodes or [`MAX_ATTRIBUTES_PER_TAG`] attributes on
+//! one tag the parser is not even started. That scan is a shortcut, not the defence: the budget
+//! bounds whatever it lets through.
+//!
+//! The `data:` URIs written for `cid:` images share a budget of [`MAX_INLINE_DATA_BYTES`] per
+//! document: past it a reference gets the placeholder.
 //!
 //! Known limit: protocol-relative addresses (`//host/x.png`) are relative and therefore removed,
 //! not counted.
@@ -66,11 +79,14 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{BuildHasher, Hasher};
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ammonia::{Builder, UrlRelative};
 use base64::Engine as _;
 use cssparser::{Parser, Token};
+use html5ever::budget;
 
 use crate::shape::{self, Limits};
 
@@ -305,8 +321,22 @@ pub const MAX_HTML_NODES: usize = 1_500_000;
 pub const MAX_ATTRIBUTES_PER_TAG: usize = 256;
 /// Most bytes of sanitised markup kept (not counting the `data:` URIs of inline images, which
 /// have their own budget). Escaping can make the output several times its input (`&` becomes
-/// `&amp;`); past this the message is shown as text.
+/// `&amp;`); past this the message is shown as text. The serialiser writes into a buffer that
+/// refuses more, so a bigger output is never built.
 pub const MAX_SANITIZED_MARKUP_BYTES: usize = 8 * 1024 * 1024;
+/// The parser's work budget for one document, in units (`html5ever::budget`): one per token,
+/// per step over the parser's stack of open elements or list of formatting elements, per sibling
+/// searched and per 64 list entries shifted; `NODE_UNITS` per node created plus
+/// `ATTRIBUTE_UNITS` per attribute; `CHAR_REF_UNITS` per character reference, `ERROR_UNITS` per
+/// tokenizer error, `URL_UNITS` per address read, `CSS_UNITS_PER_BYTE` per byte a CSS filter
+/// reads. Each unit is about 5-10 ns of work (release build, x86), so a parse ends within about
+/// 0.3 s whatever the input. Past it the HTML is shown as text. See `docs/DECISIONS.md` (T18a,
+/// round 3) for the measured worst cases.
+pub const MAX_PARSE_UNITS: u64 = 30_000_000;
+/// Most attribute bytes the parser may copy into rebuilt elements (formatting elements it opens
+/// again in every paragraph, the adoption agency's copies) in one document. Past it the HTML is
+/// shown as text.
+pub const MAX_REBUILT_BYTES: u64 = 8 * 1024 * 1024;
 /// Most bytes of `data:` URIs written for `cid:` images in one document (the base64 of
 /// [`crate::MAX_INLINE_TOTAL_BYTES`] and a little more). A message that references one image many
 /// times cannot make the HTML huge.
@@ -348,10 +378,18 @@ pub struct Sanitized {
     pub styles_removed: u32,
     /// The Content-IDs whose images were drawn (written as `data:` URIs).
     pub cids_used: Vec<String>,
-    /// True when the HTML was past one of the limits ([`MAX_HTML_TAGS`], [`MAX_HTML_DEPTH`],
-    /// [`MAX_HTML_COST`], [`MAX_HTML_NODES`], [`MAX_ATTRIBUTES_PER_TAG`]) or its output past
-    /// [`MAX_SANITIZED_MARKUP_BYTES`]: `html` is then empty and the message is shown as text.
+    /// True when the HTML is too complex to render: the parser's work budget
+    /// ([`MAX_PARSE_UNITS`], [`MAX_REBUILT_BYTES`]) ran out, the shape scan refused it
+    /// ([`MAX_HTML_TAGS`], [`MAX_HTML_DEPTH`], [`MAX_HTML_COST`], [`MAX_HTML_NODES`],
+    /// [`MAX_ATTRIBUTES_PER_TAG`]) or its output was past [`MAX_SANITIZED_MARKUP_BYTES`]. `html`
+    /// is then empty and the message is shown as text. The same input always gives the same
+    /// answer, so it may be stored.
     pub too_complex: bool,
+    /// True when the work was cancelled (see [`sanitize_html_with`]): `html` is empty, and the
+    /// answer says nothing about the input (do not store it).
+    pub cancelled: bool,
+    /// The work charged: `(units, rebuilt bytes)`. For tests and calibration.
+    pub work: (u64, u64),
 }
 
 impl fmt::Debug for Sanitized {
@@ -363,7 +401,35 @@ impl fmt::Debug for Sanitized {
             .field("styles_removed", &self.styles_removed)
             .field("cids_used", &self.cids_used.len())
             .field("too_complex", &self.too_complex)
+            .field("cancelled", &self.cancelled)
+            .field("work", &self.work)
             .finish()
+    }
+}
+
+/// How one call of [`sanitize_html_with`] runs.
+#[derive(Clone, Debug)]
+pub struct Options {
+    /// Run the [`crate::shape`] scan first (on by default). Tests turn it off to reach the
+    /// parser's own budget with inputs the scan would refuse.
+    pub prefilter: bool,
+    /// The parser's work budget.
+    pub units: u64,
+    /// The rebuilt-bytes budget.
+    pub rebuilt_bytes: u64,
+    /// When set to true (by another thread), the work stops at the parser's next charge and the
+    /// result is [`Sanitized::cancelled`].
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            prefilter: true,
+            units: MAX_PARSE_UNITS,
+            rebuilt_bytes: MAX_REBUILT_BYTES,
+            cancel: None,
+        }
     }
 }
 
@@ -390,6 +456,8 @@ struct State {
     trackers_removed: u32,
     styles_removed: u32,
     cids_used: Vec<String>,
+    /// The same Content-IDs as [`State::cids_used`], for a constant-time "already listed" check.
+    cids_seen: HashSet<String>,
     /// Bytes of `data:` URIs written so far.
     inline_bytes: usize,
     img: ImgDraft,
@@ -406,6 +474,9 @@ struct Context {
     /// The marker attribute added as the last attribute of every `img`.
     marker: String,
     images: HashMap<String, InlineImage>,
+    /// Each image's Content-ID in ASCII lower case, mapped to its key in `images`, built once per
+    /// document so that a reference that misses the exact key is found without scanning.
+    images_lower: HashMap<String, String>,
 }
 
 /// The allowed attributes of each tag (besides [`GENERIC_ATTRIBUTES`]).
@@ -480,7 +551,85 @@ fn random_hex() -> String {
 fn too_complex() -> Sanitized {
     Sanitized {
         too_complex: true,
+        work: budget::used(),
         ..Sanitized::default()
+    }
+}
+
+/// The result when the parser stopped: spent (too complex) or cancelled.
+fn stopped(why: budget::Stop) -> Sanitized {
+    Sanitized {
+        too_complex: why == budget::Stop::Exhausted,
+        cancelled: why == budget::Stop::Cancelled,
+        work: budget::used(),
+        ..Sanitized::default()
+    }
+}
+
+/// `html` with CR and CRLF turned into LF and NUL into U+FFFD, as the HTML parser's input
+/// preprocessing does (it reports each NUL as an error and hands each CR on its own, which made
+/// floods of them expensive). Borrowed when there is nothing to change.
+pub fn normalise(html: &str) -> Cow<'_, str> {
+    let bytes = html.as_bytes();
+    if !bytes.iter().any(|&b| b == b'\r' || b == 0) {
+        return Cow::Borrowed(html);
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                out.push_str(&html[start..i]);
+                out.push('\n');
+                if bytes.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                }
+                start = i + 1;
+            }
+            0 => {
+                out.push_str(&html[start..i]);
+                out.push('\u{fffd}');
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out.push_str(&html[start..]);
+    Cow::Owned(out)
+}
+
+/// Collects serialised markup and refuses (with an error, which stops the serialiser) anything
+/// past its cap, or anything at all once the cancel flag is set.
+struct CappedWriter {
+    buf: Vec<u8>,
+    cap: usize,
+    cancel: Option<Arc<AtomicBool>>,
+    over: bool,
+    cancelled: bool,
+}
+
+impl io::Write for CappedWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+        {
+            self.cancelled = true;
+            return Err(io::Error::other("cancelled"));
+        }
+        if self.buf.len().saturating_add(data.len()) > self.cap {
+            self.over = true;
+            return Err(io::Error::other("over the cap"));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -492,19 +641,42 @@ pub fn sanitize_html(
     remote_allowed: bool,
     images: &HashMap<String, InlineImage>,
 ) -> Sanitized {
-    let shape = shape::measure(
-        html,
-        Limits {
-            tags: MAX_HTML_TAGS,
-            depth: MAX_HTML_DEPTH,
-            attributes: MAX_ATTRIBUTES_PER_TAG,
-            cost: MAX_HTML_COST,
-            nodes: MAX_HTML_NODES,
-        },
-    );
-    if shape.over {
-        return too_complex();
+    sanitize_html_with(html, remote_allowed, images, &Options::default())
+}
+
+/// [`sanitize_html`] with other [`Options`]: a cancel flag (what [`crate::render`] sets at its
+/// deadline), or, for tests, another budget or no shape scan. Runs on the calling thread; the
+/// parser's budget is installed on it for the length of the call.
+pub fn sanitize_html_with(
+    html: &str,
+    remote_allowed: bool,
+    images: &HashMap<String, InlineImage>,
+    options: &Options,
+) -> Sanitized {
+    let html = normalise(html);
+    let html = html.as_ref();
+    if options.prefilter {
+        let shape = shape::measure(
+            html,
+            Limits {
+                tags: MAX_HTML_TAGS,
+                depth: MAX_HTML_DEPTH,
+                attributes: MAX_ATTRIBUTES_PER_TAG,
+                cost: MAX_HTML_COST,
+                nodes: MAX_HTML_NODES,
+            },
+        );
+        if shape.over {
+            return too_complex();
+        }
     }
+    let _budget = budget::install(
+        budget::Limits {
+            units: options.units,
+            bytes: options.rebuilt_bytes,
+        },
+        options.cancel.clone(),
+    );
     let mut id = random_hex();
     while html.contains(id.as_str()) {
         id = random_hex();
@@ -516,6 +688,10 @@ pub fn sanitize_html(
         nonce: format!("croftimg{id}:"),
         marker: format!("croftend{id}"),
         images: images.clone(),
+        images_lower: images
+            .keys()
+            .map(|k| (k.to_ascii_lowercase(), k.clone()))
+            .collect(),
     });
     let state = Arc::new(Mutex::new(State::default()));
     let (filter_context, filter_state) = (context.clone(), state.clone());
@@ -538,8 +714,31 @@ pub fn sanitize_html(
             let mut state = filter_state.lock().unwrap_or_else(PoisonError::into_inner);
             filter_attribute(element, attribute, value, &filter_context, &mut state)
         });
-    let html = builder.clean(html).to_string();
+    let document = builder.clean(html);
+    if let Some(why) = budget::stopped() {
+        return stopped(why);
+    }
     let state = std::mem::take(&mut *state.lock().unwrap_or_else(PoisonError::into_inner));
+    let cap = MAX_SANITIZED_MARKUP_BYTES.saturating_add(state.inline_bytes);
+    let mut out = CappedWriter {
+        buf: Vec::new(),
+        cap,
+        cancel: options.cancel.clone(),
+        over: false,
+        cancelled: false,
+    };
+    let written = document.write_to(&mut out);
+    drop(document);
+    if out.cancelled {
+        return stopped(budget::Stop::Cancelled);
+    }
+    let work = budget::used();
+    let Ok(html) = written
+        .map_err(drop)
+        .and_then(|()| String::from_utf8(out.buf).map_err(drop))
+    else {
+        return too_complex();
+    };
     let Some(html) = substitute(&html, &context.nonce, &state.decided) else {
         return too_complex();
     };
@@ -553,6 +752,8 @@ pub fn sanitize_html(
         styles_removed: state.styles_removed,
         cids_used: state.cids_used,
         too_complex: false,
+        cancelled: false,
+        work,
     }
 }
 
@@ -694,14 +895,27 @@ fn filter_attribute<'u>(
     context: &Context,
     state: &mut State,
 ) -> Option<Cow<'u, str>> {
+    // Nothing is kept once the parser's budget is spent (or the work cancelled).
+    if budget::spent() {
+        return None;
+    }
     match (element, attribute) {
         ("img", a) if a == context.marker => {
             decide_img(context, state);
             None
         }
+        ("img", "src" | "srcset")
+            if !budget::charge(
+                budget::URL_UNITS + value.len() as u64 / budget::URL_BYTES_PER_UNIT,
+            ) =>
+        {
+            // An address is read, kept aside and decided later: charged like a URL parse.
+            None
+        }
         ("img", "src") => {
             if let Some(cid) = cid_of(value) {
-                return resolve_cid(&cid, &context.images, state).map(Cow::Owned);
+                return resolve_cid(&cid, &context.images, &context.images_lower, state)
+                    .map(Cow::Owned);
             }
             is_remote(value).then(|| defer(Deferred::Src(value.to_owned()), context, state))
         }
@@ -718,6 +932,13 @@ fn filter_attribute<'u>(
         // A link keeps its destination as written; a `cid:` link goes nowhere.
         (_, "href") => (cid_of(value).is_none()).then_some(Cow::Borrowed(value)),
         (_, "style") => {
+            // The CSS tokenizer's work is charged like the parser's (a style copied into every
+            // rebuilt element is read once per copy); `img` styles are read twice.
+            let reads = if element == "img" { 2 } else { 1 };
+            let units = reads * (1 + value.len() as u64 * budget::CSS_UNITS_PER_BYTE);
+            if !budget::charge(units) {
+                return None;
+            }
             if element == "img" {
                 state.img.style = Some(value.to_owned());
             }
@@ -806,18 +1027,21 @@ fn cid_of(url: &str) -> Option<String> {
 fn resolve_cid(
     cid: &str,
     images: &HashMap<String, InlineImage>,
+    images_lower: &HashMap<String, String>,
     state: &mut State,
 ) -> Option<String> {
-    let (key, image) = images
-        .get_key_value(cid)
-        .or_else(|| images.iter().find(|(k, _)| k.eq_ignore_ascii_case(cid)))?;
+    let (key, image) = images.get_key_value(cid).or_else(|| {
+        images_lower
+            .get(&cid.to_ascii_lowercase())
+            .and_then(|k| images.get_key_value(k))
+    })?;
     let prefix = format!("data:{};base64,", image.mime_type);
     let size = prefix.len() + image.data.len().div_ceil(3) * 4;
     if state.inline_bytes.saturating_add(size) > MAX_INLINE_DATA_BYTES {
         return Some(BLOCKED_IMAGE_PLACEHOLDER.to_owned());
     }
     state.inline_bytes += size;
-    if !state.cids_used.contains(key) {
+    if state.cids_seen.insert(key.clone()) {
         state.cids_used.push(key.clone());
     }
     let mut uri = prefix;

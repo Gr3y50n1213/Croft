@@ -68,6 +68,24 @@ from the chip menu.
 **FFI API version 9** and migration **0007** (T18c merged first with version 8 and migration 0006; `claude/croft-build`
 is merged into this branch).
 
+**Opus review round 3: 6 high (DoS), 2 medium, 3 low; fixed by a work budget inside the parser** (12 November).
+The shape scan's prediction is replaced by measurement: the vendored html5ever (new change 3 in its `CROFT-PATCHES.md`)
+and a newly vendored ammonia 4.2.4 (`core/vendor/ammonia`, MIT OR Apache-2.0, notices kept) charge every token, every
+step over the stack of open elements and the formatting list, every node, every rebuilt attribute byte, the DOM's
+sibling searches and the CSS and URL work to a per-thread budget (`html5ever::budget`): **30 000 000 units and 8 MiB of
+rebuilt attributes** per document. When it is spent the parser stops at once and the message shows as text. Input is
+normalised first (CR, CRLF to LF; NUL to U+FFFD); the serialiser writes into a buffer that refuses more than 8 MiB; the
+3 s deadline is a backstop that cancels the parser (its thread ends within milliseconds); one sanitiser thread per
+process (a caller waits for it within its own deadline, then shows text); a deadline miss or a busy sanitiser is
+`html_pending` (stored, retried on the next open, never a mark), only deterministic outcomes are `too_complex`. L1: the
+scan counts implied `tr`/`colgroup`. L2: size-only folding only when neither copy is fetched. L3: one fetch and sanitise
+per message (a per-message lock in the engine). Release, x86, every input to 4 MiB with the budget alone (no shape
+scan): worst 0.31 s and 92 MB; newsletters render (a 4 MiB MJML newsletter uses 16.5 million units). Table in
+`docs/DECISIONS.md`; regression test per finding (`tests/sanitize.rs`, `tests/sanitizer_thread.rs`,
+`engine/tests/body.rs`, `storage` reading tests), charge-point tests that fail when a charge is removed
+(`tests/budget.rs`, checked by removing two charges), and a guard test on the vendored sources. The S60 licence list was
+regenerated with `gen_licences.py` (Gradle ran offline this time). Not re-reviewed.
+
 **Opus review round 2: 3 high (DoS), 2 medium, 5 low; all fixed** (12 November; N6 accepted and documented). N1:
 the shape scan never pops on end tags inside quoted values, comments, CDATA or bogus comments, and void names nest once
 `<svg`/`<math` appeared. N2: a node budget for rebuilt formatting elements, 1 500 000 (0.31 s and 125 MB at the cap;

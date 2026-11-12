@@ -110,6 +110,9 @@ pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "xbap",
     "xht",
     "xhtml",
+    "xml",
+    "xsl",
+    "xslt",
     "xlam",
     "xll",
     "xlsm",
@@ -133,8 +136,14 @@ const EXECUTABLE_TYPES: &[&str] = &[
     "application/x-mimearchive",
     "application/vnd.ms-htmlhelp",
     "application/xhtml+xml",
+    "application/vnd.wap.xhtml+xml",
+    "application/xml",
+    "application/xslt+xml",
     "image/svg+xml",
+    "multipart/related",
     "text/html",
+    "text/xml",
+    "text/xsl",
     "text/javascript",
 ];
 
@@ -431,10 +440,21 @@ mod tests {
             "app.apkm",
             "app.apks",
             "app.xapk",
+            "invoice.xml",
+            "style.xsl",
         ] {
             assert!(is_executable(name, "application/octet-stream"), "{name}");
         }
-        for mime in ["text/html", "image/svg+xml", "application/xhtml+xml"] {
+        for mime in [
+            "text/html",
+            "image/svg+xml",
+            "application/xhtml+xml",
+            // Review of T18b M2: XML a browser could render as a local page with script.
+            "text/xml",
+            "application/xml",
+            "application/vnd.wap.xhtml+xml",
+            "multipart/related",
+        ] {
             assert!(is_executable("file.txt", mime), "{mime}");
         }
         assert!(!is_executable("report.docx", "application/octet-stream"));

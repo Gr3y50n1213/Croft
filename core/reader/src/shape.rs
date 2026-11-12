@@ -19,8 +19,12 @@
 //!   `td`, ...) and is not a formatting element (`b`, `a`, `font`, ... go through the adoption
 //!   agency). Any other end tag is ignored. A start tag closes the element on top only where the
 //!   parser always does (`<p>` after an open `p`, `<li>` after `li`, `<td>` after `td`, ...).
-//!   A table counts one extra level for the `tbody` the parser inserts. Raw-text states are never
-//!   followed (a `<div>` inside `<style>` counts).
+//!   A table counts one extra level for the `tbody` the parser inserts, a cell directly in it one
+//!   for the `tr`, and a `col` one for the `colgroup`. Raw-text states are never followed (a
+//!   `<div>` inside `<style>` counts).
+//!
+//! This scan is only a cheap first filter: the parser's own work budget (see
+//! [`crate::sanitize`]) bounds whatever it lets through, so it may stay simple.
 //! - **Cost**: the sum of the depth at every tag. The parser's scope checks walk the open
 //!   elements, so its time follows this sum; capping it bounds the time whatever the shape (deep
 //!   and short, or shallow and long), and lets ordinary deep legacy layouts through.
@@ -302,6 +306,7 @@ pub fn measure(html: &str, limits: Limits) -> Shape {
                 if name.as_slice() == b"svg" || name.as_slice() == b"math" {
                     foreign = true;
                 }
+                implied(&mut stack, &name);
                 if foreign || !VOID.contains(&name.as_slice()) {
                     open(&mut stack, name);
                     shape.max_depth = shape.max_depth.max(stack.len());
@@ -362,6 +367,17 @@ pub fn measure(html: &str, limits: Limits) -> Shape {
         }
     }
     shape
+}
+
+/// The elements the parser inserts itself before a start tag: a `tr` for a cell directly in a
+/// table (body), a `colgroup` for a `col` (void, so it opens nothing itself).
+fn implied(stack: &mut Stack, name: &[u8]) {
+    let in_table = [b"table".as_slice(), b"#tbody", b"tbody", b"thead", b"tfoot"];
+    match name {
+        b"td" | b"th" if stack.top_is(&in_table) => stack.push(b"tr".to_vec()),
+        b"col" if stack.top_is(&in_table) => stack.push(b"colgroup".to_vec()),
+        _ => {}
+    }
 }
 
 /// A start tag: first what the parser always closes before it, then the element itself (and for a

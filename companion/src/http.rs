@@ -393,6 +393,7 @@ mod tests {
             data_dir: std::path::PathBuf::from("/nonexistent"),
             master_key_file: std::path::PathBuf::from("/nonexistent/key"),
             trusted_proxies: Vec::new(),
+            oidc: None,
         };
         let out = tokio::task::spawn_blocking(move || {
             crate::cli::run(&config, &crate::cli::Command::Healthcheck)

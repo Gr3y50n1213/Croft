@@ -14,6 +14,7 @@ pub mod config;
 pub mod crypto;
 pub mod enrol_page;
 pub mod http;
+pub mod jwt;
 pub mod limits;
 pub mod store;
 pub mod totp;

@@ -27,6 +27,8 @@ pub enum ConfigError {
     MasterKeyDamaged(PathBuf),
     /// Writing a file failed.
     Write(PathBuf),
+    /// A secret file (the OIDC client secret) cannot be used: the path and why.
+    SecretFile(PathBuf, &'static str),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -48,6 +50,7 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "the master key file {} does not hold a key", p.display())
             }
             Self::Write(p) => write!(f, "could not write {}", p.display()),
+            Self::SecretFile(p, why) => write!(f, "the secret file {} {why}", p.display()),
         }
     }
 }
@@ -62,6 +65,38 @@ struct FileConfig {
     data_dir: Option<PathBuf>,
     master_key_file: Option<PathBuf>,
     trusted_proxies: Option<Vec<String>>,
+    oidc: Option<FileOidc>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileOidc {
+    issuer: Option<String>,
+    client_id: Option<String>,
+    client_secret_file: Option<PathBuf>,
+    name: Option<String>,
+    create_users: Option<bool>,
+    required_group: Option<String>,
+    groups_claim: Option<String>,
+}
+
+/// Sign-in through an OpenID Connect provider (T25).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OidcSettings {
+    /// The provider's issuer URL, exactly as its discovery document gives it (`https://`).
+    pub issuer: String,
+    /// The Companion's client id at the provider.
+    pub client_id: String,
+    /// The file holding the client secret (outside the data folder, mode 0600).
+    pub client_secret_file: PathBuf,
+    /// The provider's name on the sign-in button.
+    pub name: String,
+    /// Whether a first sign-in by an unknown person creates a user (only with `required_group`).
+    pub create_users: bool,
+    /// The group a new person must be in (read from `groups_claim`).
+    pub required_group: Option<String>,
+    /// The ID token claim that lists the person's groups.
+    pub groups_claim: String,
 }
 
 /// The settings in force.
@@ -78,6 +113,8 @@ pub struct Config {
     /// The reverse proxies whose `X-Forwarded-For` is believed (for the client address that rate
     /// limits count by). Empty: the address of the connection itself.
     pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Sign-in through an OpenID Connect provider, if set up.
+    pub oidc: Option<OidcSettings>,
 }
 
 impl Config {
@@ -132,6 +169,7 @@ impl Config {
             .map_err(|_| {
                 ConfigError::Invalid("trusted_proxies must be IP addresses, such as 172.18.0.2")
             })?;
+        let oidc = oidc_settings(file.oidc, env, &data_dir)?;
         if !public_url_is_ok(&public_url) {
             return Err(ConfigError::Invalid(
                 "public_url must be https:// and a domain name (plain http only for localhost; no IP address)",
@@ -143,6 +181,7 @@ impl Config {
             data_dir,
             master_key_file,
             trusted_proxies,
+            oidc,
         })
     }
 
@@ -155,6 +194,60 @@ impl Config {
         };
         Self::parse(&text, &|name| std::env::var(name).ok())
     }
+}
+
+fn oidc_settings(
+    file: Option<FileOidc>,
+    env: &dyn Fn(&str) -> Option<String>,
+    data_dir: &Path,
+) -> Result<Option<OidcSettings>, ConfigError> {
+    let file = file.unwrap_or_default();
+    let issuer = env("CROFT_COMPANION_OIDC_ISSUER").or(file.issuer);
+    let client_id = env("CROFT_COMPANION_OIDC_CLIENT_ID").or(file.client_id);
+    let secret = env("CROFT_COMPANION_OIDC_CLIENT_SECRET_FILE")
+        .map(PathBuf::from)
+        .or(file.client_secret_file);
+    let (issuer, client_id, client_secret_file) = match (issuer, client_id, secret) {
+        (None, None, None) => return Ok(None),
+        (Some(i), Some(c), Some(s)) => (i, c, s),
+        _ => {
+            return Err(ConfigError::Invalid(
+                "oidc needs issuer, client_id and client_secret_file together",
+            ))
+        }
+    };
+    // The issuer is compared character for character with the provider's own: no trimming.
+    if !issuer.starts_with("https://") || issuer.contains(['?', '#', '@']) || issuer.len() > 512 {
+        return Err(ConfigError::Invalid(
+            "oidc.issuer must be the provider's https:// issuer URL",
+        ));
+    }
+    if client_id.trim().is_empty() || client_id.len() > 256 {
+        return Err(ConfigError::Invalid("oidc.client_id is empty or too long"));
+    }
+    if client_secret_file.starts_with(data_dir) {
+        return Err(ConfigError::Invalid(
+            "oidc.client_secret_file must be outside data_dir",
+        ));
+    }
+    let create_users = file.create_users.unwrap_or(false);
+    if create_users && file.required_group.is_none() {
+        return Err(ConfigError::Invalid(
+            "oidc.create_users needs oidc.required_group (only members of that group are created)",
+        ));
+    }
+    Ok(Some(OidcSettings {
+        issuer,
+        client_id,
+        client_secret_file,
+        name: file
+            .name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| "single sign-on".to_owned()),
+        create_users,
+        required_group: file.required_group,
+        groups_claim: file.groups_claim.unwrap_or_else(|| "groups".to_owned()),
+    }))
 }
 
 fn public_url_is_ok(url: &str) -> bool {
@@ -187,24 +280,55 @@ fn public_url_is_ok(url: &str) -> bool {
 /// Reads the master key. Refused: a symbolic link, a file other users can read, and a file that
 /// changed between the check and the read (the check is made on the opened file itself).
 pub fn load_master_key(path: &Path) -> Result<Key, ConfigError> {
-    use std::io::Read;
-    let link =
-        std::fs::symlink_metadata(path).map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?;
-    if link.file_type().is_symlink() || !link.is_file() {
-        return Err(ConfigError::MasterKeyExposed(path.to_owned()));
+    let text = read_private_file(path, 256).map_err(|e| match e {
+        PrivateFile::Missing => ConfigError::NoMasterKey(path.to_owned()),
+        PrivateFile::Exposed => ConfigError::MasterKeyExposed(path.to_owned()),
+        PrivateFile::Unreadable => ConfigError::MasterKeyDamaged(path.to_owned()),
+    })?;
+    Key::from_hex(&text).map_err(|_| ConfigError::MasterKeyDamaged(path.to_owned()))
+}
+
+/// Reads a secret kept in a file (the OIDC client secret, T25) with the master key's rules: no
+/// symbolic link, nobody else may read it, checked on the opened file. Surrounding white space is
+/// dropped; an empty file is refused.
+pub fn load_secret_file(path: &Path) -> Result<zeroize::Zeroizing<String>, ConfigError> {
+    let text = read_private_file(path, 4096).map_err(|e| match e {
+        PrivateFile::Missing => ConfigError::SecretFile(path.to_owned(), "is missing"),
+        PrivateFile::Exposed => ConfigError::SecretFile(
+            path.to_owned(),
+            "can be read by other users or is a link; run `chmod 600` on the file itself",
+        ),
+        PrivateFile::Unreadable => ConfigError::SecretFile(path.to_owned(), "cannot be read"),
+    })?;
+    let trimmed = zeroize::Zeroizing::new(text.trim().to_owned());
+    if trimmed.is_empty() {
+        return Err(ConfigError::SecretFile(path.to_owned(), "is empty"));
     }
-    let file = std::fs::File::open(path).map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?;
-    let opened = file
-        .metadata()
-        .map_err(|_| ConfigError::NoMasterKey(path.to_owned()))?;
+    Ok(trimmed)
+}
+
+enum PrivateFile {
+    Missing,
+    Exposed,
+    Unreadable,
+}
+
+fn read_private_file(path: &Path, max: u64) -> Result<zeroize::Zeroizing<String>, PrivateFile> {
+    use std::io::Read;
+    let link = std::fs::symlink_metadata(path).map_err(|_| PrivateFile::Missing)?;
+    if link.file_type().is_symlink() || !link.is_file() {
+        return Err(PrivateFile::Exposed);
+    }
+    let file = std::fs::File::open(path).map_err(|_| PrivateFile::Missing)?;
+    let opened = file.metadata().map_err(|_| PrivateFile::Missing)?;
     if exposed(&opened) || !same_file(&link, &opened) {
-        return Err(ConfigError::MasterKeyExposed(path.to_owned()));
+        return Err(PrivateFile::Exposed);
     }
     let mut text = zeroize::Zeroizing::new(String::new());
-    file.take(256)
+    file.take(max)
         .read_to_string(&mut text)
-        .map_err(|_| ConfigError::MasterKeyDamaged(path.to_owned()))?;
-    Key::from_hex(&text).map_err(|_| ConfigError::MasterKeyDamaged(path.to_owned()))
+        .map_err(|_| PrivateFile::Unreadable)?;
+    Ok(text)
 }
 
 #[cfg(unix)]
@@ -295,6 +419,49 @@ mod tests {
         let c = Config::parse("public_url = \"https://x.example\"", &env).unwrap();
         assert_eq!(c.listen, "127.0.0.1:1234");
         assert!(c.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn oidc_settings_come_together_or_not_at_all() {
+        let c = Config::parse("public_url = \"https://x.example\"", &no_env).unwrap();
+        assert!(c.oidc.is_none());
+        let full = "public_url = \"https://x.example\"\n[oidc]\nissuer = \"https://id.example/realms/a\"\nclient_id = \"croft\"\nclient_secret_file = \"/keys/oidc\"\n";
+        let o = Config::parse(full, &no_env).unwrap().oidc.unwrap();
+        assert_eq!(o.issuer, "https://id.example/realms/a");
+        assert!(!o.create_users);
+        assert_eq!(o.groups_claim, "groups");
+        for bad in [
+            "public_url = \"https://x.example\"\n[oidc]\nissuer = \"https://id.example\"\n",
+            &full.replace("https://id.example/realms/a", "http://id.example"),
+            &full.replace("/keys/oidc", "/data/oidc"),
+            &format!("{full}create_users = true\n"),
+            &format!("{full}unknown = 1\n"),
+        ] {
+            assert!(Config::parse(bad, &no_env).is_err(), "{bad}");
+        }
+        assert!(Config::parse(
+            &format!("{full}create_users = true\nrequired_group = \"mail\"\n"),
+            &no_env
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn a_secret_file_follows_the_master_keys_rules() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("secret");
+        assert!(load_secret_file(&p).is_err());
+        std::fs::write(&p, "  s3cret-made-up\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_secret_file(&p).is_err(), "readable by others");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(load_secret_file(&p).unwrap().as_str(), "s3cret-made-up");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&p, &link).unwrap();
+        assert!(load_secret_file(&link).is_err(), "a link");
+        let msg = load_secret_file(&link).unwrap_err().to_string();
+        assert!(!msg.contains("s3cret"));
     }
 
     #[test]

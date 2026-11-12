@@ -71,6 +71,8 @@ fun AttachmentChip(
     modifier: Modifier = Modifier,
     progress: Float = 0f,
     limitText: String? = null,
+    /** What a tap does, when the table's word for the state does not fit (in compose a tap removes the file). */
+    tapLabelOverride: String? = null,
     onLongClick: (() -> Unit)? = null,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
 ) {
@@ -79,7 +81,7 @@ fun AttachmentChip(
     val shape = MaterialTheme.shapes.small
     // At a large text size the name and the size line wrap instead of ending in an ellipsis.
     val lineCap = if (LocalDensity.current.fontScale > BIG_TEXT_FROM_FONT_SCALE) Int.MAX_VALUE else 1
-    val tapLabel = stringResource(
+    val tapLabelDefault = stringResource(
         when (state) {
             AttachmentState.NOT_DOWNLOADED -> R.string.attachment_tap_download
             AttachmentState.DOWNLOADING -> R.string.attachment_tap_cancel
@@ -89,6 +91,7 @@ fun AttachmentChip(
             AttachmentState.OVER_LIMIT -> R.string.attachment_tap_remove
         },
     )
+    val tapLabel = tapLabelOverride ?: tapLabelDefault
     val stateWord = stringResource(
         when (state) {
             AttachmentState.NOT_DOWNLOADED -> R.string.attachment_state_not_downloaded
@@ -138,7 +141,8 @@ fun AttachmentChip(
             else -> Icon(CroftIcons.Attachment, null, Modifier.size(20.dp), tint = content)
         }
         Column {
-            Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
+            // Middle ellipsis: a long name keeps its extension.
+            Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = lineCap, overflow = TextOverflow.MiddleEllipsis)
             Text(
                 when (state) {
                     AttachmentState.FAILED -> stringResource(R.string.attachment_failed_line, size)

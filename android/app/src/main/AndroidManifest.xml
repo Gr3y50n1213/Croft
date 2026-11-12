@@ -20,12 +20,39 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Croft">
         <!-- No screenOrientation, resizeableActivity or aspect-ratio settings: see docs/store/READINESS.md. -->
+        <!-- singleTop: a mailto: link or a share that arrives while Croft is on top reaches onNewIntent instead of starting a second copy.
+             Exported, with exactly these intent filters (each one is handled in ComposeIntents; docs/store/READINESS.md):
+             mailto: links (VIEW, which browsers and other apps use, with BROWSABLE; SENDTO), and SEND and SEND_MULTIPLE (text and content: streams).
+             A link or a share only fills the compose screen; nothing is sent without the person pressing Send. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="mailto" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="mailto" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
     </application>

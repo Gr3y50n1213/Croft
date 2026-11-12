@@ -175,7 +175,8 @@ fun RecipientChip(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (state == RecipientChipState.ERROR) Icon(Icons.Filled.Warning, null, Modifier.size(16.dp), tint = content)
-        Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Middle ellipsis: a long chip keeps its end, where an address ends.
+        Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
         if (state == RecipientChipState.ERROR) Text(errorWord, style = MaterialTheme.typography.labelSmall, color = content)
         if (hasKey) Icon(Icons.Filled.Lock, null, Modifier.size(14.dp), tint = content)
     }

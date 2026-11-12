@@ -66,6 +66,8 @@ class Rig(
     undoWindowMs: Long = 1_000,
     password: String = TEST_PASSWORD,
     signInPassword: String = password,
+    /** The account has an SMTP server in its settings (a port nobody listens on: a send is queued and then retried), so that `send` is allowed (T18d). */
+    private val smtp: Boolean = false,
 ) : AutoCloseable {
     val server: TestImapServer = TestImapServer.start(messages.toUInt(), password)
     val dir: File = Files.createTempDirectory("croft-mailtest").toFile()
@@ -77,6 +79,13 @@ class Rig(
         private set
     lateinit var repo: CoreMessageRepository
         private set
+
+    /** The compose calls over the same core (T18d); replaced when the core is reopened. */
+    lateinit var compose: com.example.croft.mail.compose.CoreComposeBackend
+        private set
+
+    /** The folder the picker's copies go to (registered with the core); never the folder of the database. */
+    val attachDir: File = File(dir, "compose-attach").also { it.mkdirs() }
     var account: Long = 0
         private set
 
@@ -96,7 +105,7 @@ class Rig(
     private fun discovered() = FfiDiscovered(
         email = "alice@example.org",
         imap = ServerSettings(server.host(), server.port(), SecurityMode.TLS, server.username()),
-        smtp = null,
+        smtp = if (smtp) ServerSettings("127.0.0.1", 1u, SecurityMode.TLS, server.username()) else null,
         jmap = null,
         source = DiscoverySource.AUTOCONFIG,
         provider = null,
@@ -106,6 +115,8 @@ class Rig(
     private fun openCore() {
         core = Core.open(File(dir, "croft.db").path, null, provider)
         repo = CoreMessageRepository(core, mapping)
+        core.setAttachmentDirectory(attachDir.path)
+        compose = com.example.croft.mail.compose.CoreComposeBackend(core)
         val mine = repo
         // The screen's loop: wait for a change, note it, wait again. It must be cancelled before the core is closed (an
         // unfinished call keeps the core alive), exactly as the screen's coroutine is when the process goes.

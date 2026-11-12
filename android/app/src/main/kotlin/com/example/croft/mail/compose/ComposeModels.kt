@@ -55,6 +55,11 @@ data class ComposeFill(
     override fun toString(): String = "ComposeFill(${to.size + cc.size + bcc.size} recipients, ${attachments.size} files)"
 }
 
+/** One line of the From picker. */
+data class SenderChoice(val account: AccountId, val identity: FfiIdentity) {
+    override fun toString(): String = "SenderChoice(account=$account, identity=${identity.id})"
+}
+
 /** The three recipient fields. */
 enum class RecipientField { TO, CC, BCC }
 
@@ -113,6 +118,10 @@ data class ComposeState(
     val draftId: Long? = null,
     val identities: List<FfiIdentity> = emptyList(),
     val identity: Long? = null,
+    /** Everything the From picker offers: every identity of every account (the person can switch account while there is no attachment). */
+    val senders: List<SenderChoice> = emptyList(),
+    /** The state of the account being sent from, for the Offline and Sign in banners. */
+    val accountStatus: com.example.croft.mail.AccountState? = null,
     val to: List<RecipientChipData> = emptyList(),
     val cc: List<RecipientChipData> = emptyList(),
     val bcc: List<RecipientChipData> = emptyList(),

@@ -9,12 +9,15 @@ import com.example.croft.debug.TestHooks
 import com.example.croft.mail.accounts.AccountPrefsStore
 import com.example.croft.mail.accounts.AccountSweep
 import com.example.croft.mail.accounts.AppFiles
+import com.example.croft.mail.compose.AttachmentFolder
+import com.example.croft.mail.compose.CoreComposeBackend
 import com.example.croft.openCore
 import com.example.croft.secrets.AccountSecrets
 import com.example.croft.secrets.AppSecrets
 import com.example.croft.secrets.SecretStoreCredentials
 import com.example.croft.secrets.SignInNeeded
 import com.example.croft.secrets.createAppSecrets
+import com.example.croft.ui.compose.ComposeFiles
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -129,6 +132,7 @@ object MailRuntime {
             anchors = FileAnchorStore(File(context.noBackupFilesDir, "croft-list-anchors-core.json")),
             rowActions = CoreRowActions(repository, mapping),
             folderMapping = mapping,
+            compose = CoreComposeBackend(open.core),
         )
     }
 
@@ -148,6 +152,21 @@ object MailRuntime {
         }
     }
 
+    /**
+     * The folder the picker's copies go to (`cacheDir/compose-attach`, never the database's folder): created if missing, emptied of
+     * copies a crash left, and registered with the core, which reads attachments only from a file under it. If that fails, attaching
+     * files says "could not be attached"; nothing else is affected.
+     */
+    private fun registerAttachmentFolder(context: Context, core: Core) {
+        try {
+            val dir = ComposeFiles.directory(context)
+            AttachmentFolder.prepare(dir)
+            core.setAttachmentDirectory(dir.path)
+        } catch (e: Exception) {
+            // No attachments in this run; no path or text is kept.
+        }
+    }
+
     private class SecretsForSweep(private val open: OpenedCore) : AccountSweep.Secrets {
         override fun storedIds() = open.secrets.secrets.accountIds()
         override fun deleteSecrets(id: Long) = open.secrets.secrets.removeAccount(id)
@@ -162,6 +181,7 @@ object MailRuntime {
         val core = openCore(dbFile.path, secrets, SecretStoreCredentials(secrets.secrets, signIn))
         val accountSecrets = AccountSecrets(secrets.secrets, signIn)
         val open = OpenedCore(core, secrets, accountSecrets, signIn)
+        registerAttachmentFolder(context, core)
         sweepOrphans(context, open)
         return open.also { opened = it }
     }

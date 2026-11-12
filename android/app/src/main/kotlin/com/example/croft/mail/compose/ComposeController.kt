@@ -117,12 +117,13 @@ class ComposeController(
     private suspend fun openFresh(wanted: AccountId?, fill: ComposeFill) {
         val account = defaultAccount(wanted) ?: throw ComposeFailure(ComposeProblem.NO_SUCH_ACCOUNT)
         val identities = backend.identities(account)
+        val senders = loadSenders()
         val to = chipsOfText(fill.to)
         val cc = chipsOfText(fill.cc)
         val bcc = chipsOfText(fill.bcc)
         mutable.update {
             it.copy(
-                phase = ComposeState.Phase.EDITING, account = account, identities = identities,
+                phase = ComposeState.Phase.EDITING, account = account, identities = identities, senders = senders,
                 identity = identities.firstOrNull { i -> i.isDefault }?.id ?: identities.firstOrNull()?.id,
                 to = to, cc = cc, bcc = bcc, showCcBcc = cc.isNotEmpty() || bcc.isNotEmpty(),
                 subject = fill.subject, body = fill.body,
@@ -137,12 +138,13 @@ class ComposeController(
         val account = defaultAccount(wanted) ?: throw ComposeFailure(ComposeProblem.NO_SUCH_ACCOUNT)
         val identities = backend.identities(account)
         val reply = make()
+        val senders = loadSenders()
         val c = reply.content
         inReplyTo = c.inReplyTo
         references = c.references
         mutable.update {
             it.copy(
-                phase = ComposeState.Phase.EDITING, account = account, identities = identities,
+                phase = ComposeState.Phase.EDITING, account = account, identities = identities, senders = senders,
                 identity = c.identity ?: identities.firstOrNull { i -> i.isDefault }?.id ?: identities.firstOrNull()?.id,
                 to = chipsOf(c.to), cc = chipsOf(c.cc), bcc = chipsOf(c.bcc),
                 showCcBcc = c.cc.isNotEmpty() || c.bcc.isNotEmpty(),
@@ -158,13 +160,14 @@ class ComposeController(
         val draft: FfiDraft = backend.loadDraft(start.account, start.draftId)
         val identities = backend.identities(start.account)
         val c = draft.content
+        val senders = loadSenders()
         inReplyTo = c.inReplyTo
         references = c.references
         val cursor = start.cursor ?: cursors.recall(draft.id)
         mutable.update {
             it.copy(
                 phase = if (draft.outboxId != null) ComposeState.Phase.LOCKED else ComposeState.Phase.EDITING,
-                account = start.account, draftId = draft.id, identities = identities,
+                account = start.account, draftId = draft.id, identities = identities, senders = senders,
                 identity = c.identity ?: identities.firstOrNull { i -> i.isDefault }?.id ?: identities.firstOrNull()?.id,
                 to = chipsOf(c.to), cc = chipsOf(c.cc), bcc = chipsOf(c.bcc), showCcBcc = c.cc.isNotEmpty() || c.bcc.isNotEmpty(),
                 subject = c.subject, body = c.body, attachments = draft.attachments,
@@ -177,6 +180,12 @@ class ComposeController(
         }
         bodyCursor = cursor
         if (draft.outboxId == null) refreshStatus()
+    }
+
+    private suspend fun loadSenders(): List<SenderChoice> = try {
+        accounts().flatMap { a -> backend.identities(a.id).map { SenderChoice(a.id, it) } }
+    } catch (e: ComposeFailure) {
+        emptyList()
     }
 
     private fun chipsOf(list: List<FfiAddress>): List<RecipientChipData> = list.map { RecipientChipData(it, tools.isValid(it.address)) }
@@ -423,9 +432,9 @@ class ComposeController(
     /** Re-reads `check_draft`, the policy and the account's state into the Send button. Call with [ops] held (or from a single caller). */
     private suspend fun refreshStatus() {
         val s = state.value
-        val offline = try {
-            accounts().firstOrNull { it.id == s.account }?.status.let { it == AccountState.OFFLINE || it == AccountState.NEEDS_SIGN_IN }
-        } catch (e: Exception) { false }
+        val status = try { accounts().firstOrNull { it.id == s.account }?.status } catch (e: Exception) { null }
+        val offline = status == AccountState.OFFLINE || status == AccountState.NEEDS_SIGN_IN
+        mutable.update { it.copy(accountStatus = status) }
         val addresses = s.allRecipients.map { it.address.address }
         val warn = addresses.isNotEmpty() && policy.check(s.account, addresses) is EncryptionDecision.RequiredKeysMissing
         val id = s.draftId

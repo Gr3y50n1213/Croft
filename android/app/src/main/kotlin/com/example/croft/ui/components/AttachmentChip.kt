@@ -71,6 +71,8 @@ fun AttachmentChip(
     modifier: Modifier = Modifier,
     progress: Float = 0f,
     limitText: String? = null,
+    /** What a tap does, when the table's word for the state does not fit (in compose a tap removes the file). */
+    tapLabelOverride: String? = null,
     onLongClick: (() -> Unit)? = null,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
 ) {
@@ -79,7 +81,7 @@ fun AttachmentChip(
     val shape = MaterialTheme.shapes.small
     // At a large text size the name and the size line wrap instead of ending in an ellipsis.
     val lineCap = if (LocalDensity.current.fontScale > BIG_TEXT_FROM_FONT_SCALE) Int.MAX_VALUE else 1
-    val tapLabel = stringResource(
+    val tapLabelDefault = stringResource(
         when (state) {
             AttachmentState.NOT_DOWNLOADED -> R.string.attachment_tap_download
             AttachmentState.DOWNLOADING -> R.string.attachment_tap_cancel
@@ -89,6 +91,7 @@ fun AttachmentChip(
             AttachmentState.OVER_LIMIT -> R.string.attachment_tap_remove
         },
     )
+    val tapLabel = tapLabelOverride ?: tapLabelDefault
     val stateWord = stringResource(
         when (state) {
             AttachmentState.NOT_DOWNLOADED -> R.string.attachment_state_not_downloaded

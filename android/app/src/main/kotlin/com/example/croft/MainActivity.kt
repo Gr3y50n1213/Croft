@@ -4,6 +4,7 @@
 
 package com.example.croft
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,6 +21,8 @@ import com.example.croft.mail.MailSession
 import com.example.croft.mail.MailSettingsStore
 import com.example.croft.mail.accounts.AccountPrefsStore
 import com.example.croft.theme.ThemeStore
+import com.example.croft.ui.compose.ComposeIntents
+import com.example.croft.ui.nav.ComposeRequest
 import com.example.croft.ui.nav.CroftApp
 import com.example.croft.ui.nav.Route
 import com.example.croft.ui.nav.StartProblemScreen
@@ -34,9 +37,20 @@ import com.example.croft.ui.onboarding.appOnboardingEnvironment
  * the session and the start screen are known, so the app never flashes the wrong screen.
  */
 class MainActivity : ComponentActivity() {
+    /** A `mailto:` link or a share that opened (or reached) the app, until the navigation has taken it. */
+    private var composeRequest by mutableStateOf<ComposeRequest?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        ComposeIntents.parse(intent)?.let { composeRequest = ComposeRequest(it) }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Only on a first start: after a rotation the intent is still the old one and the request was already used.
+        if (savedInstanceState == null) ComposeIntents.parse(intent)?.let { composeRequest = ComposeRequest(it) }
         // A missing library or a version mismatch shows the error line instead of crashing.
         val info = runCatching { loadRustInfo() }.getOrNull()
         val store = ThemeStore.shared(applicationContext)
@@ -73,6 +87,8 @@ class MainActivity : ComponentActivity() {
                     swipeStore = com.example.croft.ui.swipe.SwipeSettingsStore.shared(applicationContext),
                     mailStore = mailStore,
                     connectivity = connectivity,
+                    composeRequest = composeRequest,
+                    onComposeRequestHandled = { composeRequest = null },
                 )
             }
         }

@@ -10,8 +10,18 @@
   },
   "exported": {
     "activity:${applicationId}.MainActivity": {
-      "why": "The launcher activity.",
-      "permission": null
+      "why": "The launcher activity, and the entry for mailto: links and shares (T18d, S23): VIEW and SENDTO with a mailto: URI, SEND and SEND_MULTIPLE with text and content: streams. They only fill the compose screen; nothing is sent without Send.",
+      "permission": null,
+      "actions": [
+        "android.intent.action.MAIN",
+        "android.intent.action.VIEW",
+        "android.intent.action.SENDTO",
+        "android.intent.action.SEND",
+        "android.intent.action.SEND_MULTIPLE"
+      ],
+      "browsable-schemes": [
+        "mailto"
+      ]
     },
     "receiver:androidx.profileinstaller.ProfileInstallReceiver": {
       "why": "AndroidX profileinstaller (baseline profiles): lets the shell trigger profile installation. Only the system or adb can hold android.permission.DUMP, so other apps cannot call it.",

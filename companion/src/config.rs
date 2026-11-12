@@ -66,6 +66,7 @@ struct FileConfig {
     master_key_file: Option<PathBuf>,
     trusted_proxies: Option<Vec<String>>,
     oidc: Option<FileOidc>,
+    mail_allowed_networks: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -115,6 +116,66 @@ pub struct Config {
     pub trusted_proxies: Vec<std::net::IpAddr>,
     /// Sign-in through an OpenID Connect provider, if set up.
     pub oidc: Option<OidcSettings>,
+    /// Private networks a mail server may be on (T26). Everything internal (loopback, private,
+    /// link-local...) is refused otherwise.
+    pub mail_allowed_networks: Vec<Network>,
+}
+
+/// An IP network (`address/prefix`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Network {
+    /// The network's address.
+    pub addr: std::net::IpAddr,
+    /// The prefix length.
+    pub prefix: u8,
+}
+
+impl Network {
+    /// Reads `192.168.1.0/24`, `fd00::/8` or a single address.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (a, p) = match s.trim().split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (s.trim(), None),
+        };
+        let addr: std::net::IpAddr = a.parse().ok()?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match p {
+            Some(p) => p.parse::<u8>().ok().filter(|p| *p <= max)?,
+            None => max,
+        };
+        Some(Self {
+            addr: addr.to_canonical(),
+            prefix,
+        })
+    }
+
+    /// Whether `ip` is in this network.
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr::{V4, V6};
+        let bits = |n: u32, len: u8| {
+            if len == 0 {
+                0
+            } else {
+                n >> (32 - u32::from(len))
+            }
+        };
+        let bits6 = |n: u128, len: u8| {
+            if len == 0 {
+                0
+            } else {
+                n >> (128 - u32::from(len))
+            }
+        };
+        match (self.addr, ip.to_canonical()) {
+            (V4(net), V4(a)) => {
+                bits(u32::from(net), self.prefix) == bits(u32::from(a), self.prefix)
+            }
+            (V6(net), V6(a)) => {
+                bits6(u128::from(net), self.prefix) == bits6(u128::from(a), self.prefix)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Config {
@@ -170,6 +231,22 @@ impl Config {
                 ConfigError::Invalid("trusted_proxies must be IP addresses, such as 172.18.0.2")
             })?;
         let oidc = oidc_settings(file.oidc, env, &data_dir)?;
+        let networks: Vec<String> = match env("CROFT_COMPANION_MAIL_ALLOWED_NETWORKS") {
+            Some(list) => list
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            None => file.mail_allowed_networks.unwrap_or_default(),
+        };
+        let mail_allowed_networks = networks
+            .iter()
+            .map(|n| Network::parse(n))
+            .collect::<Option<Vec<_>>>()
+            .ok_or(ConfigError::Invalid(
+                "mail_allowed_networks must be networks such as 192.168.1.0/24",
+            ))?;
         if !public_url_is_ok(&public_url) {
             return Err(ConfigError::Invalid(
                 "public_url must be https:// and a domain name (plain http only for localhost; no IP address)",
@@ -182,6 +259,7 @@ impl Config {
             master_key_file,
             trusted_proxies,
             oidc,
+            mail_allowed_networks,
         })
     }
 
@@ -429,6 +507,30 @@ mod tests {
         let c = Config::parse("public_url = \"https://x.example\"", &env).unwrap();
         assert_eq!(c.listen, "127.0.0.1:1234");
         assert!(c.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn mail_networks_are_parsed_and_matched() {
+        let env = |n: &str| {
+            (n == "CROFT_COMPANION_MAIL_ALLOWED_NETWORKS")
+                .then(|| "192.168.1.0/24, fd00::/8, 10.0.0.7".to_owned())
+        };
+        let c = Config::parse("public_url = \"https://x.example\"", &env).unwrap();
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let any = |a: &str| c.mail_allowed_networks.iter().any(|n| n.contains(ip(a)));
+        assert!(
+            any("192.168.1.20") && any("::ffff:192.168.1.20") && any("fd12::1") && any("10.0.0.7")
+        );
+        assert!(!any("192.168.2.1") && !any("10.0.0.8") && !any("fe80::1"));
+        for bad in ["192.168.1.0/33", "nope", "fd00::/129"] {
+            let env =
+                |n: &str| (n == "CROFT_COMPANION_MAIL_ALLOWED_NETWORKS").then(|| bad.to_owned());
+            assert!(
+                Config::parse("public_url = \"https://x.example\"", &env).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(Network::parse("0.0.0.0/0").unwrap().contains(ip("8.8.8.8")));
     }
 
     #[test]

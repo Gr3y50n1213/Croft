@@ -198,6 +198,29 @@ pub fn open_value(
     data_key.open(&value_aad(user_id, context), sealed)
 }
 
+impl Key {
+    /// A key derived from this one for one purpose (HKDF-SHA256, `info` naming the purpose): the
+    /// same key and purpose always give the same result, and nothing about this key is learnt from
+    /// it.
+    pub fn derive(&self, info: &'static [u8]) -> Zeroizing<[u8; 32]> {
+        struct Len;
+        impl ring::hkdf::KeyType for Len {
+            fn len(&self) -> usize {
+                32
+            }
+        }
+        let prk =
+            ring::hkdf::Salt::new(ring::hkdf::HKDF_SHA256, b"croft-companion").extract(&self.0[..]);
+        let mut out = Zeroizing::new([0u8; 32]);
+        let infos = [info];
+        // `expand` and `fill` fail only for a length HKDF cannot give (over 255 blocks); 32 is fine.
+        if let Ok(okm) = prk.expand(&infos, Len) {
+            let _ = okm.fill(&mut out[..]);
+        }
+        out
+    }
+}
+
 /// Compares two secrets in time that depends only on their lengths (never on where they differ).
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -214,6 +237,17 @@ pub(crate) const MASTER_CHECK_AAD: &[u8] = b"croft-companion/master-check/v1";
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derived_keys_differ_by_purpose_and_by_key() {
+        let k = Key::generate().unwrap();
+        let a = k.derive(b"one");
+        assert_eq!(*a, *k.derive(b"one"));
+        assert_ne!(*a, *k.derive(b"two"));
+        assert_ne!(*a, *Key::generate().unwrap().derive(b"one"));
+        assert_ne!(*a, [0u8; 32]);
+        assert_ne!(&a[..], &k.0[..]);
+    }
 
     #[test]
     fn ct_eq_compares_whole_values() {

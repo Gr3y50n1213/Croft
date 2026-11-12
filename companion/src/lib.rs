@@ -16,6 +16,8 @@ pub mod enrol_page;
 pub mod http;
 pub mod jwt;
 pub mod limits;
+pub mod mail;
+pub mod mail_store;
 pub mod oidc;
 pub mod oidc_store;
 pub mod store;

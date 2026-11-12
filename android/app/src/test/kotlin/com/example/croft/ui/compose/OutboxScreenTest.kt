@@ -77,7 +77,7 @@ class OutboxScreenTest {
         rule.onNodeWithText("The server refused a recipient address.").assertExists()
         rule.onNodeWithText("May not have been sent. Check Sent before trying again.").assertExists()
         // A Failed row announces itself; a Sending row has neither Retry, Edit nor Discard.
-        rule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite) and hasText("Failed")).assertExists()
+        assertEquals("both Failed rows announce themselves", 2, rule.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Polite) and hasText("Failed")).fetchSemanticsNodes().size)
         assertEquals("Retry only on the two Failed rows", 2, rule.onAllNodesWithTag(OutboxTags.RETRY).fetchSemanticsNodes().size)
         assertEquals("Edit on Queued and Failed, not Sending", 3, rule.onAllNodesWithTag(OutboxTags.EDIT).fetchSemanticsNodes().size)
     }

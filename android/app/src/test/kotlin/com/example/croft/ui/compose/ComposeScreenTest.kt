@@ -243,7 +243,8 @@ class ComposeScreenTest {
         open(f, ComposeStart.Fill(ComposeFill(to = listOf("dan@oldmail.org"), subject = "Secret", body = "Text"), account = 1))
         rule.onNodeWithTag(ComposeTags.SEND).performClick()
         rule.waitForText("One recipient has no key")
-        rule.onNodeWithText("dan@oldmail.org").assertExists()
+        // The address is on its chip and again in the sheet, which names who has no key.
+        assertTrue(rule.onAllNodes(hasText("dan@oldmail.org")).fetchSemanticsNodes().size >= 2)
         assertFalse("nothing is sent before the choice", f.backend.calls.contains("send"))
         // The sheet announces itself.
         rule.onNode(SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, LiveRegionMode.Assertive) and hasText("One recipient has no key")).assertExists()

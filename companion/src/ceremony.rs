@@ -64,18 +64,36 @@ pub enum Pending {
     },
 }
 
-/// The ceremonies in progress.
-#[derive(Default)]
-pub struct Ceremonies {
-    map: HashMap<[u8; 32], (i64, Owner, Pending)>,
+/// The ceremonies in progress (WebAuthn ones by default; T25 keeps its OIDC flows and hand-over
+/// codes in the same kind of table).
+pub struct Ceremonies<T = Pending> {
+    map: HashMap<[u8; 32], (i64, Owner, T)>,
     /// Ids in the order they were made (ids already taken are skipped when reached).
     order: VecDeque<[u8; 32]>,
     /// Each owner's live ids, oldest first.
     by_owner: HashMap<Owner, VecDeque<[u8; 32]>>,
+    /// How long one lasts.
+    ttl_ms: i64,
 }
 
-impl Ceremonies {
-    fn remove(&mut self, key: &[u8; 32]) -> Option<(i64, Pending)> {
+impl<T> Default for Ceremonies<T> {
+    fn default() -> Self {
+        Self::with_ttl(TTL_MS)
+    }
+}
+
+impl<T> Ceremonies<T> {
+    /// An empty table whose entries last `ttl_ms`.
+    pub fn with_ttl(ttl_ms: i64) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            by_owner: HashMap::new(),
+            ttl_ms,
+        }
+    }
+
+    fn remove(&mut self, key: &[u8; 32]) -> Option<(i64, T)> {
         let (expires, owner, pending) = self.map.remove(key)?;
         if let Some(q) = self.by_owner.get_mut(&owner) {
             q.retain(|k| k != key);
@@ -86,13 +104,7 @@ impl Ceremonies {
         Some((expires, pending))
     }
 
-    /// Keeps `pending` for `owner` and returns its id.
-    pub fn put(
-        &mut self,
-        owner: Owner,
-        pending: Pending,
-        now: i64,
-    ) -> Result<Zeroizing<String>, StoreError> {
+    fn make_room(&mut self, owner: Owner, now: i64) {
         // Expired ones leave from the front (the oldest).
         while let Some(front) = self.order.front().copied() {
             match self.map.get(&front) {
@@ -114,16 +126,36 @@ impl Ceremonies {
         if let Some(key) = oldest_of_owner {
             self.remove(&key);
         }
+    }
+
+    /// Keeps `pending` for `owner` and returns its id.
+    pub fn put(
+        &mut self,
+        owner: Owner,
+        pending: T,
+        now: i64,
+    ) -> Result<Zeroizing<String>, StoreError> {
+        self.make_room(owner, now);
         let id = random_token()?;
         let key = token_hash(&id);
-        self.map.insert(key, (now + TTL_MS, owner, pending));
+        self.map.insert(key, (now + self.ttl_ms, owner, pending));
         self.order.push_back(key);
         self.by_owner.entry(owner).or_default().push_back(key);
         Ok(id)
     }
 
+    /// Keeps `pending` for `owner` under an id the caller chose (a random value it made, such as
+    /// an OIDC `state`).
+    pub fn put_with_id(&mut self, owner: Owner, id: &str, pending: T, now: i64) {
+        self.make_room(owner, now);
+        let key = token_hash(id);
+        self.map.insert(key, (now + self.ttl_ms, owner, pending));
+        self.order.push_back(key);
+        self.by_owner.entry(owner).or_default().push_back(key);
+    }
+
     /// Hands out the ceremony with this id, once, if it has not expired.
-    pub fn take(&mut self, id: &str, now: i64) -> Option<Pending> {
+    pub fn take(&mut self, id: &str, now: i64) -> Option<T> {
         let (expires, pending) = self.remove(&token_hash(id))?;
         (expires > now).then_some(pending)
     }

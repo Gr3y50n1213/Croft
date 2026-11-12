@@ -33,6 +33,8 @@ A TOML file (`--config FILE`) and environment variables; the variable wins.
 | `data_dir` | `CROFT_COMPANION_DATA_DIR` | `/data` |
 | `master_key_file` | `CROFT_COMPANION_MASTER_KEY_FILE` | `/keys/master.key` (must be outside `data_dir`) |
 | `trusted_proxies` | `CROFT_COMPANION_TRUSTED_PROXIES` (comma-separated) | none |
+| `[oidc]` `issuer`, `client_id`, `client_secret_file` | `CROFT_COMPANION_OIDC_ISSUER`, `_OIDC_CLIENT_ID`, `_OIDC_CLIENT_SECRET_FILE` | not set (no OIDC) |
+| `[oidc]` `name`, `create_users`, `required_group`, `groups_claim` | (file only) | `single sign-on`, `false`, none, `groups` |
 
 `public_url` must use a domain name (passkeys do not work with an IP address) and is the address passkeys are bound to: changing it
 later means everyone enrols again. `trusted_proxies` lists the reverse proxy's own addresses (as the Companion sees them, for example
@@ -72,6 +74,37 @@ key is encrypted with the **master key**. The master key is a file, never in the
   an admin must never be able to act as someone else. (The server's operator holds the master key, so nothing is hidden from them.)
 - **Admins** can list, disable and enable users and read the instance's audit log. They cannot read anyone's data or sign in as them.
 
+## Signing in through your identity provider (OIDC)
+
+If you run Authelia, Authentik, Keycloak or Microsoft Entra ID, people can sign in through it instead of with a passkey.
+
+1. Register the Companion at the provider as a **confidential** client using the authorization code flow with PKCE, with the redirect
+   URI `https://<your public_url>/oidc/callback` and the scopes `openid profile` (plus `groups` if you use `create_users`).
+2. Put the client secret in a file outside the data folder, readable only by the Companion (`chmod 600`), for example on the `/keys`
+   volume.
+3. Add to the settings:
+
+   ```
+   [oidc]
+   issuer = "https://auth.example.org"          # exactly as the provider's discovery document gives it
+   client_id = "croft"
+   client_secret_file = "/keys/oidc-client-secret"
+   name = "Authelia"                            # the button's label
+   # create_users = true                        # create a user the first time a member of the group signs in
+   # required_group = "mail"
+   ```
+
+- People are matched by the provider's (issuer, subject) pair, never by e-mail. A user links their identity once, from the web app,
+  within ten minutes of signing in; an admin can unlink it, and a re-enrolment (`user enrol`) removes it. With `create_users`, a member of `required_group` who signs in for the first
+  time gets a new user (role `user`).
+- The provider's answer is handed to the app as a one-time code that only the app that started the sign-in can use (PKCE), so a sign-in
+  started by someone else cannot end in your session.
+- The issuer must use `https`, and so must every endpoint its discovery document lists. The ID token must be signed with RS256, ES256
+  or EdDSA.
+- Provider notes (not tested here): Keycloak's issuer is `https://<host>/realms/<realm>`; Entra ID's is
+  `https://login.microsoftonline.com/<tenant id>/v2.0`; Authelia and Authentik give theirs on the client's page. Group claims may need
+  a mapper (Keycloak) or the `groups` scope (Authelia).
+
 ## Commands
 
 ```
@@ -97,3 +130,6 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `GET /api/me`, `POST /api/sign-out`, `POST /api/passkeys/start`, `/api/passkeys/finish` | signed in (also a recovery sign-in) |
 | `GET /api/passkeys`, `DELETE /api/passkeys/{id}`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `GET /api/audit` | signed in |
 | `GET /api/admin/users`, `POST /api/admin/users/{id}/disable`, `/enable`, `GET /api/admin/audit` | admins |
+| `GET /api/oidc`, `GET /api/sign-in/oidc/start?app_challenge&app_redirect`, `GET /oidc/callback`, `POST /api/sign-in/oidc/exchange` (`{"code", "verifier"}`) | anyone |
+| `POST /api/oidc/link/start`, `/api/oidc/link/finish`, `DELETE /api/oidc/link` | signed in |
+| `POST /api/admin/users/{id}/oidc/unlink` | admins |

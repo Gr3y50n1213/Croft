@@ -14,6 +14,7 @@
 //! Nothing here prints a token, a code, a verifier or a secret: every such value is held in a
 //! [`Zeroizing`] string and the `Debug` output of each type says only what kind of value it is.
 
+pub mod fetch;
 pub mod loopback;
 pub mod token;
 

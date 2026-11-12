@@ -333,6 +333,7 @@ mod tests {
             data_dir: dir.join("data"),
             master_key_file: dir.join("keys").join("master.key"),
             trusted_proxies: Vec::new(),
+            oidc: None,
         }
     }
 

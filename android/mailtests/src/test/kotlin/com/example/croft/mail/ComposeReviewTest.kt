@@ -157,6 +157,21 @@ class ComposeReviewTest {
     }
 
     @Test(timeout = 60_000)
+    fun textTypedInARecipientFieldCountsAsARecipientForTheSendButton() = runBlocking {
+        val c = controller(FakeComposeBackend())
+        c.open(ComposeStart.New(1))
+        c.onSubject("Typed")
+        c.onBody("Body")
+        c.commitRecipients(RecipientField.TO, "ann@example.org")
+        c.removeRecipient(RecipientField.TO, c.state.value.to.single())
+        assertEquals(SendState.NO_RECIPIENT, c.state.value.sendState)
+        c.setPendingRecipientText(RecipientField.TO, "bob@example.org")
+        wait("the button counts the typed address") { c.state.value.sendState == SendState.READY }
+        c.setPendingRecipientText(RecipientField.TO, "")
+        wait("and stops counting it when it is gone") { c.state.value.sendState == SendState.NO_RECIPIENT }
+    }
+
+    @Test(timeout = 60_000)
     fun textTypedInARecipientFieldIsKeptByBack() = runBlocking {
         val fake = FakeComposeBackend()
         val c = controller(fake)

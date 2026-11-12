@@ -47,7 +47,10 @@ object ComposeFiles {
      * - An authority that does not resolve is accepted: no app serves it, so a read just fails, and refusing it would also refuse real
      *   shares from apps that package visibility hides from this one.
      */
-    fun isForeign(context: Context, uri: Uri): Boolean {
+    fun isForeign(context: Context, uri: Uri): Boolean = isForeign(context, uri, ::mediaOwner)
+
+    /** [isForeign] with the MediaStore owner lookup given (tests give a fixed answer; the app asks MediaStore). */
+    fun isForeign(context: Context, uri: Uri, mediaOwnerOf: (Context, Uri) -> String?): Boolean {
         try {
             if (!uri.scheme.equals(ContentResolver.SCHEME_CONTENT, ignoreCase = true)) return false
             val authority = uri.authority?.substringAfterLast('@')?.takeIf { it.isNotEmpty() } ?: return false
@@ -56,7 +59,7 @@ object ComposeFiles {
             if (authority in ownAuthorities(context)) return false
             val info = pm.resolveContentProvider(authority, 0)
             if (info != null && (info.packageName == own || info.applicationInfo?.uid == android.os.Process.myUid())) return false
-            if (authority == MEDIA_AUTHORITY && ownsMediaItem(context, uri)) return false
+            if (authority == MEDIA_AUTHORITY && mediaOwnerOf(context, uri) == context.packageName) return false
             return true
         } catch (e: RuntimeException) {
             // Anything unexpected while deciding: refuse.
@@ -75,15 +78,16 @@ object ComposeFiles {
 
     private const val MEDIA_AUTHORITY = "media"
 
-    /** Whether this app put the MediaStore item at [uri] there (it can read its own items without any permission). */
-    private fun ownsMediaItem(context: Context, uri: Uri): Boolean {
-        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return false
+    /** The package that put the MediaStore item at [uri] there (`OWNER_PACKAGE_NAME`, API 29 and later), or null when it cannot be told. */
+    private fun mediaOwner(context: Context, uri: Uri): String? {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return null
         return try {
             context.contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.OWNER_PACKAGE_NAME), null, null, null)?.use { c ->
-                c.moveToFirst() && c.getString(0) == context.packageName
-            } ?: false
+                val column = c.getColumnIndex(android.provider.MediaStore.MediaColumns.OWNER_PACKAGE_NAME)
+                if (column >= 0 && c.moveToFirst()) c.getString(column) else null
+            }
         } catch (e: RuntimeException) {
-            false
+            null
         }
     }
 }

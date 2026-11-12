@@ -24,6 +24,13 @@ use crate::store::Store;
 pub const MAX_BODY: usize = 64 * 1024;
 /// Longest a request may take.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest a client may take to send a request's body (at most [`MAX_BODY`]).
+pub const BODY_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest a connection is kept: a kept-alive connection is then closed after its current request,
+/// so no client holds a slot for good.
+pub const MAX_CONNECTION_AGE: Duration = Duration::from_secs(120);
+/// Connections served at once from one address (IPv6: one /64); a trusted proxy is not limited.
+pub const MAX_PER_ADDRESS: usize = 32;
 /// Longest a client may take to send a request's headers (also how long an idle kept-alive
 /// connection stays open).
 pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -37,6 +44,10 @@ pub struct ServerLimits {
     pub header_read_timeout: Duration,
     /// See [`MAX_CONNECTIONS`].
     pub max_connections: usize,
+    /// See [`MAX_PER_ADDRESS`].
+    pub max_per_address: usize,
+    /// See [`MAX_CONNECTION_AGE`].
+    pub max_connection_age: Duration,
 }
 
 impl Default for ServerLimits {
@@ -44,6 +55,8 @@ impl Default for ServerLimits {
         Self {
             header_read_timeout: HEADER_READ_TIMEOUT,
             max_connections: MAX_CONNECTIONS,
+            max_per_address: MAX_PER_ADDRESS,
+            max_connection_age: MAX_CONNECTION_AGE,
         }
     }
 }
@@ -53,6 +66,7 @@ impl Default for ServerLimits {
 pub struct App {
     pub(crate) store: Arc<Mutex<Store>>,
     pub(crate) auth: Arc<Auth>,
+    pub(crate) body_read_timeout: Duration,
 }
 
 impl App {
@@ -61,7 +75,14 @@ impl App {
         Self {
             store: Arc::new(Mutex::new(store)),
             auth: Arc::new(auth),
+            body_read_timeout: BODY_READ_TIMEOUT,
         }
+    }
+
+    /// The same, with another body read timeout (tests).
+    pub fn with_body_read_timeout(mut self, t: Duration) -> Self {
+        self.body_read_timeout = t;
+        self
     }
 }
 
@@ -75,7 +96,7 @@ pub fn router(app: App) -> Router {
     }
     r.fallback(not_found)
         .layer(DefaultBodyLimit::max(MAX_BODY))
-        .layer(middleware::from_fn(guard))
+        .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }
 
@@ -101,9 +122,25 @@ async fn not_found() -> Response {
     StatusCode::NOT_FOUND.into_response()
 }
 
+/// Reads the whole body (at most [`MAX_BODY`]) within the body read timeout, so a client that
+/// trickles its body is cut off long before the request timeout.
+async fn read_body(req: Request<Body>, within: Duration) -> Result<Request<Body>, StatusCode> {
+    use http_body_util::BodyExt;
+    let (parts, body) = req.into_parts();
+    let limited = http_body_util::Limited::new(body, MAX_BODY);
+    match tokio::time::timeout(within, limited.collect()).await {
+        Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
+        Ok(Err(e)) if e.is::<http_body_util::LengthLimitError>() => {
+            Err(StatusCode::PAYLOAD_TOO_LARGE)
+        }
+        Ok(Err(_)) => Err(StatusCode::BAD_REQUEST),
+        Ok(Ok(collected)) => Ok(Request::from_parts(parts, Body::from(collected.to_bytes()))),
+    }
+}
+
 /// Security headers on every answer, a declared body over the limit refused before it is read,
-/// and the time limit.
-async fn guard(req: Request<Body>, next: Next) -> Response {
+/// the body read within its own time limit, and the request's time limit.
+async fn guard(State(app): State<App>, req: Request<Body>, next: Next) -> Response {
     let too_big = req
         .headers()
         .get(header::CONTENT_LENGTH)
@@ -113,9 +150,12 @@ async fn guard(req: Request<Body>, next: Next) -> Response {
     let mut res = if too_big {
         StatusCode::PAYLOAD_TOO_LARGE.into_response()
     } else {
-        match tokio::time::timeout(REQUEST_TIMEOUT, next.run(req)).await {
-            Ok(r) => r,
-            Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+        match read_body(req, app.body_read_timeout).await {
+            Err(status) => status.into_response(),
+            Ok(req) => match tokio::time::timeout(REQUEST_TIMEOUT, next.run(req)).await {
+                Ok(r) => r,
+                Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+            },
         }
     };
     let h = res.headers_mut();
@@ -160,6 +200,24 @@ pub async fn serve(listen: &str, app: App) -> std::io::Result<()> {
     serve_on(listener, app, ServerLimits::default(), shutdown_signal()).await
 }
 
+/// Counts a connection for its address until dropped.
+struct AddressSlot {
+    counts: Arc<Mutex<std::collections::HashMap<u128, usize>>>,
+    key: u128,
+}
+
+impl Drop for AddressSlot {
+    fn drop(&mut self) {
+        let mut c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(n) = c.get_mut(&self.key) {
+            *n -= 1;
+            if *n == 0 {
+                c.remove(&self.key);
+            }
+        }
+    }
+}
+
 /// [`serve`] on a bound listener, with `limits`, until `shutdown` completes.
 pub async fn serve_on(
     listener: tokio::net::TcpListener,
@@ -170,9 +228,11 @@ pub async fn serve_on(
     use hyper_util::rt::{TokioIo, TokioTimer};
     use tower::ServiceExt;
 
+    let trusted: Vec<std::net::IpAddr> = app.auth.trusted_proxies().to_vec();
     let router = router(app);
     let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_connections));
-    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+    let per_address = Arc::new(Mutex::new(std::collections::HashMap::<u128, usize>::new()));
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let mut shutdown = std::pin::pin!(shutdown);
     loop {
         let slot = tokio::select! {
@@ -190,23 +250,56 @@ pub async fn serve_on(
             },
             () = &mut shutdown => break,
         };
+        let ip = peer.ip().to_canonical();
+        let address_slot = if trusted.contains(&ip) {
+            None
+        } else {
+            let key = crate::limits::who(ip);
+            let mut c = per_address.lock().unwrap_or_else(PoisonError::into_inner);
+            let n = c.entry(key).or_insert(0);
+            if *n >= limits.max_per_address {
+                // Over this address's share: close at once (the slot is freed by the drop).
+                continue;
+            }
+            *n += 1;
+            Some(AddressSlot {
+                counts: per_address.clone(),
+                key,
+            })
+        };
         let svc = router.clone();
         let service = hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
             req.extensions_mut().insert(Peer(peer));
             svc.clone().oneshot(req.map(Body::new))
         });
-        let conn = hyper::server::conn::http1::Builder::new()
-            .timer(TokioTimer::new())
-            .header_read_timeout(limits.header_read_timeout)
-            .serve_connection(TokioIo::new(stream), service);
-        let conn = graceful.watch(conn);
+        let mut stop = stop_rx.clone();
+        let max_age = limits.max_connection_age;
+        let header_timeout = limits.header_read_timeout;
         tokio::spawn(async move {
-            let _ = conn.await;
+            let conn = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_timeout)
+                .serve_connection(TokioIo::new(stream), service);
+            let mut conn = std::pin::pin!(conn);
+            let ended = tokio::select! {
+                _ = conn.as_mut() => true,
+                _ = stop.wait_for(|s| *s) => false,
+                () = tokio::time::sleep(max_age) => false,
+            };
+            if !ended {
+                // Finish the request in progress (if any), then close.
+                conn.as_mut().graceful_shutdown();
+                let _ = tokio::time::timeout(REQUEST_TIMEOUT, conn).await;
+            }
+            drop(address_slot);
             drop(slot);
         });
     }
     drop(listener);
-    let _ = tokio::time::timeout(REQUEST_TIMEOUT, graceful.shutdown()).await;
+    let _ = stop_tx.send(true);
+    // Every connection has returned its slot, or the grace time is over.
+    let all = u32::try_from(limits.max_connections).unwrap_or(u32::MAX);
+    let _ = tokio::time::timeout(REQUEST_TIMEOUT, slots.acquire_many(all)).await;
     Ok(())
 }
 
@@ -311,15 +404,109 @@ mod tests {
     }
 
     async fn start(limits: ServerLimits) -> std::net::SocketAddr {
+        start_with(limits, app_state()).await
+    }
+
+    async fn start_with(limits: ServerLimits, app: App) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve_on(
-            listener,
-            app_state(),
-            limits,
-            std::future::pending(),
-        ));
+        tokio::spawn(serve_on(listener, app, limits, std::future::pending()));
         addr
+    }
+
+    /// Review finding: clients that keep sending small requests on kept-alive connections held
+    /// every slot for good. Connections now have a maximum age.
+    #[tokio::test]
+    async fn kept_alive_connections_are_closed_at_their_maximum_age() {
+        let addr = start(ServerLimits {
+            header_read_timeout: Duration::from_millis(300),
+            max_connections: 2,
+            max_connection_age: Duration::from_millis(500),
+            ..ServerLimits::default()
+        })
+        .await;
+        let mut hogs = Vec::new();
+        for _ in 0..2 {
+            hogs.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+        }
+        let hog = tokio::spawn(async move {
+            loop {
+                for s in &mut hogs {
+                    let _ = tokio::time::timeout(Duration::from_millis(200), get_healthz(s)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut victim = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let r = tokio::time::timeout(Duration::from_secs(3), get_healthz(&mut victim)).await;
+        hog.abort();
+        assert!(r.unwrap().starts_with("HTTP/1.1 200"));
+    }
+
+    /// Review finding: a body trickled in held its slot until the 30 s request timeout.
+    #[tokio::test]
+    async fn a_slow_body_is_cut_off_by_the_body_read_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let addr = start_with(
+            ServerLimits {
+                header_read_timeout: Duration::from_millis(300),
+                max_connections: 1,
+                ..ServerLimits::default()
+            },
+            app_state().with_body_read_timeout(Duration::from_millis(400)),
+        )
+        .await;
+        let mut slow = tokio::net::TcpStream::connect(addr).await.unwrap();
+        slow.write_all(
+            b"POST /api/sign-in/recovery HTTP/1.1\r\nhost: x\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{",
+        )
+        .await
+        .unwrap();
+        let (mut rd, mut wr) = slow.into_split();
+        let trickle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if wr.write_all(b" ").await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut buf = vec![0u8; 1024];
+        let n = tokio::time::timeout(Duration::from_secs(3), rd.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 408"));
+        trickle.abort();
+        drop(rd);
+        let mut victim = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let r = tokio::time::timeout(Duration::from_secs(3), get_healthz(&mut victim)).await;
+        assert!(r.unwrap().starts_with("HTTP/1.1 200"));
+    }
+
+    #[tokio::test]
+    async fn one_address_gets_only_its_share_of_connections() {
+        use tokio::io::AsyncReadExt;
+        let addr = start(ServerLimits {
+            max_per_address: 1,
+            ..ServerLimits::default()
+        })
+        .await;
+        let mut first = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut second = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut buf = [0u8; 16];
+        let n = tokio::time::timeout(Duration::from_secs(3), second.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap_or(0);
+        assert_eq!(n, 0, "the second connection is closed at once");
+        assert!(get_healthz(&mut first).await.starts_with("HTTP/1.1 200"));
+        let key = |s: &str| crate::limits::who(s.parse().unwrap());
+        assert_eq!(key("::ffff:10.0.0.1"), key("10.0.0.1"));
+        assert_ne!(key("::ffff:10.0.0.1"), key("2001:db8::1"));
+        assert_eq!(key("2001:db8:0:1::1"), key("2001:db8:0:1::2"));
     }
 
     async fn get_healthz(stream: &mut tokio::net::TcpStream) -> String {
@@ -339,6 +526,7 @@ mod tests {
         let addr = start(ServerLimits {
             header_read_timeout: Duration::from_millis(300),
             max_connections: 4,
+            ..ServerLimits::default()
         })
         .await;
         let mut slow = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -362,6 +550,7 @@ mod tests {
         let addr = start(ServerLimits {
             header_read_timeout: Duration::from_millis(500),
             max_connections: 2,
+            ..ServerLimits::default()
         })
         .await;
         // Two idle connections take both slots.

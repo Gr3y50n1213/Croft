@@ -488,19 +488,38 @@ async fn a_discoverable_passkey_signs_in_without_a_name() {
 }
 
 #[tokio::test]
-async fn an_unknown_name_gets_the_same_kind_of_challenge_as_a_known_one() {
+async fn a_known_name_lists_its_credentials_and_an_unknown_one_gets_a_discoverable_challenge() {
+    // Telling the two apart is accepted (DECISIONS); this pins what each gets.
     let h = h();
     h.person("ann", Role::User).await;
-    let (s, v) = h
-        .call(
-            Method::POST,
-            "/api/sign-in/passkey/start",
-            None,
-            Some(json!({ "user": "nobody" })),
-        )
-        .await;
+    let start = |user: &'static str| {
+        let h = &h;
+        async move {
+            h.call(
+                Method::POST,
+                "/api/sign-in/passkey/start",
+                None,
+                Some(json!({ "user": user })),
+            )
+            .await
+        }
+    };
+    let (s, known) = start("ann").await;
     assert_eq!(s, StatusCode::OK);
-    assert!(v["ceremony"].is_string() && v["options"]["publicKey"]["challenge"].is_string());
+    assert_eq!(
+        known["options"]["publicKey"]["allowCredentials"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(known["options"].get("mediation").is_none());
+    let (s, unknown) = start("nobody").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(unknown["options"]["publicKey"]["challenge"].is_string());
+    assert!(unknown["options"]["publicKey"]["allowCredentials"]
+        .as_array()
+        .is_none_or(Vec::is_empty));
 }
 
 #[tokio::test]
@@ -853,13 +872,14 @@ async fn ten_failures_lock_the_user_for_fifteen_minutes_and_it_is_audited() {
     let (s, v) = h.recover(&ann, "000000", "WRONG").await;
     assert_eq!(s, StatusCode::LOCKED, "the tenth failure locks");
     assert_eq!(v["until_ms"], h.now() + LOCK_MS);
-    // Locked: even the right answers and the passkey are refused.
+    // Locked: even the right recovery answers are refused, but her passkey still works (the lock
+    // guards only the guessable path; review finding: anyone could lock her out of her passkey).
     let (s, _) = h
         .recover(&ann, &h.totp_now(&ann), &ann.recovery_codes[0])
         .await;
     assert_eq!(s, StatusCode::LOCKED);
     let (c, cred) = h.assertion(&mut ann).await;
-    assert_eq!(h.finish(&c, &cred).await.0, StatusCode::LOCKED);
+    assert_eq!(h.finish(&c, &cred).await.0, StatusCode::OK);
     h.advance(LOCK_MS);
     let t = h.sign_in(&mut ann).await;
     let (_, audit) = h
@@ -1004,7 +1024,7 @@ async fn every_route_checks_who_calls_and_no_user_reaches_another_users_data() {
         StatusCode::NOT_FOUND
     );
     covered.insert(("DELETE".to_owned(), "/api/sessions/{id}"));
-    for action in ["disable", "enable", "enrol"] {
+    for action in ["disable", "enable"] {
         let p = format!("/api/admin/users/{}/{action}", b.id);
         assert_eq!(
             h.status(Method::POST, &p, Some(&a_t.access)).await,
@@ -1014,8 +1034,7 @@ async fn every_route_checks_who_calls_and_no_user_reaches_another_users_data() {
             "POST".to_owned(),
             match action {
                 "disable" => "/api/admin/users/{id}/disable",
-                "enable" => "/api/admin/users/{id}/enable",
-                _ => "/api/admin/users/{id}/enrol",
+                _ => "/api/admin/users/{id}/enable",
             },
         ));
     }
@@ -1114,21 +1133,7 @@ async fn no_token_code_or_secret_is_stored_in_the_clear_or_audited() {
         )
         .await;
     let t2 = signed(&v);
-    let (_, link) = h
-        .call(
-            Method::POST,
-            &format!("/api/admin/users/{}/enrol", ann.id),
-            Some(&t2.access),
-            None,
-        )
-        .await;
-    let link_token = link["link"]
-        .as_str()
-        .unwrap()
-        .split('#')
-        .nth(1)
-        .unwrap()
-        .to_owned();
+    let link_token = h.enrolment(ann.id);
     let mut secrets: Vec<Vec<u8>> = vec![
         t.access.into_bytes(),
         t.refresh.into_bytes(),
@@ -1233,4 +1238,287 @@ async fn the_enrolment_page_runs_only_its_own_script() {
         .to_str()
         .unwrap()
         .starts_with("default-src 'none'"));
+}
+
+// ---- Regression tests for the independent review's findings ----
+
+/// H1: an admin could get a user's enrolment link from the API, register their own passkey and
+/// sign in as the user. Re-enrolment is now the server operator's (`user enrol`); the API has no
+/// route that hands out a link.
+#[tokio::test]
+async fn no_api_route_lets_an_admin_get_a_users_enrolment_link() {
+    let h = h();
+    let mut root = h.person("root", Role::Admin).await;
+    let bob = h.person("bob", Role::User).await;
+    let t = h.sign_in(&mut root).await;
+    let s = h
+        .status(
+            Method::POST,
+            &format!("/api/admin/users/{}/enrol", bob.id),
+            Some(&t.access),
+        )
+        .await;
+    assert!(
+        s == StatusCode::NOT_FOUND || s == StatusCode::METHOD_NOT_ALLOWED,
+        "{s}"
+    );
+    for r in routes() {
+        assert!(
+            !r.path.contains("enrol") || r.access == Access::Public,
+            "{}",
+            r.path
+        );
+    }
+}
+
+/// M2: naming a user and sending someone else's credential ten times locked the user out of
+/// their own passkey.
+#[tokio::test]
+async fn failed_passkey_answers_never_lock_the_named_user() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let mut mallory = h.person("mallory", Role::User).await;
+    let (_, junk) = h.assertion(&mut mallory).await;
+    for i in 0..12 {
+        let ip = format!("203.0.113.{i}");
+        let (s, start) = h
+            .call_from(
+                &ip,
+                Method::POST,
+                "/api/sign-in/passkey/start",
+                None,
+                Some(json!({"user": "ann"})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK);
+        let (s, _) = h
+            .call_from(
+                &ip,
+                Method::POST,
+                "/api/sign-in/passkey/finish",
+                None,
+                Some(json!({"ceremony": start["ceremony"], "credential": junk})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(h.store().locked_until(ann.id, h.now()).unwrap(), None);
+    let (c, cred) = h.assertion(&mut ann).await;
+    assert_eq!(h.finish(&c, &cred).await.0, StatusCode::OK);
+    // Still audited for her.
+    let failures = h
+        .store()
+        .audit_entries(Some(ann.id), 100)
+        .unwrap()
+        .iter()
+        .filter(|e| e.action == "sign_in" && e.outcome == "failed")
+        .count();
+    assert_eq!(failures, 12);
+}
+
+/// M1: one signed-in user filled the ceremony table and blocked every sign-in for five minutes.
+#[tokio::test]
+async fn one_user_cannot_crowd_out_other_peoples_ceremonies() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let mut bob = h.person("bob", Role::User).await;
+    let t = h.sign_in(&mut ann).await;
+    // Bob starts first, then Ann floods (from many addresses, past the per-address limit).
+    let (c, cred) = h.assertion(&mut bob).await;
+    for _ in 0..200 {
+        let _ = h
+            .call(Method::POST, "/api/passkeys/start", Some(&t.access), None)
+            .await;
+    }
+    assert!(h.app.auth.ceremonies().len() <= 2 * crate::ceremony::PER_OWNER);
+    assert_eq!(
+        h.finish(&c, &cred).await.0,
+        StatusCode::OK,
+        "Bob's ceremony survived"
+    );
+    // The signed-in start is rate limited per address too.
+    let mut limited = false;
+    for _ in 0..40 {
+        let (s, _) = h
+            .call_from(
+                "198.51.100.77",
+                Method::POST,
+                "/api/passkeys/start",
+                Some(&t.access),
+                None,
+            )
+            .await;
+        limited |= s == StatusCode::TOO_MANY_REQUESTS;
+    }
+    assert!(limited);
+}
+
+/// L/M1: a concurrent burst of recovery guesses got far more than ten checks before the lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_concurrent_burst_gets_at_most_ten_checks() {
+    let h = Arc::new(h());
+    let ann = h.person("ann", Role::User).await;
+    let mut tasks = Vec::new();
+    for i in 0..60 {
+        let h = h.clone();
+        tasks.push(tokio::spawn(async move {
+            h.call(
+                Method::POST,
+                "/api/sign-in/recovery",
+                None,
+                Some(
+                    json!({"user": "ann", "totp": "000000", "recovery_code": format!("WRONG-{i}")}),
+                ),
+            )
+            .await
+            .0
+        }));
+    }
+    let mut statuses = Vec::new();
+    for t in tasks {
+        statuses.push(t.await.unwrap());
+    }
+    let checked = h
+        .store()
+        .audit_entries(Some(ann.id), 1000)
+        .unwrap()
+        .iter()
+        .filter(|e| e.action == "sign_in" && e.outcome == "failed")
+        .count();
+    assert_eq!(checked, crate::auth::LOCK_AFTER as usize, "{statuses:?}");
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|s| **s == StatusCode::UNAUTHORIZED)
+            .count(),
+        9
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|s| **s == StatusCode::LOCKED)
+            .count(),
+        51
+    );
+}
+
+/// L4 and L5: a recovery session cannot be refreshed (it lives as long as its access token).
+#[tokio::test]
+async fn a_recovery_session_cannot_be_refreshed() {
+    let h = h();
+    let ann = h.person("ann", Role::User).await;
+    let (_, v) = h
+        .recover(&ann, &h.totp_now(&ann), &ann.recovery_codes[0])
+        .await;
+    assert_eq!(v["recovery"], true);
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/token/refresh",
+            None,
+            Some(json!({"refresh_token": v["refresh_token"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.status(
+            Method::GET,
+            "/api/me",
+            Some(v["access_token"].as_str().unwrap())
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+/// L1 and L2: a proxy seen as a mapped IPv6 address is recognised, and an `X-Forwarded-For`
+/// entry that does not parse stops the walk (the client wrote what lies before it).
+#[test]
+fn mapped_proxy_addresses_and_unparsable_hops_are_handled() {
+    let auth = Auth::new(
+        ORIGIN,
+        Key::generate().unwrap(),
+        vec!["172.18.0.2".parse().unwrap()],
+        Auth::system_clock(),
+    )
+    .unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-forwarded-for", "203.0.113.5".parse().unwrap());
+    let mapped = Some(Peer("[::ffff:172.18.0.2]:5000".parse().unwrap()));
+    assert_eq!(auth.client(mapped, &headers).to_string(), "203.0.113.5");
+    let proxy = Some(Peer("172.18.0.2:5000".parse().unwrap()));
+    headers.insert(
+        "x-forwarded-for",
+        "6.6.6.6, 203.0.113.5:4711".parse().unwrap(),
+    );
+    assert_eq!(auth.client(proxy, &headers).to_string(), "172.18.0.2");
+    let direct_mapped = Some(Peer("[::ffff:198.51.100.1]:5000".parse().unwrap()));
+    assert_eq!(
+        auth.client(direct_mapped, &headers).to_string(),
+        "198.51.100.1"
+    );
+}
+
+/// Spec gap: a wrong origin is refused at sign-in too, not only at registration.
+#[tokio::test]
+async fn a_sign_in_answer_made_for_another_origin_is_refused() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let (_, start) = h
+        .call(
+            Method::POST,
+            "/api/sign-in/passkey/start",
+            None,
+            Some(json!({"user": "ann"})),
+        )
+        .await;
+    let rcr: RequestChallengeResponse = serde_json::from_value(start["options"].clone()).unwrap();
+    let cred = ann
+        .key
+        .do_authentication(Url::parse("https://evil.companion.test").unwrap(), rcr)
+        .unwrap();
+    let (s, _) = h
+        .finish(&start["ceremony"], &serde_json::to_value(cred).unwrap())
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// Spec gap: identifiers in a request body. Ann's valid answer to a ceremony started for Bob's
+/// name signs nobody in.
+#[tokio::test]
+async fn an_answer_for_a_ceremony_named_for_another_user_is_refused() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    h.person("bob", Role::User).await;
+    let ann_cred_id = h.store().passkeys(ann.id).unwrap()[0].1.cred_id().clone();
+    let (_, start) = h
+        .call(
+            Method::POST,
+            "/api/sign-in/passkey/start",
+            None,
+            Some(json!({"user": "bob"})),
+        )
+        .await;
+    let mut options = start["options"].clone();
+    options["publicKey"]["allowCredentials"] =
+        json!([{ "type": "public-key", "id": b64url(ann_cred_id.as_slice()) }]);
+    let rcr: RequestChallengeResponse = serde_json::from_value(options).unwrap();
+    let cred = ann
+        .key
+        .do_authentication(Url::parse(ORIGIN).unwrap(), rcr)
+        .unwrap();
+    let (s, _) = h
+        .finish(&start["ceremony"], &serde_json::to_value(cred).unwrap())
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn device_names_lose_control_and_invisible_formatting_characters() {
+    assert_eq!(
+        device_name(Some("Ann\u{202E}enohp\u{200B}\n".into())),
+        "Annenohp"
+    );
+    assert_eq!(device_name(Some("  ".into())), "Unnamed device");
+    assert_eq!(device_name(Some("x".repeat(100))).len(), MAX_DEVICE);
 }

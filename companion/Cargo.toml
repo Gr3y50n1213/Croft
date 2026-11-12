@@ -15,6 +15,7 @@ description = "The Croft Companion server"
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 base64 = "0.22.1"
+http-body-util = "0.1.3"
 hyper = { version = "1.12", features = ["http1", "server"] }
 hyper-util = { version = "0.1.21", features = ["tokio", "server", "http1", "server-graceful", "service"] }
 qrcode = { version = "0.14.1", default-features = false }
@@ -33,7 +34,6 @@ zeroize = "1.9.1"
 [dev-dependencies]
 tempfile = "3.27"
 tokio = { version = "1.54", features = ["io-util"] }
-http-body-util = "0.1"
 webauthn-authenticator-rs = { version = "0.6.2", default-features = false, features = ["softpasskey"] }
 
 [lints.rust]

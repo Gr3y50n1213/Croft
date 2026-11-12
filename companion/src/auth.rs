@@ -642,19 +642,21 @@ impl Store {
         Ok(until.flatten().filter(|u| *u > now))
     }
 
-    /// Records a failed sign-in (audited). For a known user it counts towards the lockout; returns
-    /// the lock's end when this failure locked them.
+    /// Records a failed sign-in (audited). With `counts`, a known user's failure counts towards
+    /// the lockout (the recovery path, whose codes can be guessed); returns the lock's end when this
+    /// failure locked them.
     pub fn record_failure(
         &mut self,
         user_id: Option<i64>,
         now: i64,
+        counts: bool,
     ) -> Result<Option<i64>, StoreError> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         audit(&tx, now, user_id, None, "sign_in", "failed")?;
         let mut locked = None;
-        if let Some(user_id) = user_id {
+        if let Some(user_id) = user_id.filter(|_| counts) {
             tx.execute(
                 "DELETE FROM sign_in_failure WHERE user_id = ?1 AND at_ms <= ?2",
                 params![user_id, now - LOCK_WINDOW_MS],
@@ -746,7 +748,9 @@ impl Store {
     }
 
     /// Starts a session (a device) for a user who just proved who they are, and issues its first
-    /// tokens. Refused for a disabled or locked user. Clears their failure count. Audited.
+    /// tokens. Refused for a disabled user, and a recovery sign-in for a locked one (a passkey is
+    /// not stopped by the lock, which only guards the guessable recovery path). Clears their
+    /// failure count. Audited.
     pub fn start_session(
         &mut self,
         user_id: i64,
@@ -766,7 +770,7 @@ impl Store {
             .optional()?;
         match state {
             None | Some((true, _)) => return Err(SignInError::Invalid),
-            Some((false, Some(until))) if until > now => {
+            Some((false, Some(until))) if recovery && until > now => {
                 return Err(SignInError::Locked { until_ms: until })
             }
             Some(_) => {}
@@ -781,9 +785,21 @@ impl Store {
             params![now],
         )?;
         tx.execute(
-            "DELETE FROM sign_in_failure WHERE user_id = ?1",
-            params![user_id],
+            "DELETE FROM enrolment WHERE used_ms IS NOT NULL OR expires_ms <= ?1",
+            params![now],
         )?;
+        // A revoked session's refresh tokens expire within REFRESH_TTL_MS; after that it is kept
+        // for nothing (its refresh rows go with it).
+        tx.execute(
+            "DELETE FROM session WHERE revoked_ms IS NOT NULL AND revoked_ms <= ?1",
+            params![now - REFRESH_TTL_MS],
+        )?;
+        if !recovery {
+            tx.execute(
+                "DELETE FROM sign_in_failure WHERE user_id = ?1",
+                params![user_id],
+            )?;
+        }
         tx.execute(
             "INSERT INTO session(user_id, device, created_ms, last_seen_ms, recovery) VALUES (?1, ?2, ?3, ?3, ?4)",
             params![user_id, device, now, recovery],
@@ -834,26 +850,38 @@ impl Store {
     }
 
     /// Exchanges a refresh token for new tokens. The old one is spent; if it comes back, the whole
-    /// session is revoked (someone else has a copy) and that is audited.
+    /// session is revoked (someone else has a copy) and that is audited. A recovery session cannot
+    /// be refreshed.
     pub fn refresh(&mut self, refresh: &str, now: i64) -> Result<Tokens, RefreshError> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let hash = token_hash(refresh);
-        // (user, session, expires, rotated, session revoked, user disabled)
-        type Row = (i64, i64, i64, Option<i64>, Option<i64>, bool);
+        // (user, session, expires, rotated, session revoked, user disabled, recovery session)
+        type Row = (i64, i64, i64, Option<i64>, Option<i64>, bool, bool);
         let found: Option<Row> = tx
             .query_row(
-                "SELECT r.user_id, r.session_id, r.expires_ms, r.rotated_ms, s.revoked_ms, u.disabled
+                "SELECT r.user_id, r.session_id, r.expires_ms, r.rotated_ms, s.revoked_ms, u.disabled, s.recovery
                  FROM refresh_token r
                  JOIN session s ON s.id = r.session_id AND s.user_id = r.user_id
                  JOIN user u ON u.id = r.user_id
                  WHERE r.token_hash = ?1",
                 params![&hash[..]],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((user_id, session_id, expires, rotated, revoked, disabled)) = found else {
+        let Some((user_id, session_id, expires, rotated, revoked, disabled, recovery)) = found
+        else {
             return Err(RefreshError::Invalid);
         };
         if rotated.is_some() {
@@ -871,7 +899,8 @@ impl Store {
             tx.commit()?;
             return Err(RefreshError::Reused);
         }
-        if expires <= now || revoked.is_some() || disabled {
+        // A recovery session lives as long as its first access token: enough to add a passkey.
+        if expires <= now || revoked.is_some() || disabled || recovery {
             return Err(RefreshError::Invalid);
         }
         tx.execute(

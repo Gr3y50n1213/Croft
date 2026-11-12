@@ -51,23 +51,26 @@ key is encrypted with the **master key**. The master key is a file, never in the
 - `croft-companion rotate-master-key` (with the server stopped) re-wraps every user's key under a new master key and replaces the
   file; back up the new one. If a rotation is cut short, the Companion will not start and says so: check the key file and run
   `croft-companion rotate-master-key --finish`. A leftover key is never adopted on its own.
-- The Companion drops a client that does not send its request headers within 10 seconds and serves at most 512 connections at once;
-  still keep it behind the reverse proxy and do not publish port 8480 to the internet.
+- The Companion drops a client that does not send its request headers within 10 seconds or its body within 10 seconds, closes any
+  connection after two minutes (once its current request is done), and serves at most 512 connections at once and 32 from one
+  address (a trusted proxy is not limited). Still keep it behind the reverse proxy and do not publish port 8480 to the internet.
 
 ## Signing in
 
 - **Passkeys** are how people sign in. Each person can register more than one (another phone, a security key) once signed in.
 - **Authenticator app and recovery codes** are the backup for a device that cannot use a passkey. A code from the app is never enough on
-  its own: it must come with one of the ten recovery codes, each usable once, and that sign-in can only register a new passkey.
+  its own: it must come with one of the ten recovery codes, each usable once, and that sign-in can only register a new passkey (it
+  lasts 15 minutes and cannot be renewed).
 - **Devices.** Each sign-in is a device the person can see and sign out remotely. An app holds an access token (15 minutes) and a
   refresh token (30 days, replaced on every use); if a used refresh token ever comes back, that device is signed out at once.
-- **Limits.** Ten failed sign-ins in 15 minutes lock that user for 15 minutes; one address gets 30 sign-in requests a minute and 20
-  failures in 15 minutes.
-- **Lost everything?** An admin can give a user a new enrolment link (`croft-companion user enrol --name NAME`, or the admin API).
+- **Limits.** Ten failed authenticator-app and recovery-code attempts in 15 minutes lock that way of signing in for that user for 15
+  minutes; a passkey still works (passkey answers cannot be guessed, so they never lock anyone). One address gets 30 sign-in requests a
+  minute and 20 failures in 15 minutes.
+- **Lost everything?** Whoever runs the server gives the person a new enrolment link: `croft-companion user enrol --name NAME`.
   Using it replaces the user's passkeys, authenticator key and recovery codes and signs out every device. This is also how an admin who
-  lost their own passkeys gets back in: run the command on the server.
-- **Admins** can list, disable, enable and re-enrol users and read the instance's audit log. They cannot read anyone's data. (They can
-  re-enrol a user, which the user sees: their passkeys stop working, and their audit log names the admin.)
+  lost their own passkeys gets back in. It is deliberately not in the admin API: whoever holds a user's link can become that user, and
+  an admin must never be able to act as someone else. (The server's operator holds the master key, so nothing is hidden from them.)
+- **Admins** can list, disable and enable users and read the instance's audit log. They cannot read anyone's data or sign in as them.
 
 ## Commands
 
@@ -93,4 +96,4 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `POST /api/token/refresh` (`{"refresh_token"}`) | anyone |
 | `GET /api/me`, `POST /api/sign-out`, `POST /api/passkeys/start`, `/api/passkeys/finish` | signed in (also a recovery sign-in) |
 | `GET /api/passkeys`, `DELETE /api/passkeys/{id}`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `GET /api/audit` | signed in |
-| `GET /api/admin/users`, `POST /api/admin/users/{id}/disable`, `/enable`, `/enrol`, `GET /api/admin/audit` | admins |
+| `GET /api/admin/users`, `POST /api/admin/users/{id}/disable`, `/enable`, `GET /api/admin/audit` | admins |

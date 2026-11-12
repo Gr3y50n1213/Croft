@@ -20,19 +20,13 @@ pub const FAILURE_WINDOW_MS: i64 = 15 * 60 * 1000;
 const MAX_ADDRESSES: usize = 100_000;
 
 /// The key an address counts under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Who {
-    V4(u32),
-    V6(u64),
-}
+type Who = u128;
 
-fn who(ip: IpAddr) -> Who {
-    match ip {
-        IpAddr::V4(a) => Who::V4(u32::from(a)),
-        IpAddr::V6(a) => match a.to_ipv4_mapped() {
-            Some(v4) => Who::V4(u32::from(v4)),
-            None => Who::V6((u128::from(a) >> 64) as u64),
-        },
+/// The key an address counts under: IPv4 (also when mapped into IPv6) whole, IPv6 by its /64.
+pub fn who(ip: IpAddr) -> u128 {
+    match ip.to_canonical() {
+        IpAddr::V4(a) => u128::from(u32::from(a)),
+        IpAddr::V6(a) => (u128::from(a) >> 64) | (1 << 127),
     }
 }
 
@@ -43,10 +37,15 @@ struct Entry {
     failures: VecDeque<i64>,
 }
 
-/// The limits' state.
+/// The limits' state: two generations of entries. The current one takes every address seen;
+/// it becomes the previous one every [`FAILURE_WINDOW_MS`] (or as soon as it holds
+/// [`MAX_ADDRESSES`]), and the older one is dropped whole. Memory stays bounded and no request
+/// ever scans the table. An address seen again moves its entry into the current generation.
 #[derive(Debug, Default)]
 pub struct Limits {
-    map: HashMap<Who, Entry>,
+    current: HashMap<Who, Entry>,
+    previous: HashMap<Who, Entry>,
+    since: i64,
 }
 
 /// Why a request was refused, and for how long.
@@ -59,8 +58,7 @@ pub struct Refused {
 impl Limits {
     /// Counts a request from `ip`; refuses it when the address is over either limit.
     pub fn request(&mut self, ip: IpAddr, now: i64) -> Result<(), Refused> {
-        self.forget_old(now);
-        let e = self.map.entry(who(ip)).or_default();
+        let e = self.entry(ip, now);
         while e
             .failures
             .front()
@@ -90,24 +88,31 @@ impl Limits {
 
     /// Records a failure from `ip`.
     pub fn failed(&mut self, ip: IpAddr, now: i64) {
-        let e = self.map.entry(who(ip)).or_default();
+        let e = self.entry(ip, now);
         e.failures.push_back(now);
         while e.failures.len() > FAILURES_PER_WINDOW {
             e.failures.pop_front();
         }
     }
 
-    fn forget_old(&mut self, now: i64) {
-        if self.map.len() < MAX_ADDRESSES {
-            return;
+    fn entry(&mut self, ip: IpAddr, now: i64) -> &mut Entry {
+        let key = who(ip);
+        if !self.current.contains_key(&key)
+            && (now - self.since >= FAILURE_WINDOW_MS || self.current.len() >= MAX_ADDRESSES)
+        {
+            self.previous = std::mem::take(&mut self.current);
+            self.since = now;
         }
-        let minute = now.div_euclid(60_000);
-        self.map.retain(|_, e| {
-            e.minute == minute
-                || e.failures
-                    .back()
-                    .is_some_and(|t| *t > now - FAILURE_WINDOW_MS)
-        });
+        let moved = self.previous.remove(&key);
+        self.current
+            .entry(key)
+            .or_insert_with(|| moved.unwrap_or_default())
+    }
+
+    /// Addresses remembered (tests).
+    #[cfg(test)]
+    fn remembered(&self) -> usize {
+        self.current.len() + self.previous.len()
     }
 }
 
@@ -131,6 +136,26 @@ mod tests {
             "another address is not affected"
         );
         assert!(l.request(ip, t + 60_000).is_ok());
+    }
+
+    /// Review finding: the cap was no cap, and every request scanned the table once it was full.
+    #[test]
+    fn the_table_stays_bounded_and_a_known_address_keeps_its_history() {
+        let mut l = Limits::default();
+        let t = 1_000_000_000_000;
+        let known: IpAddr = "192.0.2.1".parse().unwrap();
+        for _ in 0..FAILURES_PER_WINDOW {
+            l.failed(known, t);
+        }
+        for i in 0..(2 * MAX_ADDRESSES as u32 + 10) {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + i));
+            let _ = l.request(ip, t);
+            if i % 50_000 == 0 {
+                // The known address comes back now and then: its failures stay with it.
+                assert!(l.request(known, t).is_err());
+            }
+        }
+        assert!(l.remembered() <= 2 * MAX_ADDRESSES);
     }
 
     #[test]

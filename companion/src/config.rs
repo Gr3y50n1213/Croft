@@ -134,7 +134,7 @@ impl Config {
             })?;
         if !public_url_is_ok(&public_url) {
             return Err(ConfigError::Invalid(
-                "public_url must start with https:// (plain http only for localhost)",
+                "public_url must be https:// and a domain name (plain http only for localhost; no IP address)",
             ));
         }
         Ok(Self {
@@ -177,7 +177,11 @@ fn public_url_is_ok(url: &str) -> bool {
             authority
         }
     });
-    secure || host == "localhost" || host == "127.0.0.1"
+    // Passkeys are bound to a domain name: an IP address (v4, or v6 in brackets) cannot be used.
+    if host.starts_with('[') || host.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    secure || host == "localhost"
 }
 
 /// Reads the master key. Refused: a symbolic link, a file other users can read, and a file that
@@ -327,6 +331,17 @@ mod tests {
         ));
         assert!(Config::parse("public_url = \"http://mail.example.org\"", &no_env).is_err());
         assert!(Config::parse("public_url = \"http://localhost:8480\"", &no_env).is_ok());
+        // Passkeys need a domain name (review finding: the settings took an address `serve` refused).
+        for ip in [
+            "http://127.0.0.1:8480",
+            "https://192.0.2.1",
+            "https://[2001:db8::1]:443",
+        ] {
+            assert!(
+                Config::parse(&format!("public_url = \"{ip}\""), &no_env).is_err(),
+                "{ip}"
+            );
+        }
         for bad in [
             "http://localhost:x@evil.example/",
             "https://user@mail.example.org",

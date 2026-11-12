@@ -28,10 +28,10 @@ use webauthn_rs::prelude::{
 use zeroize::Zeroizing;
 
 use crate::auth::{self, Caller, RefreshError, SignInError, Tokens};
-use crate::ceremony::{Ceremonies, Pending};
+use crate::ceremony::{Ceremonies, Owner, Pending};
 use crate::crypto::{self, Key};
 use crate::http::App;
-use crate::limits::Limits;
+use crate::limits::{self, Limits};
 use crate::store::{Role, Store, StoreError};
 use crate::totp;
 
@@ -96,7 +96,7 @@ impl Auth {
             master,
             ceremonies: Mutex::new(Ceremonies::default()),
             limits: Mutex::new(Limits::default()),
-            trusted_proxies,
+            trusted_proxies: trusted_proxies.iter().map(IpAddr::to_canonical).collect(),
             clock,
         })
     }
@@ -108,6 +108,11 @@ impl Auth {
 
     fn now(&self) -> i64 {
         (self.clock)()
+    }
+
+    /// The reverse proxies whose `X-Forwarded-For` is believed (canonical addresses).
+    pub fn trusted_proxies(&self) -> &[IpAddr] {
+        &self.trusted_proxies
     }
 
     /// The link a person opens to enrol.
@@ -126,25 +131,30 @@ impl Auth {
     }
 
     /// The client's address: the connection's, or, from a trusted proxy, the last address in
-    /// `X-Forwarded-For` that is not itself a trusted proxy.
+    /// `X-Forwarded-For` that is not itself a trusted proxy. Mapped IPv4 addresses are IPv4.
     fn client(&self, peer: Option<Peer>, headers: &HeaderMap) -> IpAddr {
         let Some(Peer(addr)) = peer else {
             return IpAddr::V4(Ipv4Addr::UNSPECIFIED);
         };
-        let mut ip = addr.ip();
+        let mut ip = addr.ip().to_canonical();
         if !self.trusted_proxies.contains(&ip) {
             return ip;
         }
-        let forwarded: Vec<IpAddr> = headers
+        let forwarded: Vec<&str> = headers
             .get_all("x-forwarded-for")
             .iter()
             .filter_map(|v| v.to_str().ok())
             .flat_map(|v| v.split(','))
-            .filter_map(|s| s.trim().parse().ok())
             .collect();
+        // From the right: each hop was added by the one after it. Stop at the first that is not a
+        // trusted proxy, or at anything that does not parse (never skip it: what is left of it
+        // was written by the client).
         for hop in forwarded.into_iter().rev() {
-            ip = hop;
-            if !self.trusted_proxies.contains(&hop) {
+            let Ok(hop) = hop.trim().parse::<IpAddr>() else {
+                break;
+            };
+            ip = hop.to_canonical();
+            if !self.trusted_proxies.contains(&ip) {
                 break;
             }
         }
@@ -180,8 +190,6 @@ pub enum ApiError {
     RateLimited(i64),
     /// It conflicts with what exists (a passkey registered twice, the last passkey).
     Conflict,
-    /// Too many ceremonies in progress.
-    Busy,
     /// Something failed on the server (no detail is given).
     Server,
 }
@@ -223,7 +231,6 @@ impl IntoResponse for ApiError {
                 return res;
             }
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
-            Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "busy"),
             Self::Server => (StatusCode::INTERNAL_SERVER_ERROR, "server"),
         };
         let mut res = (status, Json(json!({ "error": code }))).into_response();
@@ -273,7 +280,7 @@ fn device_name(raw: Option<String>) -> String {
     let cleaned: String = raw
         .unwrap_or_default()
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_format_char(*c))
         .take(MAX_DEVICE)
         .collect();
     let cleaned = cleaned.trim();
@@ -282,6 +289,14 @@ fn device_name(raw: Option<String>) -> String {
     } else {
         cleaned.to_owned()
     }
+}
+
+/// Invisible formatting characters (bidirectional overrides, zero-width ones, the soft hyphen, the
+/// byte order mark): they could make one device's name look like another's.
+fn is_format_char(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
 }
 
 fn tokens_json(tokens: &Tokens, recovery: bool) -> Response {
@@ -467,12 +482,6 @@ pub fn routes() -> Vec<Route> {
             A,
             post(admin_enable),
         ),
-        route(
-            Method::POST,
-            "/api/admin/users/{id}/enrol",
-            A,
-            post(admin_enrol),
-        ),
         route(Method::GET, "/api/admin/audit", A, get(admin_audit)),
     ]
 }
@@ -521,18 +530,15 @@ async fn enrol_start(
         .start_passkey_registration(target.handle, &target.name, &target.name, None)
         .map_err(|_| ApiError::Server)?;
     let options = creation_options(&ccr)?;
-    let id = app
-        .auth
-        .ceremonies()
-        .put(
-            Pending::Enrol {
-                user_id: target.user_id,
-                link_hash: auth::token_hash(&token),
-                state,
-            },
-            now,
-        )?
-        .ok_or(ApiError::Busy)?;
+    let id = app.auth.ceremonies().put(
+        Owner::Address(limits::who(ip)),
+        Pending::Enrol {
+            user_id: target.user_id,
+            link_hash: auth::token_hash(&token),
+            state,
+        },
+        now,
+    )?;
     Ok(
         Json(json!({"ceremony": id.as_str(), "user": target.name, "options": options}))
             .into_response(),
@@ -632,11 +638,13 @@ async fn sign_in_start(
     headers: HeaderMap,
     req: Result<Json<SignInStart>, JsonRejection>,
 ) -> ApiResult {
-    limit(&app, peer, &headers)?;
+    let ip = limit(&app, peer, &headers)?;
     let req = body(req)?;
     let now = app.auth.now();
-    // A named user with passkeys gets their credentials listed; anything else (no name, an unknown
-    // or disabled name, no passkeys) gets a discoverable challenge, so the answer has one shape.
+    // A named user with passkeys gets their credential ids listed; anything else (no name, an
+    // unknown or disabled name, no passkeys) gets a discoverable challenge. This tells a known name
+    // from an unknown one, which is accepted (DECISIONS): names are not secret on a household
+    // server, and a passkey that is not discoverable needs its id listed.
     let named = match req.user {
         Some(name) => {
             with_store(&app, move |s| {
@@ -679,11 +687,11 @@ async fn sign_in_start(
         }
         None => None,
     };
-    let id = app
-        .auth
-        .ceremonies()
-        .put(Pending::SignIn { user_id, state }, now)?
-        .ok_or(ApiError::Busy)?;
+    let id = app.auth.ceremonies().put(
+        Owner::Address(limits::who(ip)),
+        Pending::SignIn { user_id, state },
+        now,
+    )?;
     Ok(Json(json!({"ceremony": id.as_str(), "options": options})).into_response())
 }
 
@@ -700,13 +708,14 @@ struct SignInFinish {
     device: Option<String>,
 }
 
-/// After a failed check: count it for the user (which may lock them) and the address.
-async fn sign_in_failed(app: &App, ip: IpAddr, user_id: Option<i64>) -> ApiError {
+/// After a failed passkey check: count it for the address and audit it for the user. It never
+/// counts toward the user's lock: a passkey answer cannot be guessed, and counting it would let
+/// anyone who knows a name lock that person out of their own passkey.
+async fn passkey_failed(app: &App, ip: IpAddr, user_id: Option<i64>) -> ApiError {
     failed(app, ip);
     let now = app.auth.now();
-    match with_store(app, move |s| s.record_failure(user_id, now)).await {
-        Ok(Ok(Some(until))) => ApiError::Locked(until),
-        Ok(Ok(None)) => ApiError::Invalid,
+    match with_store(app, move |s| s.record_failure(user_id, now, false)).await {
+        Ok(Ok(_)) => ApiError::Invalid,
         _ => ApiError::Server,
     }
 }
@@ -729,9 +738,7 @@ async fn start_session(app: &App, user_id: i64, device: String, recovery: bool) 
 enum Checked {
     /// The passkey is the user's and the answer is good (the counter is stored).
     Good(i64),
-    /// The user is locked.
-    Locked(i64),
-    /// Not good; the user, when known, gets the failure counted.
+    /// Not good; the user, when known, gets the failure audited.
     Bad(Option<i64>),
 }
 
@@ -775,9 +782,7 @@ async fn sign_in_finish(
             (None, Some(h)) => h,
             (None, None) => return Ok(Checked::Bad(None)),
         };
-        if let Some(until) = s.locked_until(user_id, now)? {
-            return Ok(Checked::Locked(until));
-        }
+        // A lock (from failed recovery attempts) does not stop a valid passkey.
         let Some((row_id, mut passkey)) =
             s.passkey_by_credential(user_id, credential.get_credential_id())?
         else {
@@ -799,14 +804,8 @@ async fn sign_in_finish(
         Checked::Good(user_id) => {
             start_session(&app, user_id, device_name(req.device), false).await
         }
-        Checked::Locked(until) => Err(ApiError::Locked(until)),
-        Checked::Bad(user_id) => Err(sign_in_failed(&app, ip, user_id).await),
+        Checked::Bad(user_id) => Err(passkey_failed(&app, ip, user_id).await),
     }
-}
-
-async fn locked(app: &App, user_id: i64) -> Result<Option<i64>, ApiError> {
-    let now = app.auth.now();
-    Ok(with_store(app, move |s| s.locked_until(user_id, now)).await??)
 }
 
 #[derive(Deserialize)]
@@ -818,6 +817,13 @@ struct Recovery {
     device: Option<String>,
 }
 
+/// How a recovery sign-in ended.
+enum Recovered {
+    Tokens(Tokens),
+    Invalid,
+    Locked(i64),
+}
+
 async fn sign_in_recovery(
     State(app): State<App>,
     MaybePeer(peer): MaybePeer,
@@ -826,26 +832,46 @@ async fn sign_in_recovery(
 ) -> ApiResult {
     let ip = limit(&app, peer, &headers)?;
     let req = body(req)?;
-    let name = req.user;
-    let user = with_store(&app, move |s| s.user_by_name(&name)).await??;
-    let Some(user) = user.filter(|u| !u.disabled) else {
-        return Err(sign_in_failed(&app, ip, None).await);
-    };
-    if let Some(until) = locked(&app, user.id).await? {
-        return Err(ApiError::Locked(until));
-    }
     let now = app.auth.now();
+    let name = req.user;
+    let device = device_name(req.device);
     let (totp_code, code) = (Zeroizing::new(req.totp), Zeroizing::new(req.recovery_code));
     let auth_ = app.auth.clone();
-    let user_id = user.id;
-    let good = with_store(&app, move |s| {
-        s.check_recovery(&auth_.master, user_id, &totp_code, &code, now)
+    // One store lock around the lock check, the check itself, the failure count and the new
+    // session: a burst of guesses is checked one at a time, and the eleventh never is.
+    let outcome = with_store(&app, move |s| {
+        let Some(user) = s.user_by_name(&name)?.filter(|u| !u.disabled) else {
+            s.record_failure(None, now, false)?;
+            return Ok(Recovered::Invalid);
+        };
+        if let Some(until) = s.locked_until(user.id, now)? {
+            return Ok(Recovered::Locked(until));
+        }
+        if !s.check_recovery(&auth_.master, user.id, &totp_code, &code, now)? {
+            return Ok(match s.record_failure(Some(user.id), now, true)? {
+                Some(until) => Recovered::Locked(until),
+                None => Recovered::Invalid,
+            });
+        }
+        match s.start_session(user.id, &device, true, now) {
+            Ok(tokens) => Ok(Recovered::Tokens(tokens)),
+            Err(SignInError::Invalid) => Ok(Recovered::Invalid),
+            Err(SignInError::Locked { until_ms }) => Ok(Recovered::Locked(until_ms)),
+            Err(SignInError::Store(e)) => Err(e),
+        }
     })
     .await??;
-    if !good {
-        return Err(sign_in_failed(&app, ip, Some(user_id)).await);
+    match outcome {
+        Recovered::Tokens(tokens) => Ok(tokens_json(&tokens, true)),
+        Recovered::Locked(until) => {
+            failed(&app, ip);
+            Err(ApiError::Locked(until))
+        }
+        Recovered::Invalid => {
+            failed(&app, ip);
+            Err(ApiError::Invalid)
+        }
     }
-    start_session(&app, user_id, device_name(req.device), true).await
 }
 
 #[derive(Deserialize)]
@@ -897,7 +923,13 @@ async fn sign_out(State(app): State<App>, Signed(c): Signed) -> ApiResult {
     Ok(ok())
 }
 
-async fn passkey_start(State(app): State<App>, Signed(c): Signed) -> ApiResult {
+async fn passkey_start(
+    State(app): State<App>,
+    MaybePeer(peer): MaybePeer,
+    headers: HeaderMap,
+    Signed(c): Signed,
+) -> ApiResult {
+    limit(&app, peer, &headers)?;
     let now = app.auth.now();
     let (handle, name, existing) = with_store(&app, move |s| {
         let name = s
@@ -919,18 +951,15 @@ async fn passkey_start(State(app): State<App>, Signed(c): Signed) -> ApiResult {
         .start_passkey_registration(handle, &name, &name, Some(existing))
         .map_err(|_| ApiError::Server)?;
     let options = creation_options(&ccr)?;
-    let id = app
-        .auth
-        .ceremonies()
-        .put(
-            Pending::AddPasskey {
-                user_id: c.user_id,
-                session_id: c.session_id,
-                state,
-            },
-            now,
-        )?
-        .ok_or(ApiError::Busy)?;
+    let id = app.auth.ceremonies().put(
+        Owner::User(c.user_id),
+        Pending::AddPasskey {
+            user_id: c.user_id,
+            session_id: c.session_id,
+            state,
+        },
+        now,
+    )?;
     Ok(Json(json!({"ceremony": id.as_str(), "options": options})).into_response())
 }
 
@@ -1100,21 +1129,6 @@ async fn admin_enable(
 ) -> ApiResult {
     let Path(id) = id.map_err(|_| ApiError::NotFound)?;
     admin_set_disabled(&app, c, id, false).await
-}
-
-async fn admin_enrol(
-    State(app): State<App>,
-    Admin(c): Admin,
-    id: Result<Path<i64>, axum::extract::rejection::PathRejection>,
-) -> ApiResult {
-    let Path(id) = id.map_err(|_| ApiError::NotFound)?;
-    let now = app.auth.now();
-    let token = with_store(&app, move |s| s.create_enrolment(id, Some(c.user_id), now)).await??;
-    let link = app.auth.enrolment_link(&token);
-    Ok(
-        Json(json!({ "link": link.as_str(), "expires_ms": now + auth::ENROL_TTL_MS }))
-            .into_response(),
-    )
 }
 
 async fn admin_audit(State(app): State<App>, Admin(_): Admin) -> ApiResult {

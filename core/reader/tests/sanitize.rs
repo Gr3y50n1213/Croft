@@ -418,3 +418,137 @@ fn output_past_the_markup_cap_is_shown_as_text() {
     let out = clean(&"&".repeat(2 * 1024 * 1024), false);
     assert!(out.too_complex && out.html.is_empty());
 }
+
+/// The sanitiser with the parser's budget alone (no shape scan): what bounds an input nobody has
+/// found yet.
+fn budget_only(html: &str) -> Sanitized {
+    croft_reader::sanitize_html_with(
+        html,
+        false,
+        &HashMap::new(),
+        &croft_reader::Options {
+            prefilter: false,
+            ..croft_reader::Options::default()
+        },
+    )
+}
+
+/// Asserts that `html` is shown as text, both as the app runs it and with the budget alone, and
+/// that the work and the copied bytes stayed within the budget.
+fn assert_refused(name: &str, html: &str) {
+    use croft_reader::sanitize::{MAX_PARSE_UNITS, MAX_REBUILT_BYTES};
+    for out in [clean(html, false), budget_only(html)] {
+        assert!(out.too_complex && out.html.is_empty(), "{name}: {out:?}");
+        assert!(out.work.0 <= MAX_PARSE_UNITS, "{name}: {out:?}");
+        assert!(out.work.1 <= MAX_REBUILT_BYTES, "{name}: {out:?}");
+    }
+}
+
+#[test]
+fn round_3_clone_bombs_stop_at_the_rebuilt_bytes_budget() {
+    // H1: a formatting element with a big attribute, closed by `</div>`, is rebuilt in every
+    // paragraph (50 KB x 20 000 copies took 3.8 s and 1.9 GB; 3.5 MB aborted the process).
+    let font = |a: usize| format!("<div><font title=\"{}A\"></div>", "X".repeat(a));
+    let html = font(50_000) + &"<p>x</p>".repeat(20_000);
+    assert_refused("H1 title", &html);
+    let out = budget_only(&html);
+    assert_eq!(
+        out.work.1 / 50_000,
+        croft_reader::sanitize::MAX_REBUILT_BYTES / 50_000
+    );
+    let big = font(3_500_000);
+    let fill = (4 * 1024 * 1024 - big.len()) / 8;
+    assert_refused("H1 3.5 MB", &(big + &"<p>x</p>".repeat(fill)));
+    // The same with a 1 KB style: each copy went through the CSS filters (5 s, 590 MB).
+    let style = format!("<div><font style=\"{}\"></div>", "color:red;".repeat(100));
+    assert_refused("H1 style", &(style + &"<p>x</p>".repeat(20_000)));
+    // A few copies of a small formatting element still render.
+    let ok = "<div><font color=red></div>".to_string() + &"<p>x</p>".repeat(200);
+    let out = clean(&ok, false);
+    assert!(
+        !out.too_complex && out.html.matches("<font").count() >= 200,
+        "{out:?}"
+    );
+}
+
+#[test]
+fn round_3_deep_stacks_and_floods_of_tiny_tokens_stop_at_the_work_budget() {
+    // H2: `<li>`/`<dd>` inside spans: the scan saw depth 2, the parser built 33 000 levels.
+    assert_refused(
+        "H2",
+        &(String::from("<b>")
+            + &"<span><li></span><span><dd></span>".repeat(8_300)
+            + "x"
+            + &"\r".repeat(3_700_000)),
+    );
+    // H4: one-character tokens that each walk 2 041 open elements (a bare `&` each).
+    assert_refused(
+        "H4 &",
+        &(String::from("<b>") + &"<div>".repeat(2_040) + "x" + &"&".repeat(4_000_000)),
+    );
+    // H5: table text foster parented before 24 000 siblings, one `&` at a time.
+    assert_refused(
+        "H5 &",
+        &("<br>".repeat(24_000) + "<table>x" + &"&".repeat(4_000_000)),
+    );
+}
+
+#[test]
+fn round_3_carriage_returns_cost_nothing_after_normalisation() {
+    // H3, H4, H5 with CR: every CR was a token of its own, each walking the stack or the
+    // siblings. CR and CRLF now become LF before parsing, so the work does not grow with them.
+    let shapes = [
+        (
+            "H3",
+            String::from("<b><svg>") + &"<td>".repeat(49_990) + "<foreignObject>x",
+        ),
+        ("H4", String::from("<b>") + &"<div>".repeat(2_040) + "x"),
+        ("H5", "<br>".repeat(24_000) + "<table>x"),
+    ];
+    for (name, head) in shapes {
+        let few = budget_only(&(head.clone() + &"\r".repeat(1_000)));
+        let many = budget_only(&(head + &"\r".repeat(400_000)));
+        assert!(!few.too_complex && !many.too_complex, "{name}");
+        // A little more text to copy, no more work per CR.
+        assert!(
+            many.work.0 < few.work.0 + 10_000,
+            "{name}: {:?} then {:?}",
+            few.work,
+            many.work
+        );
+    }
+    assert_eq!(
+        croft_reader::sanitize::normalise("a\r\nb\rc\n\0d"),
+        "a\nb\nc\n\u{fffd}d"
+    );
+}
+
+#[test]
+fn round_3_nul_floods_are_bounded() {
+    // M2: `<p>` and 4 million NUL characters peaked at 377 MB (a parse error kept for each).
+    // NUL becomes U+FFFD first; the output (12 MB) is past the markup cap, which the serialiser
+    // stops at.
+    let out = clean(&(String::from("<p>") + &"\0".repeat(4_000_000)), false);
+    assert!(out.too_complex && out.html.is_empty());
+    let out = clean(&(String::from("<p>a") + &"\0".repeat(3) + "b</p>"), false);
+    assert_eq!(out.html, "<p>a\u{fffd}\u{fffd}\u{fffd}b</p>");
+}
+
+#[test]
+fn round_3_tables_count_their_implied_rows_and_column_groups() {
+    // L1: `<table><td>` inserts `tbody` and `tr`, `<table><col>` a `colgroup`.
+    use croft_reader::shape::{measure, Limits};
+    let wide = Limits {
+        tags: usize::MAX,
+        depth: usize::MAX,
+        attributes: usize::MAX,
+        cost: usize::MAX,
+        nodes: usize::MAX,
+    };
+    // table, tbody, tr, td
+    assert_eq!(measure("<table><td>x", wide).max_depth, 4);
+    assert_eq!(measure("<table><tr><td>x", wide).max_depth, 4);
+    // table, colgroup (col is void), then tbody, tr, td: at least what the parser builds.
+    assert!(measure("<table><col>", wide).max_depth >= 2);
+    assert!(measure("<table><col><td>x", wide).max_depth >= 4);
+}

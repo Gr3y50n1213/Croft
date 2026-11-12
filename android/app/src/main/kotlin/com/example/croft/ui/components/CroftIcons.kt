@@ -99,6 +99,17 @@ object CroftIcons {
         }
     }
 
+    /** A picture: a frame with a hill. Attach a photo. */
+    val Photo: ImageVector by lazy {
+        materialIcon(name = "Croft.Photo") {
+            materialPath(pathFillType = androidx.compose.ui.graphics.PathFillType.EvenOdd) {
+                moveTo(4f, 4f); horizontalLineTo(20f); verticalLineTo(20f); horizontalLineTo(4f); close()
+                moveTo(6f, 6f); verticalLineTo(18f); horizontalLineTo(18f); verticalLineTo(6f); close()
+                moveTo(7.5f, 16.5f); lineTo(11f, 11.5f); lineTo(13.5f, 14.5f); lineTo(15.5f, 12.5f); lineTo(17.5f, 16.5f); close()
+            }
+        }
+    }
+
     /** An arrow leaving a line: Outbox. */
     val Outbox: ImageVector by lazy {
         materialIcon(name = "Croft.Outbox") {

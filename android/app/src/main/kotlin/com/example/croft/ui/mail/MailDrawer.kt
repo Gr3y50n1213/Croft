@@ -93,6 +93,8 @@ fun MailDrawerContent(
     onSelect: (FolderInfo) -> Unit,
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    /** The Outbox (S26) entry; null hides it. */
+    onOutbox: (() -> Unit)? = null,
     /** The long-press menu of a mailbox (docs/ux/controls.md): Mark all as read, Sync now, Mailbox settings. */
     onMarkAllRead: (FolderInfo) -> Unit = {},
     onSyncNow: (FolderInfo) -> Unit = {},
@@ -123,6 +125,13 @@ fun MailDrawerContent(
             labels.forEach { f -> DrawerRow(f, selected = scope == MessageScope.Folder(f.account, f.id), count = 0, onClick = { onSelect(f) }, onMarkAllRead = { onMarkAllRead(f) }, onSyncNow = { onSyncNow(f) }, onMailboxSettings = { onMailboxSettings(f) }) }
         }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        if (onOutbox != null) NavigationDrawerItem(
+            label = { Text(stringResource(R.string.mail_folder_outbox)) },
+            selected = false,
+            onClick = onOutbox,
+            icon = { Icon(CroftIcons.Outbox, contentDescription = null) },
+            modifier = Modifier.testTag("drawer-outbox"),
+        )
         NavigationDrawerItem(
             label = { Text(stringResource(R.string.nav_settings)) },
             selected = false,

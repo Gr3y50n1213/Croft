@@ -160,6 +160,18 @@ android {
             matchingFallbacks += listOf("release")
             isDebuggable = false
         }
+        // Preview: the release code paths (R8, resource shrinking, not debuggable, the src/release stubs and never src/debug),
+        // signed with the standard Android debug key so that it installs without the owner's release key. The debug key is made
+        // by the build tools on each computer and is not in the repository. It installs next to a store build (".preview") and
+        // is called "Croft Preview" (src/preview/res/values/strings.xml). It cannot be updated to a store build. See
+        // docs/TESTING-ON-A-PHONE.md.
+        create("preview") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            isDebuggable = false
+            applicationIdSuffix = ".preview"
+        }
     }
 
     compileOptions {
@@ -181,6 +193,12 @@ android {
             kotlin.directories.add("build/generated/uniffi/kotlin")
             jniLibs.directories.add("build/generated/rust/jniLibs")
         }
+        // A source set is named after its build type, so `initWith(release)` does not bring src/release along (and
+        // `matchingFallbacks` only picks dependency variants). Without the stubs the preview build would not compile, because the
+        // app refers to DebugGallery and TestHooks. Share the release stubs, in place, never copied; src/debug stays out.
+        getByName("preview") {
+            kotlin.directories.add("src/release/kotlin")
+        }
     }
 }
 
@@ -189,7 +207,6 @@ android {
 // those classes the app crashes at start, and nothing but a device run would notice. Two checks fail the release build
 // instead: the keep rules must exist (before R8 runs), and R8's own mapping must show the bindings were not renamed (after).
 val rulesFile = layout.projectDirectory.file("proguard-rules.pro")
-val mappingFile = layout.buildDirectory.file("outputs/mapping/release/mapping.txt")
 val checkReleaseKeepRules = tasks.register("checkReleaseKeepRules") {
     group = "verification"
     description = "Fails if proguard-rules.pro lacks the UniFFI/JNA keep rules."
@@ -203,9 +220,11 @@ val checkReleaseKeepRules = tasks.register("checkReleaseKeepRules") {
         }
     }
 }
-val checkReleaseMapping = tasks.register("checkReleaseMapping") {
+// One mapping check per shrunk build type (release and preview).
+fun registerMappingCheck(taskName: String, variant: String) = tasks.register(taskName) {
+    val mappingFile = layout.buildDirectory.file("outputs/mapping/$variant/mapping.txt")
     group = "verification"
-    description = "Fails if R8 renamed a UniFFI or JNA class, using R8's mapping.txt."
+    description = "Fails if R8 renamed a UniFFI or JNA class in the $variant build, using R8's mapping.txt."
     inputs.file(mappingFile)
     doLast {
         // mapping.txt lists "original -> obfuscated:"; a kept class maps to its own name.
@@ -220,10 +239,25 @@ val checkReleaseMapping = tasks.register("checkReleaseMapping") {
         check(renamed.isEmpty()) { "R8 renamed classes that JNA/UniFFI look up by name: $renamed" }
     }
 }
+val checkReleaseMapping = registerMappingCheck("checkReleaseMapping", "release")
+val checkPreviewMapping = registerMappingCheck("checkPreviewMapping", "preview")
+// The preview build must compile the release stubs and nothing from src/debug (the test hooks and the component gallery).
+val checkPreviewSourceSets = tasks.register("checkPreviewSourceSets") {
+    group = "verification"
+    description = "Fails unless the preview source set shares src/release/kotlin and does not include src/debug."
+    val dirs = android.sourceSets.getByName("preview").kotlin.directories.toList()
+    doLast {
+        check(dirs.any { it.replace('\\', '/').endsWith("src/release/kotlin") }) { "preview does not compile the release stubs: $dirs" }
+        check(dirs.none { it.replace('\\', '/').contains("src/debug") }) { "preview must not include src/debug: $dirs" }
+    }
+}
 afterEvaluate {
-    tasks.matching { it.name == "minifyReleaseWithR8" }.configureEach { dependsOn(checkReleaseKeepRules) }
+    tasks.matching { it.name == "minifyReleaseWithR8" || it.name == "minifyPreviewWithR8" }.configureEach { dependsOn(checkReleaseKeepRules) }
+    tasks.matching { it.name == "compilePreviewKotlin" }.configureEach { dependsOn(checkPreviewSourceSets) }
     checkReleaseMapping.configure { mustRunAfter("minifyReleaseWithR8") }
+    checkPreviewMapping.configure { mustRunAfter("minifyPreviewWithR8") }
     tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach { finalizedBy(checkReleaseMapping) }
+    tasks.matching { it.name == "assemblePreview" }.configureEach { finalizedBy(checkPreviewMapping) }
 }
 
 tasks.named("preBuild") { dependsOn("generateUniffiBindings", "buildRustAndroid") }

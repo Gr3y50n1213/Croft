@@ -51,6 +51,44 @@ class ManifestCheck(unittest.TestCase):
         )
         self.assertEqual(run(extra_top=top), [])
 
+    def test_the_compose_intent_filters_of_t18d_pass(self):
+        manifest = BASE.replace(
+            '<intent-filter><action android:name="android.intent.action.MAIN" /></intent-filter>',
+            '<intent-filter><action android:name="android.intent.action.MAIN" /></intent-filter>'
+            '<intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.BROWSABLE" />'
+            '<data android:scheme="mailto" /></intent-filter>'
+            '<intent-filter><action android:name="android.intent.action.SEND" /><data android:mimeType="*/*" /></intent-filter>',
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "AndroidManifest.xml"
+            p.write_text(manifest % ("", ""))
+            self.assertEqual(crm.check(p, ALLOW), [])
+
+    def test_a_browsable_web_link_filter_fails(self):
+        manifest = BASE.replace(
+            '<intent-filter><action android:name="android.intent.action.MAIN" /></intent-filter>',
+            '<intent-filter><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.BROWSABLE" />'
+            '<data android:scheme="https" /></intent-filter>',
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "AndroidManifest.xml"
+            p.write_text(manifest % ("", ""))
+            errs = crm.check(p, ALLOW)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("https", errs[0])
+
+    def test_an_action_nobody_handles_fails(self):
+        manifest = BASE.replace(
+            '<intent-filter><action android:name="android.intent.action.MAIN" /></intent-filter>',
+            '<intent-filter><action android:name="android.intent.action.PICK" /></intent-filter>',
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "AndroidManifest.xml"
+            p.write_text(manifest % ("", ""))
+            errs = crm.check(p, ALLOW)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("PICK", errs[0])
+
     def test_fake_exported_receiver_fails(self):
         errs = run(extra_app='<receiver android:name="com.example.croft.Evil" android:exported="true" />')
         self.assertEqual(len(errs), 1)
@@ -70,6 +108,23 @@ class ManifestCheck(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "m.xml"
             p.write_text((BASE % ("", "")).replace("<application>", '<application android:debuggable="true">'))
+            self.assertEqual(len(crm.check(p, ALLOW)), 1)
+
+    def test_preview_suffix_keeps_the_activity_in_the_namespace(self):
+        # The preview build's package is "<namespace>.preview"; its classes and its signature permission differ accordingly.
+        import os
+        text = BASE.replace('package="com.example.croft"', 'package="com.example.croft.preview"').replace(
+            "com.example.croft.DYNAMIC", "com.example.croft.preview.DYNAMIC"
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "m.xml"
+            p.write_text(text % ("", ""))
+            os.environ["CROFT_NAMESPACE"] = "com.example.croft"
+            try:
+                self.assertEqual(crm.check(p, ALLOW), [])
+            finally:
+                del os.environ["CROFT_NAMESPACE"]
+            # Without the namespace the activity is not the allowlisted one.
             self.assertEqual(len(crm.check(p, ALLOW)), 1)
 
 

@@ -6,8 +6,11 @@
 
 Usage: check-release-manifest.py <AndroidManifest.xml> [allowlist.json]
 Also fails on android:debuggable="true". The allowlist defaults to manifest-allowlist.json next to this script.
+In the allowlist, ${applicationId} is the manifest's package (the application id, which the preview build gives a suffix) and
+${namespace} is the code's namespace, where the app's own classes live (environment variable CROFT_NAMESPACE, default: the package).
 """
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -22,7 +25,8 @@ def check(manifest_path, allowlist_path):
     app_id = root.get("package")
     if not app_id:
         return ["manifest has no package attribute"]
-    sub = lambda s: s.replace("${applicationId}", app_id)
+    namespace = os.environ.get("CROFT_NAMESPACE") or app_id
+    sub = lambda s: s.replace("${applicationId}", app_id).replace("${namespace}", namespace)
     allowed_perms = {sub(k) for k in allow["uses-permission"]}
     allowed_decl = {sub(k) for k in allow.get("permission", {})}
     allowed_exp = {sub(k): v for k, v in allow["exported"].items()}
@@ -49,7 +53,7 @@ def check(manifest_path, allowlist_path):
                 continue
             name = el.get(A + "name") or ""
             if name.startswith("."):
-                name = app_id + name
+                name = namespace + name
             exported = el.get(A + "exported")
             # Without the attribute a component is exported when it has an intent filter (older targetSdk rule).
             is_exported = exported == "true" or (exported is None and el.find("intent-filter") is not None)
@@ -63,6 +67,32 @@ def check(manifest_path, allowlist_path):
                 errors.append(
                     f"exported component {key} is guarded by {el.get(A + 'permission')!r}, allowlist says {entry.get('permission')!r}"
                 )
+            else:
+                errors.extend(check_filters(key, el, entry))
+    return errors
+
+
+def check_filters(key, component, entry):
+    """Intent filters of an exported component: only the actions the allowlist names (`actions`), and a BROWSABLE filter (reachable from
+    any web page) only for the URI schemes in `browsable-schemes`. A component whose entry has no `actions` is not checked."""
+    errors = []
+    actions = entry.get("actions")
+    schemes = entry.get("browsable-schemes", [])
+    if actions is None:
+        return errors
+    for f in component.findall("intent-filter"):
+        for a in f.findall("action"):
+            name = a.get(A + "name")
+            if name not in actions:
+                errors.append(f"exported component {key} has an intent filter action not on the allowlist: {name}")
+        browsable = any(c.get(A + "name") == "android.intent.category.BROWSABLE" for c in f.findall("category"))
+        if browsable:
+            for d in f.findall("data"):
+                scheme = d.get(A + "scheme")
+                if scheme not in schemes:
+                    errors.append(f"exported component {key} has a BROWSABLE filter for a scheme not on the allowlist: {scheme}")
+            if not f.findall("data"):
+                errors.append(f"exported component {key} has a BROWSABLE filter with no data")
     return errors
 
 

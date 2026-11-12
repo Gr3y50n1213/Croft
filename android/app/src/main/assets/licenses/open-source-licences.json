@@ -871,13 +871,13 @@
   },
   {
    "name": "event-listener",
-   "version": "5.4.2",
+   "version": "2.5.3",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "event-listener",
-   "version": "2.5.3",
+   "version": "5.4.2",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -973,13 +973,13 @@
   },
   {
    "name": "getrandom",
-   "version": "0.4.3",
+   "version": "0.2.17",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "getrandom",
-   "version": "0.2.17",
+   "version": "0.4.3",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1675,13 +1675,13 @@
   },
   {
    "name": "syn",
-   "version": "2.0.119",
+   "version": "3.0.10",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "syn",
-   "version": "3.0.10",
+   "version": "2.0.119",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1717,13 +1717,13 @@
   },
   {
    "name": "thiserror",
-   "version": "2.0.21",
+   "version": "1.0.69",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "thiserror",
-   "version": "1.0.69",
+   "version": "2.0.21",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

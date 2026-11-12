@@ -326,9 +326,12 @@ pub const MAX_ATTRIBUTES_PER_TAG: usize = 256;
 pub const MAX_SANITIZED_MARKUP_BYTES: usize = 8 * 1024 * 1024;
 /// The parser's work budget for one document, in units (`html5ever::budget`): one per token,
 /// per step over the parser's stack of open elements or list of formatting elements, per sibling
-/// searched and per 64 list entries shifted; `html5ever::budget::NODE_UNITS` per node created
-/// plus `ATTRIBUTE_UNITS` per attribute; one per 4 bytes read by a CSS filter. Past it the
-/// HTML is shown as text. See `docs/DECISIONS.md` (T18a, round 3) for the measured worst cases.
+/// searched and per 64 list entries shifted; `NODE_UNITS` per node created plus
+/// `ATTRIBUTE_UNITS` per attribute; `CHAR_REF_UNITS` per character reference, `ERROR_UNITS` per
+/// tokenizer error, `URL_UNITS` per address read, `CSS_UNITS_PER_BYTE` per byte a CSS filter
+/// reads. Each unit is about 5-10 ns of work (release build, x86), so a parse ends within about
+/// 0.3 s whatever the input. Past it the HTML is shown as text. See `docs/DECISIONS.md` (T18a,
+/// round 3) for the measured worst cases.
 pub const MAX_PARSE_UNITS: u64 = 30_000_000;
 /// Most attribute bytes the parser may copy into rebuilt elements (formatting elements it opens
 /// again in every paragraph, the adoption agency's copies) in one document. Past it the HTML is

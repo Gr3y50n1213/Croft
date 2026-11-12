@@ -62,6 +62,17 @@ async fn a_forbidden_address_is_refused_by_every_protocol_and_an_allowed_one_is_
         );
     }
 
+    // A push endpoint is a client's choice (T28): the policy applies.
+    let err = croft_protocols::oauth::fetch::post_push(
+        &format!("https://127.0.0.1:{port}/push"),
+        "vapid t=x, k=y",
+        &[("TTL", "60")],
+        b"x",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, croft_protocols::oauth::fetch::FetchError::Refused);
+
     // The Companion's OIDC provider is its admin's choice: the fetch it uses is not restricted, so a
     // provider on the same network keeps working.
     let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -123,6 +123,7 @@ impl TokenEndpoint {
             max_response: MAX_ANSWER,
             extra_time: Duration::ZERO,
             error_body: true,
+            extra_headers: &[],
         };
         let answer = self.http.send(&req).await.map_err(|e| match e.error {
             BackendError::Transient(_) => OAuthError::Transient,

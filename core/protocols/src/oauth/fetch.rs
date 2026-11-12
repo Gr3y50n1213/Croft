@@ -83,13 +83,42 @@ async fn send(
     body: &[u8],
     max_answer: usize,
 ) -> Result<Answer, FetchError> {
+    send_with(
+        method,
+        url,
+        authorization,
+        content_type,
+        body,
+        &[],
+        max_answer,
+        true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_with(
+    method: &'static str,
+    url: &str,
+    authorization: Option<&str>,
+    content_type: Option<&str>,
+    body: &[u8],
+    extra_headers: &[(&str, &str)],
+    max_answer: usize,
+    admin_configured: bool,
+) -> Result<Answer, FetchError> {
     let url = Url::parse(url).ok_or(FetchError::BadUrl)?;
     if !url.is_allowed() {
         return Err(FetchError::BadUrl);
     }
     // The OIDC provider is the admin's own choice, so the address policy (for what users choose)
     // does not apply: a provider on the same LAN or Docker network keeps working.
-    let http = Http::new(Trust::Roots, TIMEOUT, DEADLINE).admin_configured();
+    let http = Http::new(Trust::Roots, TIMEOUT, DEADLINE);
+    let http = if admin_configured {
+        http.admin_configured()
+    } else {
+        http
+    };
     let req = HttpRequest {
         method,
         url: &url,
@@ -99,6 +128,7 @@ async fn send(
         max_response: max_answer,
         extra_time: Duration::ZERO,
         error_body: true,
+        extra_headers,
     };
     let answer = http.send(&req).await.map_err(|e| match e.error {
         BackendError::Transient(_) => FetchError::Unreachable,
@@ -134,6 +164,28 @@ pub async fn post_form(
         Some("application/x-www-form-urlencoded"),
         form.as_bytes(),
         max_answer,
+    )
+    .await
+}
+
+/// `POST`s a Web Push message (T28) to a push service's endpoint: `body` is the encrypted
+/// message, `headers` its `TTL`, `Urgency` and `Content-Encoding`. The endpoint is a client's
+/// choice, so unlike [`get`] and [`post_form`] the process's address policy applies.
+pub async fn post_push(
+    url: &str,
+    authorization: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<Answer, FetchError> {
+    send_with(
+        "POST",
+        url,
+        Some(authorization),
+        Some("application/octet-stream"),
+        body,
+        headers,
+        4096,
+        false,
     )
     .await
 }

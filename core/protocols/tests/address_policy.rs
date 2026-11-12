@@ -62,9 +62,23 @@ async fn a_forbidden_address_is_refused_by_every_protocol_and_an_allowed_one_is_
         );
     }
 
-    // A push endpoint is a client's choice (T28): the policy applies.
+    // A push endpoint is a client's choice (T28): the policy applies. The listener would answer
+    // 201 to plain http on this machine, so only the policy can refuse it.
+    let push = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let push_port = push.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while let Ok((mut s, _)) = push.accept().await {
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf).await;
+            let _ = s
+                .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        }
+    });
+    let push_url = format!("http://127.0.0.1:{push_port}/push");
     let err = croft_protocols::oauth::fetch::post_push(
-        &format!("https://127.0.0.1:{port}/push"),
+        &push_url,
         "vapid t=x, k=y",
         &[("TTL", "60")],
         b"x",
@@ -91,6 +105,18 @@ async fn a_forbidden_address_is_refused_by_every_protocol_and_an_allowed_one_is_
         .await
         .unwrap();
     assert_eq!(ok.status, 200);
+
+    // Allowed, the same push goes through.
+    netpolicy::set_address_policy(Arc::new(|_| true));
+    let ok = croft_protocols::oauth::fetch::post_push(
+        &push_url,
+        "vapid t=x, k=y",
+        &[("TTL", "60")],
+        b"x",
+    )
+    .await
+    .unwrap();
+    assert_eq!(ok.status, 201);
 
     // Allowed again: the connection is made (and fails later, at TLS, for another reason).
     netpolicy::set_address_policy(Arc::new(|_| true));

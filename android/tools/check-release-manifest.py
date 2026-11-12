@@ -6,8 +6,11 @@
 
 Usage: check-release-manifest.py <AndroidManifest.xml> [allowlist.json]
 Also fails on android:debuggable="true". The allowlist defaults to manifest-allowlist.json next to this script.
+In the allowlist, ${applicationId} is the manifest's package (the application id, which the preview build gives a suffix) and
+${namespace} is the code's namespace, where the app's own classes live (environment variable CROFT_NAMESPACE, default: the package).
 """
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -22,7 +25,8 @@ def check(manifest_path, allowlist_path):
     app_id = root.get("package")
     if not app_id:
         return ["manifest has no package attribute"]
-    sub = lambda s: s.replace("${applicationId}", app_id)
+    namespace = os.environ.get("CROFT_NAMESPACE") or app_id
+    sub = lambda s: s.replace("${applicationId}", app_id).replace("${namespace}", namespace)
     allowed_perms = {sub(k) for k in allow["uses-permission"]}
     allowed_decl = {sub(k) for k in allow.get("permission", {})}
     allowed_exp = {sub(k): v for k, v in allow["exported"].items()}
@@ -49,7 +53,7 @@ def check(manifest_path, allowlist_path):
                 continue
             name = el.get(A + "name") or ""
             if name.startswith("."):
-                name = app_id + name
+                name = namespace + name
             exported = el.get(A + "exported")
             # Without the attribute a component is exported when it has an intent filter (older targetSdk rule).
             is_exported = exported == "true" or (exported is None and el.find("intent-filter") is not None)

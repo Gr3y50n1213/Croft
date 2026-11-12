@@ -55,6 +55,8 @@ fi
 if "$bt/aapt2" dump xmltree --file AndroidManifest.xml "$apk" | grep -q 'debuggable'; then bad "APK manifest sets android:debuggable"; else echo "ok   APK is not debuggable"; fi
 
 # Permissions and exported components, on the merged manifest AGP packaged into the APK.
+# The app's own classes live in the namespace (gradle.properties), which the preview build's id suffix does not change.
+export CROFT_NAMESPACE="$(sed -n 's/^croft\.applicationId=//p' gradle.properties)"
 vcap="$(tr '[:lower:]' '[:upper:]' <<<"${variant:0:1}")${variant:1}"
 python3 tools/check-release-manifest.py "app/build/intermediates/packaged_manifests/$variant/process${vcap}ManifestForPackage/AndroidManifest.xml" || fail=1
 

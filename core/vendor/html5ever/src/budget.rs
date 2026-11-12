@@ -57,6 +57,13 @@ pub const URL_UNITS: u64 = 120;
 /// Bytes of a URL per unit charged when it is parsed.
 pub const URL_BYTES_PER_UNIT: u64 = 2;
 
+/// Units charged per non-ASCII byte of a URL when it is parsed: mapping a non-ASCII host to ASCII
+/// (IDNA, Punycode) costs about half a microsecond per byte, a hundred times an ASCII byte.
+pub const URL_NON_ASCII_UNITS: u64 = 100;
+
+/// The longest URL a sanitiser parses; a longer `href` or `src` is dropped unparsed.
+pub const URL_MAX_BYTES: usize = 8 * 1024;
+
 /// Elements moved in one `Vec` shift (an insert or remove in the middle of a list) per unit
 /// charged.
 pub const SHIFT_PER_UNIT: u64 = 64;
@@ -65,8 +72,10 @@ pub const SHIFT_PER_UNIT: u64 = 64;
 /// tokenizer is the slowest per byte of the steps that run per attribute).
 pub const CSS_UNITS_PER_BYTE: u64 = 2;
 
-/// How many charges pass between two reads of the cancel flag.
-const CHECK_EVERY: u32 = 1024;
+/// How many units of work pass between two reads of the cancel flag (about 0.1 to 0.2 ms of
+/// parser work). Counted in units, not in calls, so one large charge cannot carry the work far
+/// past a cancel; a single charge of this size or more always reads the flag first.
+const CHECK_EVERY_UNITS: u64 = 16_384;
 
 /// How much work one parse may do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +101,7 @@ struct State {
     bytes: Cell<u64>,
     limits: Cell<Limits>,
     stop: Cell<Option<Stop>>,
-    until_check: Cell<u32>,
+    until_check: Cell<u64>,
     cancel: RefCell<Option<Arc<AtomicBool>>>,
 }
 
@@ -128,8 +137,8 @@ impl Drop for Guard {
 }
 
 /// Installs a budget on this thread (replacing any earlier one) until the guard is dropped.
-/// `cancel`, when given, stops the work soon after it is set to true (it is read every
-/// 1024 charges, so within microseconds of parser work).
+/// `cancel`, when given, stops the work soon after it is set to true (it is read after every
+/// [`CHECK_EVERY_UNITS`] units of work, about a tenth of a millisecond).
 pub fn install(limits: Limits, cancel: Option<Arc<AtomicBool>>) -> Guard {
     let _ = STATE.try_with(|s| {
         s.active.set(true);
@@ -171,8 +180,8 @@ pub fn charge(units: u64) -> bool {
             }
             s.units.set(left - units);
             let until = s.until_check.get();
-            if until == 0 {
-                s.until_check.set(CHECK_EVERY);
+            if units >= until {
+                s.until_check.set(CHECK_EVERY_UNITS);
                 let cancelled = s
                     .cancel
                     .borrow()
@@ -182,7 +191,7 @@ pub fn charge(units: u64) -> bool {
                     return stop(s, Stop::Cancelled);
                 }
             } else {
-                s.until_check.set(until - 1);
+                s.until_check.set(until - units);
             }
             true
         })
@@ -282,7 +291,20 @@ mod tests {
         while charge(1) {
             n += 1;
         }
-        assert!(n <= CHECK_EVERY as usize);
+        assert!(n as u64 <= CHECK_EVERY_UNITS);
+        assert_eq!(stopped(), Some(Stop::Cancelled));
+    }
+
+    /// The flag is read by units of work, not by calls: one large charge (a long URL) reads it
+    /// before it lets the work go on, so a cancel cannot be carried far past.
+    #[test]
+    fn a_large_charge_reads_the_cancel_flag_first() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let _g = install(Limits { units: u64::MAX, bytes: 0 }, Some(flag.clone()));
+        assert!(charge(1));
+        assert!(charge(1));
+        flag.store(true, Ordering::Relaxed);
+        assert!(!charge(CHECK_EVERY_UNITS), "a charge of a full check interval reads the flag");
         assert_eq!(stopped(), Some(Stop::Cancelled));
     }
 

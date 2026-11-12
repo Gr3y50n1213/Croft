@@ -33,6 +33,9 @@ ALTER TABLE message_body ADD COLUMN too_complex      INTEGER NOT NULL DEFAULT 0;
 -- sanitiser was busy with another message, or its deadline passed on a loaded device): the text is
 -- shown, and the next open tries the HTML again.
 ALTER TABLE message_body ADD COLUMN html_pending     INTEGER NOT NULL DEFAULT 0;
+-- How many times in a row the HTML was pending. After MAX_HTML_ATTEMPTS (3) the message is marked too_complex,
+-- so a message that always misses its deadline is not tried again on every open. A finished render sets it to 0.
+ALTER TABLE message_body ADD COLUMN html_attempts    INTEGER NOT NULL DEFAULT 0;
 
 -- attachment.part_id is the part's number in the stored message (croft-reader's numbering).
 ALTER TABLE attachment ADD COLUMN content_id   TEXT;

@@ -191,8 +191,9 @@ pub fn store_body(
     )?;
     conn.execute(
         "INSERT INTO message_body (message_id, headers_raw, text_plain, html_clean, remote_blocked,
-                                   trackers_removed, truncated, too_complex, html_pending)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                   trackers_removed, truncated, too_complex, html_pending,
+                                   html_attempts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
         params![
             message_id,
             body.headers_raw,
@@ -382,6 +383,11 @@ pub fn set_too_complex(conn: &Connection, account_id: i64, message_id: i64) -> R
     )? > 0)
 }
 
+/// How many renders in a row may leave a message's HTML pending (sanitiser busy or past its
+/// deadline) before it is marked too complex and shown as text from then on. Bounds the work a
+/// message that always misses its deadline costs: a few tries, never one on every open.
+pub const MAX_HTML_ATTEMPTS: i64 = 3;
+
 /// What a later render of a message whose HTML was pending gave (see [`store_html`]).
 /// `Debug` is not derived: it holds content.
 pub struct RenderedHtml<'a> {
@@ -413,9 +419,16 @@ pub fn store_html(
     if !owned(conn, account_id, message_id)? {
         return Ok(false);
     }
+    // A pending outcome counts one more attempt; the last allowed one marks the message too
+    // complex (the right-hand sides read the row's values before this update).
     let updated = conn.execute(
         "UPDATE message_body SET html_clean = ?2, remote_blocked = ?3, trackers_removed = ?4,
-                                 truncated = ?5, too_complex = ?6, html_pending = ?7
+                                 truncated = ?5,
+                                 too_complex = CASE WHEN ?6 OR (?7 AND html_attempts + 1 >= ?8)
+                                                    THEN 1 ELSE 0 END,
+                                 html_pending = CASE WHEN ?6 OR (?7 AND html_attempts + 1 >= ?8)
+                                                     THEN 0 ELSE ?7 END,
+                                 html_attempts = CASE WHEN ?7 THEN html_attempts + 1 ELSE 0 END
           WHERE message_id = ?1",
         params![
             message_id,
@@ -424,7 +437,8 @@ pub fn store_html(
             html.trackers_removed,
             html.truncated,
             html.too_complex,
-            html.html_pending && !html.too_complex
+            html.html_pending && !html.too_complex,
+            MAX_HTML_ATTEMPTS
         ],
     )?;
     if updated == 0 {

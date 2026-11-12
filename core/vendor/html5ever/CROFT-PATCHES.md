@@ -99,3 +99,10 @@ and look for new loops over `open_elems` or `active_formatting`), check that
 `grep -rn 'debug!\|trace!' src` shows nothing that prints tokens or characters, then run
 `cargo test -p croft-reader` (`tests/budget.rs` and `tests/vendored_html5ever.rs` fail when a charge
 point is lost) and the timings in `core/reader/tests/limits_bench.rs`.
+
+### Final review (cancel by units)
+
+`budget::charge` reads the cancel flag after every `CHECK_EVERY_UNITS` (16,384) units of work rather
+than every 1024 calls, so one large charge (a long URL) cannot carry the work far past a cancel: a
+charge of a full interval or more reads the flag before the work goes on.
+

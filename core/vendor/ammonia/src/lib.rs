@@ -2112,11 +2112,21 @@ impl<'a> Builder<'a> {
                             attr_name == "class" && self.allowed_classes.contains_key(tag_name)
                         } else if is_url_attr(tag_name, attr_name) {
                             // CROFT-PATCH: parsing a URL is the costliest step per attribute:
-                            // charged to the parser's budget (see `html5ever::budget`).
-                            html5ever::budget::charge(
+                            // charged to the parser's budget (see `html5ever::budget`), with
+                            // non-ASCII bytes charged heavily (IDNA mapping of a host is far
+                            // slower per byte than ASCII). A URL longer than the cap is dropped
+                            // unparsed, and once the budget is spent nothing is parsed at all.
+                            if attr_val.len() > html5ever::budget::URL_MAX_BYTES {
+                                return false;
+                            }
+                            let non_ascii = attr_val.bytes().filter(|b| !b.is_ascii()).count() as u64;
+                            if !html5ever::budget::charge(
                                 html5ever::budget::URL_UNITS
-                                    + attr_val.len() as u64 / html5ever::budget::URL_BYTES_PER_UNIT,
-                            );
+                                    + attr_val.len() as u64 / html5ever::budget::URL_BYTES_PER_UNIT
+                                    + non_ascii * html5ever::budget::URL_NON_ASCII_UNITS,
+                            ) {
+                                return false;
+                            }
                             let url = Url::parse(attr_val);
                             if let Ok(url) = url {
                                 self.url_schemes.contains(url.scheme())
@@ -3101,11 +3111,30 @@ fn is_mathml_tag(element: &str) -> bool {
     )
 }
 
+// CROFT-PATCH: decided without parsing the URL a second time (the first parse, in the attribute
+// filter, is charged to the budget; this one was not, and parsing a long non-ASCII host is
+// slow). A URL is relative exactly when it has no scheme: after the leading C0 controls and
+// spaces and every tab and newline are removed (as the URL parser removes them), it does not
+// start with an ASCII letter followed by letters, digits, `+`, `-` or `.` up to a `:`. Every URL
+// attribute that reaches this point already passed the full parse in the filter.
 fn is_url_relative(url: &str) -> bool {
-    matches!(
-        Url::parse(url),
-        Err(url::ParseError::RelativeUrlWithoutBase)
-    )
+    let mut chars = url
+        .trim_start_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'));
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return true,
+    }
+    for c in chars {
+        if c == ':' {
+            return false;
+        }
+        if !(c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+            return true;
+        }
+    }
+    true
 }
 
 /// Policy for [relative URLs], that is, URLs that do not specify the scheme in full.

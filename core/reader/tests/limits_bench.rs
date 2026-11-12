@@ -154,6 +154,19 @@ fn round3() {
     run("H1 clone bomb, 1 KB style, p to 4 MiB", || {
         style + &"<p>x</p>".repeat(fill)
     });
+    // Final review: a link with a 1 MB non-ASCII host (340 labels of 1000 CJK characters), and the
+    // same rebuilt by seven paragraphs.
+    let label: String = (0..1000u32)
+        .filter_map(|i| char::from_u32(0x4E00 + i))
+        .collect();
+    let host = vec![label.as_str(); 340].join(".");
+    run("final H1 1 MB non-ASCII href + 7 p", || {
+        format!("<p><a href=\"https://{host}/\">x</p>") + &"<p>y</p>".repeat(7)
+    });
+    run("final H1 8 KiB non-ASCII hrefs to 4 MiB", || {
+        let short = [label.as_str(); 2].join(".");
+        format!("<a href=\"https://{short}/\">x</a>").repeat(4 * 1024 * 1024 / 6_100)
+    });
     run("H2 span li/dd x8300 + CR x3.7M", || {
         String::from("<b>")
             + &"<span><li></span><span><dd></span>".repeat(8_300)

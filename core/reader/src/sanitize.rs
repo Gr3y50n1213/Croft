@@ -456,6 +456,8 @@ struct State {
     trackers_removed: u32,
     styles_removed: u32,
     cids_used: Vec<String>,
+    /// The same Content-IDs as [`State::cids_used`], for a constant-time "already listed" check.
+    cids_seen: HashSet<String>,
     /// Bytes of `data:` URIs written so far.
     inline_bytes: usize,
     img: ImgDraft,
@@ -472,6 +474,9 @@ struct Context {
     /// The marker attribute added as the last attribute of every `img`.
     marker: String,
     images: HashMap<String, InlineImage>,
+    /// Each image's Content-ID in ASCII lower case, mapped to its key in `images`, built once per
+    /// document so that a reference that misses the exact key is found without scanning.
+    images_lower: HashMap<String, String>,
 }
 
 /// The allowed attributes of each tag (besides [`GENERIC_ATTRIBUTES`]).
@@ -683,6 +688,10 @@ pub fn sanitize_html_with(
         nonce: format!("croftimg{id}:"),
         marker: format!("croftend{id}"),
         images: images.clone(),
+        images_lower: images
+            .keys()
+            .map(|k| (k.to_ascii_lowercase(), k.clone()))
+            .collect(),
     });
     let state = Arc::new(Mutex::new(State::default()));
     let (filter_context, filter_state) = (context.clone(), state.clone());
@@ -905,7 +914,8 @@ fn filter_attribute<'u>(
         }
         ("img", "src") => {
             if let Some(cid) = cid_of(value) {
-                return resolve_cid(&cid, &context.images, state).map(Cow::Owned);
+                return resolve_cid(&cid, &context.images, &context.images_lower, state)
+                    .map(Cow::Owned);
             }
             is_remote(value).then(|| defer(Deferred::Src(value.to_owned()), context, state))
         }
@@ -1017,18 +1027,21 @@ fn cid_of(url: &str) -> Option<String> {
 fn resolve_cid(
     cid: &str,
     images: &HashMap<String, InlineImage>,
+    images_lower: &HashMap<String, String>,
     state: &mut State,
 ) -> Option<String> {
-    let (key, image) = images
-        .get_key_value(cid)
-        .or_else(|| images.iter().find(|(k, _)| k.eq_ignore_ascii_case(cid)))?;
+    let (key, image) = images.get_key_value(cid).or_else(|| {
+        images_lower
+            .get(&cid.to_ascii_lowercase())
+            .and_then(|k| images.get_key_value(k))
+    })?;
     let prefix = format!("data:{};base64,", image.mime_type);
     let size = prefix.len() + image.data.len().div_ceil(3) * 4;
     if state.inline_bytes.saturating_add(size) > MAX_INLINE_DATA_BYTES {
         return Some(BLOCKED_IMAGE_PLACEHOLDER.to_owned());
     }
     state.inline_bytes += size;
-    if !state.cids_used.contains(key) {
+    if state.cids_seen.insert(key.clone()) {
         state.cids_used.push(key.clone());
     }
     let mut uri = prefix;

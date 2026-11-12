@@ -420,6 +420,64 @@ fn a_pending_body_gets_its_html_later_and_keeps_its_attachment_ids() {
     assert!(stored.too_complex && !stored.html_pending);
 }
 
+/// Final review M1: a message whose HTML is pending every time (it always misses its deadline) is
+/// tried a bounded number of times, then marked too complex; a finished render resets the count.
+#[test]
+fn html_that_stays_pending_is_marked_too_complex_after_a_few_tries() {
+    let db = Db::open_in_memory().unwrap();
+    let c = db.connection();
+    let a1 = account(c, "one@example.org");
+    let f1 = folder(c, a1, "INBOX", SpecialUse::Inbox);
+    let m = message(c, a1, f1, 1, "m1@example.org", &[], 10);
+    let attachments = [];
+    let mut b = body(&attachments, "text");
+    b.html_clean = None;
+    b.html_pending = true;
+    reading::store_body(c, a1, m, &b).unwrap();
+    let pending = reading::RenderedHtml {
+        html_clean: None,
+        remote_blocked: 0,
+        trackers_removed: 0,
+        truncated: true,
+        too_complex: false,
+        html_pending: true,
+        cids_used: &[],
+    };
+    // The first fetch was attempt 1; each retry adds one.
+    for attempt in 2..reading::MAX_HTML_ATTEMPTS {
+        reading::store_html(c, a1, m, &pending).unwrap();
+        let s = reading::body(c, a1, m).unwrap().unwrap();
+        assert!(
+            s.html_pending && !s.too_complex,
+            "attempt {attempt} still pending"
+        );
+    }
+    reading::store_html(c, a1, m, &pending).unwrap();
+    let s = reading::body(c, a1, m).unwrap().unwrap();
+    assert!(
+        s.too_complex && !s.html_pending,
+        "the last attempt marks it"
+    );
+    assert!(
+        !reading::html_pending(c, a1, m).unwrap(),
+        "never retried again"
+    );
+
+    // A finished render in between resets the count.
+    reading::store_body(c, a1, m, &b).unwrap();
+    reading::store_html(c, a1, m, &pending).unwrap();
+    let done = reading::RenderedHtml {
+        html_clean: Some("<p>x</p>"),
+        truncated: false,
+        html_pending: false,
+        ..pending
+    };
+    reading::store_html(c, a1, m, &done).unwrap();
+    reading::store_html(c, a1, m, &pending).unwrap();
+    let s = reading::body(c, a1, m).unwrap().unwrap();
+    assert!(s.html_pending && !s.too_complex, "counted again from zero");
+}
+
 #[test]
 fn copies_with_the_same_header_but_other_bytes_are_both_listed() {
     // Round 2 review N9: a forged copy (same Message-ID, sender, date and size) in the opened

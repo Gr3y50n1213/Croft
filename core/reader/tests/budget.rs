@@ -227,3 +227,30 @@ fn a_cancelled_parse_stops_and_says_so() {
     let out = sanitize_html_with("<p>x</p>", false, &HashMap::new(), &Options::default());
     assert_eq!(out.html, "<p>x</p>");
 }
+
+/// Final review H1: a URL with a long non-ASCII host cost seconds to parse (IDNA) while charged
+/// as if it were ASCII. Now a URL over the cap is dropped unparsed, and non-ASCII bytes are
+/// charged heavily, so the work a parse may do bounds the time it takes.
+#[test]
+fn long_or_non_ascii_urls_are_capped_and_charged() {
+    let label: String = (0..1000u32)
+        .filter_map(|i| char::from_u32(0x4E00 + i))
+        .collect();
+    let host = [label.as_str(); 4].join(".");
+    let long = format!("<p><a href=\"https://{host}/\">x</a></p>");
+    let out = run(&long, u64::MAX / 4, u64::MAX / 4);
+    assert!(!out.too_complex, "{out:?}");
+    assert!(
+        !out.html.contains("href"),
+        "a URL over the cap is dropped: {}",
+        out.html
+    );
+    // A short non-ASCII host is kept, and charged far more than the same length of ASCII.
+    let short = "<p><a href=\"https://\u{4E00}\u{4E01}.example/\">x</a></p>";
+    let ascii = "<p><a href=\"https://abcdef.example/\">x</a></p>";
+    assert!(run(short, u64::MAX / 4, u64::MAX / 4).html.contains("href"));
+    charged("non-ASCII URL bytes", short, ascii, 500);
+    // Once the budget is spent no URL is parsed: the result is the text fallback.
+    let many = format!("<p><a href=\"https://{label}.example/\">x</a></p>").repeat(50);
+    assert!(run(&many, 200_000, u64::MAX / 4).too_complex);
+}

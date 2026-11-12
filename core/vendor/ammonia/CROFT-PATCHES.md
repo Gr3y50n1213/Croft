@@ -53,6 +53,14 @@ the whole sanitising pass.
   run; the attribute filter loop charges one unit per attribute (the filter's own work is charged
   by Croft's filter).
 
+- URL attributes (final review): a URL longer than `URL_MAX_BYTES` (8 KiB) is dropped unparsed;
+  the parse is charged `URL_UNITS` + 1 per 2 bytes + `URL_NON_ASCII_UNITS` (100) per non-ASCII byte
+  (mapping a non-ASCII host to ASCII is about a hundred times slower per byte); when the charge
+  fails the URL is not parsed and the attribute goes.
+- `is_url_relative` no longer parses the URL a second time: it checks for a scheme the way the URL
+  parser does (leading C0 controls and spaces, tabs and newlines ignored). Every URL attribute that
+  reaches it already passed the full, charged parse in the attribute filter.
+
 ## Upstream
 
 These changes only make sense together with html5ever's change 3. Upstream could take the

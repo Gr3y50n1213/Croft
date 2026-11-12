@@ -179,7 +179,8 @@ fn content_type(name: &str) -> &'static str {
 
 /// The page's CSP: scripts from the app's own folders only (`/_app/immutable/`, `/theme.js`, never
 /// another page's script such as `/enrol.js`) and its inline start-up scripts by hash; Trusted
-/// Types required, with Svelte's own policy (its compiled templates) the only one. Style attributes
+/// Types required, with Svelte's own policy (its compiled templates) and the reading pane's (the
+/// sandboxed email frame's document, T31) the only ones. Style attributes
 /// are allowed (Svelte's templates and SvelteKit's screen-reader announcer use them); `<style>`
 /// elements are not. A style attribute runs no script, and with images, fonts and connections
 /// limited to this origin it cannot send anything elsewhere.
@@ -198,7 +199,7 @@ fn csp_for(html: &str, origin: &str) -> String {
         "default-src 'none'; script-src {origin}/_app/immutable/ {origin}/theme.js {}; \
          style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; \
          font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; \
-         require-trusted-types-for 'script'; trusted-types svelte-trusted-html; \
+         require-trusted-types-for 'script'; trusted-types svelte-trusted-html croft-mail-srcdoc; \
          frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         hashes.join(" ")
     )
@@ -367,7 +368,7 @@ mod tests {
         assert!(csp.contains(
             "script-src https://companion.test/_app/immutable/ https://companion.test/theme.js "
         ));
-        assert!(csp.contains("trusted-types svelte-trusted-html;"));
+        assert!(csp.contains("trusted-types svelte-trusted-html croft-mail-srcdoc;"));
         assert!(csp.contains(&hash("\nmore()\n")), "{csp}");
         assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"));
         // Scripts and style elements: never inline; only style attributes are allowed.

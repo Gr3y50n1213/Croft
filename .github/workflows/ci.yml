@@ -47,6 +47,7 @@ jobs:
           workspaces: companion
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --features test-mail --all-targets -- -D warnings
       - run: cargo test --locked
       # The image builds (it is not pushed anywhere).
       - run: docker build -f Dockerfile -t croft-companion:ci ..
@@ -73,9 +74,9 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
-      - name: Build the Companion
+      - name: Build the Companion and the test mail server (test only)
         working-directory: companion
-        run: cargo build --locked
+        run: cargo build --locked --features test-mail
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e
 

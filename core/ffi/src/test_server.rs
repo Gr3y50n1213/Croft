@@ -144,6 +144,18 @@ impl TestImapServer {
         .unwrap_or(0)
     }
 
+    /// Adds a whole raw message (RFC 5322, CRLF line ends) to `folder`; its UID (0 when the
+    /// server is stopped or the folder does not exist). For tests that need HTML or attachments.
+    pub fn inject_raw(&self, folder: String, raw: String) -> u32 {
+        self.with(|s| {
+            if s.messages(&folder).is_empty() && !known_folder(&folder) {
+                return 0;
+            }
+            s.add_message(&folder, &raw)
+        })
+        .unwrap_or(0)
+    }
+
     /// Changes flags the way another client would (`\Seen`, `\Flagged`, ...); the server's
     /// mod-sequence moves, so the next sync picks it up.
     pub fn change_flags(&self, folder: String, uid: u32, add: Vec<String>, remove: Vec<String>) {

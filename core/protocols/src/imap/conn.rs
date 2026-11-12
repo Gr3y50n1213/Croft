@@ -13,7 +13,8 @@ use super::config::{Credential, ImapConfig, Security};
 use super::error::{self, OpError};
 use super::stream::Stream;
 use super::text::{
-    bracketed_message_id, decode_encoded_words, folder_arg, quote, uid_set, uid_sets,
+    bracketed_message_id, decode_encoded_words, folder_arg, quote, search_criteria, uid_set,
+    uid_sets,
 };
 use super::text::{reference_ids, utf7_decode};
 use super::tls::{client_config, Trust};
@@ -873,6 +874,39 @@ impl Conn {
             )
             .await?;
         Ok(search_results(&reply).into_iter().max())
+    }
+
+    /// Searches one folder (see `MailBackend::search`): `UID SEARCH` with quoted criteria, the
+    /// newest [`MAX_SEARCH_UIDS`] UIDs. A refusal (`NO` or `BAD`) on a working connection means the
+    /// server cannot run this search; a query with a term this adapter cannot quote is not sent.
+    pub(crate) async fn search(
+        &mut self,
+        folder: &str,
+        query: &ServerQuery,
+    ) -> Result<SearchOutcome, OpError> {
+        let Some(criteria) = search_criteria(query) else {
+            return Ok(SearchOutcome::Unsupported);
+        };
+        if criteria.is_empty() {
+            return Ok(SearchOutcome::Found(Vec::new()));
+        }
+        self.select(folder, false, None).await?;
+        match self
+            .exec(&format!("UID SEARCH {criteria}"), "search the folder")
+            .await
+        {
+            Ok(reply) => {
+                let mut uids = search_results(&reply);
+                uids.sort_unstable_by(|a, b| b.cmp(a));
+                uids.dedup();
+                uids.truncate(MAX_SEARCH_UIDS);
+                Ok(SearchOutcome::Found(uids))
+            }
+            Err(e) if !e.broken && matches!(e.error, BackendError::Permanent(_)) => {
+                Ok(SearchOutcome::Unsupported)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Like [`Conn::find_by_message_id`], but only messages flagged `\Draft`.

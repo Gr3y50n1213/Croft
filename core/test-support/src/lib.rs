@@ -10,7 +10,8 @@
 //! LIST (with `RETURN (SPECIAL-USE)`), STATUS, SELECT/EXAMINE (with CONDSTORE and QRESYNC),
 //! UID FETCH (FLAGS, ENVELOPE, RFC822.SIZE, INTERNALDATE, header fields, `BODY[]` and
 //! `BODY.PEEK[]` (only `BODY[]` sets `\Seen`), MODSEQ, CHANGEDSINCE),
-//! UID STORE, UID COPY, UID MOVE, UID EXPUNGE, EXPUNGE, UID SEARCH (ALL, UID, DELETED, HEADER),
+//! UID STORE, UID COPY, UID MOVE, UID EXPUNGE, EXPUNGE, UID SEARCH (ALL, UID, DELETED, DRAFT, HEADER, TEXT, FROM, TO, CC, SUBJECT, OR, UNSEEN,
+//! FLAGGED),
 //! APPEND and CLOSE.
 //!
 //! What tests can do to it: switch capabilities off ([`TestServer::set_caps`]), change
@@ -124,6 +125,9 @@ pub enum Misbehavior {
     /// Answer every `UID SEARCH UID ...` with the UIDs asked for that exist, plus every other UID
     /// in the folder, plus one that does not exist (999999).
     SearchExtraUids,
+    /// Refuse the text search keys (`TEXT`, `FROM`, `TO`, `CC`, `SUBJECT`, `OR`) with `BAD`, as a
+    /// server without full-text search might. `HEADER`, `UID`, `ALL` and the flag keys still work.
+    NoTextSearch,
 }
 
 /// Settings for [`TestServer::start`].

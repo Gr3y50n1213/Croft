@@ -1072,6 +1072,7 @@ fn uid_search(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> Strin
             .first()
             .and_then(Tok::text)
             .is_some_and(|k| k.eq_ignore_ascii_case("UID"));
+    let no_text_search = st.misbehavior == Misbehavior::NoTextSearch;
     let Some((f, _)) = selected(st, sess) else {
         return format!("{tag} BAD No folder selected\r\n");
     };
@@ -1118,6 +1119,24 @@ fn uid_search(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> Strin
                 });
                 i += 3;
             }
+            "UNSEEN" => {
+                hits.retain(|m| !m.flags.contains("\\Seen"));
+                i += 1;
+            }
+            "FLAGGED" => {
+                hits.retain(|m| m.flags.contains("\\Flagged"));
+                i += 1;
+            }
+            "TEXT" | "FROM" | "TO" | "CC" | "SUBJECT" | "OR" => {
+                if no_text_search {
+                    return format!("{tag} BAD Text search is not available\r\n");
+                }
+                let Some((pred, next)) = text_criterion(toks, i) else {
+                    return format!("{tag} BAD Bad search criterion\r\n");
+                };
+                hits.retain(|m| pred(m));
+                i = next;
+            }
             _ => return format!("{tag} BAD Unsupported search key\r\n"),
         }
     }
@@ -1137,6 +1156,37 @@ fn uid_search(st: &mut State, sess: &mut Sess, tag: &str, toks: &[Tok]) -> Strin
         format!("* SEARCH {}\r\n", uids.join(" "))
     };
     format!("{line}{tag} OK Search completed\r\n")
+}
+
+/// A text search key at `toks[i]` (`TEXT`, `FROM`, `TO`, `CC`, `SUBJECT`, or `OR` of two of
+/// them) as a predicate, and the index after it. Matching is a case-insensitive substring, as most
+/// servers do it.
+type Pred = Box<dyn Fn(&Message) -> bool>;
+
+fn text_criterion(toks: &[Tok], i: usize) -> Option<(Pred, usize)> {
+    let key = toks.get(i)?.text()?.to_ascii_uppercase();
+    if key == "OR" {
+        let (a, j) = text_criterion(toks, i + 1)?;
+        let (b, k) = text_criterion(toks, j)?;
+        return Some((Box::new(move |m| a(m) || b(m)), k));
+    }
+    let needle = toks.get(i + 1)?.text()?.to_lowercase();
+    let pred: Pred = match key.as_str() {
+        "TEXT" => Box::new(move |m: &Message| m.raw.to_lowercase().contains(&needle)),
+        "FROM" | "TO" | "CC" | "SUBJECT" => {
+            let name = match key.as_str() {
+                "FROM" => "From",
+                "TO" => "To",
+                "CC" => "Cc",
+                _ => "Subject",
+            };
+            Box::new(move |m: &Message| {
+                header_value(&m.raw, name).is_some_and(|v| v.to_lowercase().contains(&needle))
+            })
+        }
+        _ => return None,
+    };
+    Some((pred, i + 2))
 }
 
 // -------------------------------------------------------------------------------------------

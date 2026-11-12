@@ -114,6 +114,10 @@ class InboxTexts(private val res: Resources) {
     val synced: String get() = res.getString(R.string.mail_snack_synced)
     val replyLater: String get() = res.getString(R.string.mail_snack_reply_later)
     val accountScreensLater: String get() = res.getString(R.string.mail_snack_account_screens)
+    val draftSaved: String get() = res.getString(R.string.compose_snack_draft_saved)
+    val sending: String get() = res.getString(R.string.compose_snack_sending)
+    val tooLateToUndo: String get() = res.getString(R.string.compose_snack_too_late)
+    val undoFailed: String get() = res.getString(R.string.compose_snack_undo_failed)
 }
 
 /**
@@ -162,6 +166,19 @@ class InboxController(
 
     /** The one snackbar of the screen. */
     val snackbar = CroftSnackbarState()
+
+    /**
+     * What Reply does on a row. Set by the screen when compose is wired in (T18d): it opens compose as a reply. Without it (tests of the
+     * list alone) the row says that Reply comes later.
+     */
+    var replyHandler: ((MessageRowData) -> Unit)? = null
+
+    /** The drafts of this device shown at the top of a Drafts folder (the core's local drafts, those not in the Outbox); empty elsewhere. */
+    var localDrafts by mutableStateOf<List<uniffi.croft_ffi.DraftSummary>>(emptyList())
+        private set
+
+    /** After Send, focus goes to the first row of the list (docs/ux/accessibility.md): set until the rows are there and focus was asked for. */
+    var focusFirstPending by mutableStateOf(false)
 
     var messageScope by mutableStateOf(startScope)
         private set
@@ -303,7 +320,7 @@ class InboxController(
 
     /** Why the list is empty, or null when it is not. */
     val emptyKind: EmptyKind?
-        get() = if (phase != LoadPhase.LOADED || rows.isNotEmpty()) null else when (scopeRole) {
+        get() = if (phase != LoadPhase.LOADED || rows.isNotEmpty() || localDrafts.isNotEmpty()) null else when (scopeRole) {
             FolderRole.INBOX -> EmptyKind.InboxZero
             FolderRole.TRASH -> EmptyKind.Trash
             FolderRole.SPAM -> EmptyKind.Spam
@@ -325,6 +342,7 @@ class InboxController(
     suspend fun run() = coroutineScope {
         // The folders first: the empty state and the toolbar need to know what the folder is.
         refreshAccountsAndFolders()
+        reloadLocalDrafts()
         launch { loadFirst() }
         launch { observeChanges() }
     }
@@ -347,6 +365,7 @@ class InboxController(
 
     private suspend fun handle(batch: ChangeBatch) {
         refreshAccountsAndFolders()
+        reloadLocalDrafts()
         dismissed = dismissed.filterTo(HashSet()) { kind -> activeKinds().contains(kind) }
         if (batch.failures.isNotEmpty()) onFailures(batch.failures)
         if (batch.everything || affects(batch)) reloadHead()
@@ -573,6 +592,7 @@ class InboxController(
         restoring = true
         restoreTarget = null
         scope.launch { loadFirst() }
+        scope.launch { reloadLocalDrafts() }
     }
 
     /** The inbox folder id of [account]. */
@@ -976,8 +996,53 @@ class InboxController(
         } else keepAction(row, action)
     }
 
-    /** Reply is T18's; until the compose screen exists the row's Reply action says so. */
-    fun reply(row: MessageRowData) { snackbar.show(texts.replyLater) }
+    /** Reply: opens compose as a reply when the screen wired it (T18d); otherwise the row says that Reply comes later. */
+    fun reply(row: MessageRowData) {
+        val handler = replyHandler
+        if (handler != null) handler(row) else snackbar.show(texts.replyLater)
+    }
+
+    /** Re-reads the local drafts when the folder shown is a Drafts folder (a local read); clears them elsewhere. */
+    private suspend fun reloadLocalDrafts() {
+        val compose = session.compose
+        val s = messageScope
+        if (compose == null || s !is MessageScope.Folder || scopeRole != FolderRole.DRAFTS) {
+            if (localDrafts.isNotEmpty()) localDrafts = emptyList()
+            return
+        }
+        localDrafts = try {
+            compose.listDrafts(s.account).filter { it.outboxId == null }.sortedByDescending { it.updatedMs }
+        } catch (e: com.example.croft.mail.compose.ComposeFailure) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Compose closed with [closed]: "Draft saved", or "Sending..." with Undo for the Undo window. Undo takes the send back
+     * (`undo_send`) and [onUndo] reopens compose on that draft with the cursor where it was; if the window has closed it says so.
+     * After Send, focus goes to the first row.
+     */
+    fun showNotice(closed: com.example.croft.mail.compose.ComposeClosed, onUndo: (com.example.croft.mail.compose.ComposeStart.Draft) -> Unit) {
+        when (closed) {
+            com.example.croft.mail.compose.ComposeClosed.DraftSaved -> { snackbar.show(texts.draftSaved); scope.launch { reloadLocalDrafts() } }
+            is com.example.croft.mail.compose.ComposeClosed.Sent -> {
+                focusFirstPending = true
+                val remaining = (closed.sendAtMs - session.clock()).coerceIn(MIN_UNDO_SNACK_MS, session.undoWindowMs + MIN_UNDO_SNACK_MS)
+                snackbar.show(texts.sending, texts.undo, stayMs = remaining) {
+                    scope.launch {
+                        val backend = session.compose
+                        try {
+                            val draftId = backend?.undoSend(closed.account, closed.outboxId) ?: return@launch
+                            onUndo(com.example.croft.mail.compose.ComposeStart.Draft(closed.account, draftId, closed.cursor))
+                        } catch (e: com.example.croft.mail.compose.ComposeFailure) {
+                            snackbar.show(if (e.problem == com.example.croft.mail.compose.ComposeProblem.TOO_LATE) texts.tooLateToUndo else texts.undoFailed)
+                        }
+                    }
+                }
+            }
+            else -> scope.launch { reloadLocalDrafts() }
+        }
+    }
 
     /** Mailbox menu: mark every unread message of [folder] (of every account's Inbox when [unified]) as read, with Undo. */
     fun markMailboxRead(folder: FolderInfo, unified: Boolean = false) {
@@ -1028,6 +1093,7 @@ class InboxController(
 
         private const val MAX_RESTORE_PAGES = 100
         private const val ALL_IDS_PAGE = 500
+        private const val MIN_UNDO_SNACK_MS = 1_000L
     }
 }
 

@@ -57,6 +57,9 @@ fun CroftApp(
     accountOps: AccountOps? = null,
     /** The app's own account order, names and colours; defaults when null. */
     accountPrefsStore: AccountPrefsStore? = null,
+    /** A `mailto:` link or a share that started or reached the app: compose opens on it. */
+    composeRequest: ComposeRequest? = null,
+    onComposeRequestHandled: () -> Unit = {},
 ) {
     // The session the Inbox shows: the one given, until the first account is added; then the one over the core.
     var active by remember(session) { mutableStateOf(session) }
@@ -98,6 +101,8 @@ fun CroftApp(
                     onboarding = onboarding,
                     onAccountReady = { onboarding?.let { active = it.openSession() } },
                     accountOps = accountOps,
+                    composeRequest = composeRequest,
+                    onComposeRequestHandled = onComposeRequestHandled,
                     accountPrefs = prefsNow,
                     onAccountPrefsChange = { next -> accountPrefs = next; scope.launch { accountPrefsStore?.set(next) } },
                     // The removal path waits for this: the entries of a removed account are gone from the stored prefs when it returns.

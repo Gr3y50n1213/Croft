@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- S23 Compose -->
+    <string name="compose_title">New message</string>
+    <string name="compose_close">Close</string>
+    <string name="compose_more">More options</string>
+    <string name="compose_attach">Attach a file</string>
+    <string name="compose_attach_photo">Attach a photo</string>
+    <string name="compose_from">From</string>
+    <string name="compose_from_description">From %1$s. Choose who to send as</string>
+    <string name="compose_to">To</string>
+    <string name="compose_cc">Cc</string>
+    <string name="compose_bcc">Bcc</string>
+    <string name="compose_subject">Subject</string>
+    <string name="compose_body">Message</string>
+    <string name="compose_show_cc_bcc">Add Cc and Bcc</string>
+    <string name="compose_recipient_hint">Type a name or address</string>
+    <string name="compose_suggestions">Suggestions</string>
+    <string name="compose_chip_move_to_to">Move to To</string>
+    <string name="compose_chip_move_to_cc">Move to Cc</string>
+    <string name="compose_chip_move_to_bcc">Move to Bcc</string>
+    <string name="compose_chip_remove">Remove</string>
+    <string name="compose_chip_fix">Remove, then type the address again</string>
+    <string name="compose_discard">Discard draft</string>
+    <string name="compose_discard_title">Discard this draft?</string>
+    <string name="compose_discard_message">The draft is deleted from this device and from the server.</string>
+    <string name="compose_discard_confirm">Discard</string>
+    <string name="compose_account_locked">Attachments stay with the account they were added to. Remove them to send from another account.</string>
+    <string name="compose_quote_missing">The original message is not on this device yet, so it is not quoted.</string>
+    <string name="compose_locked">This message is waiting in the Outbox. Open it from there to change it.</string>
+    <string name="compose_schedule_later">Schedule send is not available yet.</string>
+    <string name="compose_failed_to_open">This draft could not be opened.</string>
+
+    <!-- The quiet line about saving -->
+    <string name="compose_status_saved">Saved</string>
+    <string name="compose_status_device">Saved on this device</string>
+    <string name="compose_status_waiting">Waiting for connection</string>
+    <string name="compose_status_failed">Could not save on this device</string>
+
+    <!-- Snackbars after compose closes -->
+    <string name="compose_snack_draft_saved">Draft saved</string>
+    <string name="compose_snack_sending">Sending…</string>
+    <string name="compose_snack_too_late">Too late to undo. The message is in the Outbox.</string>
+    <string name="compose_snack_undo_failed">Could not take the message back.</string>
+
+    <!-- Send problems the button cannot show -->
+    <string name="compose_error_cannot_send">This account cannot send mail. Check its server settings.</string>
+    <string name="compose_error_in_outbox">This message is already in the Outbox.</string>
+    <string name="compose_error_generic">The message could not be sent. Try again.</string>
+
+    <!-- Attachments -->
+    <string name="attachment_over_limit_text">Over the %1$d MB limit</string>
+    <string name="attachment_adding">Adding a file</string>
+    <string name="attachment_remove">Remove %1$s</string>
+    <string name="attachment_error_too_large">That file is over the %1$d MB limit and was not attached.</string>
+    <string name="attachment_error_too_many">Too many attachments.</string>
+    <string name="attachment_error_total">The attachments together are too large.</string>
+    <string name="attachment_error_unreadable">That file could not be read.</string>
+    <string name="attachment_error_failed">The file could not be attached.</string>
+
+    <!-- Questions before sending -->
+    <string name="compose_empty_title">Send without subject or text?</string>
+    <string name="compose_empty_message">The message has no subject and no text.</string>
+    <string name="compose_empty_confirm">Send anyway</string>
+
+    <!-- S24 Encryption check -->
+    <plurals name="encryption_title">
+        <item quantity="one">One recipient has no key</item>
+        <item quantity="other">%1$d recipients have no key</item>
+    </plurals>
+    <string name="encryption_row_no_key">No key found. This message would not be encrypted.</string>
+    <string name="encryption_message">Encryption is required, so Croft will not send this unless you choose to.</string>
+    <string name="encryption_send_unencrypted">Send unencrypted</string>
+    <string name="encryption_cancel">Cancel</string>
+
+    <!-- S26 Outbox -->
+    <string name="outbox_title">Outbox</string>
+    <string name="outbox_back">Back</string>
+    <string name="outbox_empty_title">Nothing is waiting to be sent</string>
+    <string name="outbox_empty_message">Messages you send wait here until they are on their way.</string>
+    <string name="outbox_loading">Loading the Outbox</string>
+    <string name="outbox_state_queued">Queued</string>
+    <string name="outbox_state_sending">Sending</string>
+    <string name="outbox_state_failed">Failed</string>
+    <string name="outbox_no_subject">(no subject)</string>
+    <plurals name="outbox_recipients">
+        <item quantity="one">To %1$d recipient</item>
+        <item quantity="other">To %1$d recipients</item>
+    </plurals>
+    <string name="outbox_row_description">%1$s. %2$s. %3$s</string>
+    <string name="outbox_retry">Retry</string>
+    <string name="outbox_edit">Edit</string>
+    <string name="outbox_discard">Discard</string>
+    <string name="outbox_waiting">Waiting to be sent</string>
+    <string name="outbox_sending_now">Sending now</string>
+    <string name="outbox_maybe_title">This message may already have been sent</string>
+    <string name="outbox_maybe_message">Look in your Sent folder first. Sending it again can deliver it twice.</string>
+    <string name="outbox_maybe_confirm">Retry anyway</string>
+    <string name="outbox_discard_title">Discard this message?</string>
+    <string name="outbox_discard_message">It will not be sent, and its draft is deleted.</string>
+    <string name="outbox_problem_wrong_state">It is being sent right now.</string>
+    <string name="outbox_problem_generic">That did not work. Try again.</string>
+    <string name="outbox_reason_may_not_have_been_sent">May not have been sent. Check Sent before trying again.</string>
+    <string name="outbox_reason_sender_refused">The server refused the sender address.</string>
+    <string name="outbox_reason_recipient_refused">The server refused a recipient address.</string>
+    <string name="outbox_reason_message_refused">The server refused the message.</string>
+    <string name="outbox_reason_too_large">The message is larger than the server accepts.</string>
+    <string name="outbox_reason_server_limits">The server cannot take this message.</string>
+    <string name="outbox_reason_trying_again">Could not reach the server. Trying again.</string>
+    <string name="outbox_reason_gave_up">Could not reach the server after several tries.</string>
+    <string name="outbox_reason_needs_sign_in">Sign in again to send this message.</string>
+    <string name="outbox_reason_internal">Something went wrong inside Croft.</string>
+    <string name="outbox_reason_other">The message could not be sent.</string>
+
+    <!-- Drafts on this device (the Drafts folder) -->
+    <string name="drafts_local_title">Drafts on this device</string>
+    <string name="drafts_local_no_subject">(no subject)</string>
+    <string name="drafts_local_row">%1$s. Draft. %2$s</string>
+    <string name="drafts_local_not_sent">Draft</string>
+</resources>

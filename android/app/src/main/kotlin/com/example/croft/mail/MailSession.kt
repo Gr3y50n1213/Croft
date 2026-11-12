@@ -5,6 +5,10 @@
 package com.example.croft.mail
 
 import com.example.croft.design.CroftTokens
+import com.example.croft.mail.compose.ComposeBackend
+import com.example.croft.mail.compose.CursorMemory
+import com.example.croft.mail.compose.EncryptionPolicy
+import com.example.croft.mail.compose.NoEncryptionPolicy
 import java.time.ZoneId
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -38,6 +42,12 @@ class MailSession(
      * Inbox is gone from the running app: "Try with sample mail" is the core's own sample account (`AccountInfo.is_demo`).
      */
     val coreUnavailable: Boolean = false,
+    /** The compose calls (S23, S26): the core's drafts, attachments, send and Outbox. Null where there is no core (tests of other screens): compose then closes at once. */
+    val compose: ComposeBackend? = null,
+    /** S24: asked before every send. The default says "not required"; tests and screenshots give a fake. */
+    val encryptionPolicy: EncryptionPolicy = NoEncryptionPolicy,
+    /** Where the cursor was in each draft of this session, for Undo. In memory only. */
+    val cursors: CursorMemory = CursorMemory(),
 ) {
     private val cache = HashMap<String, CachedList>()
 

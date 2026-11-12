@@ -48,6 +48,11 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 ## Companion (phase 2)
 - **Real passkeys and identity providers are untested (T24, T25).** The Companion's sign-in was tested with a software passkey and a fake OIDC provider only. To try on a real host: passkeys on a phone, a computer and a security key; OIDC against your own Authelia, Authentik, Keycloak or Entra ID (README, "Signing in through your identity provider").
 - **An identity provider with a private certificate authority (T25 review):** the Companion trusts the public roots only; a home-lab provider signed by its own CA cannot be used yet. A setting for an extra CA file is a later task if needed.
+- **The push gateway needs the owner (T29), before the Play build has push:** a Firebase project for the app (its real application
+  id), a service account key for it with permission to send through FCM, and a host for the gateway with a public https address
+  (`gateway/README.md`). Real delivery through FCM is untested until then. T34 should register phones with their Companion's VAPID
+  key (bound endpoints), and consider `Urgency: high` for new mail (the Companion sends `normal`, which FCM may delay on a sleeping
+  phone).
 - **Push to a push service on the Companion's own network (T28):** push endpoints reach public addresses only, so a self-hosted ntfy
   that resolves only to a private address (split-horizon DNS, a LAN-only install) gets no pings. If owners need it, add a separate
   `push_allowed_networks` setting (never shared with `mail_allowed_networks`). Real push services (Mozilla, Google and Apple for browsers;

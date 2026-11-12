@@ -77,6 +77,7 @@ pub fn is_loopback_http(url: &str) -> bool {
 async fn send(
     method: &'static str,
     url: &str,
+    authorization: Option<&str>,
     content_type: Option<&str>,
     body: &[u8],
     max_answer: usize,
@@ -89,7 +90,7 @@ async fn send(
     let req = HttpRequest {
         method,
         url: &url,
-        authorization: None,
+        authorization,
         content_type,
         body,
         max_response: max_answer,
@@ -111,15 +112,22 @@ async fn send(
 
 /// `GET url`, reading at most `max_answer` bytes of the answer.
 pub async fn get(url: &str, max_answer: usize) -> Result<Answer, FetchError> {
-    send("GET", url, None, &[], max_answer).await
+    send("GET", url, None, None, &[], max_answer).await
 }
 
-/// `POST url` with a form body (`application/x-www-form-urlencoded`), reading at most
-/// `max_answer` bytes of the answer.
-pub async fn post_form(url: &str, form: &str, max_answer: usize) -> Result<Answer, FetchError> {
+/// `POST url` with a form body (`application/x-www-form-urlencoded`) and, when given, an
+/// `Authorization` header (HTTP Basic client authentication), reading at most `max_answer` bytes
+/// of the answer. The header is never logged.
+pub async fn post_form(
+    url: &str,
+    form: &str,
+    authorization: Option<&str>,
+    max_answer: usize,
+) -> Result<Answer, FetchError> {
     send(
         "POST",
         url,
+        authorization,
         Some("application/x-www-form-urlencoded"),
         form.as_bytes(),
         max_answer,

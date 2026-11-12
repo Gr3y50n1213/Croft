@@ -16,5 +16,23 @@ pub mod enrol_page;
 pub mod http;
 pub mod jwt;
 pub mod limits;
+pub mod oidc;
+pub mod oidc_store;
 pub mod store;
 pub mod totp;
+
+#[cfg(test)]
+mod tests {
+    /// The core's patched crates must be the ones built (the stock async-imap logs protocol lines,
+    /// which can hold passwords): a patched crate has no `source` in the lock file.
+    #[test]
+    fn the_core_patches_are_in_force() {
+        let lock = include_str!("../Cargo.lock");
+        let entry = lock
+            .split("[[package]]")
+            .find(|p| p.contains("name = \"async-imap\""))
+            .unwrap_or_default();
+        assert!(!entry.is_empty(), "async-imap is not in the lock file");
+        assert!(!entry.contains("source ="), "the stock async-imap is built");
+    }
+}

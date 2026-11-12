@@ -56,6 +56,7 @@ pub struct Auth {
     limits: Mutex<Limits>,
     trusted_proxies: Vec<IpAddr>,
     clock: Clock,
+    oidc: Option<Arc<crate::oidc::Provider>>,
 }
 
 impl std::fmt::Debug for Auth {
@@ -98,7 +99,14 @@ impl Auth {
             limits: Mutex::new(Limits::default()),
             trusted_proxies: trusted_proxies.iter().map(IpAddr::to_canonical).collect(),
             clock,
+            oidc: None,
         })
+    }
+
+    /// The same, with sign-in through an OpenID Connect provider (T25).
+    pub fn with_oidc(mut self, provider: crate::oidc::Provider) -> Self {
+        self.oidc = Some(Arc::new(provider));
+        self
     }
 
     /// The system clock.
@@ -192,6 +200,8 @@ pub enum ApiError {
     Conflict,
     /// Something failed on the server (no detail is given).
     Server,
+    /// An outside service (the OIDC provider) could not be reached; try later.
+    Unavailable,
 }
 
 impl From<StoreError> for ApiError {
@@ -232,6 +242,7 @@ impl IntoResponse for ApiError {
             }
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
             Self::Server => (StatusCode::INTERNAL_SERVER_ERROR, "server"),
+            Self::Unavailable => (StatusCode::BAD_GATEWAY, "unavailable"),
         };
         let mut res = (status, Json(json!({ "error": code }))).into_response();
         if status == StatusCode::UNAUTHORIZED {
@@ -483,6 +494,44 @@ pub fn routes() -> Vec<Route> {
             post(admin_enable),
         ),
         route(Method::GET, "/api/admin/audit", A, get(admin_audit)),
+        route(Method::GET, "/api/oidc", P, get(oidc_api::info)),
+        route(
+            Method::GET,
+            "/api/sign-in/oidc/start",
+            P,
+            get(oidc_api::sign_in_start),
+        ),
+        route(Method::GET, "/oidc/callback", P, get(oidc_api::callback)),
+        route(
+            Method::POST,
+            "/api/sign-in/oidc/exchange",
+            P,
+            post(oidc_api::exchange),
+        ),
+        route(
+            Method::POST,
+            "/api/oidc/link/start",
+            F,
+            post(oidc_api::link_start),
+        ),
+        route(
+            Method::POST,
+            "/api/oidc/link/finish",
+            F,
+            post(oidc_api::link_finish),
+        ),
+        route(
+            Method::DELETE,
+            "/api/oidc/link",
+            F,
+            delete(oidc_api::unlink),
+        ),
+        route(
+            Method::POST,
+            "/api/admin/users/{id}/oidc/unlink",
+            A,
+            post(oidc_api::admin_unlink),
+        ),
     ]
 }
 
@@ -1136,6 +1185,13 @@ async fn admin_audit(State(app): State<App>, Admin(_): Admin) -> ApiResult {
     Ok(audit_json(&entries))
 }
 
+#[path = "oidc_api.rs"]
+mod oidc_api;
+
 #[cfg(test)]
 #[path = "api_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "oidc_tests.rs"]
+mod oidc_tests;

@@ -1024,6 +1024,12 @@ async fn every_route_checks_who_calls_and_no_user_reaches_another_users_data() {
         StatusCode::NOT_FOUND
     );
     covered.insert(("DELETE".to_owned(), "/api/sessions/{id}"));
+    let p = format!("/api/admin/users/{}/oidc/unlink", b.id);
+    assert_eq!(
+        h.status(Method::POST, &p, Some(&a_t.access)).await,
+        StatusCode::FORBIDDEN
+    );
+    covered.insert(("POST".to_owned(), "/api/admin/users/{id}/oidc/unlink"));
     for action in ["disable", "enable"] {
         let p = format!("/api/admin/users/{}/{action}", b.id);
         assert_eq!(

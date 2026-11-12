@@ -40,6 +40,17 @@ fn run(args: &[String]) -> Result<String, CliError> {
         api::Auth::system_clock(),
     )
     .map_err(|e| CliError::Serve(e.to_string()))?;
+    let auth = match &config.oidc {
+        Some(settings) => {
+            let secret = croft_companion::config::load_secret_file(&settings.client_secret_file)?;
+            auth.with_oidc(croft_companion::oidc::Provider::new(
+                settings.clone(),
+                secret,
+                &config.public_url,
+            ))
+        }
+        None => auth,
+    };
     let runtime = tokio::runtime::Runtime::new().map_err(|e| CliError::Serve(e.to_string()))?;
     runtime
         .block_on(http::serve(&config.listen, http::App::new(store, auth)))

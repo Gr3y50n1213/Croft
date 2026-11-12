@@ -5,6 +5,8 @@
 #   docker build -f companion/Dockerfile -t croft-companion .
 FROM rust:1-slim-bookworm AS build
 WORKDIR /src
+# The Companion uses the core's protocol crate (and its patched async-imap) by path.
+COPY core/ core/
 COPY companion/ companion/
 RUN cd companion && cargo build --release --locked
 

@@ -88,6 +88,11 @@ enum KeyMaterial {
 }
 
 impl Jwk {
+    /// The key's id, if it has one.
+    pub fn kid(&self) -> Option<&str> {
+        self.kid.as_deref()
+    }
+
     fn fits(&self, alg: Alg) -> bool {
         let type_fits = matches!(
             (&self.key, alg),

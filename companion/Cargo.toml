@@ -12,6 +12,20 @@ license = "AGPL-3.0-or-later"
 publish = false
 description = "The Croft Companion server"
 
+# Test only (T31): `croft-test-mail`, the core's in-process IMAP server for the web app's end-to-end
+# tests. Never in the Docker image (built without features).
+[features]
+test-mail = ["croft-ffi/test-server"]
+
+[[bin]]
+name = "croft-companion"
+path = "src/main.rs"
+
+[[bin]]
+name = "croft-test-mail"
+path = "src/bin/test_mail.rs"
+required-features = ["test-mail"]
+
 [dependencies]
 croft-protocols = { path = "../core/protocols" }
 # T26: the core itself, one per user, over a SQLCipher database (linked against the system's OpenSSL).

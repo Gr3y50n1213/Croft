@@ -19,7 +19,7 @@ export class Companion {
   #env: NodeJS.ProcessEnv;
   #proc: ChildProcess | null = null;
 
-  private constructor(port: number) {
+    private constructor(port: number, extra: NodeJS.ProcessEnv = {}) {
     this.#dir = mkdtempSync(join(tmpdir(), 'croft-e2e-'));
     this.url = `http://localhost:${port}`;
     this.#env = {
@@ -28,12 +28,14 @@ export class Companion {
       CROFT_COMPANION_PUBLIC_URL: this.url,
       CROFT_COMPANION_DATA_DIR: join(this.#dir, 'data'),
       CROFT_COMPANION_MASTER_KEY_FILE: join(this.#dir, 'keys', 'master.key'),
-      CROFT_COMPANION_WEB_DIR: resolve('build')
+            CROFT_COMPANION_WEB_DIR: resolve('build'),
+      ...extra
     };
   }
 
-  static async start(): Promise<Companion> {
-    const c = new Companion(await freePort());
+  /** `extra`: more settings, such as `CROFT_COMPANION_MAIL_ALLOWED_NETWORKS` for a mail server here. */
+  static async start(extra: NodeJS.ProcessEnv = {}): Promise<Companion> {
+    const c = new Companion(await freePort(), extra);
     c.cli('init');
     c.#proc = spawn(BIN, ['serve'], { env: c.#env, stdio: ['ignore', 'ignore', 'inherit'] });
     for (let i = 0; i < 100; i++) {
@@ -120,4 +122,63 @@ export function watchForErrors(page: Page): string[] {
   });
   page.on('pageerror', (e) => errors.push(String(e)));
   return errors;
+}
+
+const MAIL_BIN = process.env['CROFT_TEST_MAIL_BIN'] ?? resolve('../companion/target/debug/croft-test-mail');
+
+/** The core's IMAP test server (`croft-test-mail`, test only) with `count` messages. */
+export class TestMail {
+  readonly host: string;
+  readonly port: number;
+  readonly username: string;
+  readonly password: string;
+  readonly fingerprint: string;
+  #proc: ChildProcess;
+
+  private constructor(proc: ChildProcess, info: Record<string, string | number>) {
+    this.#proc = proc;
+    this.host = String(info['host']);
+    this.port = Number(info['port']);
+    this.username = String(info['username']);
+    this.password = String(info['password']);
+    this.fingerprint = String(info['fingerprint']);
+  }
+
+  static start(count = 30): Promise<TestMail> {
+    const proc = spawn(MAIL_BIN, [String(count)], { stdio: ['pipe', 'pipe', 'inherit'] });
+    return new Promise((ok, fail) => {
+      let out = '';
+      proc.stdout!.on('data', (d: Buffer) => {
+        out += d.toString();
+        const line = out.split('\n')[0];
+        if (out.includes('\n') && line) ok(new TestMail(proc, JSON.parse(line)));
+      });
+      proc.on('exit', () => fail(new Error('croft-test-mail stopped')));
+    });
+  }
+
+  stop(): void {
+    this.#proc.stdin?.end();
+    this.#proc.kill('SIGTERM');
+  }
+}
+
+/** Adds the test server's account to the signed-in user of `page` (through the API, as the phone app does). */
+export async function addAccount(page: Page, mail: TestMail): Promise<void> {
+  const status = await page.evaluate(async (m) => {
+    // The web app keeps its access token to itself: take a fresh one through the cookie.
+    const r = await fetch('/api/web/refresh', { method: 'POST', headers: { 'x-croft-web': '1' } });
+    const { access_token } = await r.json();
+    const add = await fetch('/api/accounts', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${access_token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        discovered: { email: 'alice@example.test', imap: { host: m.host, port: m.port, security: 'tls', username: m.username } },
+        password: m.password,
+        pin: m.fingerprint
+      })
+    });
+    return `${add.status} ${await add.text()}`;
+  }, { host: mail.host, port: mail.port, username: mail.username, password: mail.password, fingerprint: mail.fingerprint });
+  if (!status.startsWith('200')) throw new Error(`adding the account: ${status}`);
 }

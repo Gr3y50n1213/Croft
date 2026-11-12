@@ -5,6 +5,36 @@ unverified, the next step.
 
 ---
 
+## T31a: The web inbox, W01 (12 November 2026)
+
+**Status:** draft pull request #56 on `task/t31` (CI green before the review fixes, run 43327566934); an independent review focused
+on the reading pane: 1 high, 3 medium, 1 low, all fixed with end-to-end tests (DECISIONS). Merged with the pull request that
+carries this entry.
+
+**What was built** (`web/`, on the Companion's JMAP API of T27):
+- **A JMAP client** (`src/lib/jmap`): the session, batched calls with result references, folders, pages, bodies, changes.
+- **W01**: the sidebar (folders by role with unread counts, other folders, accounts), the list (50 at a time with more on scroll,
+  unread and starred marks, checkboxes, hover quick actions from the swipe settings, trackpad two-finger swipes through the swipe
+  machine of T30b with its numbers from the tokens), the reading pane (sanitised HTML in a sandboxed frame, or text; opening marks
+  read), a toolbar, a folder picker, the snackbar with Undo, the hint bar and `?`.
+- **Actions** (`src/lib/mail`): archive, delete (to Trash; for good in Trash), spam, move, read, unread, star; optimistic, with
+  Undo cancelling the core's queued operation; the same set from the toolbar, the hover buttons, the keyboard and a swipe.
+- **Keyboard**: the table of `docs/UX.md` as a pure interpreter (`g` sequences, never while typing).
+- **Tests**: `croft-test-mail` (test only) runs the core's IMAP test server for the end-to-end tests; CI builds it.
+
+**Checks.** 68 web unit tests (the JMAP client's neighbours: keys, actions; the client, PKCE, the swipe port). Playwright against a
+real Companion with 30 messages on the test server: the folders and Inbox, opening an email (body shown, marked read), the
+keyboard (move, open, archive, Undo with `z`, star, `?`), hover delete with Undo, an archive arriving in Archive, a trackpad swipe
+marking read and back, and `axe-core` with no violation on W01 (it found a missing `main`, a missing `h1` and a contrast failure,
+all fixed). After the review: an HTML email (with a script, an event handler, a remote image and a form) opens in its frame and
+does nothing to the app; the pane's toolbar acts on the email shown; the snackbar's Undo undoes its own action; deleting from
+Trash asks first. 15 Playwright tests in all, each with a Companion and a mailbox of its own; 69 web unit tests. No CSP violation
+or script error. `svelte-check` and clippy (also with `test-mail`) are clean.
+
+**Not verified here:** real mail servers through the web app, Safari and Firefox, a real trackpad's wheel events.
+
+---
+
 ## T30b: The swipe machine in TypeScript (12 November 2026)
 
 **Status:** its own pull request after T30a. Not security-sensitive (pure UI logic), so no independent review.

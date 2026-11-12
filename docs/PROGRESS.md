@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T23: Companion foundation (12 November 2026)
 
-**Status:** draft pull request #36 on `task/t23` (CI); independent review done, fixes included. Phase 2 begins; the plan is `docs/tasks/PHASE-2.md`.
+**Status:** merged to main (pull request #37; CI green, run 43272022586); independent review done, fixes included. Phase 2 begins; the plan is `docs/tasks/PHASE-2.md`.
 
 **What was built.** `companion/`, a Cargo workspace of its own (AGPL-3.0-or-later): settings (TOML plus environment variables, unknown
 keys refused, an https public address), the master key file (created with mode 0600, refused when others can read it, never

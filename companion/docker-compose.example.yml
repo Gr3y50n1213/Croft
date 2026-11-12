@@ -3,6 +3,7 @@
 #
 # An example only: copy it, set your own address, and put a TLS reverse proxy in front.
 # First run:   docker compose run --rm companion init
+#              docker compose run --rm companion user add --name admin --admin   (prints an enrolment link)
 # Then:        docker compose up -d
 services:
   companion:
@@ -14,6 +15,9 @@ services:
       CROFT_COMPANION_PUBLIC_URL: "https://mail.example.org"
       # The master key is on its own volume (/keys, the image's default), never next to the data.
       # Back it up separately from the data.
+      # The reverse proxy's address as the container sees it (with a proxy on the host and the port
+      # published as below, Docker's gateway, often 172.17.0.1): only its X-Forwarded-For is believed.
+      # CROFT_COMPANION_TRUSTED_PROXIES: "172.17.0.1"
     volumes:
       - companion-data:/data
       - companion-keys:/keys

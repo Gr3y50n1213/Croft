@@ -8,14 +8,15 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasAnyDescendant
-import androidx.compose.ui.test.hasScrollToNodeAction
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.performTextInput
 import com.example.croft.CroftTheme
 import com.example.croft.mail.search.FilterChip
@@ -59,6 +60,15 @@ class SearchScreenTest {
 
     private fun waitFor(tag: String) = rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().isNotEmpty() }
 
+    /** Waits for [cond]; on a timeout the failure says what the controller and the backend saw. */
+    private fun waitOrExplain(c: SearchController, backend: FakeSearchBackend, cond: () -> Boolean) {
+        try {
+            rule.waitUntil(20_000, cond)
+        } catch (e: Throwable) {
+            throw AssertionError("state=${c.state.value.copy(hits = emptyList())} hits=${c.state.value.hits.size} calls=${backend.calls}", e)
+        }
+    }
+
     private fun back() {
         rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
         rule.waitForIdle()
@@ -95,10 +105,9 @@ class SearchScreenTest {
         rule.onNodeWithTag(SearchTags.chip(FilterChip.ATTACHMENT)).performClick()
         rule.waitForIdle()
         assertTrue(c.state.value.query, FilterChip.ATTACHMENT.isOn(c.state.value.query) && FilterChip.UNREAD.isOn(c.state.value.query))
-        // The account chips come after the filter chips: scroll the row to the one for account 2 before tapping it.
-        rule.onNode(hasScrollToNodeAction() and hasAnyDescendant(hasTestTag(SearchTags.scope(2)))).performScrollToNode(hasTestTag(SearchTags.scope(2)))
-        rule.onNodeWithTag(SearchTags.scope(2)).performClick()
-        rule.waitUntil(20_000) { backend.calls.any { it.startsWith("local:2:") } }
+        // The account chips come after the filter chips, past the edge of a narrow screen: their click action, not a tap at a position.
+        rule.onNodeWithTag(SearchTags.scope(2)).performSemanticsAction(SemanticsActions.OnClick)
+        waitOrExplain(c, backend) { backend.calls.any { it.startsWith("local:2:") } }
     }
 
     @Test
@@ -117,7 +126,7 @@ class SearchScreenTest {
     @Test
     fun offlineShowsTheLocalResultsAndTheLine_andNoResultsOffersSearchServer() {
         val backend = FakeSearchBackend(server = ServerSearchResult(emptyList(), offline = true))
-        show(backend)
+        val c = show(backend)
         rule.onNodeWithTag(SearchTags.FIELD).performTextInput("lunch")
         waitFor(SearchTags.result(1))
         rule.waitUntil(10_000) { rule.onAllNodes(hasText("Can't reach the server. Showing results from this device.")).fetchSemanticsNodes().isNotEmpty() }
@@ -126,8 +135,9 @@ class SearchScreenTest {
         rule.onNodeWithText("No results for “lunch nothing”").assertExists()
         rule.waitForIdle()
         val before = backend.calls.count { it == "server:null:lunch nothing" }
-        rule.onNodeWithTag(SearchTags.SERVER_BUTTON).assertExists().performClick()
-        rule.waitUntil(20_000) { backend.calls.count { it == "server:null:lunch nothing" } > before }
+        rule.onNodeWithTag(SearchTags.SERVER_BUTTON, useUnmergedTree = true).assertExists()
+        rule.onNode(hasClickAction() and hasAnyDescendant(hasText("Search server"))).performSemanticsAction(SemanticsActions.OnClick)
+        waitOrExplain(c, backend) { backend.calls.count { it == "server:null:lunch nothing" } > before }
     }
 
     @Test

@@ -24,7 +24,7 @@ or credentials is reachable through another user, and a stolen database reveals 
   new secret the same way; `sign_in_needed` marks the account. Nothing in the mail database or the logs holds a credential.
 - **API** (full sessions only, every call scoped to the caller):
   - `POST /api/accounts/discover` (`{email}`) → the core's discovery result.
-  - `POST /api/accounts/verify` (`{discovered, password, accept_pin?}`) → ok, or the core's `VerifyFailure` (wrong password, a
+  - `POST /api/accounts/verify` (`{discovered, password, pin?}`) → ok, or the core's `VerifyFailure` (wrong password, a
     certificate to confirm with its fingerprint, unreachable).
   - `POST /api/accounts` (the same, with a display name) → the new account (the password is sealed only after the core accepts it).
   - `GET /api/accounts` → the caller's accounts (id, address, kind, state); `DELETE /api/accounts/{id}` → removes it and its sealed

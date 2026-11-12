@@ -419,3 +419,255 @@ async fn bad_settings_and_oauth_only_providers_are_refused() {
         )
     );
 }
+
+// ---- Regression tests for the independent review's findings ----
+
+fn h_with_max(max: usize) -> H {
+    let dir = tempfile::tempdir().unwrap();
+    let master = Key::generate().unwrap();
+    let store = Store::in_memory().unwrap();
+    store.check_master_key(&master).unwrap();
+    let auth = Auth::new(ORIGIN, master.clone(), Vec::new(), Auth::system_clock()).unwrap();
+    let app = App::new(store, auth)
+        .with_mail(MailCores::new(dir.path().to_path_buf()).with_max_accounts(max));
+    H {
+        router: router(app.clone()),
+        app,
+        master,
+        _dir: dir,
+    }
+}
+
+/// M1: two first uses at once opened two engines on one database.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_uses_open_one_core() {
+    let h = h();
+    let (ann, _) = h.user("ann");
+    let mut joins = Vec::new();
+    for _ in 0..8 {
+        let mail = h.app.mail.clone().unwrap();
+        let store = h.app.store.clone();
+        let master = h.master.clone();
+        joins.push(tokio::task::spawn_blocking(move || {
+            Arc::as_ptr(&mail.core(&store, &master, ann).unwrap()) as usize
+        }));
+    }
+    let mut ptrs = Vec::new();
+    for j in joins {
+        ptrs.push(j.await.unwrap());
+    }
+    ptrs.dedup();
+    assert_eq!(ptrs.len(), 1, "several cores were opened");
+}
+
+/// M3: an add with a wrong password was kept (and replayed at every start); one user could add
+/// any number of accounts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_add_checks_the_password_and_the_number_of_accounts_is_capped() {
+    let h = h_with_max(1);
+    let (_, t) = h.user("ann");
+    let server = start_server(1, ANN_PW).await;
+    let fp = server.certificate_fingerprint();
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/accounts",
+            &t,
+            Some(json!({"discovered": discovered("ann@example.test", &server), "password": "made-up-wrong", "pin": fp})),
+        )
+        .await;
+    assert_eq!(
+        (s, v["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("wrong_password"))
+    );
+    assert!(list(&h, &t).await.is_empty());
+    add(&h, &t, "ann@example.test", &server, ANN_PW).await;
+    // A second address is over the limit; signing the same one in again is not.
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/accounts",
+            &t,
+            Some(json!({"discovered": discovered("ann2@example.test", &server), "password": ANN_PW, "pin": fp})),
+        )
+        .await;
+    assert_eq!(
+        (s, v["reason"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("too_many_accounts"))
+    );
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/accounts",
+            &t,
+            Some(json!({"discovered": discovered("ann@example.test", &server), "password": ANN_PW, "pin": fp})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["updated"], true);
+    stop(server).await;
+}
+
+/// M2: when the new password of an account signed in again could not be stored, the whole
+/// account (and its mail) was removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_store_on_signing_in_again_keeps_the_account() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(1, ANN_PW).await;
+    let fp = server.certificate_fingerprint();
+    add(&h, &t, "ann@example.test", &server, ANN_PW).await;
+    h.store()
+        .conn
+        .execute_batch("ALTER TABLE mail_credential RENAME TO hidden_for_the_test")
+        .unwrap();
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/accounts",
+            &t,
+            Some(json!({"discovered": discovered("ann@example.test", &server), "password": ANN_PW, "pin": fp})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR);
+    h.store()
+        .conn
+        .execute_batch("ALTER TABLE hidden_for_the_test RENAME TO mail_credential")
+        .unwrap();
+    assert_eq!(list(&h, &t).await.len(), 1, "the account was removed");
+    stop(server).await;
+}
+
+/// A disabled user's core stops, and is not opened again while they are disabled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_disabled_users_core_stops_and_stays_stopped() {
+    let h = h();
+    let (ann, t) = h.user("ann");
+    let root = h
+        .store()
+        .add_user(&h.master, "root", Role::Admin)
+        .unwrap()
+        .id;
+    let root_t = h
+        .store()
+        .start_session(root, "test", false, crate::store::now_ms())
+        .unwrap()
+        .access
+        .to_string();
+    let server = start_server(1, ANN_PW).await;
+    add(&h, &t, "ann@example.test", &server, ANN_PW).await;
+    let mail = h.app.mail.clone().unwrap();
+    assert!(mail.open_core(ann).is_some());
+    let (s, _) = h
+        .call(
+            Method::POST,
+            &format!("/api/admin/users/{ann}/disable"),
+            &root_t,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(mail.open_core(ann).is_none());
+    let (store, master) = (h.app.store.clone(), h.master.clone());
+    let m = mail.clone();
+    let reopened = tokio::task::spawn_blocking(move || m.core(&store, &master, ann).is_ok())
+        .await
+        .unwrap();
+    assert!(!reopened);
+    let app = h.app.clone();
+    tokio::task::spawn_blocking(move || app.open_all_mail())
+        .await
+        .unwrap();
+    assert!(mail.open_core(ann).is_none());
+    stop(server).await;
+}
+
+/// The mail database opened with its key (and its WAL) holds no password; a wrong master key
+/// opens neither the passwords nor the mail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_decrypted_mail_database_holds_no_password_and_a_wrong_master_key_opens_nothing() {
+    let h = h();
+    let (ann, t) = h.user("ann");
+    let server = start_server(2, ANN_PW).await;
+    add(&h, &t, "ann@example.test", &server, ANN_PW).await;
+    let path = h.app.mail.clone().unwrap().database(ann);
+    let key = h
+        .store()
+        .data_key(&h.master, ann)
+        .unwrap()
+        .derive(crate::mail::MAIL_DB_KEY);
+    let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
+        .unwrap();
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(tables.iter().any(|t| t == "account"), "{tables:?}");
+    for table in &tables {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+        let n = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            for i in 0..n {
+                if let rusqlite::types::ValueRef::Text(b) | rusqlite::types::ValueRef::Blob(b) =
+                    row.get_ref(i).unwrap()
+                {
+                    assert!(
+                        !b.windows(ANN_PW.len()).any(|w| w == ANN_PW.as_bytes()),
+                        "{table}"
+                    );
+                }
+            }
+        }
+    }
+    drop(conn);
+    let wal = path.with_extension("db-wal");
+    if let Ok(bytes) = std::fs::read(&wal) {
+        assert!(!bytes.windows(ANN_PW.len()).any(|w| w == ANN_PW.as_bytes()));
+    }
+    // A wrong master key: the data key does not open, so neither does anything behind it.
+    let wrong = Key::generate().unwrap();
+    assert!(h.store().mail_credential(&wrong, ann, 1).is_err());
+    let mail = h.app.mail.clone().unwrap();
+    tokio::task::spawn_blocking(move || mail.close(ann))
+        .await
+        .unwrap();
+    let (mail, store) = (h.app.mail.clone().unwrap(), h.app.store.clone());
+    let opened = tokio::task::spawn_blocking(move || mail.core(&store, &wrong, ann).is_ok())
+        .await
+        .unwrap();
+    assert!(!opened);
+    stop(server).await;
+}
+
+/// A JMAP account (the core's JMAP test server, plain http on this machine) is added the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_jmap_account_is_added_and_listed() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = tokio::task::spawn_blocking(croft_ffi::TestJmapServer::start)
+        .await
+        .unwrap();
+    // With no IMAP settings, the JMAP login is the address: the test server's login.
+    let email = server.username();
+    let d = json!({"email": email, "jmap": server.session_url(), "source": "jmap_well_known"});
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/accounts",
+            &t,
+            Some(json!({"discovered": d, "password": server.password()})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let accounts = list(&h, &t).await;
+    assert_eq!(accounts.len(), 1);
+    tokio::task::spawn_blocking(move || drop(server))
+        .await
+        .unwrap();
+}

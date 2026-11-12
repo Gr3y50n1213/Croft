@@ -40,7 +40,9 @@ A TOML file (`--config FILE`) and environment variables; the variable wins.
 
 `mail_allowed_networks` lists private networks a mail server may be on, such as `192.168.1.0/24` or your Docker network: the Companion
 refuses to connect to its own machine and to private, link-local and similar addresses unless they are listed here, so nobody can use
-"their mail server" to reach other services on your network.
+"their mail server" to reach other services on your network. Your OIDC provider (which you configure, not your users) is not limited
+by it. Public addresses that lead back into your network (your own public address through the router, a cloud provider's special
+public addresses) are not recognised as internal: keep such services behind their own sign-in.
 
 `public_url` must use a domain name (passkeys do not work with an IP address) and is the address passkeys are bound to: changing it
 later means everyone enrols again. `trusted_proxies` lists the reverse proxy's own addresses (as the Companion sees them, for example
@@ -117,7 +119,8 @@ Each user adds their own mail accounts (IMAP and SMTP, or JMAP, with a password)
 with the same Rust core the phones use. Each user's mail lives in a database of its own (`/data/users/<id>/mail.db`), encrypted with a
 key derived from that user's data key; each account's password is sealed with the same data key. Without the master key, neither can be
 read. Gmail and Outlook accounts that need OAuth cannot be added through the Companion yet (an app password works where the provider
-allows one).
+allows one). Each user can have up to 20 accounts; an account is added only after its server accepted the password, and a password the
+server later refuses is not tried again until the user gives a new one.
 
 Each user with mail runs a small sync engine of its own (two threads): fine for a household or a small company.
 
@@ -149,4 +152,4 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `GET /api/oidc`, `GET /api/sign-in/oidc/start?app_challenge&app_redirect`, `GET /oidc/callback`, `POST /api/sign-in/oidc/exchange` (`{"code", "verifier"}`) | anyone |
 | `POST /api/oidc/link/start`, `/api/oidc/link/finish`, `DELETE /api/oidc/link` | signed in |
 | `POST /api/admin/users/{id}/oidc/unlink` | admins |
-| `POST /api/accounts/discover` (`{"email"}`), `/api/accounts/verify` and `POST /api/accounts` (`{"discovered", "password", "pin"?}`), `GET /api/accounts`, `DELETE /api/accounts/{id}` | signed in |
+| `POST /api/accounts/discover` (`{"email"}`), `/api/accounts/verify` and `POST /api/accounts` (`{"discovered", "password", "pin"?}`), `GET /api/accounts`, `DELETE /api/accounts/{id}` | signed in (not a recovery sign-in); 30 a minute per user |

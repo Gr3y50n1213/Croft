@@ -190,6 +190,26 @@ pub async fn post_form(
     .await
 }
 
+/// `POST url` with a JSON body and an `Authorization` header, to an address the server's admin
+/// configured (T29: the push gateway's FCM endpoint), reading at most `max_answer` bytes of the
+/// answer. The header and body are never logged.
+pub async fn post_json(
+    url: &str,
+    authorization: &str,
+    json: &[u8],
+    max_answer: usize,
+) -> Result<Answer, FetchError> {
+    send(
+        "POST",
+        url,
+        Some(authorization),
+        Some("application/json"),
+        json,
+        max_answer,
+    )
+    .await
+}
+
 /// Whether `url` can be delivered to as a push endpoint: an absolute `https` URL this client
 /// reads (the same parser that sends).
 pub fn is_push_url(url: &str) -> bool {

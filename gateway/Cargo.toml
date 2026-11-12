@@ -1,0 +1,53 @@
+# The Croft push gateway (T29): forwards the Companions' Web Push messages, already encrypted for the
+# device, to Google's FCM for the Play build. AGPL-3.0-or-later (LICENSES.md); never shipped in an app.
+# Its own workspace, like the Companion's: it uses the core's HTTPS client by path.
+[workspace]
+
+[package]
+name = "croft-push-gateway"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "The Croft push gateway (Web Push to FCM)"
+
+[dependencies]
+croft-protocols = { path = "../core/protocols" }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+base64 = "0.22.1"
+hyper = { version = "1.12", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "http1", "service"] }
+ring = "0.17.14"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+toml = "1.2.1"
+tower = { version = "0.5.3", features = ["util"] }
+zeroize = { version = "1.9.1", features = ["serde"] }
+
+# The core's patched crate applies only inside its own workspace; the gateway names it again. Do not
+# remove without reading core/vendor/async-imap/CROFT-PATCHES.md (the stock crate logs protocol lines).
+# `the_core_patch_is_in_force` checks the lock file.
+[patch.crates-io]
+async-imap = { path = "../core/vendor/async-imap" }
+
+[dev-dependencies]
+http-body-util = "0.1.3"
+# A made-up service account key for the tests (ring cannot make RSA keys).
+rsa = "0.9.8"
+rand = "0.8.5"
+axum = { version = "0.8.9", default-features = false, features = ["form"] }
+
+# RSA key generation is slow unoptimised (tests only).
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "deny"
+unwrap_used = "warn"
+expect_used = "warn"

@@ -1,8 +1,8 @@
 {
  "version": 1,
  "inputs": {
-  "cargoLockSha256": "e129f7e6aad3a211f6ba808438701dd36a73425d90580c904375cf4d931bbd6e",
-  "libsCatalogSha256": "9d9a1ddedca679350073cd37b2b888f157b68dd3efa4ab6950b8456f1ca1a383"
+  "cargoLockSha256": "29b60a172744a2afcc25b034b725fc4f81a3dc1838510a4ac7c3a821a8a0c78e",
+  "libsCatalogSha256": "6f7b8a482bef67f3e42dedc476ee949b99a3e2e3b3244e1ab1688451e334a95b"
  },
  "entries": [
   {
@@ -62,6 +62,12 @@
   {
    "name": "androidx.autofill:autofill",
    "version": "1.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.browser:browser",
+   "version": "1.9.0",
    "licence": "Apache-2.0",
    "origin": "Android"
   },
@@ -673,13 +679,13 @@
   },
   {
    "name": "async-channel",
-   "version": "1.9.0",
+   "version": "2.5.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "async-channel",
-   "version": "2.5.0",
+   "version": "1.9.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -925,13 +931,13 @@
   },
   {
    "name": "event-listener",
-   "version": "5.4.2",
+   "version": "2.5.3",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "event-listener",
-   "version": "2.5.3",
+   "version": "5.4.2",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -1027,13 +1033,13 @@
   },
   {
    "name": "getrandom",
-   "version": "0.4.3",
+   "version": "0.2.17",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "getrandom",
-   "version": "0.2.17",
+   "version": "0.4.3",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

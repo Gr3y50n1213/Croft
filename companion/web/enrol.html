@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Set up your Croft Companion sign-in</title>
+<link rel="stylesheet" href="/enrol.css">
+<script src="/enrol.js" defer></script>
+</head>
+<body>
+<main>
+  <h1>Set up your sign-in</h1>
+
+  <section id="step-passkey">
+    <p>This link sets up how you sign in to this Croft Companion. It works once and for 24 hours.</p>
+    <p>First, make a <strong>passkey</strong>: your phone, computer or security key will ask for your
+      fingerprint, face, PIN or screen lock. Nothing you type here leaves your device.</p>
+    <p id="who" hidden></p>
+    <button id="make-passkey" type="button" disabled>Make a passkey</button>
+    <p id="status" role="status"></p>
+  </section>
+
+  <section id="step-backup" hidden>
+    <h2>Your passkey is ready</h2>
+    <p>Now set up a backup, for a device that cannot use your passkey. <strong>This is shown only
+      once.</strong></p>
+
+    <h3>1. Authenticator app</h3>
+    <p>Scan this code with an authenticator app, or type the key in by hand.</p>
+    <canvas id="qr" width="232" height="232" aria-label="QR code of your authenticator key"></canvas>
+    <p>Key: <code id="secret"></code></p>
+
+    <h3>2. Recovery codes</h3>
+    <p>Each code works once. Keep them somewhere safe and offline, such as on paper. Signing in with
+      the authenticator app also needs one of these, and then asks you to make a new passkey.</p>
+    <ol id="codes"></ol>
+
+    <p>You can close this page and sign in from the Croft app.</p>
+  </section>
+</main>
+</body>
+</html>

@@ -12,7 +12,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::crypto::{self, CryptoError, Key, MASTER_CHECK_AAD};
 
 /// The migrations, in order. `PRAGMA user_version` is how many have run.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_sign_in.sql"),
+];
 
 /// The plaintext of the master key check value.
 const MASTER_CHECK: &[u8] = b"croft-companion master key";
@@ -30,6 +33,14 @@ pub enum StoreError {
     NameTaken,
     /// No such user.
     NoSuchUser,
+    /// The row already exists (a passkey registered twice).
+    Conflict,
+    /// The last passkey cannot be removed.
+    LastPasskey,
+    /// A stored row does not read back (damaged data).
+    Damaged,
+    /// A login name must be 1 to 64 letters, digits, `.`, `_` or `-`.
+    BadName,
 }
 
 impl std::fmt::Display for StoreError {
@@ -40,6 +51,12 @@ impl std::fmt::Display for StoreError {
             Self::TooNew => f.write_str("the database was written by a newer Companion"),
             Self::NameTaken => f.write_str("that name is taken"),
             Self::NoSuchUser => f.write_str("no such user"),
+            Self::Conflict => f.write_str("that already exists"),
+            Self::LastPasskey => f.write_str("the last passkey cannot be removed"),
+            Self::Damaged => f.write_str("stored data is damaged"),
+            Self::BadName => f.write_str(
+                "a login name must be 1 to 64 letters, digits, dots, underscores or dashes",
+            ),
         }
     }
 }
@@ -68,14 +85,14 @@ pub enum Role {
 }
 
 impl Role {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Admin => "admin",
             Self::User => "user",
         }
     }
 
-    fn parse(s: &str) -> Self {
+    pub(crate) fn parse(s: &str) -> Self {
         if s == "admin" {
             Self::Admin
         } else {
@@ -101,7 +118,8 @@ pub struct User {
 
 /// The database.
 pub struct Store {
-    conn: Connection,
+    /// The connection. The sign-in module (`auth`) keeps its own queries scoped by user.
+    pub(crate) conn: Connection,
 }
 
 impl std::fmt::Debug for Store {
@@ -183,6 +201,14 @@ impl Store {
     /// undercut by a key wrapped under the old master key. Audited.
     pub fn add_user(&mut self, master: &Key, name: &str, role: Role) -> Result<User, StoreError> {
         let name = name.trim();
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return Err(StoreError::BadName);
+        }
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

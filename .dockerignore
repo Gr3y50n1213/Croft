@@ -1,0 +1,4 @@
+# Build contexts (the Companion image builds from the repository root): never send build output or git data.
+**/target
+.git
+android/

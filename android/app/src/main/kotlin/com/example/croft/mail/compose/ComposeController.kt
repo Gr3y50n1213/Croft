@@ -439,7 +439,12 @@ class ComposeController(
         val warn = addresses.isNotEmpty() && policy.check(s.account, addresses) is EncryptionDecision.RequiredKeysMissing
         val id = s.draftId
         if (id == null) {
-            mutable.update { it.copy(sendState = SendState.NO_RECIPIENT, offlineOrSignIn = offline, encryptionWarning = warn) }
+            mutable.update {
+                it.copy(
+                    sendState = SendRules.beforeFirstSave(it.allRecipients, it.subject.isBlank(), it.body.isBlank(), it.attachmentsBusy > 0, warn, offline),
+                    offlineOrSignIn = offline, encryptionWarning = warn,
+                )
+            }
             return
         }
         try {

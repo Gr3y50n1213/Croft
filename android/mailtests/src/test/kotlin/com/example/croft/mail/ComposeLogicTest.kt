@@ -151,6 +151,27 @@ class ComposeLogicTest {
         assertEquals("image/png", AttachmentIntake.cleanType("image/png"))
     }
 
+    // ---- the Drafts folder: the server's copy of a local draft ----
+
+    private fun row(subject: String, snippet: String, account: Long = 1) = MessageRowData(
+        id = 1, account = account, folder = 5, senderName = null, senderAddress = null, subject = subject, snippet = snippet,
+        dateMs = 0, seen = true, flagged = false, hasAttachments = false,
+    )
+
+    private fun draft(subject: String, snippet: String, account: Long = 1) = uniffi.croft_ffi.DraftSummary(7, account, subject, snippet, emptyList(), false, null, 0)
+
+    @Test
+    fun theServerCopyOfALocalDraftIsHidden_andNothingElseIs() {
+        val local = listOf(draft("Plans", "Let us meet at noon on Friday"))
+        val copy = row("Plans", "Let us meet at noon on Friday and bring the files")
+        val other = row("Plans", "Something else entirely")
+        val otherSubject = row("Plans for May", "Let us meet at noon on Friday")
+        val otherAccount = row("Plans", "Let us meet at noon on Friday", account = 2)
+        assertEquals(listOf(other, otherSubject, otherAccount), com.example.croft.mail.compose.LocalDraftMatch.withoutCopies(listOf(copy, other, otherSubject, otherAccount), local))
+        assertEquals("no local drafts: every row stays", listOf(copy), com.example.croft.mail.compose.LocalDraftMatch.withoutCopies(listOf(copy), emptyList()))
+        assertTrue("whitespace does not matter", com.example.croft.mail.compose.LocalDraftMatch.isCopyOf(row("Plans", "Let  us meet\nat noon"), draft("Plans ", " Let us meet at noon")))
+    }
+
     @Test
     fun recipientFieldsAreThree() = assertEquals(3, RecipientField.entries.size)
 }

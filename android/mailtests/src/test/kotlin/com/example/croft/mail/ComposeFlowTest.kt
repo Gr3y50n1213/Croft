@@ -211,6 +211,24 @@ class ComposeFlowTest {
         assertEquals(SendState.EMPTY_CONFIRM, SendRules.stateOf(ok.copy(subjectEmpty = true, bodyEmpty = true)))
     }
 
+    @Test(timeout = 60_000)
+    fun aMailtoOrShareFill_hasItsSendButtonBeforeAnythingIsTypedOrSaved() {
+        val r = rig()
+        val ok = harness(r).open(ComposeStart.Fill(com.example.croft.mail.compose.ComposeFill(to = listOf("ann@example.org"), subject = "Hi", body = "Text"), r.account)).state.value
+        assertEquals(SendState.READY, ok.sendState)
+        assertNull("nothing stored until the person writes", ok.draftId)
+        val bad = harness(r).open(ComposeStart.Fill(com.example.croft.mail.compose.ComposeFill(to = listOf("ann@example.org", "nope")), r.account)).state.value
+        assertEquals(SendState.INVALID_RECIPIENT, bad.sendState)
+        val bare = harness(r).open(ComposeStart.Fill(com.example.croft.mail.compose.ComposeFill(to = listOf("ann@example.org")), r.account)).state.value
+        assertEquals(SendState.EMPTY_CONFIRM, bare.sendState)
+        assertEquals(emptyList<Any>(), r.run { r.compose.listDrafts(r.account) })
+        // Leaving it alone leaves nothing behind.
+        val c = harness(r).open(ComposeStart.Fill(com.example.croft.mail.compose.ComposeFill(to = listOf("ann@example.org"), subject = "Hi"), r.account))
+        r.run { c.back() }
+        assertEquals(ComposeClosed.Nothing, c.state.value.closed)
+        assertEquals(emptyList<Any>(), r.run { r.compose.listDrafts(r.account) })
+    }
+
     // ---- autosave survives a crash ----
 
     @Test(timeout = 90_000)

@@ -87,10 +87,12 @@ import com.example.croft.haptics.LocalHaptics
 import com.example.croft.mail.AccountId
 import com.example.croft.mail.MailEvent
 import com.example.croft.mail.MailSession
+import com.example.croft.mail.compose.AddressTools
 import com.example.croft.mail.compose.AttachmentError
 import com.example.croft.mail.compose.AttachmentIntake
 import com.example.croft.mail.compose.BodyCursor
 import com.example.croft.mail.compose.ComposeClosed
+import com.example.croft.mail.compose.CoreAddressTools
 import com.example.croft.mail.compose.ComposeController
 import com.example.croft.mail.compose.ComposeProblem
 import com.example.croft.mail.compose.ComposeStart
@@ -140,6 +142,8 @@ fun ComposeHost(
     start: ComposeStart,
     onClosed: (ComposeClosed) -> Unit,
     modifier: Modifier = Modifier,
+    /** Reading and checking addresses: the core's own functions; tests that must not load the native library give a stand-in. */
+    tools: AddressTools = CoreAddressTools,
 ) {
     val backend = session.compose
     if (backend == null) {
@@ -154,6 +158,7 @@ fun ComposeHost(
             scope = scope,
             accounts = { session.repository.listAccounts() },
             intake = AttachmentIntake(backend, ComposeFiles.directory(context)),
+            tools = tools,
             policy = session.encryptionPolicy,
             cursors = session.cursors,
             files = { ComposeFiles.resolve(context, it) },

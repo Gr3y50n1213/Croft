@@ -5,6 +5,24 @@ unverified, the next step.
 
 ---
 
+## T18d: compose and Outbox screens (12 November 2026)
+
+**Status:** draft pull request `task/t18d` (CI only; not merged). T18 Part B on Android: S23 Compose, S24 Encryption check (the policy seam), S26 Undo send and Outbox, on the core's compose calls (FFI API version stays 8). No Rust change. No new permission, no new library.
+
+**What was built:** (1) *Logic apart from the screens* (`mail/compose/`, plain Kotlin, compiled into `:mailtests`): `ComposeController` (From, To, Cc, Bcc chips through the core's `parse_recipients` and `is_valid_address`, autosave: device 1 s after typing stops, server 5 s after and at most every 20 s, and on pause; the Send button's table from `check_draft`; Back rules; Send with the questions in front of it), `AttachmentIntake`, `OutboxController`, `EncryptionPolicy`, `Mailto`, `FakeComposeBackend`. (2) *Screens:* S23 (From picker over every identity of every account, chips with a menu, Cc and Bcc behind a toggle, suggestions from `suggest_recipients` only, subject, plain-text body, attachment chips, a quiet "Saved / Saved on this device / Waiting for connection" line, Offline and Sign in banners), the S24 sheet, S26 (Queued, Sending with a progress ring, Failed with the reason from `outbox_reason_key`; Retry, Edit, Discard). (3) *Wiring:* FAB, the row's Reply action, `mailto:`/`SEND`/`SENDTO`/`SEND_MULTIPLE` intent filters on `MainActivity` (`singleTop`), Outbox in the drawer, "Draft saved" and the Undo snackbar on the Inbox (Undo calls `undo_send` and reopens compose on the draft with the cursor), focus to the first row after Send, local drafts at the top of a Drafts folder. (4) `Core.setAttachmentDirectory` is called right after `Core.open` on `cacheDir/compose-attach`, emptied at each start.
+
+**Entry points for S20 and S21:** `ComposeStart.Reply(account, messageId)`, `ReplyAll(...)`, `Forward(...)` passed to the navigation host's `openCompose`. See `android/README.md`, "Compose and the Outbox".
+
+**Attachments:** picker (system document picker or photo picker, no permission) gives a `content:` URI; the declared size is checked against `compose_limits().max_attachment_bytes` before anything is copied; the copy goes to `cacheDir/compose-attach/att-<random hex>`; `add_draft_attachment_file` reads it; the copy is deleted whatever the result.
+
+**Manifest check:** `check-release-manifest.py` now also checks the intent filters of an exported component against `actions` and `browsable-schemes` in the allowlist (new tests in `test_check_release_manifest.py`).
+
+**Checks that ran here:** `:mailtests:test` (all: the 21 earlier files plus `ComposeLogicTest`, `ComposeFlowTest`, `OutboxTest`) on the real core and the in-process IMAP server; `:app:compileDebugKotlin` and `:app:compileDebugUnitTestKotlin`; `python3 -m unittest discover -s tools`. **Not run here:** Robolectric and screenshot tests (Maven Central refuses this container); they run on CI.
+
+**Existing tests:** none deleted or weakened. `Rig` in `MailTestKit.kt` got an optional `smtp` flag (default off), so the earlier tests are unchanged. The Reply row action keeps its "comes later" snackbar when the screen is given no `onReply` (the existing `SwipeSemanticsTest` still sees it).
+
+**Gaps and choices:** (a) The Drafts folder list does not carry a Message-ID, so a server row is hidden only when it has the same subject and start of text as a local draft (`LocalDraftMatch`); a missed copy shows twice, never hides other mail. Local drafts are shown above the folder's list and open in compose; a server-only draft opens nothing yet (needs the reading calls). (b) Undo after the window: the core still takes back a message whose first send failed and is waiting to retry; the "too late" answer is the core's own and is tested in Rust. (c) Account switching in From starts a new draft in that account and is offered only while there is no attachment. (d) Schedule send (S25): long-press on Send says it is not available. (e) The attachment chip's tap removes the file (new optional `tapLabelOverride` on `AttachmentChip`). (f) Screenshots are not committed as goldens. (g) The "may have been sent" state could only be tested on the in-memory backend (the host library has no SMTP server); the Rust tests cover the core side. Unverified on a device: keyboard and IME behaviour, the system pickers, a real share.
+
 ## T18c: compose and sending in the core (11 November 2026)
 
 **Status:** draft pull request `task/t18c` (CI only; not merged). Part B of T18, core side only: no screens. **FFI API version 8** (T18a may also bump it; whoever merges second takes the next number).

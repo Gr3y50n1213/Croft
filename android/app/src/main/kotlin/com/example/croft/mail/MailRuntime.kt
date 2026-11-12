@@ -108,6 +108,7 @@ object MailRuntime {
      */
     fun afterErase(context: Context): Boolean {
         forgetCore()
+        try { ComposeFiles.directory(context.applicationContext).deleteRecursively() } catch (e: SecurityException) { /* cleared at the next start */ }
         return AppFiles.eraseMailFiles(context.applicationContext.noBackupFilesDir).isEmpty()
     }
 

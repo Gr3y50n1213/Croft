@@ -29,6 +29,27 @@ object SendRules {
         else -> SendState.READY
     }
 
+    /**
+     * The button before the first save, when the core has no draft to check yet (a `mailto:` link or a share filled the fields and the person has
+     * not typed): the same rows, from what the screen holds. The core's `check_draft` answers as soon as the draft exists.
+     */
+    fun beforeFirstSave(
+        recipients: List<RecipientChipData>,
+        subjectBlank: Boolean,
+        bodyBlank: Boolean,
+        uploading: Boolean = false,
+        encryptionWarning: Boolean = false,
+        offlineOrSignIn: Boolean = false,
+    ): SendState = when {
+        recipients.isEmpty() -> SendState.NO_RECIPIENT
+        recipients.any { !it.valid } -> SendState.INVALID_RECIPIENT
+        uploading -> SendState.UPLOADING
+        encryptionWarning -> SendState.ENCRYPTION_NO_KEY
+        subjectBlank && bodyBlank -> SendState.EMPTY_CONFIRM
+        offlineOrSignIn -> SendState.OFFLINE_OR_SIGN_IN
+        else -> SendState.READY
+    }
+
     /** Whether a tap on Send in [state] does nothing but explain. */
     fun isDisabled(state: SendState): Boolean = state == SendState.NO_RECIPIENT || state == SendState.INVALID_RECIPIENT || state == SendState.OVER_SIZE_LIMIT || state == SendState.SENDING
 

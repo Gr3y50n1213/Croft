@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use croft_protocols::{
     BackendError, BackendFuture, Capabilities, Credential, FlagChange, FolderStatus, ImapBackend,
     ImapConfig, MailBackend, MoveOutcome, RawMessage, RemoteFolder, RemoteHeader, RemoteSnapshot,
-    Uid,
+    SearchOutcome, ServerQuery, Uid,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -436,5 +436,13 @@ impl MailBackend for AccountBackend {
 
     fn fetch_body<'a>(&'a self, folder: &'a str, uid: Uid) -> BackendFuture<'a, RawMessage> {
         Box::pin(async move { self.current().await?.fetch_body(folder, uid).await })
+    }
+
+    fn search<'a>(
+        &'a self,
+        folder: &'a str,
+        query: &'a ServerQuery,
+    ) -> BackendFuture<'a, SearchOutcome> {
+        Box::pin(async move { self.current().await?.search(folder, query).await })
     }
 }

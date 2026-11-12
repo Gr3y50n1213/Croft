@@ -78,6 +78,25 @@ fn row(r: &Row<'_>) -> rusqlite::Result<MessageRow> {
     })
 }
 
+/// The rows of these message ids, in the given order. Ids not in `accounts`, unknown ones and
+/// rows hidden by a waiting move or delete are left out (search results use this).
+pub(crate) fn rows_for(
+    conn: &Connection,
+    accounts: &[i64],
+    ids: &[i64],
+) -> Result<Vec<MessageRow>, CoreError> {
+    let sql = format!("SELECT {COLUMNS} FROM message WHERE id = ?1 AND local_hidden = 0");
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let mut out = Vec::with_capacity(ids.len());
+    for &id in ids {
+        let found = stmt.query_map(params![id], row)?.next().transpose()?;
+        if let Some(r) = found.filter(|r| accounts.contains(&r.account)) {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
 /// Up to `limit` rows of one folder after the cursor, newest first.
 fn folder_rows(
     conn: &Connection,

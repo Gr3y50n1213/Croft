@@ -2,7 +2,7 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 9)
+## The surface (API version 10)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
@@ -14,13 +14,15 @@ and `discover_error_message_key` / `discover_error_default_message`.
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`
 - sync and network: `sync_now`, `set_network_available`
 - composing and sending (since version 8): drafts, `send`, `undo_send`, the Outbox actions, recipient suggestions, reply and forward fields, identities. Everything is in "Composing and sending" below.
+- search (since version 10, T19): `search_local` (instant, the device's index) and `search_server` (async, each
+  account's own server; hits the device lacked are stored as rows), with highlight ranges in UTF-16 units;
 - reading a message (since version 9, T18a): `open_conversation`, `load_body` (async), `save_attachment` (async),
   `allow_remote_content`, `trust_sender`, `untrust_sender`, `trusted_senders`; see "Reading a message". Their errors
   are `ReadError`
 
 Callback interfaces the app implements: `CredentialProvider` (`credential`, `sign_in_needed`) and `DiscoveryObserver` (`on_probe`).
 Every callback returns `Result<_, ProviderError>`; `ProviderError` has one fieldless variant, `Failed` (see "Callbacks").
-Errors: `CoreError`, `DiscoverError`, `VerifyFailure`, and `ComposeError` (since version 8) and `ReadError` (since version 9): fixed categories, no free text.
+Errors: `CoreError`, `DiscoverError`, `VerifyFailure`, `ComposeError` (since version 8), `ReadError` (since version 9) and `SearchFailure` (since version 10): fixed categories, no free text.
 
 ## Reading a message (version 9)
 Everything here lives in `src/reading.rs`; the parsing and the sanitiser are in `core/reader` (`croft-reader`).
@@ -299,3 +301,20 @@ cd core && cargo test -p croft-ffi
 cargo run -p croft-ffi --features cli --bin uniffi-bindgen -- --help   # same UniFFI version as the library
 ```
 The Android build (`android/`) runs cargo-ndk and the bindings generator; see `android/README.md`.
+
+## Searching (S27, S28)
+
+1. As the person types (after a 150 ms pause), call `search_local(account, query, limit)`: the device's index, instant,
+   offline too. `account` is `None` for all accounts. Results are `SearchHit`s: a normal `MessageRow` plus the matched
+   parts of its subject (`subject_ranges`) and, when the downloaded body matched, a short `snippet` with its own ranges.
+   Ranges are `[start, end)` in UTF-16 code units, so they apply directly to a Kotlin `String`.
+2. If `bodies_partial` is true, show "Searched headers and downloaded mail" and offer **Search server**.
+3. `search_server(account, query)` (async) asks each account's own server (never for the sample mailbox), stores the
+   headers of hits the device did not have, and returns them as hits. Merge them into the local list by `row.id`.
+   Cancel the call when the person types again; rows already stored stay. Problems are flags, never an exception:
+   `unsupported` (say the server cannot search), `offline`, `sign_in_needed`, `failed` (a banner; keep the local
+   results).
+4. The query language: words (prefix match), `"phrases"`, `from:`, `to:`, `subject:`, `is:unread`, `is:starred`,
+   `has:attachment`, `in:folder`, `before:YYYY-MM-DD`, `after:YYYY-MM-DD`. Unknown operators are searched as text.
+   The only error is `SearchFailure::BadDate`. `has:attachment` is applied on the device only. A word with non-ASCII
+   letters is not sent to an IMAP server (the answer is `unsupported`); JMAP servers take it.

@@ -44,7 +44,7 @@ pub struct LocalHit {
 
 /// The folder ids an `in:` value names in one account: a role (`inbox`, `sent`, `drafts`,
 /// `archive`, `trash`, `junk`/`spam`, `all`) or a folder's path or last path part, ignoring case.
-fn named_folders(conn: &Connection, account: i64, name: &str) -> Result<Vec<i64>> {
+pub fn named_folders(conn: &Connection, account: i64, name: &str) -> Result<Vec<i64>> {
     let want = name.to_lowercase();
     let role = match want.as_str() {
         "spam" => "junk",
@@ -191,4 +191,19 @@ pub fn search(
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// True when some message of these accounts has no stored body (its text was not searched).
+pub fn bodies_missing(conn: &Connection, accounts: &[i64]) -> Result<bool> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM message m
+                         WHERE m.account_id = ?1
+                           AND NOT EXISTS (SELECT 1 FROM message_body b WHERE b.message_id = m.id))",
+    )?;
+    for &a in accounts {
+        if stmt.query_row([a], |r| r.get::<_, bool>(0))? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

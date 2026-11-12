@@ -42,6 +42,7 @@ required-features = ["cli"]
 
 [dependencies]
 croft-engine = { path = "../engine" }
+croft-mail-core = { path = "../mail-core" }
 croft-protocols = { path = "../protocols" }
 croft-reader = { path = "../reader" }
 croft-storage = { path = "../storage" }

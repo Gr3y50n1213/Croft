@@ -52,7 +52,7 @@ pub fn verify(secret: &[u8], code: &str, now: u64, last_used: Option<u64>) -> Op
     let mut found = None;
     for step in [current.saturating_sub(1), current, current + 1] {
         let expected = format!("{:0width$}", code_at(secret, step), width = DIGITS as usize);
-        let same = ring::constant_time::verify_slices_are_equal(expected.as_bytes(), typed).is_ok();
+        let same = crate::crypto::ct_eq(expected.as_bytes(), typed);
         if same && last_used.is_none_or(|l| step > l) && found.is_none() {
             found = Some(step);
         }

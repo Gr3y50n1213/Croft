@@ -1,9 +1,10 @@
 // This Source Code Form is subject to the terms of the GNU Affero General Public License,
 // version 3 or later. See LICENSE-AGPL-3.0 at the repository root.
 
-//! The Companion's HTTP side (T23): `/healthz` and `/version` so far, with strict security headers
-//! on every answer, a request body limit and a time limit. Plain HTTP: TLS is the reverse proxy's
-//! job (see the README).
+//! The Companion's HTTP side (T23, T24): `/healthz`, `/version` and the sign-in API, with strict
+//! security headers on every answer, a request body limit and a time limit. The server loop limits
+//! open connections and how long a client may take to send its headers (slow clients). Plain HTTP:
+//! TLS is the reverse proxy's job (see the README).
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -16,34 +17,63 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 
+use crate::api::{self, Auth, Peer};
 use crate::store::Store;
 
 /// Largest request body accepted.
 pub const MAX_BODY: usize = 64 * 1024;
 /// Longest a request may take.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest a client may take to send a request's headers (also how long an idle kept-alive
+/// connection stays open).
+pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Connections served at once; more wait in the kernel's backlog.
+pub const MAX_CONNECTIONS: usize = 512;
+
+/// The server loop's limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerLimits {
+    /// See [`HEADER_READ_TIMEOUT`].
+    pub header_read_timeout: Duration,
+    /// See [`MAX_CONNECTIONS`].
+    pub max_connections: usize,
+}
+
+impl Default for ServerLimits {
+    fn default() -> Self {
+        Self {
+            header_read_timeout: HEADER_READ_TIMEOUT,
+            max_connections: MAX_CONNECTIONS,
+        }
+    }
+}
 
 /// What the handlers share.
 #[derive(Clone)]
 pub struct App {
-    store: Arc<Mutex<Store>>,
+    pub(crate) store: Arc<Mutex<Store>>,
+    pub(crate) auth: Arc<Auth>,
 }
 
 impl App {
-    /// The state over an open store.
-    pub fn new(store: Store) -> Self {
+    /// The state over an open store and the sign-in settings.
+    pub fn new(store: Store, auth: Auth) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            auth: Arc::new(auth),
         }
     }
 }
 
 /// The routes, with the headers, the body limit and the time limit around every one.
 pub fn router(app: App) -> Router {
-    Router::new()
+    let mut r = Router::new()
         .route("/healthz", get(healthz))
-        .route("/version", get(version))
-        .fallback(not_found)
+        .route("/version", get(version));
+    for route in api::routes() {
+        r = r.route(route.path, route.handler);
+    }
+    r.fallback(not_found)
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(guard))
         .with_state(app)
@@ -92,15 +122,18 @@ async fn guard(req: Request<Body>, next: Next) -> Response {
     let set = |h: &mut axum::http::HeaderMap, name: header::HeaderName, value: &'static str| {
         h.insert(name, HeaderValue::from_static(value));
     };
+    // A page that sets its own (the enrolment page) keeps it; everything else allows nothing.
+    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        set(
+            h,
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        );
+    }
     set(h, header::CACHE_CONTROL, "no-store");
     set(h, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     set(h, header::REFERRER_POLICY, "no-referrer");
     set(h, header::X_FRAME_OPTIONS, "DENY");
-    set(
-        h,
-        header::CONTENT_SECURITY_POLICY,
-        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-    );
     set(
         h,
         header::HeaderName::from_static("cross-origin-opener-policy"),
@@ -119,12 +152,62 @@ async fn guard(req: Request<Body>, next: Next) -> Response {
     res
 }
 
-/// Serves `app` on `listen` until SIGTERM or Ctrl-C, then lets requests in flight finish.
+/// Serves `app` on `listen` until SIGTERM or Ctrl-C, then lets requests in flight finish (for up
+/// to [`REQUEST_TIMEOUT`]). At most [`MAX_CONNECTIONS`] are served at once, and a client that does
+/// not send its headers within [`HEADER_READ_TIMEOUT`] is dropped.
 pub async fn serve(listen: &str, app: App) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
-    axum::serve(listener, router(app))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
+    serve_on(listener, app, ServerLimits::default(), shutdown_signal()).await
+}
+
+/// [`serve`] on a bound listener, with `limits`, until `shutdown` completes.
+pub async fn serve_on(
+    listener: tokio::net::TcpListener,
+    app: App,
+    limits: ServerLimits,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> std::io::Result<()> {
+    use hyper_util::rt::{TokioIo, TokioTimer};
+    use tower::ServiceExt;
+
+    let router = router(app);
+    let slots = Arc::new(tokio::sync::Semaphore::new(limits.max_connections));
+    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+    let mut shutdown = std::pin::pin!(shutdown);
+    loop {
+        let slot = tokio::select! {
+            s = slots.clone().acquire_owned() => s.map_err(std::io::Error::other)?,
+            () = &mut shutdown => break,
+        };
+        let (stream, peer) = tokio::select! {
+            r = listener.accept() => match r {
+                Ok(c) => c,
+                Err(_) => {
+                    // Out of file descriptors or a reset before accept: pause, never spin.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+            },
+            () = &mut shutdown => break,
+        };
+        let svc = router.clone();
+        let service = hyper::service::service_fn(move |mut req: Request<hyper::body::Incoming>| {
+            req.extensions_mut().insert(Peer(peer));
+            svc.clone().oneshot(req.map(Body::new))
+        });
+        let conn = hyper::server::conn::http1::Builder::new()
+            .timer(TokioTimer::new())
+            .header_read_timeout(limits.header_read_timeout)
+            .serve_connection(TokioIo::new(stream), service);
+        let conn = graceful.watch(conn);
+        tokio::spawn(async move {
+            let _ = conn.await;
+            drop(slot);
+        });
+    }
+    drop(listener);
+    let _ = tokio::time::timeout(REQUEST_TIMEOUT, graceful.shutdown()).await;
+    Ok(())
 }
 
 async fn shutdown_signal() {
@@ -147,14 +230,26 @@ async fn shutdown_signal() {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    fn app_state() -> App {
+        let store = Store::in_memory().unwrap();
+        let auth = Auth::new(
+            "https://companion.test",
+            crate::crypto::Key::generate().unwrap(),
+            Vec::new(),
+            Auth::system_clock(),
+        )
+        .unwrap();
+        App::new(store, auth)
+    }
+
     fn app() -> Router {
-        router(App::new(Store::in_memory().unwrap()))
+        router(app_state())
     }
 
     async fn call(req: Request<Body>) -> (StatusCode, axum::http::HeaderMap, String) {
@@ -193,12 +288,18 @@ mod tests {
     async fn the_healthcheck_command_asks_the_running_server() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
-        tokio::spawn(async move { axum::serve(listener, app()).await });
+        tokio::spawn(serve_on(
+            listener,
+            app_state(),
+            ServerLimits::default(),
+            std::future::pending(),
+        ));
         let config = crate::config::Config {
             listen: addr,
             public_url: "http://localhost".into(),
             data_dir: std::path::PathBuf::from("/nonexistent"),
             master_key_file: std::path::PathBuf::from("/nonexistent/key"),
+            trusted_proxies: Vec::new(),
         };
         let out = tokio::task::spawn_blocking(move || {
             crate::cli::run(&config, &crate::cli::Command::Healthcheck)
@@ -207,6 +308,78 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(out, "ok");
+    }
+
+    async fn start(limits: ServerLimits) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve_on(
+            listener,
+            app_state(),
+            limits,
+            std::future::pending(),
+        ));
+        addr
+    }
+
+    async fn get_healthz(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nhost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).await.unwrap();
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_client_that_does_not_send_its_headers_in_time_is_dropped() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let addr = start(ServerLimits {
+            header_read_timeout: Duration::from_millis(300),
+            max_connections: 4,
+        })
+        .await;
+        let mut slow = tokio::net::TcpStream::connect(addr).await.unwrap();
+        slow.write_all(b"GET /healthz HTTP/1.1\r\nhost:")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 256];
+        let n = tokio::time::timeout(Duration::from_secs(5), slow.read(&mut buf))
+            .await
+            .expect("the server closes the connection")
+            .unwrap_or(0);
+        // Closed, at most with an error status; never a 200.
+        assert!(!String::from_utf8_lossy(&buf[..n]).contains("200 OK"));
+        // A normal client is served.
+        let mut ok = tokio::net::TcpStream::connect(addr).await.unwrap();
+        assert!(get_healthz(&mut ok).await.starts_with("HTTP/1.1 200"));
+    }
+
+    #[tokio::test]
+    async fn connections_over_the_limit_wait_for_a_free_slot() {
+        let addr = start(ServerLimits {
+            header_read_timeout: Duration::from_millis(500),
+            max_connections: 2,
+        })
+        .await;
+        // Two idle connections take both slots.
+        let _a = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _b = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut third = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let waited = std::time::Instant::now();
+        let reply = tokio::time::timeout(Duration::from_secs(5), get_healthz(&mut third))
+            .await
+            .unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        // Served only once an idle connection timed out and freed its slot.
+        assert!(
+            waited.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            waited.elapsed()
+        );
     }
 
     #[tokio::test]

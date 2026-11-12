@@ -61,6 +61,7 @@ struct FileConfig {
     public_url: Option<String>,
     data_dir: Option<PathBuf>,
     master_key_file: Option<PathBuf>,
+    trusted_proxies: Option<Vec<String>>,
 }
 
 /// The settings in force.
@@ -74,6 +75,9 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// The master key file.
     pub master_key_file: PathBuf,
+    /// The reverse proxies whose `X-Forwarded-For` is believed (for the client address that rate
+    /// limits count by). Empty: the address of the connection itself.
+    pub trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 impl Config {
@@ -112,6 +116,22 @@ impl Config {
                 "listen must be an address and port, such as 0.0.0.0:8480",
             ));
         }
+        let proxies: Vec<String> = match env("CROFT_COMPANION_TRUSTED_PROXIES") {
+            Some(list) => list
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            None => file.trusted_proxies.unwrap_or_default(),
+        };
+        let trusted_proxies = proxies
+            .iter()
+            .map(|p| p.parse::<std::net::IpAddr>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| {
+                ConfigError::Invalid("trusted_proxies must be IP addresses, such as 172.18.0.2")
+            })?;
         if !public_url_is_ok(&public_url) {
             return Err(ConfigError::Invalid(
                 "public_url must start with https:// (plain http only for localhost)",
@@ -122,6 +142,7 @@ impl Config {
             public_url: public_url.trim_end_matches('/').to_owned(),
             data_dir,
             master_key_file,
+            trusted_proxies,
         })
     }
 
@@ -269,6 +290,33 @@ mod tests {
         let env = |n: &str| (n == "CROFT_COMPANION_LISTEN").then(|| "127.0.0.1:1234".to_owned());
         let c = Config::parse("public_url = \"https://x.example\"", &env).unwrap();
         assert_eq!(c.listen, "127.0.0.1:1234");
+        assert!(c.trusted_proxies.is_empty());
+    }
+
+    #[test]
+    fn trusted_proxies_are_addresses_from_the_file_or_the_environment() {
+        let c = Config::parse(
+            "public_url = \"https://x.example\"\ntrusted_proxies = [\"127.0.0.1\", \"::1\"]",
+            &no_env,
+        )
+        .unwrap();
+        assert_eq!(c.trusted_proxies.len(), 2);
+        let env = |n: &str| {
+            (n == "CROFT_COMPANION_TRUSTED_PROXIES").then(|| "172.18.0.2, 10.0.0.1".to_owned())
+        };
+        let c = Config::parse("public_url = \"https://x.example\"", &env).unwrap();
+        assert_eq!(
+            c.trusted_proxies,
+            vec![
+                "172.18.0.2".parse::<std::net::IpAddr>().unwrap(),
+                "10.0.0.1".parse().unwrap()
+            ]
+        );
+        assert!(Config::parse(
+            "public_url = \"https://x.example\"\ntrusted_proxies = [\"proxy.local\"]",
+            &no_env
+        )
+        .is_err());
     }
 
     #[test]

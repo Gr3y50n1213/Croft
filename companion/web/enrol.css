@@ -1,0 +1,29 @@
+/* This Source Code Form is subject to the terms of the GNU Affero General Public License,
+   version 3 or later. See LICENSE-AGPL-3.0 at the repository root. */
+:root {
+  color-scheme: light dark;
+  --fg: #1b1c1e;
+  --bg: #fbfbfc;
+  --muted: #5d6066;
+  --accent: #2f5fd0;
+  --on-accent: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e4e5e8; --bg: #141517; --muted: #a2a5ab; --accent: #8fb0ff; --on-accent: #0b1a3d; }
+}
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 36rem; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 1.6rem; margin: 0 0 16px; }
+h2 { font-size: 1.25rem; }
+h3 { font-size: 1.05rem; margin-top: 24px; }
+button {
+  font: inherit; padding: 12px 20px; min-height: 48px; border: 0; border-radius: 24px;
+  background: var(--accent); color: var(--on-accent); cursor: pointer;
+}
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }
+#status { color: var(--muted); min-height: 1.5em; }
+canvas { background: #fff; border-radius: 8px; max-width: 100%; }
+code { font: 15px/1.4 ui-monospace, monospace; word-break: break-all; }
+#codes { columns: 2; padding-left: 1.4em; }
+#codes li { margin: 4px 0; }

@@ -4,6 +4,18 @@
 -- T24: sign-in. Every token and code is stored only as a SHA-256 hash; the TOTP secret is sealed
 -- with the user's data key. Forward-only.
 
+-- Until when the user is locked after too many failed sign-ins.
+ALTER TABLE user ADD COLUMN locked_until_ms INTEGER;
+
+-- Who did it, when an admin acts on a user (`user_id` is the user acted on).
+ALTER TABLE audit_log ADD COLUMN actor_id INTEGER REFERENCES user(id) ON DELETE SET NULL;
+
+-- The WebAuthn user handle: random, so a passkey never carries the row id or the name.
+CREATE TABLE user_handle (
+    user_id INTEGER PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
+    handle  BLOB    NOT NULL UNIQUE
+);
+
 -- One-time enrolment links (from `user add` or an admin's "re-enrol").
 CREATE TABLE enrolment (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +62,8 @@ CREATE TABLE session (
     recovery     INTEGER NOT NULL DEFAULT 0 CHECK (recovery IN (0, 1))
 );
 
+CREATE INDEX session_user ON session(user_id);
+
 CREATE TABLE access_token (
     token_hash BLOB    PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
@@ -66,6 +80,8 @@ CREATE TABLE refresh_token (
 );
 
 -- Failed sign-ins, for the lockout (kept 15 minutes).
+CREATE INDEX refresh_token_session ON refresh_token(session_id);
+
 CREATE TABLE sign_in_failure (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,

@@ -198,6 +198,15 @@ pub fn open_value(
     data_key.open(&value_aad(user_id, context), sealed)
 }
 
+/// Compares two secrets in time that depends only on their lengths (never on where they differ).
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    std::hint::black_box(diff) == 0
+}
+
 /// The associated data of the master key check value (see the store).
 pub(crate) const MASTER_CHECK_AAD: &[u8] = b"croft-companion/master-check/v1";
 
@@ -205,6 +214,15 @@ pub(crate) const MASTER_CHECK_AAD: &[u8] = b"croft-companion/master-check/v1";
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ct_eq_compares_whole_values() {
+        assert!(ct_eq(b"", b""));
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"xbc"));
+        assert!(!ct_eq(b"abc", b"abcd"));
+    }
 
     #[test]
     fn a_sealed_value_opens_only_for_its_user_and_context() {

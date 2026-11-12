@@ -1094,6 +1094,8 @@ impl Core {
                 inner.demos().remove(&id);
                 inner.previous().remove(&id);
                 inner.hub.forget(id);
+                // The notification marker lives in the setting table, outside the account's rows.
+                let _ = inner.handle.forget_notified(id);
                 inner
                     .handle
                     .read(|db| accounts::delete(db.connection(), id))?;

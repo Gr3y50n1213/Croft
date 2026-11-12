@@ -2,7 +2,7 @@ UniFFI surface for Kotlin (and Swift later). The wasm-bindgen surface for the we
 
 Keep it small and versioned; every change here is reviewed by hand.
 
-## The surface (API version 10)
+## The surface (API version 11)
 Free functions: `croft_version()`, `ffi_api_version()` (**bump `FFI_API_VERSION` in `src/lib.rs` on any change**;
 the apps check it at start-up), and the text helpers `verify_failure_message_key` / `verify_failure_default_message`
 and `discover_error_message_key` / `discover_error_default_message`.
@@ -14,6 +14,8 @@ and `discover_error_message_key` / `discover_error_default_message`.
 - actions: `mark_seen`, `set_flagged`, `archive`, `trash`, `move_to`, `delete_forever`, `undo`, `set_undo_window_ms`
 - sync and network: `sync_now`, `set_network_available`
 - composing and sending (since version 8): drafts, `send`, `undo_send`, the Outbox actions, recipient suggestions, reply and forward fields, identities. Everything is in "Composing and sending" below.
+- background check (since version 11, T20): `sync_once` (async, one account within a deadline, returns the messages to
+  notify about) and `mark_notified` (after posting);
 - search (since version 10, T19): `search_local` (instant, the device's index) and `search_server` (async, each
   account's own server; hits the device lacked are stored as rows), with highlight ranges in UTF-16 units;
 - reading a message (since version 9, T18a): `open_conversation`, `load_body` (async), `save_attachment` (async),
@@ -318,3 +320,12 @@ The Android build (`android/`) runs cargo-ndk and the bindings generator; see `a
    `has:attachment`, `in:folder`, `before:YYYY-MM-DD`, `after:YYYY-MM-DD`. Unknown operators are searched as text.
    The only error is `SearchFailure::BadDate`. `has:attachment` is applied on the device only. A word with non-ASCII
    letters is not sent to an IMAP server (the answer is `unsupported`); JMAP servers take it.
+
+## The background check (T20)
+
+The WorkManager job calls `sync_once(account, deadline_ms)` for each enabled account in turn. It syncs, then returns
+`new_mail`: unread Inbox messages that arrived since the last notification, with sender and subject only. The first check
+of an account returns nothing (it sets a baseline, so mail already there never notifies), and so does the sample mailbox.
+Post a notification for each, then call `mark_notified(account, uids)`: until then they are offered again (a failed post
+is not lost). Flags: `timed_out` (the deadline passed; not a failure), `transient_failure` (ask WorkManager for a retry),
+`needs_sign_in` (nothing was asked of the server).

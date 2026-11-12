@@ -5,6 +5,18 @@ unverified, the next step.
 
 ---
 
+## T19: search (12 November 2026)
+
+**Status:** draft pull request `task/t19` (CI). **FFI API version 10.**
+
+**What was built:** (1) *Query language* (`croft_mail_core::search`): words (prefix), `"phrases"`, `from:`, `to:`, `subject:`, `is:unread`, `is:starred`, `has:attachment`, `in:`, `before:`, `after:`; the FTS5 text is only quoted strings, so no input raises an FTS error; the only error is a typed bad date. (2) *Local search* (`croft_storage::search`): bm25 with the subject first, then date, then id; scoped by account; Trash and Junk only with `in:`; matches marked for highlighting; a note when bodies were not all downloaded. (3) *Server search*: `MailBackend::search` for IMAP (`UID SEARCH` with quoted criteria; a refusal is "unsupported") and JMAP (`Email/query` AND filter); the engine stores headers of hits the device lacked, so every hit is a normal row. (4) *FFI*: `search_local`, `search_server` (flags for unsupported, offline, sign-in, failed), ranges in UTF-16 units; the sample mailbox searches on the device only. (5) *Android* S27 and S28: 150 ms pause, local results then the servers' merged by id, typing again cancels the server request, notes at the end of the list, recent searches with Undo and Clear (on the device only), filter and account chips, Back from results to S27 to the Inbox, highlighted matches in the row component.
+
+**Checks:** Rust: parser (every operator, hostile input), storage (ranking stability, account scoping, index triggers, body only once stored, every filter, hostile queries), IMAP in-process (sender, subject, body, flags, unsupported, non-ASCII), engine (stored hits, unsupported, offline), FFI (ranges, local, server bringing in a new message, sample mailbox), integration: GreenMail search passed here, Stalwart (JMAP) passed on CI. The FFI test found that the account wrapper did not forward `search` (every real account answered "unsupported"); fixed. JVM (`:mailtests`): 8 controller tests including the real core offline. Robolectric and screenshots (S27, S28, empty, offline; two widths, light and dark, font 1.0 and 2.0, one RTL) on CI.
+
+**Not done:** non-ASCII words are not sent to IMAP servers (no literal support yet); recent searches are one list for all accounts; perceived speed on a mailbox of tens of thousands of messages, keyboard and highlight legibility are unverified on a device.
+
+---
+
 ## T18b: conversation and message screens (12 November 2026)
 
 **Status:** draft pull request #22 on `task/t18b` (CI only; not merged). T18 Part A on Android: S20 Conversation and S21 Message,

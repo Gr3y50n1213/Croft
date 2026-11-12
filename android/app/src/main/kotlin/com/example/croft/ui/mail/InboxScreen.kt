@@ -120,6 +120,8 @@ fun InboxScreen(
     startSwitcherOpen: Boolean = false,
     onOpenMessage: (MessageId) -> Unit = {},
     onCompose: () -> Unit = {},
+    /** The search pill opens S27 (T19). Null: a note says search comes later (tests of the Inbox alone). */
+    onOpenSearch: (() -> Unit)? = null,
     /** "Add another account" of the switcher (S02); a note that it comes later shows when null (tests of the Inbox alone). */
     onAddAccount: (() -> Unit)? = null,
     /** "Manage accounts" of the switcher (S44); a note shows when null. */
@@ -193,7 +195,7 @@ fun InboxScreen(
         if (expanded) {
             Row(Modifier.fillMaxSize()) {
                 PermanentDrawerSheet(Modifier.width(DRAWER_WIDTH)) { drawerContent() }
-                InboxBody(controller, session, showMenu = false, showBottomBar = false, onMenu = {}, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, Modifier.weight(1f))
+                InboxBody(controller, session, showMenu = false, showBottomBar = false, onMenu = {}, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, onOpenSearch = onOpenSearch, Modifier.weight(1f))
             }
         } else {
             ModalNavigationDrawer(
@@ -201,7 +203,7 @@ fun InboxScreen(
                 drawerState = drawerState,
                 gesturesEnabled = drawerState.isOpen || !controller.isSelecting,
             ) {
-                InboxBody(controller, session, showMenu = true, showBottomBar = true, onMenu = { scope.launch { drawerState.open() } }, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, Modifier.fillMaxSize())
+                InboxBody(controller, session, showMenu = true, showBottomBar = true, onMenu = { scope.launch { drawerState.open() } }, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, onOpenSearch = onOpenSearch, Modifier.fillMaxSize())
             }
             BackHandler(enabled = drawerState.isOpen) { closeDrawer() }
         }
@@ -249,6 +251,7 @@ private fun InboxBody(
     onOpenMessage: (MessageId) -> Unit,
     onCompose: () -> Unit,
     onOpenDraft: ((AccountId, Long) -> Unit)?,
+    onOpenSearch: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -364,7 +367,7 @@ private fun InboxBody(
                     accountLabel = avatarAccount?.label ?: "",
                     accountStatusText = statusText,
                     onMenu = onMenu,
-                    onSearch = { controller.snackbar.show(laterMessage) },
+                    onSearch = { onOpenSearch?.invoke() ?: controller.snackbar.show(laterMessage) },
                     onAccount = onAccount,
                     showMenu = showMenu,
                 )
@@ -403,7 +406,7 @@ private fun InboxBody(
                     kind = emptyKind,
                     lastSynced = controller.lastSyncedMs?.let { formatTime(session, it, locale) },
                     onCompose = onCompose,
-                    onSearchServer = { controller.snackbar.show(laterMessage) },
+                    onSearchServer = { onOpenSearch?.invoke() ?: controller.snackbar.show(laterMessage) },
                 )
                 else -> {
                     val flat = settings.listStyle == ListStyle.FLAT

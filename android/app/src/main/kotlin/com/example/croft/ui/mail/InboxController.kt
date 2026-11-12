@@ -1044,6 +1044,15 @@ class InboxController(
         }
     }
 
+    /**
+     * The conversation (S20) closed after an action: shows [text] with Undo for the Undo window, and Undo cancels [ops]. [ops] null or
+     * empty: no Undo button (delete forever cannot be undone).
+     */
+    fun showConversationNotice(text: String, ops: List<OpId>?) {
+        if (ops.isNullOrEmpty()) { snackbar.show(text); return }
+        snackbar.show(text, texts.undo, stayMs = session.undoWindowMs) { scope.launch { session.rowActions.undo(ops) } }
+    }
+
     /** Mailbox menu: mark every unread message of [folder] (of every account's Inbox when [unified]) as read, with Undo. */
     fun markMailboxRead(folder: FolderInfo, unified: Boolean = false) {
         scope.launch {

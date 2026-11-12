@@ -28,6 +28,8 @@ import com.example.croft.mail.compose.ComposeClosed
 import com.example.croft.mail.compose.ComposeStart
 import com.example.croft.ui.compose.ComposeHost
 import com.example.croft.ui.compose.OutboxHost
+import com.example.croft.ui.reading.ConversationHost
+import com.example.croft.ui.reading.ConversationNotice
 import androidx.compose.runtime.LaunchedEffect
 import com.example.croft.swipe.SwipeSettings
 import com.example.croft.ui.swipe.SwipeSettingsFlow
@@ -99,6 +101,9 @@ enum class Route(val parent: Route?) {
 
     /** S26 Outbox, from the drawer. */
     OUTBOX(HOME),
+
+    /** S20 Conversation and S21 Message (the message is [CroftNavHost]'s `conversationId`): a tap on a row of any folder. Back returns to the list. */
+    CONVERSATION(HOME),
     ;
 
     /** How deep the screen is; going to a larger depth is "forward". */
@@ -147,10 +152,14 @@ fun CroftNavHost(
     // was open is in the Drafts folder (it was autosaved).
     var composeStart by remember { mutableStateOf<ComposeStart?>(null) }
     var composeReturn by remember { mutableStateOf(Route.HOME) }
+    // S20: the message that was opened, and what its actions leave for the Inbox to show once ("Archived", with Undo).
+    var conversationId by rememberSaveable { mutableStateOf(0L) }
+    var conversationNotice by remember { mutableStateOf<ConversationNotice?>(null) }
     var notice by remember { mutableStateOf<InboxNotice?>(null) }
     val openCompose: (ComposeStart) -> Unit = { start ->
         composeStart = start
-        composeReturn = if (route == Route.OUTBOX) Route.OUTBOX else Route.HOME
+        // Compose returns to where it was opened: the Outbox or the conversation (a reply), else the Inbox.
+        composeReturn = if (route == Route.OUTBOX || route == Route.CONVERSATION) route else Route.HOME
         route = Route.COMPOSE
     }
     if (route == Route.COMPOSE && composeStart == null) route = Route.HOME
@@ -174,7 +183,7 @@ fun CroftNavHost(
     }
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
     // Compose and the Outbox handle their own Back (compose saves first).
-    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX) { route = route.parent ?: Route.HOME }
+    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION) { route = route.parent ?: Route.HOME }
 
     // Removing an account: the account in the core first (its task stops, nothing new is sent), then its saved secret (`AccountOps.remove`),
     // then the app's own entries for it (folder choices, order, name, colour: the prefs are written and waited for), then a fresh session.
@@ -266,6 +275,17 @@ fun CroftNavHost(
                 onUndoSend = { openCompose(it) },
                 onOpenOutbox = if (session.compose != null) ({ route = Route.OUTBOX }) else null,
                 onOpenDraft = { account, draft -> openCompose(ComposeStart.Draft(account, draft)) },
+                onOpenMessage = { id -> conversationId = id; route = Route.CONVERSATION },
+                conversationNotice = conversationNotice,
+                onConversationNoticeShown = { conversationNotice = null },
+            )
+            Route.CONVERSATION -> ConversationHost(
+                session = session,
+                messageId = conversationId,
+                settings = mailSettings,
+                onBack = { route = Route.HOME },
+                onClosed = { notice -> conversationNotice = notice; route = Route.HOME },
+                onCompose = { openCompose(it) },
             )
             Route.COMPOSE -> composeStart?.let { start ->
                 ComposeHost(
@@ -312,7 +332,7 @@ fun CroftNavHost(
             Route.LICENCES -> LicencesScreen(onBack = { route = Route.ABOUT })
             Route.APPEARANCE -> AppearanceFlow(settings = settings, onChange = onSettingsChange, onBack = { route = Route.SETTINGS })
             Route.SWIPE_ACTIONS -> SwipeSettingsFlow(settings = swipeSettings, onChange = onSwipeSettingsChange, onBack = { route = Route.SETTINGS })
-            Route.INBOX_SETTINGS -> InboxSettingsScreen(settings = mailSettings, onChange = onMailSettingsChange, onBack = { route = Route.SETTINGS })
+            Route.INBOX_SETTINGS -> InboxSettingsScreen(settings = mailSettings, onChange = onMailSettingsChange, onBack = { route = Route.SETTINGS }, session = session)
             Route.GALLERY -> DebugGallery.Screen(onBack = { route = Route.SETTINGS })
         }
     }

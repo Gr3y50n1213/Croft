@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- T18b: S20 Conversation and S21 Message. Every text a person sees is here; the sample texts of the tests are made up. -->
+
+    <!-- S20: action bar, header, messages -->
+    <string name="reading_back">Back</string>
+    <string name="reading_action_archive">Archive</string>
+    <string name="reading_action_delete">Delete</string>
+    <string name="reading_action_delete_forever">Delete forever</string>
+    <string name="reading_action_mark_unread">Mark as unread</string>
+    <string name="reading_action_more">More options</string>
+    <string name="reading_menu_move">Move to</string>
+    <string name="reading_menu_spam">Report spam</string>
+    <string name="reading_menu_not_spam">Not spam</string>
+    <string name="reading_no_subject">(no subject)</string>
+    <string name="reading_star">Star</string>
+    <string name="reading_unstar">Remove star</string>
+    <string name="reading_reply">Reply</string>
+    <string name="reading_reply_all">Reply all</string>
+    <string name="reading_forward">Forward</string>
+    <string name="reading_reply_to">Reply to %1$s</string>
+    <string name="reading_you">You</string>
+    <string name="reading_to_line">to %1$s, %2$s</string>
+    <string name="reading_to_me">me</string>
+    <string name="reading_message_collapsed">Collapsed</string>
+    <string name="reading_message_expanded">Expanded</string>
+    <string name="reading_expand">Expand message</string>
+    <string name="reading_collapse">Collapse message</string>
+    <string name="reading_message_description">%1$s, %2$s</string>
+    <string name="reading_loading">Loading message</string>
+    <string name="reading_cannot_open_title">This message can\'t be shown</string>
+    <string name="reading_delete_forever_title">Delete this message forever?</string>
+    <string name="reading_delete_forever_message">It will be removed from your mail server and cannot be restored.</string>
+    <string name="reading_flagged">Starred</string>
+
+    <!-- S21: body -->
+    <string name="reading_body_loading">Loading the message</string>
+    <string name="reading_body_empty">This message has no text.</string>
+    <string name="reading_plain_note">This message is shown as plain text</string>
+    <string name="reading_not_downloaded">Not downloaded yet. It will load when you\'re online.</string>
+    <string name="reading_body_failed">The message could not be loaded.</string>
+    <string name="reading_retry">Retry</string>
+
+    <!-- S21: the Remote images blocked bar -->
+    <plurals name="reading_remote_blocked">
+        <item quantity="one">Remote images blocked: %1$d picture</item>
+        <item quantity="other">Remote images blocked: %1$d pictures</item>
+    </plurals>
+    <string name="reading_remote_show">Show images</string>
+    <string name="reading_remote_always">Always for this sender</string>
+    <string name="reading_remote_never">Remote images are turned off in your settings, so none are loaded.</string>
+    <string name="reading_remote_dismiss">Dismiss</string>
+    <string name="reading_remote_trusted_snack">Images will show for this sender from now on.</string>
+
+    <!-- S21: attachments -->
+    <string name="reading_attachments">Attachments</string>
+    <string name="reading_attachment_blocked_label">Blocked for your safety</string>
+    <string name="reading_attachment_blocked_tap">Why it is blocked</string>
+    <string name="reading_attachment_blocked_snack">Croft never opens programs or scripts from email.</string>
+    <string name="reading_attachment_no_app">No app on this phone can open this file.</string>
+    <string name="reading_attachment_open_with">Open with</string>
+
+    <!-- S21: links. The dialog shows where the link really goes. -->
+    <string name="reading_link_title">Open this link?</string>
+    <string name="reading_link_goes_to">This link goes to %1$s</string>
+    <string name="reading_link_address_label">Full address</string>
+    <string name="reading_link_open">Open</string>
+    <string name="reading_link_chooser">Open link with</string>
+    <string name="reading_mailto_title">Write to this address?</string>
+    <string name="reading_mailto_open">Write email</string>
+
+    <!-- Plain-language texts for every ReadError of the core (a test checks that each variant has one). -->
+    <string name="read_error_no_such_message">This message is no longer on this phone. It may have been moved or deleted.</string>
+    <string name="read_error_no_such_attachment">That attachment is no longer available.</string>
+    <string name="read_error_no_such_account">The account this message belongs to was removed.</string>
+    <string name="read_error_account_unavailable">This account isn\'t available right now. Try again in a moment.</string>
+    <string name="read_error_offline">Not downloaded yet. It will load when you\'re online.</string>
+    <string name="read_error_sign_in_needed">Sign in again to load this message.</string>
+    <string name="read_error_not_on_server">This message is no longer on the server. It may have been moved or deleted on another device.</string>
+    <string name="read_error_too_large">This message is too large to download in Croft.</string>
+    <string name="read_error_unreadable">Croft couldn\'t read this message. It may be damaged.</string>
+    <string name="read_error_server_unavailable">The mail server isn\'t answering. Try again in a moment.</string>
+    <string name="read_error_server_refused">The mail server wouldn\'t give this message. Try again later.</string>
+    <string name="read_error_attachment_blocked">Programs and scripts are blocked for your safety, so this file can\'t be opened.</string>
+    <string name="read_error_bad_destination">Croft couldn\'t prepare a place for the file. Try again.</string>
+    <string name="read_error_write_failed">Croft couldn\'t save the file on this phone. Check that there is free space, then try again.</string>
+    <string name="read_error_invalid_address">That doesn\'t look like an email address.</string>
+    <string name="read_error_storage">Croft couldn\'t read its storage on this phone. Try again, or restart the app.</string>
+    <string name="read_error_internal">Something went wrong. Try again.</string>
+
+    <!-- S49: the settings of reading -->
+    <string name="reading_settings_remote_title">Remote images</string>
+    <string name="reading_settings_remote_ask">Ask</string>
+    <string name="reading_settings_remote_known">Known senders</string>
+    <string name="reading_settings_remote_never">Never</string>
+    <string name="reading_settings_remote_hint">Pictures in email can tell the sender that you read it. Ask keeps them blocked until you tap Show images. Known senders also shows them for the senders you chose with Always for this sender.</string>
+    <string name="reading_settings_markread_title">Mark as read when opened</string>
+    <string name="reading_settings_markread_now">Immediately</string>
+    <string name="reading_settings_markread_2s">After 2 s</string>
+    <string name="reading_settings_markread_never">Never</string>
+    <string name="reading_settings_markread_hint">How long a message stays on screen before Croft marks it read.</string>
+    <string name="reading_settings_known_title">Known senders</string>
+    <string name="reading_settings_known_empty">No senders yet. Tap Always for this sender on a message to add one.</string>
+    <string name="reading_settings_known_remove">Stop showing images from %1$s</string>
+    <string name="reading_settings_known_account">%1$s</string>
+</resources>

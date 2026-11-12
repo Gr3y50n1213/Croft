@@ -51,6 +51,23 @@ object LinkRules {
         return host.takeIf { it.isNotEmpty() }
     }
 
+    /** A link found in plain text: the characters [start] until [end] (exclusive) are the link, which goes to [url]. */
+    data class LinkSpan(val start: Int, val end: Int, val url: String)
+
+    private val inText = Regex("""(?i)\b(?:https?://|mailto:)[^\s<>"]+""")
+    private const val TRAILING = ".,;:!?)]}'\u201D\u2019"
+
+    /**
+     * The web and `mailto:` links written out in plain [text], for the plain-text view. A link ends at white space; punctuation that
+     * ends a sentence is not part of it. A link is only made tappable here: what it does is decided by [classify] and the person's answer.
+     */
+    fun linkSpans(text: String): List<LinkSpan> = inText.findAll(text).mapNotNull { m ->
+        var end = m.range.last + 1
+        while (end > m.range.first && text[end - 1] in TRAILING) end--
+        val url = text.substring(m.range.first, end)
+        if (classify(url) is LinkAction.Ignore) null else LinkSpan(m.range.first, end, url)
+    }.toList()
+
     /**
      * [url] as it is safe to show: the characters that can change how text reads (bidirectional controls, zero-width characters, other
      * invisible formatting) are written out as `\uXXXX`, so that the real destination cannot be disguised.

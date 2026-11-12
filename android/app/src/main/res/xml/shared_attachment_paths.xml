@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<!-- T18b: the only files Croft's FileProvider can give to another app: attachments the person opened, saved by the core into
+     cacheDir/shared-attachments/. Nothing else of Croft's has a URI (a test asserts this file lists this one path and no other). -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="shared_attachments" path="shared-attachments/" />
+</paths>

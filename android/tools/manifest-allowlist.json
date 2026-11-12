@@ -1,5 +1,5 @@
 {
-  "_comment": "Approved permissions and exported components of the release merged manifest. Add an entry only with the task or store-checklist row that justifies it (docs/store/READINESS.md). ${applicationId} stands for the application id.",
+  "_comment": "Approved permissions and exported components of the release merged manifest. Add an entry only with the task or store-checklist row that justifies it (docs/store/READINESS.md). ${applicationId} stands for the application id. \"uri-grant-providers\" lists every content provider with grantUriPermissions=true by authority; each must be not exported.",
   "uses-permission": {
     "android.permission.INTERNET": "Mail sync: the Rust core opens its own TLS connections to the person's IMAP and SMTP servers (docs/store/READINESS.md, permissions table; T16).",
     "android.permission.ACCESS_NETWORK_STATE": "The connectivity callback (ConnectivityManager.registerDefaultNetworkCallback) that tells the core whether the device has a network, so that the Offline banner is true and nothing is sent while offline (T16). Normal permission, no data leaves the device.",
@@ -26,6 +26,13 @@
     "receiver:androidx.profileinstaller.ProfileInstallReceiver": {
       "why": "AndroidX profileinstaller (baseline profiles): lets the shell trigger profile installation. Only the system or adb can hold android.permission.DUMP, so other apps cannot call it.",
       "permission": "android.permission.DUMP"
+    }
+  },
+  "uri-grant-providers": {
+    "${applicationId}.attachments": {
+      "why": "T18b (S21): the FileProvider that gives a viewer app read access to one attachment the person opened, with a temporary URI grant (FLAG_GRANT_READ_URI_PERMISSION). Not exported. Its paths file (res/xml/shared_attachment_paths.xml) exposes only cacheDir/shared-attachments/; a test asserts that. Compose refuses content: URIs of this authority as share input.",
+      "class": "androidx.core.content.FileProvider",
+      "paths-resource": "shared_attachment_paths"
     }
   }
 }

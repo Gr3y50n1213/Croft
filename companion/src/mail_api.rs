@@ -28,13 +28,7 @@ use crate::http::App;
 
 /// The caller's core, opened if needed.
 async fn core(app: &App, user_id: i64) -> Result<Arc<Core>, ApiError> {
-    let mail = app.mail.clone().ok_or(ApiError::NotFound)?;
-    let store = app.store.clone();
-    let auth = app.auth.clone();
-    tokio::task::spawn_blocking(move || mail.core(&store, auth.master(), user_id))
-        .await
-        .map_err(|_| ApiError::Server)?
-        .map_err(|_| ApiError::Server)
+    app.user_core(user_id).await.map(|(c, _)| c)
 }
 
 fn failure(kind: &str, reason: &str, extra: Value) -> Response {

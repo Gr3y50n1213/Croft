@@ -551,7 +551,10 @@ async fn result_references_cannot_amplify_a_request() {
         .post_raw(&t, json!({"using": USING, "methodCalls": calls}))
         .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(len < 2 * crate::api::jmap_api::MAX_RESPONSE_BYTES, "{len} bytes");
+    assert!(
+        len < 2 * crate::api::jmap_api::MAX_RESPONSE_BYTES,
+        "{len} bytes"
+    );
     assert!(v["methodResponses"]
         .as_array()
         .unwrap()

@@ -68,6 +68,7 @@ pub struct App {
     pub(crate) auth: Arc<Auth>,
     pub(crate) body_read_timeout: Duration,
     pub(crate) mail: Option<Arc<crate::mail::MailCores>>,
+    pub(crate) relay: Arc<crate::push::Relay>,
 }
 
 impl App {
@@ -78,7 +79,33 @@ impl App {
             auth: Arc::new(auth),
             body_read_timeout: BODY_READ_TIMEOUT,
             mail: None,
+            relay: Arc::new(crate::push::Relay::default()),
         }
+    }
+
+    /// The same with another push relay (tests: a short window, a fake push service).
+    pub fn with_relay(mut self, relay: crate::push::Relay) -> Self {
+        self.relay = Arc::new(relay);
+        self
+    }
+
+    /// The user's core (opened if needed) and its epoch; an open core is watched by the push
+    /// relay (T28).
+    pub(crate) async fn user_core(
+        &self,
+        user_id: i64,
+    ) -> Result<(Arc<croft_ffi::Core>, u64), crate::api::ApiError> {
+        let mail = self.mail.clone().ok_or(crate::api::ApiError::NotFound)?;
+        let store = self.store.clone();
+        let auth = self.auth.clone();
+        let (core, epoch) = tokio::task::spawn_blocking(move || {
+            mail.core_and_epoch(&store, auth.master(), user_id)
+        })
+        .await
+        .map_err(|_| crate::api::ApiError::Server)?
+        .map_err(|_| crate::api::ApiError::Server)?;
+        self.relay.watch(self, user_id, &core, epoch);
+        Ok((core, epoch))
     }
 
     /// Opens the core of every enabled user who has mail accounts (at start; blocking).
@@ -93,7 +120,10 @@ impl App {
             .users_with_mail()
             .unwrap_or_default();
         for user_id in users {
-            let _ = mail.core(&self.store, self.auth.master(), user_id);
+            if let Ok((core, epoch)) = mail.core_and_epoch(&self.store, self.auth.master(), user_id)
+            {
+                self.relay.watch(self, user_id, &core, epoch);
+            }
         }
     }
 

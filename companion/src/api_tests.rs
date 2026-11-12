@@ -1043,6 +1043,31 @@ async fn every_route_checks_who_calls_and_no_user_reaches_another_users_data() {
         StatusCode::NOT_FOUND
     );
     covered.insert(("DELETE".to_owned(), "/api/accounts/{id}"));
+    // Push subscriptions: B's id is not A's.
+    let b_push = {
+        let master = h.master.clone();
+        let mut st = h.store();
+        st.add_push(
+            &master,
+            b.id,
+            b_session,
+            "https://push.example/made-up-b",
+            &[4; 65],
+            &[1; 16],
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        h.status(
+            Method::DELETE,
+            &format!("/api/push/subscriptions/{b_push}"),
+            Some(&a_t.access)
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(h.store().push_list(b.id).unwrap().len(), 1);
+    covered.insert(("DELETE".to_owned(), "/api/push/subscriptions/{id}"));
     for action in ["disable", "enable"] {
         let p = format!("/api/admin/users/{}/{action}", b.id);
         assert_eq!(

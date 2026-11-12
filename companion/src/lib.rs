@@ -20,6 +20,8 @@ pub mod mail;
 pub mod mail_store;
 pub mod oidc;
 pub mod oidc_store;
+pub mod push;
+pub mod push_store;
 pub mod store;
 pub mod totp;
 pub mod webpush;

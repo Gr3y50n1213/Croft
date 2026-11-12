@@ -32,6 +32,11 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Base64url without padding (the form subscriptions use for their keys).
+pub fn b64_public(bytes: &[u8]) -> String {
+    b64(bytes)
+}
+
 /// Decodes base64url (padded or not), as subscriptions give their keys.
 pub fn unb64(text: &str) -> Option<Vec<u8>> {
     base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -186,6 +191,34 @@ impl Vapid {
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A receiver's side given the ECDH secret (tests).
+    pub(crate) fn decrypt_with(
+        secret: &[u8],
+        ua_public: &[u8],
+        auth: &[u8],
+        body: &[u8],
+    ) -> Vec<u8> {
+        let salt: [u8; 16] = body[..16].try_into().unwrap();
+        let as_public = &body[21..86];
+        let mut record = body[86..].to_vec();
+        let mut key_info = b"WebPush: info\0".to_vec();
+        key_info.extend_from_slice(ua_public);
+        key_info.extend_from_slice(as_public);
+        let ikm = hkdf(auth, secret, &key_info, 32).unwrap();
+        let cek = hkdf(&salt, &ikm, b"Content-Encoding: aes128gcm\0", 16).unwrap();
+        let nonce = hkdf(&salt, &ikm, b"Content-Encoding: nonce\0", 12).unwrap();
+        let key = LessSafeKey::new(UnboundKey::new(&aead::AES_128_GCM, &cek).unwrap());
+        let plain = key
+            .open_in_place(
+                Nonce::try_assume_unique_for_key(&nonce).unwrap(),
+                Aad::empty(),
+                &mut record,
+            )
+            .unwrap();
+        assert_eq!(plain.last(), Some(&2));
+        plain[..plain.len() - 1].to_vec()
+    }
 
     /// A receiver's side (tests): decrypts what [`encrypt`] made, as a browser would.
     pub(crate) fn decrypt(ua_private: EphemeralPrivateKey, auth: &[u8], body: &[u8]) -> Vec<u8> {

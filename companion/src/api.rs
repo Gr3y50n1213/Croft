@@ -582,6 +582,25 @@ pub fn routes() -> Vec<Route> {
         ),
         route(Method::POST, "/api/accounts", F, post(mail_api::add)),
         route(Method::GET, "/jmap/session", F, get(jmap_api::session)),
+        route(Method::GET, "/api/push/vapid", F, get(push_api::vapid)),
+        route(
+            Method::POST,
+            "/api/push/subscriptions",
+            F,
+            post(push_api::subscribe),
+        ),
+        route(
+            Method::GET,
+            "/api/push/subscriptions",
+            F,
+            get(push_api::list),
+        ),
+        route(
+            Method::DELETE,
+            "/api/push/subscriptions/{id}",
+            F,
+            delete(push_api::remove),
+        ),
         route(Method::POST, "/jmap/api", F, post(jmap_api::api)),
         route(Method::GET, "/api/accounts", F, get(mail_api::list)),
         route(
@@ -1313,6 +1332,9 @@ pub(crate) mod mail_api;
 #[path = "jmap_api.rs"]
 pub(crate) mod jmap_api;
 
+#[path = "push_api.rs"]
+pub(crate) mod push_api;
+
 #[cfg(test)]
 #[path = "api_tests.rs"]
 mod tests;
@@ -1328,3 +1350,7 @@ mod mail_tests;
 #[cfg(test)]
 #[path = "jmap_tests.rs"]
 mod jmap_tests;
+
+#[cfg(test)]
+#[path = "push_tests.rs"]
+mod push_tests;

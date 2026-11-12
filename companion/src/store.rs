@@ -15,6 +15,7 @@ use crate::crypto::{self, CryptoError, Key, MASTER_CHECK_AAD};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_sign_in.sql"),
+    include_str!("../migrations/0003_oidc.sql"),
 ];
 
 /// The plaintext of the master key check value.
@@ -200,51 +201,12 @@ impl Store {
     /// write transaction (taken at once), so a rotation that committed meanwhile is never
     /// undercut by a key wrapped under the old master key. Audited.
     pub fn add_user(&mut self, master: &Key, name: &str, role: Role) -> Result<User, StoreError> {
-        let name = name.trim();
-        if name.is_empty()
-            || name.len() > 64
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        {
-            return Err(StoreError::BadName);
-        }
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        check_key(&tx, master)?;
-        let taken: bool = tx
-            .query_row("SELECT 1 FROM user WHERE name = ?1", params![name], |_| {
-                Ok(true)
-            })
-            .optional()?
-            .unwrap_or(false);
-        if taken {
-            return Err(StoreError::NameTaken);
-        }
-        let created = now_ms();
-        tx.execute(
-            "INSERT INTO user(name, role, created_ms) VALUES (?1, ?2, ?3)",
-            params![name, role.as_str(), created],
-        )?;
-        let id = tx.last_insert_rowid();
-        let (_, wrapped) = crypto::new_data_key(master, id)?;
-        tx.execute(
-            "INSERT INTO user_key(user_id, wrapped, key_version) VALUES (?1, ?2, 1)",
-            params![id, wrapped],
-        )?;
-        tx.execute(
-            "INSERT INTO audit_log(at_ms, user_id, action, outcome) VALUES (?1, ?2, 'user.add', 'ok')",
-            params![created, id],
-        )?;
+        let user = insert_user(&tx, master, name, role, now_ms())?;
         tx.commit()?;
-        Ok(User {
-            id,
-            name: name.to_owned(),
-            role,
-            created_ms: created,
-            disabled: false,
-        })
+        Ok(user)
     }
 
     /// Every user, oldest first.
@@ -345,6 +307,63 @@ impl Store {
 }
 
 /// See [`Store::check_master_key`]. Runs on a connection or inside a transaction.
+/// Whether `name` is a valid login name (1 to 64 letters, digits, `.`, `_` or `-`).
+pub fn name_is_valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Adds a user with a fresh data key inside the caller's write transaction (the master key is
+/// checked in it, see [`Store::add_user`]). Audited.
+pub(crate) fn insert_user(
+    tx: &Connection,
+    master: &Key,
+    name: &str,
+    role: Role,
+    now: i64,
+) -> Result<User, StoreError> {
+    let name = name.trim();
+    if !name_is_valid(name) {
+        return Err(StoreError::BadName);
+    }
+    check_key(tx, master)?;
+    let taken: bool = tx
+        .query_row(
+            "SELECT 1 FROM user WHERE name = ?1 COLLATE NOCASE",
+            params![name],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if taken {
+        return Err(StoreError::NameTaken);
+    }
+    tx.execute(
+        "INSERT INTO user(name, role, created_ms) VALUES (?1, ?2, ?3)",
+        params![name, role.as_str(), now],
+    )?;
+    let id = tx.last_insert_rowid();
+    let (_, wrapped) = crypto::new_data_key(master, id)?;
+    tx.execute(
+        "INSERT INTO user_key(user_id, wrapped, key_version) VALUES (?1, ?2, 1)",
+        params![id, wrapped],
+    )?;
+    tx.execute(
+        "INSERT INTO audit_log(at_ms, user_id, action, outcome) VALUES (?1, ?2, 'user.add', 'ok')",
+        params![now, id],
+    )?;
+    Ok(User {
+        id,
+        name: name.to_owned(),
+        role,
+        created_ms: now,
+        disabled: false,
+    })
+}
+
 fn check_key(conn: &Connection, master: &Key) -> Result<(), StoreError> {
     let stored: Option<Vec<u8>> = conn
         .query_row(

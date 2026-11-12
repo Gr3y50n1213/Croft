@@ -5,10 +5,64 @@ unverified, the next step.
 
 ---
 
+## T25: Companion sign-in with OIDC (12 November 2026)
+
+**Status:** draft pull request #40 on `task/t25` (CI green before the review fixes, run 43279059870); independent review done, every
+finding fixed or accepted (DECISIONS). Merged with the pull request that carries this entry.
+
+**What was built.**
+- **Settings.** An optional `[oidc]` section: issuer, client id, a client secret file (with the master key's rules), and optional
+  creation of users for members of one group.
+- **The core.** `croft_protocols::oauth::fetch`: the core's own HTTPS client offered for GET and form POST (https only, plain http
+  only to loopback, no redirects, sizes capped).
+- **ID tokens (`jwt.rs`).** Signatures RS256, ES256 and EdDSA with ring; `none`, HMAC and `crit` refused; the key type must match the
+  algorithm. Claims checked: `iss`, `aud`, `azp`, `exp`, `iat`, `nbf` with leeway, `nonce`, `sub`.
+- **The relying party (`oidc.rs`).**
+  - Discovery: the issuer must match, every endpoint must be https, and PKCE S256 is required when the provider lists its methods.
+    Discovery is cached; a failure waits 30 s before the next try.
+  - The key set is refreshed (unknown key id, a failed signature, after a day).
+  - The flow uses PKCE, state and nonce; the token request uses Basic or post client authentication.
+  - The provider's answer becomes a one-time code for the app's redirect, redeemable only with the app's own verifier.
+- **Store.** Identities are linked by (issuer, subject) in migration 0003. Users can be created for a group's members, with
+  case-insensitive unique names.
+- **Routes.** Sign-in; link with a fresh sign-in; unlink by the user or an admin. Re-enrolment removes the linked identity.
+- **Build.** The Companion now builds the core's protocol crate with the core's async-imap patch (guard test); the Docker build copies
+  `core/`.
+
+**Checks.** 96 companion tests. Against an in-process fake provider (made-up keys), the whole flow runs from start to tokens and to a
+link.
+
+Refused, each with a test:
+- **ID tokens:** wrong `iss` and `aud`; `azp` missing or wrong; expired, not yet valid, or issued in the future; a wrong or missing
+  nonce; `alg: none`; an unknown key id; HS256 keyed with the public key.
+- **Discovery:** another issuer, an http endpoint, PKCE without S256.
+- **Flow:** a replayed or expired state; a hand-over code that is replayed, expired, or has a wrong verifier; login CSRF.
+- **Linking:** a link code used to sign in; another user finishing a link; a stale session linking.
+- **App redirect:** one that leaves the Companion (dot segments included).
+
+Also covered:
+- unknown people refused unless they are members of the group;
+- a disabled user;
+- a key rotated under the same id;
+- the key set refetched at most once a minute;
+- re-enrolment removing a planted identity;
+- no secret stored or audited.
+
+Clippy is clean in both workspaces.
+
+**Review** (one independent agent, opus, high effort): no high, 2 medium (the redirect's dot segments; a planted identity surviving
+re-enrolment), 11 low. All fixed with regression tests built on the reviewer's proofs, except those accepted in DECISIONS. The fixes
+were not re-reviewed.
+
+**Not verified here:** real providers (Authelia, Authentik, Keycloak, Entra ID); providers with a private certificate authority
+(OPEN-ITEMS).
+
+---
+
 ## T24: Companion sign-in (12 November 2026)
 
-**Status:** draft pull request #38 on `task/t24` (CI green before the review fixes); independent review done, every finding fixed or
-accepted (DECISIONS). Merged with the pull request that carries this entry.
+**Status:** merged to main (pull request #39; CI green, run 43276378750); independent review done, every finding fixed or accepted
+(DECISIONS).
 
 **What was built.**
 - **Enrolment.** `user add` prints a one-time enrolment link: 256 bits, stored hashed, 24 hours, with the token in the URL fragment.

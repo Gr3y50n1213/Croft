@@ -63,6 +63,7 @@
     <string name="onb_sign_in_title">Sign in</string>
     <string name="onb_account_card">%1$s, %2$s</string>
     <string name="onb_server_summary">%1$s, IMAP</string>
+    <string name="onb_server_summary_jmap">%1$s, JMAP</string>
     <string name="onb_username_label">Username</string>
     <string name="onb_password_label">Password</string>
     <string name="onb_sign_in">Sign in</string>
@@ -142,7 +143,7 @@
     <string name="fail_verify_cannot_connect">Couldn\'t connect to %1$s. Check the address, or try again.</string>
     <string name="fail_verify_no_secure_connection">%1$s does not offer a secure connection that Croft accepts, so Croft did not connect. Ask the server\'s owner to turn on current encryption (TLS 1.2 or newer).</string>
     <string name="fail_verify_server_problem">%1$s answered but would not let Croft in. Try again later, or check the server\'s settings.</string>
-    <string name="fail_verify_jmap_only">%1$s offers JMAP only. Croft can\'t sign in over JMAP yet. If the server also offers IMAP, enter its settings by hand.</string>
+    <string name="fail_verify_jmap_only">Croft found no mail server it can sign in to at %1$s. Enter the settings by hand.</string>
     <string name="fail_verify_bad_settings">The server settings can\'t be used. Check the server name, the port and the security setting.</string>
     <string name="fail_verify_internal">Something went wrong inside Croft. Try again.</string>
     <string name="fail_add_bad_settings">The server settings can\'t be used. Check the server name, the port and the security setting.</string>

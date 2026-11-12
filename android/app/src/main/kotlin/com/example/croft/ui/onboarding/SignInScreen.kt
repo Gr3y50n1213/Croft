@@ -81,7 +81,9 @@ fun SignInScreen(
     val canSubmit = username.isNotBlank() && password.isNotEmpty() && !working
     val submit = { if (canSubmit) onSignIn(username, password.toByteArray(Charsets.UTF_8)) }
     OnboardingFrame(stringResource(R.string.onb_sign_in_title), onBack, modifier.testTag(OnboardingTags.SIGN_IN)) {
-        AccountCard(state.email, imap?.host)
+        // The server the account will use (T22: a server that offers JMAP is used over JMAP, unless it is a well-known provider's).
+        val jmapHost = state.discovered?.takeIf { it.provider == null }?.jmap?.let { android.net.Uri.parse(it).host }
+        AccountCard(state.email, jmapHost ?: imap?.host, jmap = jmapHost != null)
         CroftTextField(
             value = username, onValueChange = { username = it },
             label = stringResource(R.string.onb_username_label),
@@ -124,7 +126,7 @@ fun SignInScreen(
 
 /** The avatar letter, the address and the server of the account being added. */
 @Composable
-private fun AccountCard(email: String, host: String?) {
+private fun AccountCard(email: String, host: String?, jmap: Boolean = false) {
     Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Box(Modifier.size(40.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) {
@@ -132,7 +134,7 @@ private fun AccountCard(email: String, host: String?) {
             }
             Column {
                 Text(email, style = MaterialTheme.typography.titleMedium)
-                if (host != null) Text(stringResource(R.string.onb_server_summary, host), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (host != null) Text(stringResource(if (jmap) R.string.onb_server_summary_jmap else R.string.onb_server_summary, host), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

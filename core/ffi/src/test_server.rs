@@ -390,3 +390,58 @@ impl TestTokenEndpoint {
         let _ = &self.rt;
     }
 }
+
+/// An in-process JMAP server (plain `http` on 127.0.0.1) for the JVM tests of JMAP accounts
+/// (T22). Host builds only. The login is made up.
+#[derive(uniffi::Object)]
+pub struct TestJmapServer {
+    rt: Runtime,
+    server: croft_test_support::JmapServer,
+}
+
+#[uniffi::export]
+impl TestJmapServer {
+    /// Starts it, empty.
+    #[uniffi::constructor]
+    pub fn start() -> Arc<Self> {
+        #[allow(clippy::expect_used)]
+        let rt = Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a runtime for the JMAP test server");
+        let server = rt.block_on(croft_test_support::JmapServer::start());
+        Arc::new(Self { rt, server })
+    }
+
+    /// The session URL (what discovery would find).
+    pub fn session_url(&self) -> String {
+        self.server.session_url()
+    }
+
+    /// The accepted login.
+    pub fn username(&self) -> String {
+        self.server.username().to_owned()
+    }
+
+    /// The accepted password (made up).
+    pub fn password(&self) -> String {
+        self.server.password().to_owned()
+    }
+
+    /// Puts a message with `subject` in the Inbox; returns its email id.
+    pub fn inject_message(&self, subject: String) -> String {
+        let raw = croft_test_support::sample_message(
+            &format!("{subject}@test.invalid"),
+            &subject,
+            "Ann Example <ann@example.org>",
+        );
+        let _ = &self.rt;
+        self.server.add_message("inbox", &raw, &[])
+    }
+
+    /// How many messages were submitted for delivery.
+    pub fn delivery_count(&self) -> u32 {
+        u32::try_from(self.server.deliveries().len()).unwrap_or(u32::MAX)
+    }
+}

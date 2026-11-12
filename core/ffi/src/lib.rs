@@ -83,7 +83,7 @@ pub use reading::{
 };
 pub use search::{LocalResults, SearchFailure, SearchHit, ServerResults, TextRange};
 #[cfg(feature = "test-server")]
-pub use test_server::{TestImapServer, TestTokenEndpoint};
+pub use test_server::{TestImapServer, TestJmapServer, TestTokenEndpoint};
 pub use types::*;
 
 uniffi::setup_scaffolding!();

@@ -11,6 +11,8 @@ mod background;
 mod demo;
 mod encrypted;
 mod jmap;
+#[cfg(feature = "integration")]
+mod jmap_integration;
 mod local;
 mod oauth;
 mod readd;

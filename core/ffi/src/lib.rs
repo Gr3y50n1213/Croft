@@ -48,6 +48,7 @@ mod compose;
 mod core;
 mod credentials;
 mod error;
+mod jmap_account;
 mod list;
 mod oauth;
 mod reading;

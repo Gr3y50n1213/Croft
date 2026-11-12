@@ -1315,6 +1315,10 @@ pub(crate) async fn sync_draft(
     let Some(backend) = inner.backends().get(&account).cloned() else {
         return Ok(DraftSyncOutcome::NotApplicable);
     };
+    // T22: a JMAP account's drafts stay on the device (JMAP draft copies are a later task).
+    if backend.is_jmap() {
+        return Ok(DraftSyncOutcome::NotApplicable);
+    }
     if inner.hub.is_offline() {
         return Ok(DraftSyncOutcome::Offline);
     }

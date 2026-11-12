@@ -10,6 +10,7 @@
 mod background;
 mod demo;
 mod encrypted;
+mod jmap;
 mod local;
 mod oauth;
 mod readd;

@@ -17,7 +17,7 @@ unverified, the next step.
 
 **Manifest check:** `check-release-manifest.py` now also checks the intent filters of an exported component against `actions` and `browsable-schemes` in the allowlist (new tests in `test_check_release_manifest.py`).
 
-**Checks that ran here:** `:mailtests:test` (all: the 21 earlier files plus `ComposeLogicTest`, `ComposeFlowTest`, `OutboxTest`) on the real core and the in-process IMAP server; `:app:compileDebugKotlin` and `:app:compileDebugUnitTestKotlin`; `python3 -m unittest discover -s tools`. **Not run here:** Robolectric and screenshot tests (Maven Central refuses this container); they run on CI.
+**Checks that ran here:** `:mailtests:test` (all: the 21 earlier files plus `ComposeLogicTest`, `ComposeFlowTest`, `OutboxTest`) on the real core and the in-process IMAP server; `:app:compileDebugKotlin` and `:app:compileDebugUnitTestKotlin`; `python3 -m unittest discover -s tools`. **Not run here:** Robolectric and screenshot tests (Maven Central refuses this container). They ran on CI: all 7 jobs green on `7a86eaa` (the first CI run had 43 failures, all from a test fixture whose constructor parameter hid the compose backend; fixed, then two tests that matched two nodes).
 
 **Existing tests:** none deleted or weakened. `Rig` in `MailTestKit.kt` got an optional `smtp` flag (default off), so the earlier tests are unchanged. The Reply row action keeps its "comes later" snackbar when the screen is given no `onReply` (the existing `SwipeSemanticsTest` still sees it).
 

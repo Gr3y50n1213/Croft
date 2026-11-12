@@ -5,7 +5,8 @@ search; phones work without it. Licence: AGPL-3.0-or-later (see `LICENSES.md`).
 
 **Status:** the foundation (T23), sign-in (T24, T25: passkeys, an authenticator app with recovery codes, OIDC, tokens for the apps,
 the admin's user management) and mail accounts (T26: each user's own IMAP/SMTP or JMAP accounts, synced by the same core the phones
-run), a JMAP API for the apps (T27: reading and organising) and push (T28: the apps are woken when mail changes); see
+run), a JMAP API for the apps (T27: reading and organising), push (T28: the apps are woken when mail changes) and the web app
+(T30: sign-in and its first screen); see
 `docs/tasks/PHASE-2.md`.
 
 ## Run it with Docker
@@ -38,6 +39,7 @@ A TOML file (`--config FILE`) and environment variables; the variable wins.
 | `[oidc]` `issuer`, `client_id`, `client_secret_file` | `CROFT_COMPANION_OIDC_ISSUER`, `_OIDC_CLIENT_ID`, `_OIDC_CLIENT_SECRET_FILE` | not set (no OIDC) |
 | `[oidc]` `name`, `create_users`, `required_group`, `groups_claim` | (file only) | `single sign-on`, `false`, none, `groups` |
 | `mail_allowed_networks` | `CROFT_COMPANION_MAIL_ALLOWED_NETWORKS` (comma-separated) | none |
+| `web_dir` | `CROFT_COMPANION_WEB_DIR` | none (no web app); the Docker image sets `/usr/share/croft/web` |
 
 `mail_allowed_networks` lists private networks a mail server may be on, such as `192.168.1.0/24` or your Docker network: the Companion
 refuses to connect to its own machine and to private, link-local and similar addresses unless they are listed here, so nobody can use
@@ -145,6 +147,13 @@ ends when its device signs out. Push services are reached at public addresses on
 self-hosted ntfy needs an address on the internet, which phones need anyway). A subscription whose push service keeps refusing goes
 after 10 refusals over 3 days or more; an outage of the push service drops nothing.
 
+## The web app
+
+With `web_dir` set (the Docker image does), the Companion serves the web app (`web/`, T30) at its own address: open it in a
+browser and sign in with your passkey, single sign-on or a recovery code. The built files are read once at start and served by
+exact path; the page's Content-Security-Policy allows only the app's own scripts. A browser's sign-in keeps its refresh token in an
+`HttpOnly`, `SameSite=Strict` cookie (`__Host-croft_refresh`) that no script can read, and the 15-minute access token in memory only.
+
 ## Commands
 
 ```
@@ -167,6 +176,8 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `POST /api/sign-in/passkey/start` (`{"user"?}`), `/api/sign-in/passkey/finish` | anyone |
 | `POST /api/sign-in/recovery` (`{"user", "totp", "recovery_code"}`) | anyone |
 | `POST /api/token/refresh` (`{"refresh_token"}`) | anyone |
+| The sign-in finishes above and `POST /api/sign-in/oidc/exchange` with `"web": true` and the header `X-Croft-Web: 1`: the refresh token as a cookie, not in the body | the web app |
+| `POST /api/web/refresh`, `POST /api/web/sign-out` (header `X-Croft-Web: 1`, the cookie) | the web app |
 | `GET /api/me`, `POST /api/sign-out`, `POST /api/passkeys/start`, `/api/passkeys/finish` | signed in (also a recovery sign-in) |
 | `GET /api/passkeys`, `DELETE /api/passkeys/{id}`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `GET /api/audit` | signed in |
 | `GET /api/admin/users`, `POST /api/admin/users/{id}/disable`, `/enable`, `GET /api/admin/audit` | admins |

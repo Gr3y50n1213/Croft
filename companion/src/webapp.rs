@@ -154,7 +154,10 @@ fn content_type(name: &str) -> &'static str {
     }
 }
 
-/// The page's CSP: the app's own files only, its inline scripts by hash.
+/// The page's CSP: the app's own files only, its inline scripts by hash. Style attributes are
+/// allowed (Svelte's templates and SvelteKit's screen-reader announcer use them); `<style>`
+/// elements are not. A style attribute runs no script, and with images, fonts and connections
+/// limited to this origin it cannot send anything elsewhere.
 fn csp_for(html: &str) -> String {
     let hashes: Vec<String> = inline_scripts(html)
         .iter()
@@ -167,7 +170,8 @@ fn csp_for(html: &str) -> String {
         })
         .collect();
     format!(
-        "default-src 'none'; script-src 'self' {}; style-src 'self'; img-src 'self' data:; \
+        "default-src 'none'; script-src 'self' {}; style-src 'self'; style-src-attr 'unsafe-inline'; \
+         img-src 'self' data:; \
          font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; \
          frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         hashes.join(" ")
@@ -248,7 +252,13 @@ mod tests {
         assert!(csp.contains(&hash("start(1)")), "{csp}");
         assert!(csp.contains(&hash("\nmore()\n")), "{csp}");
         assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"));
-        assert!(!csp.contains("unsafe"));
+        // Scripts and style elements: never inline; only style attributes are allowed.
+        let script_src = csp
+            .split(';')
+            .find(|d| d.trim().starts_with("script-src"))
+            .unwrap();
+        assert!(!script_src.contains("unsafe"), "{csp}");
+        assert!(csp.contains("style-src 'self';"), "{csp}");
         assert_eq!(get("/").status(), StatusCode::OK);
         for missing in [
             "/api/me",

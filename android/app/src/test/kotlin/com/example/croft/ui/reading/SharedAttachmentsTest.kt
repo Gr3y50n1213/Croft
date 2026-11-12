@@ -142,10 +142,11 @@ class SharedAttachmentsTest {
         assertNull("with a user id in front", ComposeFiles.resolve(context, "content://0@${SharedAttachments.authority(context)}/shared_attachments/report.pdf"))
         assertNull("a file: URI is never read", ComposeFiles.resolve(context, "file://${SharedAttachments.directory(context)}/report.pdf"))
         assertNotNull("another app's provider is fine", ComposeFiles.resolve(context, "content://com.example.otherapp.files/docs/photo.jpg"))
-        // The intent as a share would deliver it keeps the URI text; the refusal is where the file would be copied.
+        // The share intent drops the stream of our own provider when it is given the context (T18d's intake), and without one the copy step refuses it.
         val share = Intent(Intent.ACTION_SEND).setType("application/pdf").putExtra(Intent.EXTRA_STREAM, Uri.parse(own))
-        val start = com.example.croft.ui.compose.ComposeIntents.parse(share) as com.example.croft.mail.compose.ComposeStart.Fill
-        assertEquals(listOf(own), start.fill.attachments)
-        assertTrue(start.fill.attachments.all { ComposeFiles.resolve(context, it) == null })
+        val withContext = com.example.croft.ui.compose.ComposeIntents.parse(share, context) as com.example.croft.mail.compose.ComposeStart.Fill
+        assertEquals(emptyList<String>(), withContext.fill.attachments)
+        val without = com.example.croft.ui.compose.ComposeIntents.parse(share) as com.example.croft.mail.compose.ComposeStart.Fill
+        assertTrue(without.fill.attachments.all { ComposeFiles.resolve(context, it) == null })
     }
 }

@@ -73,6 +73,20 @@ impl Store {
         Ok(())
     }
 
+    /// Whether the server refused the stored password (it is then not offered again until the
+    /// person gives a new one).
+    pub fn mail_refused(&self, user_id: i64, account_id: i64) -> Result<bool, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT needs_sign_in FROM mail_credential WHERE user_id = ?1 AND account_id = ?2",
+                params![user_id, account_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+
     /// Removes the credential of (user, account).
     pub fn delete_mail_credential(
         &mut self,

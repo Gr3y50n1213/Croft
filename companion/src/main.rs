@@ -53,10 +53,9 @@ fn run(args: &[String]) -> Result<String, CliError> {
     };
     // T26: the Companion's own network is off limits to mail connections, except the networks
     // the admin allows (a mail server on the same LAN or Docker network).
-    let allowed = config.mail_allowed_networks.clone();
-    croft_protocols::netpolicy::set_address_policy(std::sync::Arc::new(move |ip| {
-        !croft_protocols::netpolicy::is_internal(ip) || allowed.iter().any(|n| n.contains(ip))
-    }));
+    croft_protocols::netpolicy::set_address_policy(croft_companion::mail::address_policy(
+        config.mail_allowed_networks.clone(),
+    ));
     let runtime = tokio::runtime::Runtime::new().map_err(|e| CliError::Serve(e.to_string()))?;
     runtime
         .block_on(async {

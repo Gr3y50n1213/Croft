@@ -32,7 +32,7 @@ pub fn allowed(ip: IpAddr) -> bool {
     let p = POLICY
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    p.as_ref().is_none_or(|f| f(ip.to_canonical()))
+    p.as_ref().is_none_or(|f| f(ip))
 }
 
 /// The addresses of a lookup that may be connected to.
@@ -44,34 +44,62 @@ pub(crate) fn filter(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 pub(crate) const REFUSED: &str = "this server's address is not allowed on this Companion";
 
 /// Addresses that belong to the machine or a private network: loopback, private (RFC 1918),
-/// carrier-grade NAT, link-local, unique-local, multicast, unspecified, broadcast and the
-/// documentation and benchmarking ranges. A public mail server is never one of these.
+/// carrier-grade NAT, link-local, site-local and unique-local, multicast, unspecified, broadcast,
+/// the IETF protocol and documentation and benchmarking ranges, and reserved space. IPv6 forms that
+/// carry an IPv4 address (mapped, translated, compatible, NAT64, 6to4) are judged by that IPv4
+/// address; Teredo is refused whole. A public mail server is never one of these.
 pub fn is_internal(ip: IpAddr) -> bool {
-    match ip.to_canonical() {
-        IpAddr::V4(a) => {
-            let o = a.octets();
-            a.is_loopback()
-                || a.is_private()
-                || a.is_link_local()
-                || a.is_multicast()
-                || a.is_unspecified()
-                || a.is_broadcast()
-                || a.is_documentation()
-                || o[0] == 0
-                || (o[0] == 100 && (64..128).contains(&o[1]))
-                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-                || o[0] >= 240
-        }
+    match ip {
+        IpAddr::V4(a) => internal_v4(a),
         IpAddr::V6(a) => {
             let s = a.segments();
+            let v4 =
+                |hi: u16, lo: u16| std::net::Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+            // ::ffff:a.b.c.d (mapped), ::ffff:0:a.b.c.d (translated), ::a.b.c.d (compatible).
+            if s[..5] == [0, 0, 0, 0, 0]
+                && (s[5] == 0xffff || s[5] == 0)
+                && !(s[5] == 0 && s[6] == 0)
+            {
+                return internal_v4(v4(s[6], s[7]));
+            }
+            if s[..4] == [0, 0, 0, 0] && s[4] == 0xffff && s[5] == 0 {
+                return internal_v4(v4(s[6], s[7]));
+            }
+            // NAT64: 64:ff9b::/96 (well-known) and 64:ff9b:1::/48 (local use).
+            if s[0] == 0x0064 && s[1] == 0xff9b {
+                return s[2] == 1 || internal_v4(v4(s[6], s[7]));
+            }
+            // 6to4: 2002:AABB:CCDD::/48 carries AA.BB.CC.DD.
+            if s[0] == 0x2002 {
+                return internal_v4(v4(s[1], s[2]));
+            }
             a.is_loopback()
                 || a.is_unspecified()
                 || a.is_multicast()
                 || (s[0] & 0xfe00) == 0xfc00
                 || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xffc0) == 0xfec0
                 || (s[0] == 0x2001 && s[1] == 0x0db8)
+                // Teredo tunnels to an address it hides.
+                || (s[0] == 0x2001 && s[1] == 0)
         }
     }
+}
+
+fn internal_v4(a: std::net::Ipv4Addr) -> bool {
+    let o = a.octets();
+    a.is_loopback()
+        || a.is_private()
+        || a.is_link_local()
+        || a.is_multicast()
+        || a.is_unspecified()
+        || a.is_broadcast()
+        || a.is_documentation()
+        || o[0] == 0
+        || (o[0] == 100 && (64..128).contains(&o[1]))
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
+        || o[0] >= 240
 }
 
 #[cfg(test)]
@@ -101,6 +129,17 @@ mod tests {
             "::ffff:127.0.0.1",
             "::ffff:10.0.0.1",
             "198.18.0.1",
+            // Review findings: forms that carry an internal IPv4 address, and missing ranges.
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::a00:1",
+            "::7f00:1",
+            "::ffff:0:a00:1",
+            "2002:a9fe:a9fe::1",
+            "2002:7f00:1::1",
+            "fec0::1",
+            "192.0.0.170",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
         ] {
             assert!(is_internal(ip(a)), "{a}");
         }
@@ -109,6 +148,9 @@ mod tests {
             "93.184.216.34",
             "2606:4700::1111",
             "::ffff:1.1.1.1",
+            "64:ff9b::101:101",
+            "2002:101:101::1",
+            "::101:101",
         ] {
             assert!(!is_internal(ip(a)), "{a}");
         }

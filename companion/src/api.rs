@@ -54,6 +54,8 @@ pub struct Auth {
     master: Key,
     ceremonies: Mutex<Ceremonies>,
     limits: Mutex<Limits>,
+    /// Per-user limits for the mail routes that connect out (T26).
+    mail_limits: Mutex<Limits>,
     trusted_proxies: Vec<IpAddr>,
     clock: Clock,
     oidc: Option<Arc<crate::oidc::Provider>>,
@@ -97,6 +99,7 @@ impl Auth {
             master,
             ceremonies: Mutex::new(Ceremonies::default()),
             limits: Mutex::new(Limits::default()),
+            mail_limits: Mutex::new(Limits::default()),
             trusted_proxies: trusted_proxies.iter().map(IpAddr::to_canonical).collect(),
             clock,
             oidc: None,
@@ -137,6 +140,16 @@ impl Auth {
         self.ceremonies
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Counts a mail request (discover, verify, add) against the user (30 a minute).
+    pub(crate) fn mail_limit(&self, user_id: i64) -> Result<(), ApiError> {
+        let key = (1u128 << 126) | u128::from(user_id.unsigned_abs());
+        self.mail_limits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .request_key(key, self.now())
+            .map_err(|r| ApiError::RateLimited(r.retry_after_s))
     }
 
     fn limits(&self) -> std::sync::MutexGuard<'_, Limits> {

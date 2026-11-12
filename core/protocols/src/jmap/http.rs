@@ -109,6 +109,9 @@ pub(crate) struct Http {
     tls: OnceCell<Arc<ClientConfig>>,
     timeout: Duration,
     deadline: Duration,
+    /// Skips the process's address policy: only for the Companion's OIDC provider, which its admin
+    /// configures (no user chooses where it connects).
+    admin_configured: bool,
 }
 
 impl Http {
@@ -119,7 +122,15 @@ impl Http {
             tls: OnceCell::new(),
             timeout,
             deadline,
+            admin_configured: false,
         }
+    }
+
+    /// The same for an address the server's admin configured, which the address policy (meant for
+    /// what users choose) does not restrict.
+    pub fn admin_configured(mut self) -> Self {
+        self.admin_configured = true;
+        self
     }
 
     async fn tls_config(&self) -> Result<Arc<ClientConfig>, BackendError> {
@@ -196,7 +207,11 @@ impl Http {
             return Err(unreachable());
         }
         // T26: the process's address policy (the Companion refuses its own network).
-        let addrs = crate::netpolicy::filter(addrs);
+        let addrs = if self.admin_configured {
+            addrs
+        } else {
+            crate::netpolicy::filter(addrs)
+        };
         if addrs.is_empty() {
             return Err(BackendError::Permanent(crate::netpolicy::REFUSED.into()));
         }

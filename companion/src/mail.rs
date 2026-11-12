@@ -29,6 +29,8 @@ pub enum MailError {
     Key,
     /// The folder or the database could not be opened.
     Open,
+    /// The user is disabled.
+    Disabled,
 }
 
 impl From<StoreError> for MailError {
@@ -53,10 +55,16 @@ impl SealedCredentials {
 
 impl CredentialProvider for SealedCredentials {
     fn credential(&self, account_id: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
-        match self
-            .store()
-            .mail_credential(&self.master, self.user_id, account_id)
+        let store = self.store();
+        // A password the server refused is not replayed (at every start, it would be a failed
+        // login each time); the account waits for the person to give a new one.
+        if store
+            .mail_refused(self.user_id, account_id)
+            .map_err(|_| ProviderError::Failed)?
         {
+            return Ok(None);
+        }
+        match store.mail_credential(&self.master, self.user_id, account_id) {
             Ok(Some(secret)) => Ok(Some(FfiCredential::password(secret.to_vec()))),
             Ok(None) => Ok(None),
             Err(_) => Err(ProviderError::Failed),
@@ -77,10 +85,28 @@ impl CredentialProvider for SealedCredentials {
     }
 }
 
+/// The most accounts one user may have.
+pub const MAX_ACCOUNTS_PER_USER: usize = 20;
+
+/// The address policy the Companion sets at start: nothing internal (`netpolicy::is_internal`)
+/// unless it is in one of `allowed` (the admin's `mail_allowed_networks`).
+pub fn address_policy(
+    allowed: Vec<crate::config::Network>,
+) -> croft_protocols::netpolicy::AddressPolicy {
+    Arc::new(move |ip| {
+        !croft_protocols::netpolicy::is_internal(ip) || allowed.iter().any(|n| n.contains(ip))
+    })
+}
+
+/// One user's slot: its core, opened at most once at a time (the slot's lock is held while it
+/// opens, so two first uses at once never open two engines on one database).
+type Slot = Arc<Mutex<Option<Arc<Core>>>>;
+
 /// The open cores, one per user.
 pub struct MailCores {
     data_dir: PathBuf,
-    cores: Mutex<HashMap<i64, Arc<Core>>>,
+    slots: Mutex<HashMap<i64, Slot>>,
+    max_accounts: usize,
 }
 
 impl std::fmt::Debug for MailCores {
@@ -94,12 +120,29 @@ impl MailCores {
     pub fn new(data_dir: PathBuf) -> Self {
         Self {
             data_dir,
-            cores: Mutex::new(HashMap::new()),
+            slots: Mutex::new(HashMap::new()),
+            max_accounts: MAX_ACCOUNTS_PER_USER,
         }
     }
 
-    fn cores(&self) -> std::sync::MutexGuard<'_, HashMap<i64, Arc<Core>>> {
-        self.cores.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The same, with another limit on accounts per user (tests).
+    pub fn with_max_accounts(mut self, max: usize) -> Self {
+        self.max_accounts = max;
+        self
+    }
+
+    /// The most accounts one user may have.
+    pub fn max_accounts(&self) -> usize {
+        self.max_accounts
+    }
+
+    fn slot(&self, user_id: i64) -> Slot {
+        self.slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(user_id)
+            .or_default()
+            .clone()
     }
 
     /// The user's mail database file.
@@ -110,20 +153,27 @@ impl MailCores {
             .join("mail.db")
     }
 
-    /// The user's core, opened if needed. Blocking: call it off the async threads.
+    /// The user's core, opened if needed (never for a disabled user). Blocking: call it off the
+    /// async threads.
     pub fn core(
         &self,
         store: &Arc<Mutex<Store>>,
         master: &Key,
         user_id: i64,
     ) -> Result<Arc<Core>, MailError> {
-        if let Some(core) = self.cores().get(&user_id) {
+        let slot = self.slot(user_id);
+        let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(core) = held.as_ref() {
             return Ok(core.clone());
         }
-        let data_key = store
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .data_key(master, user_id)?;
+        let data_key = {
+            let s = store.lock().unwrap_or_else(PoisonError::into_inner);
+            // Checked under the slot's lock, so a user disabled meanwhile is not reopened.
+            if s.user_by_id(user_id)?.is_none_or(|u| u.disabled) {
+                return Err(MailError::Disabled);
+            }
+            s.data_key(master, user_id)?
+        };
         let db_key = data_key.derive(MAIL_DB_KEY);
         let path = self.database(user_id);
         if let Some(dir) = path.parent() {
@@ -140,20 +190,71 @@ impl MailCores {
             provider,
         )
         .map_err(|_| MailError::Open)?;
-        // Another request may have opened it meanwhile: keep the first, drop this one here (off
-        // the async threads, as the caller is).
-        let mut cores = self.cores();
-        Ok(cores.entry(user_id).or_insert(core).clone())
+        *held = Some(core.clone());
+        Ok(core)
     }
 
     /// The user's core if it is open (no opening).
     pub fn open_core(&self, user_id: i64) -> Option<Arc<Core>> {
-        self.cores().get(&user_id).cloned()
+        self.slot(user_id)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Stops the user's core (a disabled user). Blocking: call it off the async threads.
     pub fn close(&self, user_id: i64) {
-        let core = self.cores().remove(&user_id);
+        let slot = self.slot(user_id);
+        let core = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
         drop(core);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::config::Network;
+
+    #[test]
+    fn the_companions_policy_refuses_its_network_except_the_allowed_ones() {
+        let p = address_policy(vec![Network::parse("192.168.1.0/24").unwrap()]);
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert!(!p(ip("127.0.0.1")));
+        assert!(!p(ip("10.0.0.1")));
+        assert!(!p(ip("169.254.169.254")));
+        assert!(!p(ip("64:ff9b::a00:1")));
+        assert!(p(ip("192.168.1.25")));
+        assert!(p(ip("::ffff:192.168.1.25")));
+        assert!(!p(ip("192.168.2.25")));
+        assert!(p(ip("93.184.216.34")));
+    }
+
+    #[test]
+    fn a_refused_password_is_not_offered_again() {
+        let master = Key::generate().unwrap();
+        let mut s = Store::in_memory().unwrap();
+        s.check_master_key(&master).unwrap();
+        let ann = s
+            .add_user(&master, "ann", crate::store::Role::User)
+            .unwrap()
+            .id;
+        s.save_mail_credential(&master, ann, 1, b"made-up").unwrap();
+        let p = SealedCredentials {
+            store: Arc::new(Mutex::new(s)),
+            master: master.clone(),
+            user_id: ann,
+        };
+        assert!(p.credential(1).unwrap().is_some());
+        p.sign_in_needed(1).unwrap();
+        assert!(
+            p.credential(1).unwrap().is_none(),
+            "replayed after a refusal"
+        );
+        // A new password clears it.
+        p.store()
+            .save_mail_credential(&master, ann, 1, b"made-up-2")
+            .unwrap();
+        assert!(p.credential(1).unwrap().is_some());
     }
 }

@@ -143,8 +143,15 @@ impl Network {
             Some(p) => p.parse::<u8>().ok().filter(|p| *p <= max)?,
             None => max,
         };
+        // An IPv4 network written as mapped IPv6 (`::ffff:10.0.0.0/104`) is that IPv4 network.
+        let canonical = addr.to_canonical();
+        let prefix = if addr.is_ipv6() && canonical.is_ipv4() {
+            prefix.checked_sub(96)?
+        } else {
+            prefix
+        };
         Some(Self {
-            addr: addr.to_canonical(),
+            addr: canonical,
             prefix,
         })
     }
@@ -531,6 +538,10 @@ mod tests {
             );
         }
         assert!(Network::parse("0.0.0.0/0").unwrap().contains(ip("8.8.8.8")));
+        // A mapped IPv4 network is that IPv4 network (review finding: it overflowed).
+        let mapped = Network::parse("::ffff:10.0.0.0/104").unwrap();
+        assert!(mapped.contains(ip("10.1.2.3")) && !mapped.contains(ip("11.0.0.1")));
+        assert!(Network::parse("::ffff:10.0.0.0/90").is_none());
     }
 
     #[test]

@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use super::{body, limit, with_store, ApiError, ApiResult, Full, MaybePeer};
+use super::{body, with_store, ApiError, ApiResult, Full, MaybePeer};
 use crate::http::App;
 
 /// The caller's core, opened if needed.
@@ -224,7 +224,8 @@ pub async fn discover(
     Full(c): Full,
     req: Result<Json<Discover>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult {
-    limit(&app, peer, &headers)?;
+    let _ = (peer, headers);
+    app.auth.mail_limit(c.user_id)?;
     let req = body(req)?;
     if req.email.len() > 320 {
         return Err(ApiError::BadRequest);
@@ -263,7 +264,8 @@ pub async fn verify(
     Full(c): Full,
     req: Result<Json<Verify>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult {
-    limit(&app, peer, &headers)?;
+    let _ = (peer, headers);
+    app.auth.mail_limit(c.user_id)?;
     let req = body(req)?;
     let password = Zeroizing::new(req.password);
     let d = discovered_in(req.discovered).ok_or(ApiError::BadRequest)?;
@@ -290,7 +292,9 @@ pub struct Add {
     confirmed_fingerprint: Option<String>,
 }
 
-/// `POST /api/accounts`: adds the account; its password is sealed once the core has it.
+/// `POST /api/accounts`: checks the password with the server, then adds the account; its
+/// password is sealed once the core has it. Runs to its end even if the client goes away, so an
+/// account is never left without its password (or a re-added one half updated).
 pub async fn add(
     State(app): State<App>,
     MaybePeer(peer): MaybePeer,
@@ -298,7 +302,8 @@ pub async fn add(
     Full(c): Full,
     req: Result<Json<Add>, axum::extract::rejection::JsonRejection>,
 ) -> ApiResult {
-    limit(&app, peer, &headers)?;
+    let _ = (peer, headers);
+    app.auth.mail_limit(c.user_id)?;
     let req = body(req)?;
     let password = Zeroizing::new(req.password);
     let d = discovered_in(req.discovered).ok_or(ApiError::BadRequest)?;
@@ -313,37 +318,78 @@ pub async fn add(
         .take(100)
         .collect();
     let core = core(&app, c.user_id).await?;
-    let cred = FfiCredential::password(password.as_bytes().to_vec());
-    let added = match core
-        .add_account(d, name, req.pin, req.confirmed_fingerprint, cred)
+    // At most so many accounts per user (signing an existing one in again is not a new one).
+    let max = app.mail.as_ref().map_or(0, |m| m.max_accounts());
+    let email = d.email.clone();
+    let listed = core.clone();
+    let accounts = tokio::task::spawn_blocking(move || listed.list_accounts())
+        .await
+        .map_err(|_| ApiError::Server)?
+        .map_err(|_| ApiError::Server)?;
+    if accounts.len() >= max
+        && !accounts
+            .iter()
+            .any(|a| a.email.eq_ignore_ascii_case(&email))
+    {
+        return Ok(failure("add", "too_many_accounts", json!({ "max": max })));
+    }
+    // The server must accept the password first: an account is never kept with a password
+    // nobody checked (it would be replayed at every start).
+    let pin = req.pin.clone().or(req.confirmed_fingerprint.clone());
+    if let Err(f) = core
+        .verify(
+            d.clone(),
+            FfiCredential::password(password.as_bytes().to_vec()),
+            pin,
+        )
         .await
     {
-        Ok(a) => a,
-        Err(croft_ffi::CoreError::AccountExists) => return Err(ApiError::Conflict),
-        Err(croft_ffi::CoreError::CertificateChanged) => {
-            return Ok(failure("add", "certificate_changed", json!({})))
-        }
-        Err(croft_ffi::CoreError::BadSettings | croft_ffi::CoreError::BadFingerprint) => {
-            return Err(ApiError::BadRequest)
-        }
-        Err(_) => return Err(ApiError::Server),
-    };
-    let (user_id, id) = (c.user_id, added.id);
-    let auth = app.auth.clone();
-    let sealed = with_store(&app, move |s| {
-        s.save_mail_credential(auth.master(), user_id, id, password.as_bytes())?;
-        s.audit(Some(user_id), "mail_account.add", "ok")
-    })
-    .await?;
-    if sealed.is_err() {
-        // Without its password the account would only ever ask for a sign-in: take it out again.
-        let _ = core.remove_account(id).await;
-        return Err(ApiError::Server);
+        return Ok(verify_failure(&f));
     }
-    if added.updated {
-        let _ = core.signed_in(id).await;
-    }
-    Ok(Json(json!({ "id": id, "updated": added.updated })).into_response())
+    let app2 = app.clone();
+    let user_id = c.user_id;
+    let task = tokio::spawn(async move {
+        let cred = FfiCredential::password(password.as_bytes().to_vec());
+        let added = match core
+            .add_account(d, name, req.pin, req.confirmed_fingerprint, cred)
+            .await
+        {
+            Ok(a) => a,
+            Err(croft_ffi::CoreError::AccountExists) => return Err(ApiError::Conflict),
+            Err(croft_ffi::CoreError::CertificateChanged) => {
+                return Ok(failure("add", "certificate_changed", json!({})))
+            }
+            Err(croft_ffi::CoreError::BadSettings | croft_ffi::CoreError::BadFingerprint) => {
+                return Err(ApiError::BadRequest)
+            }
+            Err(_) => return Err(ApiError::Server),
+        };
+        let id = added.id;
+        let auth = app2.auth.clone();
+        let sealed = with_store(&app2, move |s| {
+            s.save_mail_credential(auth.master(), user_id, id, password.as_bytes())?;
+            s.audit(Some(user_id), "mail_account.add", "ok")
+        })
+        .await;
+        let sealed = matches!(sealed, Ok(Ok(())));
+        if added.updated {
+            // Signing in again: the core keeps the previous settings until told the new password
+            // is stored, and puts them back if it is not.
+            if sealed {
+                let _ = core.commit_account_update(id, added.update_token);
+                let _ = core.signed_in(id).await;
+            } else {
+                let _ = core.rollback_account_update(id, added.update_token).await;
+                return Err(ApiError::Server);
+            }
+        } else if !sealed {
+            // A new account without its password would only ever ask for a sign-in.
+            let _ = core.remove_account(id).await;
+            return Err(ApiError::Server);
+        }
+        Ok(Json(json!({ "id": id, "updated": added.updated })).into_response())
+    });
+    task.await.map_err(|_| ApiError::Server)?
 }
 
 /// `GET /api/accounts`: the caller's accounts.
@@ -374,7 +420,8 @@ pub async fn list(State(app): State<App>, Full(c): Full) -> ApiResult {
     Ok(Json(json!({ "accounts": items })).into_response())
 }
 
-/// `DELETE /api/accounts/{id}`: removes the account, its mail and its sealed password.
+/// `DELETE /api/accounts/{id}`: removes the account, its mail and its sealed password (to the end,
+/// even if the client goes away).
 pub async fn remove(
     State(app): State<App>,
     Full(c): Full,
@@ -382,16 +429,19 @@ pub async fn remove(
 ) -> ApiResult {
     let axum::extract::Path(id) = id.map_err(|_| ApiError::NotFound)?;
     let core = core(&app, c.user_id).await?;
-    match core.remove_account(id).await {
-        Ok(()) => {}
-        Err(croft_ffi::CoreError::NoSuchAccount) => return Err(ApiError::NotFound),
-        Err(_) => return Err(ApiError::Server),
-    }
     let user_id = c.user_id;
-    with_store(&app, move |s| {
-        s.delete_mail_credential(user_id, id)?;
-        s.audit(Some(user_id), "mail_account.remove", "ok")
-    })
-    .await??;
-    Ok(Json(json!({ "ok": true })).into_response())
+    let task = tokio::spawn(async move {
+        match core.remove_account(id).await {
+            Ok(()) => {}
+            Err(croft_ffi::CoreError::NoSuchAccount) => return Err(ApiError::NotFound),
+            Err(_) => return Err(ApiError::Server),
+        }
+        with_store(&app, move |s| {
+            s.delete_mail_credential(user_id, id)?;
+            s.audit(Some(user_id), "mail_account.remove", "ok")
+        })
+        .await??;
+        Ok(Json(json!({ "ok": true })).into_response())
+    });
+    task.await.map_err(|_| ApiError::Server)?
 }

@@ -41,9 +41,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_11() {
-    assert_eq!(FFI_API_VERSION, 11);
-    assert_eq!(ffi_api_version(), 11);
+fn the_version_is_12() {
+    assert_eq!(FFI_API_VERSION, 12);
+    assert_eq!(ffi_api_version(), 12);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -305,6 +305,10 @@ impl CredentialProvider for Failing {
     fn credential(&self, _: i64) -> Result<Option<Arc<FfiCredential>>, ProviderError> {
         Err(ProviderError::Failed)
     }
+    fn save_tokens(&self, _: i64, _: Vec<u8>) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     fn sign_in_needed(&self, _: i64) -> Result<(), ProviderError> {
         Err(ProviderError::Failed)
     }

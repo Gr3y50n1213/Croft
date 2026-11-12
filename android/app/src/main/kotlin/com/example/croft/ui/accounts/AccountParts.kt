@@ -46,6 +46,7 @@ import kotlinx.coroutines.delay
 
 /** Test tags of S44, S45 and S60. */
 object AccountsTags {
+    const val SIGN_IN_AGAIN = "S45-sign-in-again"
     const val ACCOUNTS = "S44"
     const val ADD = "S44-add"
     fun row(id: AccountId) = "S44-row-$id"

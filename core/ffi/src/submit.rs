@@ -72,6 +72,30 @@ impl MailSubmitter for AccountSubmitter {
                 .unwrap_or(Asked::NotReady);
             let credential = match asked {
                 Asked::Credential(c) => c,
+                // The account's token session (shared with IMAP); a refused token is refreshed
+                // once and the send tried once more.
+                Asked::OAuth(_) => {
+                    let first = match self.backend.oauth_credential(false).await {
+                        Some(r) => r?,
+                        None => return Err(BackendError::Auth("sign-in needed".into())),
+                    };
+                    let sent = SmtpSender::new(self.config.clone(), first)?
+                        .send(envelope_from, recipients, mime)
+                        .await;
+                    return match sent {
+                        Err(BackendError::Auth(_)) => {
+                            let again = match self.backend.oauth_credential(true).await {
+                                Some(r) => r?,
+                                None => return Err(BackendError::Auth("sign-in needed".into())),
+                            };
+                            SmtpSender::new(self.config.clone(), again)?
+                                .send(envelope_from, recipients, mime)
+                                .await
+                                .map(|_| ())
+                        }
+                        other => other.map(|_| ()),
+                    };
+                }
                 Asked::NoCredential => return Err(BackendError::Auth("sign-in needed".into())),
                 Asked::NotReady => {
                     return Err(BackendError::Transient(

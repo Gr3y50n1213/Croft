@@ -252,6 +252,7 @@ impl Client {
                 body,
                 max_response,
                 extra_time,
+                error_body: false,
             })
             .await
     }

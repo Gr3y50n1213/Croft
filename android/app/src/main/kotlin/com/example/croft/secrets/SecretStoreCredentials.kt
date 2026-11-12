@@ -72,6 +72,14 @@ class SecretStoreCredentials(
     }
 
     private fun oauth(accountId: Long): FfiCredential? {
+        // T21: a bring-your-own OAuth account keeps the core's opaque sign-in secret.
+        store.get(accountId, SecretKind.OAUTH_REFRESH)?.let { blob ->
+            return try {
+                FfiCredential.oauthStored(blob)
+            } finally {
+                blob.fill(0)
+            }
+        }
         val user = userFor(accountId) ?: return null
         val token = store.get(accountId, SecretKind.OAUTH_ACCESS) ?: return null
         return try {
@@ -83,6 +91,24 @@ class SecretStoreCredentials(
 
     override fun signInNeeded(accountId: Long) {
         signInNeeded.mark(accountId)
+    }
+
+    /**
+     * The core rotated an OAuth account's refresh token (T21): the new sign-in secret replaces the stored one. Wiped here once stored. A
+     * failure is swallowed (never thrown: the exception could carry nothing, but the old secret simply stays); the account may then need a
+     * sign-in later.
+     */
+    override fun saveTokens(accountId: Long, secret: ByteArray) {
+        try {
+            // Only over an OAuth sign-in that is still the account's: a late rotation from before a password sign-in must not
+            // bring the old OAuth secret back (the credential prefers it).
+            if (!store.has(accountId, SecretKind.OAUTH_REFRESH) || store.has(accountId, SecretKind.PASSWORD)) return
+            store.put(accountId, SecretKind.OAUTH_REFRESH, secret)
+        } catch (e: Exception) {
+            // Kept as it was; nothing is logged.
+        } finally {
+            secret.fill(0)
+        }
     }
 
     override fun toString(): String = "[redacted]"

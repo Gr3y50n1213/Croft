@@ -109,7 +109,8 @@ class OnboardingFlow(
      * and [close] wipe [password]; a cancelled attempt that is still unwinding can never wipe the next attempt's array, because each
      * attempt has its own and only touches the shared fields while it is still [run].
      */
-    private class Run(val id: Long, val discovered: FfiDiscovered, val add: Boolean, val password: ByteArray) {
+    /** [oauth]: [password] is an OAuth sign-in secret (T21), checked and added through the backend's OAuth calls. */
+    private class Run(val id: Long, val discovered: FfiDiscovered, val add: Boolean, val password: ByteArray, val oauth: Boolean = false) {
         /**
          * The certificate the person confirmed on the **changed-certificate** warning (not on an ordinary first-use question), or null.
          * It is handed to `add_account` as `confirmedFingerprint`: the core never replaces, adds or drops a trusted certificate unless
@@ -260,6 +261,20 @@ class OnboardingFlow(
         begin(named, add = true, password)
     }
 
+    /**
+     * S04, "Use your own client" (T21): the browser handed back an OAuth sign-in; [secret] (from `oauth_finish`) is checked and the
+     * account added exactly like a password, and wiped by the flow when the attempt ends.
+     */
+    fun signInWithOAuth(secret: ByteArray) {
+        val s = mutable.value
+        val found = s.discovered
+        if (s.step != Step.SIGN_IN || found == null || s.attempt is Attempt.Working || secret.isEmpty()) {
+            secret.fill(0)
+            return
+        }
+        begin(found, add = true, secret, oauth = true)
+    }
+
     // ---- S05 ----
 
     /** S05: any field changed. A new host or port drops a trusted certificate (it was trusted for the other server). */
@@ -294,10 +309,10 @@ class OnboardingFlow(
 
     // ---- the attempt (S04 and S05) ----
 
-    private fun begin(d: FfiDiscovered, add: Boolean, password: ByteArray) {
+    private fun begin(d: FfiDiscovered, add: Boolean, password: ByteArray, oauth: Boolean = false) {
         // The attempt before this one (waiting on a trust question, say) is over: its password is wiped.
         run?.wipe()
-        val r = Run(runs.incrementAndGet(), d, add, password)
+        val r = Run(runs.incrementAndGet(), d, add, password, oauth)
         r.confirmedChange = confirmedChange?.takeIf { it.equals(mutable.value.pinnedFingerprint, ignoreCase = true) }
         run = r
         job?.cancel()
@@ -312,7 +327,7 @@ class OnboardingFlow(
         var used: String? = pin
         mutable.update { if (run === r) it.copy(attempt = Attempt.Working, test = if (it.step == Step.SERVER_SETTINGS) ConnectionTest.started() else null) else it }
         try {
-            used = backend.verify(d, r.password, pin)
+            used = if (r.oauth) backend.verifyOAuth(d, r.password, pin) else backend.verify(d, r.password, pin)
             if (run !== r) { r.wipe(); return }
             if (r.add) {
                 mutable.update { it.copy(adding = true) }
@@ -366,7 +381,8 @@ class OnboardingFlow(
     private suspend fun addAccountToCompletion(r: Run, pin: String?): Long = withContext(NonCancellable) {
         val copy = r.password.copyOf()
         try {
-            backend.addAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), pin, r.confirmedChange, copy)
+            if (r.oauth) backend.addOAuthAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), copy)
+            else backend.addAccount(r.discovered, EmailInput.localPartOf(r.discovered.email), pin, r.confirmedChange, copy)
         } finally {
             copy.fill(0)
         }

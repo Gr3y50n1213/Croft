@@ -15,6 +15,8 @@ class NoCredentials : CredentialProvider {
     override fun credential(accountId: Long): FfiCredential? = null
 
     override fun signInNeeded(accountId: Long) {}
+
+    override fun saveTokens(accountId: Long, secret: ByteArray) { secret.fill(0) }
 }
 
 /**
@@ -38,6 +40,8 @@ class MemoryCredentials : CredentialProvider {
     override fun signInNeeded(accountId: Long) {
         signIns.add(accountId)
     }
+
+    override fun saveTokens(accountId: Long, secret: ByteArray) { secret.fill(0) }
 }
 
 /** A provider whose every callback throws, as a keystore failure in the app would. */
@@ -52,6 +56,10 @@ class ThrowingCredentials : CredentialProvider {
     override fun signInNeeded(accountId: Long) {
         asked.incrementAndGet()
         throw IllegalStateException("sign-in hand-off failed: $SECRET_TEXT")
+    }
+
+    override fun saveTokens(accountId: Long, secret: ByteArray) {
+        throw IllegalStateException("save failed: $SECRET_TEXT")
     }
 
     companion object {

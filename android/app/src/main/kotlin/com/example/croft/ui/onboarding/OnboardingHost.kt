@@ -40,6 +40,8 @@ import kotlinx.coroutines.delay
 class OnboardingEnvironment(
     val backend: OnboardingBackend,
     val firstSync: FirstSyncSource,
+    /** T21: "Use your own client" on S04 for Gmail and Outlook. None: S04 offers only the password (tests of other parts). */
+    val oauth: com.example.croft.mail.onboarding.OAuthBackend? = null,
     val openSession: suspend () -> MailSession,
 )
 
@@ -66,6 +68,12 @@ fun OnboardingHost(
     sampleProblem: Boolean = false,
     /** S01's privacy policy link (a view intent); no link when null. */
     onPrivacyPolicy: (() -> Unit)? = null,
+    /**
+     * Signing in again (the Needs sign-in banner): the account's address, looked up at once, so the flow goes straight on to S04 for it
+     * (S04 offers the own-client sign-in for Gmail and Outlook). Adding an address that exists with the same servers is the core's
+     * "sign in again": the account keeps its id and mail and its paused changes go on.
+     */
+    signInAgainEmail: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val flow = rememberSaveable(
@@ -73,6 +81,15 @@ fun OnboardingHost(
     ) { OnboardingFlow(environment.backend, scope, startAt = startAt) }
     DisposableEffect(flow) { onDispose { flow.close() } }
     val state by flow.state.collectAsState()
+    // Once per flow (not again after a rotation, which restores the flow where it was).
+    var prefilled by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(signInAgainEmail) {
+        if (!prefilled && signInAgainEmail != null && state.step == Step.ADD_ACCOUNT) {
+            prefilled = true
+            flow.setEmail(signInAgainEmail)
+            flow.continueWithEmail()
+        }
+    }
 
     // The first sync ending, Continue and Back can all say "finished" at about the same moment: only the first counts, so the
     // app builds the Inbox's session once.
@@ -98,10 +115,39 @@ fun OnboardingHost(
                 email = state.email, probes = state.probes, lookup = state.lookup, onRetry = flow::retryLookup,
                 onEnterManually = flow::openServerSettings, onBack = { flow.back() },
             )
-            Step.SIGN_IN -> SignInScreen(
-                state = state, onSignIn = flow::signIn, onServerSettings = flow::openServerSettings, onTrust = flow::trustServer,
-                onCancelTrust = flow::cancelTrust, onPasswordEdited = flow::dismissFailure, onBack = { flow.back() },
-            )
+            Step.SIGN_IN -> {
+                val choice = com.example.croft.mail.onboarding.OAuthProviderChoice.of(state.discovered?.provider)
+                val oauthBackend = environment.oauth
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val oauthScope = androidx.compose.runtime.rememberCoroutineScope()
+                // One sign-in controller while S04 shows; leaving S04 ends a pending browser sign-in quietly.
+                val oauth = remember(oauthBackend, choice) {
+                    if (oauthBackend == null || choice == null) null
+                    else com.example.croft.mail.onboarding.OAuthSignIn(
+                        oauthBackend, oauthScope,
+                        openTab = { url -> openInBrowserTab(context, url) },
+                        onSignedIn = { secret -> flow.signInWithOAuth(secret) },
+                        onReturned = { returnToCroft(context) },
+                    )
+                }
+                androidx.compose.runtime.DisposableEffect(oauth) { onDispose { oauth?.cancel() } }
+                SignInScreen(
+                    state = state, onSignIn = flow::signIn, onServerSettings = flow::openServerSettings, onTrust = flow::trustServer,
+                    onCancelTrust = flow::cancelTrust, onPasswordEdited = flow::dismissFailure, onBack = { flow.back() },
+                    ownClient = if (oauth != null && choice != null && oauthBackend != null) ({
+                        val phase by oauth.phase.collectAsState()
+                        var remembered by remember(choice) { mutableStateOf<String?>(null) }
+                        LaunchedEffect(choice) { remembered = oauthBackend.rememberedClientId(choice) }
+                        val donePage = androidx.compose.ui.res.stringResource(com.example.croft.R.string.onb_own_client_done_page)
+                        OwnClientSection(
+                            provider = choice, phase = phase, rememberedClientId = remembered,
+                            onStart = { id, secret -> oauth.start(choice, id, secret, state.email, donePage) },
+                            onCancel = oauth::cancel, onEdited = oauth::clearFailure,
+                            enabled = state.attempt !is com.example.croft.mail.onboarding.Attempt.Working,
+                        )
+                    }) else null,
+                )
+            }
             Step.SERVER_SETTINGS -> ServerSettingsScreen(
                 state = state, onFormChange = flow::updateForm, onTest = flow::testConnection, onAdd = flow::addFromSettings,
                 onTrust = flow::trustServer, onCancelTrust = flow::cancelTrust, onBack = { flow.back() },

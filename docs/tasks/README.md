@@ -30,4 +30,4 @@ Check `CLAUDE.md` rules before starting and read the linked UX docs for any scre
 
 T09 to T21 cover the rest of roadmap phase 1 (Android mail MVP) and end at its gate, the daily-driver alpha. T12 to T19 follow `docs/ux/build-order.md` steps 2 to 8. Order: T09 and T12 can start as soon as T08 is done; T10 and T11 gate everything that talks to the core; T13 to T15 need only fake data and can run beside T10 to T11. Every UI task ends with a line "On a device (not checkable here)": those items are reported as unverified, never claimed.
 
-After T21, phase 2 (Companion, push gateway, web app) follows; it has no task files yet. Build-order steps 9 to 13 (calendar, contacts, security settings, web, tablet, store readiness) also wait.
+After T21, T22 (JMAP accounts in the app) closes phase 1's "IMAP and JMAP sync". Then phase 2 (Companion, push gateway, web app) follows; it has no task files yet. Build-order steps 9 to 13 (calendar, contacts, security settings, web, tablet, store readiness) also wait.

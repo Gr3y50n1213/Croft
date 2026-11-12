@@ -8,6 +8,7 @@ import android.content.Context
 import com.example.croft.mail.MailRuntime
 import com.example.croft.mail.MailSettingsStore
 import com.example.croft.mail.onboarding.CoreFirstSync
+import com.example.croft.mail.onboarding.CoreOAuthBackend
 import com.example.croft.mail.onboarding.CoreOnboardingBackend
 import com.example.croft.mail.onboarding.FirstSyncSource
 import com.example.croft.mail.onboarding.FirstSyncStatus
@@ -30,6 +31,7 @@ fun appOnboardingEnvironment(context: Context, settings: MailSettingsStore = Mai
         backend = AppOnboardingBackend(app),
         firstSync = AppFirstSync(app),
         openSession = { MailRuntime.reloadSession(app, settings) },
+        oauth = CoreOAuthBackend { MailRuntime.openedCore(app).core },
     )
 }
 
@@ -45,15 +47,27 @@ private class AppOnboardingBackend(private val context: Context) : OnboardingBac
         } catch (e: UnsatisfiedLinkError) {
             throw StorageUnavailableException()
         }
-        return CoreOnboardingBackend(open.core) { discovered, name, pin, confirmed, password ->
-            try {
-                open.accountSecrets.addPasswordAccount(open.core, discovered, name, pin, confirmed, password)
-            } catch (e: SecretBoxException) {
-                throw StorageUnavailableException()
-            } catch (e: IOException) {
-                throw StorageUnavailableException()
-            }
-        }
+        return CoreOnboardingBackend(
+            open.core,
+            adder = { discovered, name, pin, confirmed, password ->
+                try {
+                    open.accountSecrets.addPasswordAccount(open.core, discovered, name, pin, confirmed, password)
+                } catch (e: SecretBoxException) {
+                    throw StorageUnavailableException()
+                } catch (e: IOException) {
+                    throw StorageUnavailableException()
+                }
+            },
+            oauthAdder = { discovered, name, secret ->
+                try {
+                    open.accountSecrets.addOAuthAccount(open.core, discovered, name, secret)
+                } catch (e: SecretBoxException) {
+                    throw StorageUnavailableException()
+                } catch (e: IOException) {
+                    throw StorageUnavailableException()
+                }
+            },
+        )
     }
 
     override suspend fun discover(email: String, observer: DiscoveryObserver): FfiDiscovered = real().discover(email, observer)
@@ -68,6 +82,12 @@ private class AppOnboardingBackend(private val context: Context) : OnboardingBac
         confirmedFingerprint: String?,
         password: ByteArray,
     ): Long = real().addAccount(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)
+
+    override suspend fun verifyOAuth(discovered: FfiDiscovered, secret: ByteArray, pinnedFingerprint: String?): String? =
+        real().verifyOAuth(discovered, secret, pinnedFingerprint)
+
+    override suspend fun addOAuthAccount(discovered: FfiDiscovered, displayName: String, secret: ByteArray): Long =
+        real().addOAuthAccount(discovered, displayName, secret)
 
     override fun toString(): String = "[redacted]"
 }

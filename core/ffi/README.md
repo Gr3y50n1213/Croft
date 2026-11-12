@@ -332,3 +332,22 @@ is not lost). Flags: `timed_out` (the deadline passed; not a failure), `transien
 were stored; the next full sync decides). Before a notification's button or tap acts on a message, call
 `notified_message_is(account, message_id, uid)`: a deleted message's row id can be given to a new message, and a stale
 notification must never act on that one.
+
+## Bring-your-own OAuth (T21)
+
+For Gmail and Outlook the person can sign in with **their own** OAuth client (Croft ships no client id and no secret):
+
+1. `oauth_begin(provider, client_id, client_secret, email, done_page)` (`"google"` or `"microsoft"`; the secret only for a Google
+   "Desktop app" client) starts listening on `127.0.0.1` and returns the provider's URL. Open it in a browser tab (Custom Tabs),
+   **never a WebView**.
+2. `oauth_finish(flow_id)` waits (up to ten minutes) for the browser to come back to the loopback address, checks the `state`,
+   exchanges the code with the PKCE verifier, and returns the **sign-in secret**: opaque bytes. Store them in the keystore under the
+   account, exactly like a password, and build `FfiCredential.oauth_stored(secret)` for `verify` and `add_account`.
+   `oauth_cancel(flow_id)` ends a pending sign-in (`Cancelled`, show no message). Failures are `OAuthFailure` (no field holds a token).
+3. From then on `CredentialProvider.credential` answers `oauth_stored(secret)` for the account. The core refreshes the access token in
+   memory and, when the provider rotates the refresh token, calls `CredentialProvider.save_tokens(account, secret)`: replace the stored
+   secret with it. The core never writes a token anywhere itself.
+
+`oauth_client_id(provider)` gives the client id used last, to fill in the field (it is not a secret and is kept in the `setting`
+table). Token requests go only to the provider's token host. Host builds with the `test-server` feature add `TestTokenEndpoint`,
+which points them at a fake endpoint on `127.0.0.1` for the JVM tests.

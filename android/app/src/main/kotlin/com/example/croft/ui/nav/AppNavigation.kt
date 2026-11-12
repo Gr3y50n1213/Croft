@@ -201,6 +201,9 @@ fun CroftNavHost(
     if (route == Route.COMPOSE && retained.start == null) route = Route.HOME
     // Where Add account (S02) returns to: S44, or the Inbox when it was started from the account switcher.
     var addReturn by rememberSaveable { mutableStateOf(Route.ACCOUNTS) }
+    // "Sign in" on the Needs sign-in banner: the add-account flow for that account's address (kept in memory only: after a restart
+    // the person taps the banner again).
+    var signInAgainEmail by remember { mutableStateOf<String?>(null) }
     var sampleProblem by remember { mutableStateOf(false) }
     var sampleBusy by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -232,6 +235,19 @@ fun CroftNavHost(
                 route = Route.COMPOSE
             }
             onComposeRequestHandled()
+        }
+    }
+    // The banner's "Sign in" (any screen that raises it): S04 again for that account, then back where it was.
+    if (onboarding != null) LaunchedEffect(session) {
+        session.events.collect { event ->
+            if (event is com.example.croft.mail.MailEvent.SignInRequested) {
+                val email = runCatching { session.repository.listAccounts() }.getOrDefault(emptyList()).firstOrNull { it.id == event.account && !it.isDemo }?.email
+                if (email != null && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT) {
+                    signInAgainEmail = email
+                    addReturn = if (route == Route.ACCOUNT || route == Route.ACCOUNTS) route else Route.HOME
+                    route = Route.ADD_ACCOUNT
+                }
+            }
         }
     }
     // A tap on a notification: the message over the Inbox (Back returns to the Inbox), or the Inbox.
@@ -341,9 +357,10 @@ fun CroftNavHost(
             Route.ADD_ACCOUNT -> if (onboarding != null) OnboardingHost(
                 environment = onboarding,
                 onTrySampleMail = {},
-                onFinished = { scope.launch { onAccountReady(); afterAccountAdded(addReturn) } },
+                onFinished = { scope.launch { signInAgainEmail = null; onAccountReady(); afterAccountAdded(addReturn) } },
                 startAt = Step.ADD_ACCOUNT,
-                onExit = { route = addReturn },
+                onExit = { signInAgainEmail = null; route = addReturn },
+                signInAgainEmail = signInAgainEmail,
             )
             Route.HOME -> InboxScreen(
                 session, onOpenSettings = { route = Route.SETTINGS },

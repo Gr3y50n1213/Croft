@@ -56,6 +56,14 @@ interface OnboardingBackend {
         confirmedFingerprint: String?,
         password: ByteArray,
     ): Long
+
+    /** T21: checks an OAuth sign-in ([secret] from `oauth_finish`) like [verify] checks a password. Not every backend has OAuth. */
+    suspend fun verifyOAuth(discovered: FfiDiscovered, secret: ByteArray, pinnedFingerprint: String?): String? =
+        throw UnsupportedOperationException("no OAuth")
+
+    /** T21: adds the account and keeps the OAuth sign-in [secret] under its id (see [addAccount]). */
+    suspend fun addOAuthAccount(discovered: FfiDiscovered, displayName: String, secret: ByteArray): Long =
+        throw UnsupportedOperationException("no OAuth")
 }
 
 /**
@@ -67,7 +75,12 @@ interface OnboardingBackend {
 typealias AccountAdder = suspend (FfiDiscovered, String, String?, String?, ByteArray) -> Long
 
 /** [OnboardingBackend] over the real [Core]. */
-class CoreOnboardingBackend(private val core: Core, private val adder: AccountAdder) : OnboardingBackend {
+class CoreOnboardingBackend(
+    private val core: Core,
+    private val adder: AccountAdder,
+    /** Adds an OAuth account and keeps its secret (`AccountSecrets.addOAuthAccount`); none: OAuth sign-in is not offered. */
+    private val oauthAdder: (suspend (FfiDiscovered, String, ByteArray) -> Long)? = null,
+) : OnboardingBackend {
     override suspend fun discover(email: String, observer: DiscoveryObserver): FfiDiscovered = core.discover(email, observer)
 
     override suspend fun verify(discovered: FfiDiscovered, password: ByteArray, pinnedFingerprint: String?): String? {
@@ -99,6 +112,23 @@ class CoreOnboardingBackend(private val core: Core, private val adder: AccountAd
         confirmedFingerprint: String?,
         password: ByteArray,
     ): Long = adder(discovered, displayName, pinnedFingerprint, confirmedFingerprint, password)
+
+    override suspend fun verifyOAuth(discovered: FfiDiscovered, secret: ByteArray, pinnedFingerprint: String?): String? {
+        val copy = secret.copyOf()
+        try {
+            val credential = FfiCredential.oauthStored(copy)
+            try {
+                return core.verify(discovered, credential, pinnedFingerprint)
+            } finally {
+                credential.close()
+            }
+        } finally {
+            copy.fill(0)
+        }
+    }
+
+    override suspend fun addOAuthAccount(discovered: FfiDiscovered, displayName: String, secret: ByteArray): Long =
+        (oauthAdder ?: throw UnsupportedOperationException("no OAuth"))(discovered, displayName, secret)
 
     override fun toString(): String = "[redacted]"
 }

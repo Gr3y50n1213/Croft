@@ -70,11 +70,33 @@ class AccountSecrets(
         pinnedFingerprint: String?,
         confirmedFingerprint: String?,
         password: ByteArray,
+    ): Long = add(core, discovered, displayName, pinnedFingerprint, confirmedFingerprint, password, SecretKind.PASSWORD)
+
+    /**
+     * Adds a bring-your-own OAuth account (T21) with the sign-in secret `Core.oauthFinish` returned: exactly like
+     * [addPasswordAccount], with the secret stored as [SecretKind.OAUTH_REFRESH] (a password left from an earlier sign-in of the same
+     * account is removed, so it cannot answer instead). The caller wipes [secret] afterwards.
+     */
+    suspend fun addOAuthAccount(
+        core: Core,
+        discovered: FfiDiscovered,
+        displayName: String,
+        secret: ByteArray,
+    ): Long = add(core, discovered, displayName, null, null, secret, SecretKind.OAUTH_REFRESH)
+
+    private suspend fun add(
+        core: Core,
+        discovered: FfiDiscovered,
+        displayName: String,
+        pinnedFingerprint: String?,
+        confirmedFingerprint: String?,
+        password: ByteArray,
+        kind: SecretKind,
     ): Long = withContext(dispatcher) {
         // The copy the credential is built from is wiped whatever happens.
         val copy = password.copyOf()
         val added = try {
-            val credential = FfiCredential.password(copy)
+            val credential = if (kind == SecretKind.OAUTH_REFRESH) FfiCredential.oauthStored(copy) else FfiCredential.password(copy)
             try {
                 core.addAccount(discovered, displayName, pinnedFingerprint, confirmedFingerprint, credential)
             } finally {
@@ -86,10 +108,9 @@ class AccountSecrets(
         val id = added.id
         try {
             if (added.updated) {
-                store.put(id, SecretKind.PASSWORD, password)
-                // A password sign-in: no token left from another kind of sign-in may answer instead of it.
-                store.remove(id, SecretKind.OAUTH_ACCESS)
-                store.remove(id, SecretKind.OAUTH_REFRESH)
+                store.put(id, kind, password)
+                // No secret left from another kind of sign-in may answer instead of this one.
+                SecretKind.entries.filter { it != kind }.forEach { store.remove(id, it) }
                 signInNeeded.clear(id)
                 // Stored: the core no longer needs to keep what it would undo.
                 try {
@@ -98,7 +119,7 @@ class AccountSecrets(
                     // It only drops a note kept in memory.
                 }
             } else {
-                store.putForNewAccount(id, SecretKind.PASSWORD, password)
+                store.putForNewAccount(id, kind, password)
             }
         } catch (e: Exception) {
             if (e !is SecretBoxException && e !is IOException) throw e

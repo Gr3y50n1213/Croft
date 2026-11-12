@@ -30,6 +30,7 @@ import com.example.croft.ui.compose.ComposeHost
 import com.example.croft.ui.compose.OutboxHost
 import com.example.croft.ui.reading.ConversationHost
 import com.example.croft.ui.reading.ConversationNotice
+import com.example.croft.ui.compose.rememberComposeRetained
 import androidx.compose.runtime.LaunchedEffect
 import com.example.croft.swipe.SwipeSettings
 import com.example.croft.ui.swipe.SwipeSettingsFlow
@@ -150,19 +151,21 @@ fun CroftNavHost(
     var accountId by rememberSaveable { mutableStateOf(0L) }
     // Compose (T18d). What it opens is kept in memory only: after process death the route falls back to the Inbox, and the draft that
     // was open is in the Drafts folder (it was autosaved).
-    var composeStart by remember { mutableStateOf<ComposeStart?>(null) }
-    var composeReturn by remember { mutableStateOf(Route.HOME) }
+    // The compose screen's start and controller are kept by the activity's retained holder, so a rotation keeps compose open with its content.
+    val retained = rememberComposeRetained()
+    var composeReturn by rememberSaveable { mutableStateOf(Route.HOME) }
     // S20: the message that was opened, and what its actions leave for the Inbox to show once ("Archived", with Undo).
     var conversationId by rememberSaveable { mutableStateOf(0L) }
     var conversationNotice by remember { mutableStateOf<ConversationNotice?>(null) }
     var notice by remember { mutableStateOf<InboxNotice?>(null) }
     val openCompose: (ComposeStart) -> Unit = { start ->
-        composeStart = start
         // Compose returns to where it was opened: the Outbox or the conversation (a reply), else the Inbox.
         composeReturn = if (route == Route.OUTBOX || route == Route.CONVERSATION) route else Route.HOME
+        retained.begin(start)
         route = Route.COMPOSE
     }
-    if (route == Route.COMPOSE && composeStart == null) route = Route.HOME
+    // After a process restart nothing of compose is kept in memory: the Inbox (the draft was saved by autosave).
+    if (route == Route.COMPOSE && retained.start == null) route = Route.HOME
     // Where Add account (S02) returns to: S44, or the Inbox when it was started from the account switcher.
     var addReturn by rememberSaveable { mutableStateOf(Route.ACCOUNTS) }
     var sampleProblem by remember { mutableStateOf(false) }
@@ -175,9 +178,14 @@ fun CroftNavHost(
     if (route == Route.GALLERY && !DebugGallery.available) route = Route.SETTINGS
     LaunchedEffect(composeRequest, route) {
         if (composeRequest != null && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT) {
-            composeStart = composeRequest.start
-            composeReturn = Route.HOME
-            route = Route.COMPOSE
+            if (route == Route.COMPOSE && retained.start != null) {
+                // A link or a share while compose is open: what is being written is saved first (a "Draft saved" shows), then the new one opens.
+                retained.replaceWith(composeRequest.start)
+            } else {
+                composeReturn = Route.HOME
+                retained.begin(composeRequest.start)
+                route = Route.COMPOSE
+            }
             onComposeRequestHandled()
         }
     }
@@ -287,12 +295,11 @@ fun CroftNavHost(
                 onClosed = { notice -> conversationNotice = notice; route = Route.HOME },
                 onCompose = { openCompose(it) },
             )
-            Route.COMPOSE -> composeStart?.let { start ->
+            Route.COMPOSE -> retained.start?.let { start ->
                 ComposeHost(
                     session = session,
                     start = start,
                     onClosed = { closed ->
-                        composeStart = null
                         when (closed) {
                             // Nothing was kept, or it was thrown away: back to where compose was opened from.
                             ComposeClosed.Nothing, ComposeClosed.Discarded -> route = composeReturn

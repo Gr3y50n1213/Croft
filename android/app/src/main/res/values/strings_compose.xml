@@ -61,6 +61,10 @@
     <string name="attachment_error_too_many">Too many attachments.</string>
     <string name="attachment_error_total">The attachments together are too large.</string>
     <string name="attachment_error_unreadable">That file could not be read.</string>
+    <string name="attachment_error_timed_out">That file took too long to read and was not attached.</string>
+    <string name="attachment_removed">Attachment removed</string>
+    <string name="attachment_cancel_adding">Cancel adding this file</string>
+    <string name="compose_truncated">The shared text was too long, so it was cut.</string>
     <string name="attachment_error_failed">The file could not be attached.</string>
 
     <!-- Questions before sending -->

@@ -128,6 +128,7 @@ object ComposeTags {
     const val ATTACH = "compose-attach"
     const val PHOTO = "compose-photo"
     fun attachment(index: Int) = "compose-attachment-$index"
+    fun pending(id: Long) = "compose-pending-$id"
 }
 
 /**
@@ -150,21 +151,24 @@ fun ComposeHost(
         LaunchedEffect(Unit) { onClosed(ComposeClosed.Nothing) }
         return
     }
-    val scope = rememberCoroutineScope()
     val context = LocalContext.current.applicationContext
-    val controller = remember(session, start) {
-        ComposeController(
-            backend = backend,
-            scope = scope,
-            accounts = { session.repository.listAccounts() },
-            intake = AttachmentIntake(backend, ComposeFiles.directory(context)),
-            tools = tools,
-            policy = session.encryptionPolicy,
-            cursors = session.cursors,
-            files = { ComposeFiles.resolve(context, it) },
-        )
+    // The controller lives in the activity's retained holder: a rebuilt window (rotation) finds the same text, chips and files.
+    val holder = rememberComposeRetained()
+    if (holder.hasEnded(start)) return
+    if (holder.start != start) holder.begin(start)
+    val controller = holder.controller ?: ComposeController(
+        backend = backend,
+        scope = holder.scope,
+        accounts = { session.repository.listAccounts() },
+        intake = AttachmentIntake(backend, ComposeFiles.directory(context)),
+        tools = tools,
+        policy = session.encryptionPolicy,
+        cursors = session.cursors,
+        files = { ComposeFiles.resolve(context, it) },
+    ).also { holder.controller = it }
+    LaunchedEffect(controller) {
+        if (!holder.opened) { holder.opened = true; controller.open(start) }
     }
-    LaunchedEffect(controller) { controller.open(start) }
     // The Offline and Sign in banners follow the core's own notices.
     LaunchedEffect(controller) {
         var after = 0L
@@ -174,7 +178,18 @@ fun ComposeHost(
             controller.refreshState()
         }
     }
-    ComposeScreen(controller, onClosed, modifier, onSignIn = { session.raise(MailEvent.SignInRequested(it)) })
+    // A new screen for a new controller: nothing of the old one's fields is kept.
+    androidx.compose.runtime.key(controller) {
+        ComposeScreen(
+            controller,
+            // Only the controller that is current may end compose: one that was replaced by a link or a share is ignored.
+            onClosed = { closed -> if (holder.controller === controller) { holder.release(); onClosed(closed) } },
+            modifier = modifier,
+            onSignIn = { session.raise(MailEvent.SignInRequested(it)) },
+            savedNotice = holder.savedNotice,
+            onSavedNoticeShown = { holder.savedNotice = false },
+        )
+    }
 }
 
 private tailrec fun Context.lifecycleOwner(): LifecycleOwner? = when (this) {
@@ -191,6 +206,9 @@ fun ComposeScreen(
     onClosed: (ComposeClosed) -> Unit,
     modifier: Modifier = Modifier,
     onSignIn: (AccountId) -> Unit = {},
+    /** A link or a share replaced a compose that had content: its draft was saved, and this screen says so. */
+    savedNotice: Boolean = false,
+    onSavedNoticeShown: () -> Unit = {},
 ) {
     val state by controller.state.collectAsState()
     val scope = rememberCoroutineScope()
@@ -206,17 +224,18 @@ fun ComposeScreen(
     // The app pauses: save on the device and copy to the server now.
     DisposableEffect(controller, context) {
         val owner = context.lifecycleOwner()
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) scope.launch { controller.flush() } }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) controller.flushAsync() }
         owner?.lifecycle?.addObserver(observer)
-        onDispose { owner?.lifecycle?.removeObserver(observer); controller.stop() }
+        // Not stopped here: the controller outlives a rebuilt window (rotation); its timers go on and the draft is saved.
+        onDispose { owner?.lifecycle?.removeObserver(observer) }
     }
 
     // The pickers: the system document picker and the photo picker. No storage or media permission is asked for.
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        controller.addFiles(uris.mapNotNull { ComposeFiles.resolve(context.contentResolver, it) })
+        controller.addFiles(uris.mapNotNull { ComposeFiles.resolve(context, it) })
     }
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
-        controller.addFiles(uris.mapNotNull { ComposeFiles.resolve(context.contentResolver, it) })
+        controller.addFiles(uris.mapNotNull { ComposeFiles.resolve(context, it) })
     }
     val attachFile: () -> Unit = { documents.launch(arrayOf("*/*")) }
     val attachPhoto: () -> Unit = { photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
@@ -229,9 +248,24 @@ fun ComposeScreen(
             AttachmentError.TOO_MANY -> stringResource(R.string.attachment_error_too_many)
             AttachmentError.TOTAL_TOO_LARGE -> stringResource(R.string.attachment_error_total)
             AttachmentError.UNREADABLE -> stringResource(R.string.attachment_error_unreadable)
+            AttachmentError.TIMED_OUT -> stringResource(R.string.attachment_error_timed_out)
             AttachmentError.FAILED -> stringResource(R.string.attachment_error_failed)
         }
         LaunchedEffect(error) { haptics.perform(HapticEvent.Rejected); snackbar.show(text); controller.attachmentErrorShown() }
+    }
+    if (state.truncatedNotice) {
+        val text = stringResource(R.string.compose_truncated)
+        LaunchedEffect(Unit) { snackbar.show(text); controller.truncatedNoticeShown() }
+    }
+    if (savedNotice) {
+        val text = stringResource(R.string.compose_snack_draft_saved)
+        LaunchedEffect(Unit) { snackbar.show(text); onSavedNoticeShown() }
+    }
+    // Removing an attachment can be taken back for a few seconds: the core deletes it for good, so the removal is held until then.
+    state.removedAttachment?.let { removed ->
+        val text = stringResource(R.string.attachment_removed)
+        val undo = stringResource(R.string.mail_undo)
+        LaunchedEffect(removed.id) { snackbar.show(text, undo, stayMs = REMOVE_UNDO_MS) { scope.launch { controller.undoRemoveAttachment() } } }
     }
     state.sendProblem?.let { problem ->
         val text = stringResource(
@@ -312,6 +346,9 @@ fun ComposeScreen(
         else -> Unit
     }
 }
+
+/** How long a removed attachment can be taken back: the controller's default ([com.example.croft.mail.compose.AutosaveTiming.removeUndoMs]). */
+private const val REMOVE_UNDO_MS = 5_000L
 
 /** Largest single attachment the core accepts, for the message when a file is over it (the core's number: 40 MB). */
 private const val MAX_ATTACHMENT_MB = 40
@@ -406,12 +443,12 @@ private fun Fields(state: ComposeState, controller: ComposeController, scope: ko
         Column(Modifier.widthIn(max = 640.dp).fillMaxWidth().padding(horizontal = 16.dp)) {
             FromRow(state, controller, scope)
             RecipientRow(
-                stringResource(R.string.compose_to), RecipientField.TO, state.to, controller, focusRequester = toFocus,
+                stringResource(R.string.compose_to), RecipientField.TO, state.to, controller, focusRequester = toFocus, clearTick = state.recipientTextTick,
                 trailing = if (!state.showCcBcc) ({ CcBccToggle { controller.showCcBcc() } }) else null,
             )
             if (state.showCcBcc) {
-                RecipientRow(stringResource(R.string.compose_cc), RecipientField.CC, state.cc, controller)
-                RecipientRow(stringResource(R.string.compose_bcc), RecipientField.BCC, state.bcc, controller)
+                RecipientRow(stringResource(R.string.compose_cc), RecipientField.CC, state.cc, controller, clearTick = state.recipientTextTick)
+                RecipientRow(stringResource(R.string.compose_bcc), RecipientField.BCC, state.bcc, controller, clearTick = state.recipientTextTick)
             }
             OutlinedTextField(
                 value = subject,
@@ -454,10 +491,12 @@ private fun Fields(state: ComposeState, controller: ComposeController, scope: ko
                             tapLabelOverride = stringResource(R.string.attachment_remove, a.name),
                         )
                     }
-                    if (state.attachmentsBusy > 0) {
-                        Row(Modifier.heightIn(min = 40.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    state.pending.forEach { p ->
+                        Row(Modifier.heightIn(min = 48.dp).testTag(ComposeTags.pending(p.id)), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             CircularProgressIndicator(Modifier.padding(4.dp).size(20.dp), strokeWidth = 2.dp)
                             Text(stringResource(R.string.attachment_adding), style = MaterialTheme.typography.bodySmall)
+                            val cancel = stringResource(R.string.attachment_cancel_adding)
+                            TextButton({ controller.cancelPending(p.id) }, Modifier.semantics { contentDescription = cancel }) { Text(stringResource(R.string.control_cancel)) }
                         }
                     }
                 }

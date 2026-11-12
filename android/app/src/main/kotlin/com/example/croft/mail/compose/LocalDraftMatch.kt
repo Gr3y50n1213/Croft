@@ -21,6 +21,8 @@ object LocalDraftMatch {
         if (squash(row.subject) != squash(draft.subject)) return false
         val a = squash(row.snippet)
         val b = squash(draft.snippet)
+        // Two empty starts say nothing about each other: never a match (an empty snippet would match every row of that subject).
+        if (a.isEmpty() || b.isEmpty()) return false
         return a.startsWith(b) || b.startsWith(a)
     }
 

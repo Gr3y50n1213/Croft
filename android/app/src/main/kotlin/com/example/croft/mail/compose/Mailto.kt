@@ -13,8 +13,11 @@ import java.io.ByteArrayOutputStream
  * header injection). Lengths are bounded.
  */
 object Mailto {
-    private const val MAX_FIELD = 4_000
-    private const val MAX_BODY = 20_000
+    /** Cuts, in characters: a subject and a text from outside are bounded (the person is told when something was cut). */
+    const val MAX_FIELD = 4_000
+    const val MAX_BODY = 20_000
+    /** The most recipients one link or share may name; more are ignored. */
+    const val MAX_RECIPIENTS = 100
 
     /** The fill for [uri], or null when it is not a `mailto:` link. */
     fun parse(uri: String): ComposeFill? {
@@ -28,6 +31,7 @@ object Mailto {
         var bcc = emptyList<String>()
         var subject = ""
         var body = ""
+        var truncated = false
         for (pair in query.substringBefore('#').split('&')) {
             if (pair.isEmpty()) continue
             val key = decode(pair.substringBefore('=')).lowercase()
@@ -36,15 +40,15 @@ object Mailto {
                 "to" -> to = to + splitList(value)
                 "cc" -> cc = cc + splitList(value)
                 "bcc" -> bcc = bcc + splitList(value)
-                "subject" -> subject = value.replace("\r", " ").replace("\n", " ").take(MAX_FIELD)
-                "body" -> body = value.replace("\r\n", "\n").take(MAX_BODY)
+                "subject" -> { truncated = truncated || value.length > MAX_FIELD; subject = value.replace("\r", " ").replace("\n", " ").take(MAX_FIELD) }
+                "body" -> { truncated = truncated || value.length > MAX_BODY; body = value.replace("\r\n", "\n").take(MAX_BODY) }
                 else -> Unit // including "attach" and "in-reply-to": never from a link
             }
         }
-        return ComposeFill(to = to, cc = cc, bcc = bcc, subject = subject, body = body)
+        return ComposeFill(to = to, cc = cc, bcc = bcc, subject = subject, body = body, truncated = truncated)
     }
 
-    private fun splitList(text: String): List<String> = text.split(',', ';').map { it.trim() }.filter { it.isNotEmpty() }.take(100)
+    private fun splitList(text: String): List<String> = text.split(',', ';').map { it.trim() }.filter { it.isNotEmpty() }.take(MAX_RECIPIENTS)
 
     /** Percent-decoding as UTF-8; a bad escape stays as it is. */
     internal fun decode(text: String): String {

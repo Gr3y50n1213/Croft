@@ -43,14 +43,14 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        ComposeIntents.parse(intent)?.let { composeRequest = ComposeRequest(it) }
+        ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // Only on a first start: after a rotation the intent is still the old one and the request was already used.
-        if (savedInstanceState == null) ComposeIntents.parse(intent)?.let { composeRequest = ComposeRequest(it) }
+        if (savedInstanceState == null) ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
         // A missing library or a version mismatch shows the error line instead of crashing.
         val info = runCatching { loadRustInfo() }.getOrNull()
         val store = ThemeStore.shared(applicationContext)

@@ -6,6 +6,7 @@ package com.example.croft.ui.compose
 
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsNodeInteraction
+import androidx.compose.ui.test.SemanticsNodeInteractionsProvider
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.hasText
@@ -26,14 +27,16 @@ class ComposeFixture(
     val policy: EncryptionPolicy = NoEncryptionPolicy,
     backendOverride: FakeComposeBackend? = null,
     rows: Int = 30,
+    data: List<com.example.croft.mail.MessageRowData>? = null,
+    session: ((ComposeFixture) -> com.example.croft.mail.compose.ComposeBackend)? = null,
 ) {
-    val inbox = InboxFixture(rows)
+    val inbox = if (data != null) InboxFixture(data.size, data = data) else InboxFixture(rows)
 
     /** On the fixture's fixed clock, so that the end of an Undo window is a known time after "now". */
     val backend: FakeComposeBackend = backendOverride ?: FakeComposeBackend(clock = { inbox.clockMs })
     val session = MailSession(
         inbox.repo, inbox.anchors, { inbox.clockMs }, ZoneId.of("UTC"), inbox.actions,
-        compose = backend, encryptionPolicy = policy,
+        compose = session?.invoke(this) ?: backend, encryptionPolicy = policy,
     )
     val closed = mutableListOf<ComposeClosed>()
 }
@@ -48,10 +51,10 @@ fun ComposeContentTestRule.waitForText(text: String, timeoutMs: Long = 10_000) {
 }
 
 /** The text in the body field (S23). */
-fun ComposeContentTestRule.bodyText(): String =
+fun SemanticsNodeInteractionsProvider.bodyText(): String =
     onNodeWithTag(ComposeTags.BODY).fetchSemanticsNode().config[SemanticsProperties.EditableText].text
 
-fun ComposeContentTestRule.subjectText(): String =
+fun SemanticsNodeInteractionsProvider.subjectText(): String =
     onNodeWithTag(ComposeTags.SUBJECT).fetchSemanticsNode().config[SemanticsProperties.EditableText].text
 
 fun SemanticsNodeInteraction.selection() = fetchSemanticsNode().config[SemanticsProperties.TextSelectionRange]

@@ -264,7 +264,7 @@ private fun InboxBody(
     // The items: headers and rows, rebuilt when the rows change. In a Drafts folder the server's copy of a draft of this device is hidden
     // (the device's own draft is shown above the list).
     val localDrafts = controller.localDrafts
-    val rows = remember(controller.rows, localDrafts) { LocalDraftMatch.withoutCopies(controller.rows, localDrafts) }
+    val rows = remember(controller.rows, localDrafts) { LocalDraftMatch.withoutCopies(controller.rows, localDrafts) } // = controller.shownRows
     val nowMs = remember(rows) { session.clock() }
     val items = remember(rows) { buildListItems(rows, nowMs, session.zone) }
     val rowsUpTo = remember(items) {

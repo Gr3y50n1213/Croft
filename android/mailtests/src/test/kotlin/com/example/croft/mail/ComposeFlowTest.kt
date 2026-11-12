@@ -222,11 +222,12 @@ class ComposeFlowTest {
         val bare = harness(r).open(ComposeStart.Fill(com.example.croft.mail.compose.ComposeFill(to = listOf("ann@example.org")), r.account)).state.value
         assertEquals(SendState.EMPTY_CONFIRM, bare.sendState)
         assertEquals(emptyList<Any>(), r.run { r.compose.listDrafts(r.account) })
-        // Leaving it alone leaves nothing behind.
+        // A fill from a link or a share is content: Back keeps it as a draft even when nothing was typed (the review's L6). A new compose and
+        // a reply that were left alone leave nothing behind (see the tests above).
         val c = harness(r).open(ComposeStart.Fill(com.example.croft.mail.compose.ComposeFill(to = listOf("ann@example.org"), subject = "Hi"), r.account))
         r.run { c.back() }
-        assertEquals(ComposeClosed.Nothing, c.state.value.closed)
-        assertEquals(emptyList<Any>(), r.run { r.compose.listDrafts(r.account) })
+        assertEquals(ComposeClosed.DraftSaved, c.state.value.closed)
+        assertEquals("Hi", r.run { r.compose.listDrafts(r.account) }.single().subject)
     }
 
     // ---- autosave survives a crash ----

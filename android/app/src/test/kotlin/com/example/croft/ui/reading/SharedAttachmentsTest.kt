@@ -12,6 +12,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.croft.ui.compose.ComposeFiles
 import java.io.File
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -31,6 +32,13 @@ import org.robolectric.annotation.Config
 class SharedAttachmentsTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private val made = mutableListOf<File>()
+
+    /** FileProvider keeps its path table in a static cache; every test has its own cache folder, so the table of an earlier test must go. */
+    @Before
+    fun forgetThePathTable() {
+        val cache = androidx.core.content.FileProvider::class.java.getDeclaredField("sCache").also { it.isAccessible = true }
+        (cache.get(null) as MutableMap<*, *>).clear()
+    }
 
     @After
     fun tearDown() = made.forEach { it.deleteRecursively() }

@@ -34,10 +34,19 @@ import org.robolectric.annotation.Config
 class MailWebViewTest {
     private val context: Context get() = ApplicationProvider.getApplicationContext()
 
+    /** Robolectric's settings object ignores Safe Browsing (its getter is always false); this one remembers it, so the flag can be asserted. */
+    private class Settings : org.robolectric.fakes.RoboWebSettings() {
+        private var safe = false
+        override fun setSafeBrowsingEnabled(enabled: Boolean) { safe = enabled }
+        override fun getSafeBrowsingEnabled(): Boolean = safe
+    }
+
     @Test
     fun theSettingsAreExactlyTheListedOnes_whileRemoteContentIsBlocked() {
-        val view = MailWebViewFactory.create(context)
-        val s = view.settings
+        // The factory applies these very settings to the page it creates (create calls apply with remote content blocked).
+        MailWebViewFactory.create(context)
+        val s = Settings()
+        MailWebViewFactory.apply(s, remoteAllowed = false, fontScale = 1f)
         assertFalse("JavaScript off", s.javaScriptEnabled)
         assertFalse("file access off", s.allowFileAccess)
         assertFalse("content access off", s.allowContentAccess)
@@ -46,8 +55,7 @@ class MailWebViewTest {
         assertTrue("no network while remote content is blocked", s.blockNetworkLoads)
         assertTrue("no pictures from the network while blocked", s.blockNetworkImage)
         assertTrue("Safe Browsing on", s.safeBrowsingEnabled)
-        // WebSettings has no getter for this one; Robolectric's own settings object does.
-        assertFalse("no geolocation", (s as org.robolectric.fakes.RoboWebSettings).geolocationEnabled)
+        assertFalse("no geolocation", s.geolocationEnabled)
         assertFalse("no saved forms", s.saveFormData)
         assertFalse("no web storage", s.domStorageEnabled)
         assertFalse("no databases", s.databaseEnabled)
@@ -61,9 +69,8 @@ class MailWebViewTest {
 
     @Test
     fun allowingRemoteContentOnlyOpensTheNetwork_nothingElseChanges() {
-        val view = MailWebViewFactory.create(context)
-        MailWebViewFactory.apply(view.settings, remoteAllowed = true, fontScale = 1f)
-        val s = view.settings
+        val s = Settings()
+        MailWebViewFactory.apply(s, remoteAllowed = true, fontScale = 1f)
         assertFalse(s.blockNetworkLoads)
         assertFalse(s.blockNetworkImage)
         assertFalse(s.javaScriptEnabled)
@@ -75,7 +82,7 @@ class MailWebViewTest {
         assertFalse(s.saveFormData)
         assertEquals(WebSettings.MIXED_CONTENT_NEVER_ALLOW, s.mixedContentMode)
         // And back: blocking again closes it.
-        MailWebViewFactory.apply(view.settings, remoteAllowed = false, fontScale = 1f)
+        MailWebViewFactory.apply(s, remoteAllowed = false, fontScale = 1f)
         assertTrue(s.blockNetworkLoads && s.blockNetworkImage)
     }
 

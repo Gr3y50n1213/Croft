@@ -207,7 +207,7 @@ fun ConversationScreen(controller: ConversationController, session: MailSession,
                         CroftSpinner(Modifier.size(20.dp))
                         Text(stringResource(R.string.reading_loading), style = MaterialTheme.typography.bodyMedium)
                     }
-                    is ConversationPhase.Failed -> Column(Modifier.padding(24.dp).widthIn(max = CONTENT_MAX_WIDTH).testTag(ReadingTags.FAILED), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    is ConversationPhase.Failed -> Column(Modifier.padding(24.dp).widthIn(max = CONTENT_MAX_WIDTH).testTag(ReadingTags.FAILED).semantics(mergeDescendants = true) { }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(stringResource(R.string.reading_cannot_open_title), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
                         Text(stringResource(ReadCopy.resFor(phase.problem)), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -298,7 +298,7 @@ private fun Header(controller: ConversationController, opened: ConversationMessa
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             controller.openedFolder?.let { folder ->
-                Surface(Modifier.testTag(ReadingTags.FOLDER), shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Surface(Modifier.testTag(ReadingTags.FOLDER).semantics(mergeDescendants = true) { }, shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Text(folder.displayName(), Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -337,12 +337,13 @@ private fun CollapsedMessage(controller: ConversationController, session: MailSe
     val collapsedWord = stringResource(R.string.reading_message_collapsed)
     val open = { controller.toggle(m.id) }
     Surface(
-        Modifier.fillMaxWidth().testTag(ReadingTags.message(m.id)),
+        Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         Row(
             Modifier
+                .testTag(ReadingTags.message(m.id))
                 .clickable(role = Role.Button, onClickLabel = expandLabel, onClick = open)
                 .semantics(mergeDescendants = true) {
                     stateDescription = collapsedWord

@@ -13,6 +13,7 @@ import androidx.compose.ui.test.performClick
 import com.example.croft.mail.MailSettings
 import com.example.croft.mail.reading.MarkReadDelay
 import com.example.croft.ui.components.show
+import com.example.croft.ui.components.ui
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -80,7 +81,7 @@ class MarkReadTimingTest {
         rule.mainClock.autoAdvance = false
         rule.show { if (visible) f.Screen(settings = MailSettings(markRead = MarkReadDelay.AFTER_2_SECONDS)) }
         rule.mainClock.advanceTimeBy(1_000)
-        rule.runOnUiThread { visible = false }
+        rule.ui { visible = false }
         rule.mainClock.advanceTimeBy(5_000)
         assertTrue(marks(f).isEmpty())
     }

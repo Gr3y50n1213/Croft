@@ -150,10 +150,10 @@ class ConversationScreenTest {
         rule.waitForTag(MoveTags.SHEET)
         // The folder the message is in is not offered.
         rule.onNodeWithTag(MoveTags.folder(f.inbox)).assertDoesNotExist()
-        val work = FakeData.folderId(1, FakeData.WORK)
-        rule.onNodeWithTag(MoveTags.folder(work)).performClick()
+        val archive = FakeData.folderId(1, FakeData.ARCHIVE)
+        rule.onNodeWithTag(MoveTags.folder(archive)).performClick()
         rule.waitUntil(10_000) { f.closed.isNotEmpty() }
-        assertTrue(f.actions.calls.contains("moveTo $NEWEST $work"))
+        assertTrue(f.actions.calls.contains("moveTo $NEWEST $archive"))
     }
 
     // ---- The reply bar ----

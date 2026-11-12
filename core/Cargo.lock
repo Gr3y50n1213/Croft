@@ -471,6 +471,7 @@ name = "croft-ffi"
 version = "0.1.0"
 dependencies = [
  "croft-engine",
+ "croft-mail-core",
  "croft-protocols",
  "croft-reader",
  "croft-storage",

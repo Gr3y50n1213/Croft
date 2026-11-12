@@ -149,6 +149,10 @@ fun MessageRow(
     extraActions: List<RowAction> = emptyList(),
     /** Lets the screen move focus to this row (after a removal). */
     focusRequester: androidx.compose.ui.focus.FocusRequester? = null,
+    /** Search results (S28): the matched parts of [subject], drawn bold on a tinted background. */
+    subjectMatches: List<IntRange> = emptyList(),
+    /** Search results (S28): the matched parts of [preview]. */
+    previewMatches: List<IntRange> = emptyList(),
 ) {
     val settings = LocalThemeSettings.current
     val colors = MaterialTheme.colorScheme
@@ -261,9 +265,9 @@ fun MessageRow(
                                 maxLines = 1,
                             )
                         }
-                        Text(subject, style = MaterialTheme.typography.bodyMedium, fontWeight = weight, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
+                        Text(highlighted(subject, subjectMatches, colors.primaryContainer), style = MaterialTheme.typography.bodyMedium, fontWeight = weight, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
                         if (density.previewLines > 0) {
-                            Text(preview, Modifier.testTag(ROW_PREVIEW_TAG), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant, maxLines = density.previewLines, overflow = TextOverflow.Ellipsis)
+                            Text(highlighted(preview, previewMatches, colors.primaryContainer), Modifier.testTag(ROW_PREVIEW_TAG), style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant, maxLines = density.previewLines, overflow = TextOverflow.Ellipsis)
                         }
                         if (state.localOnly) {
                             Text(stringResource(R.string.row_not_saved), Modifier.testTag(ROW_NOT_SAVED_TAG), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant, maxLines = 1)
@@ -368,3 +372,20 @@ private fun Initial(letter: String) {
         Text(letter, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSecondaryContainer)
     }
 }
+
+/**
+ * [text] with [matches] (search hits, `[first, last]` char indices) drawn bold on a tinted [tint] background: weight as well as colour,
+ * so a match does not depend on colour alone. Ranges outside the text are ignored.
+ */
+fun highlighted(text: String, matches: List<IntRange>, tint: androidx.compose.ui.graphics.Color): androidx.compose.ui.text.AnnotatedString =
+    androidx.compose.ui.text.buildAnnotatedString {
+        append(text)
+        for (r in matches) {
+            val start = r.first.coerceIn(0, text.length)
+            val end = (r.last + 1).coerceIn(start, text.length)
+            if (end > start) {
+                addStyle(androidx.compose.ui.text.SpanStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, background = tint), start, end)
+            }
+        }
+    }
+

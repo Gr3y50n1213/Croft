@@ -71,6 +71,7 @@ enum Op<'a> {
     MoveTo(&'a str, &'a [Uid], &'a str),
     DeleteForever(&'a str, &'a [Uid]),
     FetchBody(&'a str, Uid),
+    Search(&'a str, &'a ServerQuery),
     Append(&'a str, &'a [&'a str], &'a str),
     CreateFolder(&'a str),
 }
@@ -85,6 +86,7 @@ enum Out {
     Uid(Option<Uid>),
     Moved(MoveOutcome),
     Raw(RawMessage),
+    Search(SearchOutcome),
     Done,
 }
 
@@ -108,6 +110,7 @@ impl Op<'_> {
                 Out::Done
             }
             Op::FetchBody(f, uid) => Out::Raw(c.fetch_body(f, uid).await?),
+            Op::Search(f, q) => Out::Search(c.search(f, q).await?),
             Op::Append(f, flags, msg) => Out::Uid(c.append(f, flags, msg).await?),
             Op::CreateFolder(f) => {
                 c.create_folder(f).await?;
@@ -301,6 +304,19 @@ impl MailBackend for ImapBackend {
         Box::pin(async move {
             match self.run(Op::FetchHeaders(folder, uids)).await? {
                 Out::Headers(v) => Ok(v),
+                _ => Err(unexpected()),
+            }
+        })
+    }
+
+    fn search<'a>(
+        &'a self,
+        folder: &'a str,
+        query: &'a ServerQuery,
+    ) -> BackendFuture<'a, SearchOutcome> {
+        Box::pin(async move {
+            match self.run(Op::Search(folder, query)).await? {
+                Out::Search(v) => Ok(v),
                 _ => Err(unexpected()),
             }
         })

@@ -49,6 +49,7 @@ mod credentials;
 mod error;
 mod list;
 mod reading;
+mod search;
 mod settings;
 mod submit;
 #[cfg(feature = "test-server")]
@@ -75,6 +76,7 @@ pub use reading::{
     AttachmentInfo, BodyState, Conversation, ConversationMessage, MailAddress, MessageBody,
     ReadError, RemoteImagesSetting,
 };
+pub use search::{LocalResults, SearchFailure, SearchHit, ServerResults, TextRange};
 #[cfg(feature = "test-server")]
 pub use test_server::TestImapServer;
 pub use types::*;
@@ -109,7 +111,7 @@ uniffi::setup_scaffolding!();
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 9;
+pub const FFI_API_VERSION: u32 = 10;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

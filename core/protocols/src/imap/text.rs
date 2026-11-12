@@ -384,3 +384,105 @@ mod tests {
         assert_eq!(bracketed_message_id(" <a@b> "), "<a@b>");
     }
 }
+
+/// `12-Nov-2026` for an IMAP `SINCE` or `BEFORE` (the UTC day of `ms`).
+pub(crate) fn imap_date(ms: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // Howard Hinnant's civil-from-days.
+    let days = ms.div_euclid(86_400_000);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let month = MONTHS
+        .get(usize::try_from(m - 1).unwrap_or(0))
+        .copied()
+        .unwrap_or("Jan");
+    format!("{d}-{month}-{y}")
+}
+
+/// The criteria of a `UID SEARCH` for `q`, or `None` when a term cannot be sent (not ASCII, or a
+/// line break: this adapter sends quoted strings only, no literals). An empty string means no
+/// condition.
+pub(crate) fn search_criteria(q: &crate::ServerQuery) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for t in &q.text {
+        parts.push(format!("TEXT {}", quote(t)?));
+    }
+    for t in &q.from {
+        parts.push(format!("FROM {}", quote(t)?));
+    }
+    for t in &q.subject {
+        parts.push(format!("SUBJECT {}", quote(t)?));
+    }
+    for t in &q.to {
+        let a = quote(t)?;
+        parts.push(format!("OR TO {a} CC {a}"));
+    }
+    if q.unread {
+        parts.push("UNSEEN".into());
+    }
+    if q.starred {
+        parts.push("FLAGGED".into());
+    }
+    if let Some(ms) = q.before_ms {
+        parts.push(format!("BEFORE {}", imap_date(ms)));
+    }
+    if let Some(ms) = q.since_ms {
+        parts.push(format!("SINCE {}", imap_date(ms)));
+    }
+    Some(parts.join(" "))
+}
+
+#[cfg(test)]
+mod search_criteria_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::ServerQuery;
+
+    #[test]
+    fn dates_are_imap_dates() {
+        assert_eq!(imap_date(0), "1-Jan-1970");
+        assert_eq!(imap_date(1_794_441_600_000), "12-Nov-2026");
+        assert_eq!(imap_date(1_709_164_800_000), "29-Feb-2024");
+    }
+
+    #[test]
+    fn every_condition_is_mapped_and_quoted() {
+        let q = ServerQuery {
+            text: vec!["lunch \"friday\"".into()],
+            from: vec!["ann".into()],
+            to: vec!["bob@example.org".into()],
+            subject: vec!["q3\\plan".into()],
+            unread: true,
+            starred: true,
+            before_ms: Some(1_794_441_600_000),
+            since_ms: Some(0),
+        };
+        assert_eq!(
+            search_criteria(&q).unwrap(),
+            "TEXT \"lunch \\\"friday\\\"\" FROM \"ann\" SUBJECT \"q3\\\\plan\" \
+             OR TO \"bob@example.org\" CC \"bob@example.org\" UNSEEN FLAGGED \
+             BEFORE 12-Nov-2026 SINCE 1-Jan-1970"
+        );
+    }
+
+    #[test]
+    fn what_cannot_be_quoted_is_not_sent() {
+        for bad in ["caf\u{e9}", "a\r\nb", "x\0"] {
+            let q = ServerQuery {
+                text: vec![bad.into()],
+                ..ServerQuery::default()
+            };
+            assert_eq!(search_criteria(&q), None, "{bad:?}");
+        }
+        assert_eq!(search_criteria(&ServerQuery::default()).unwrap(), "");
+    }
+}

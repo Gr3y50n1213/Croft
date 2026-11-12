@@ -16,6 +16,7 @@ pub mod ops;
 pub mod outbox;
 pub mod outbox_store;
 pub mod persist;
+pub mod search;
 pub mod sync_plan;
 
 pub use ops::{

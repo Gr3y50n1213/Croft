@@ -12,6 +12,7 @@ mod encrypted;
 mod local;
 mod readd;
 mod reading;
+mod search;
 mod secrets;
 mod server;
 

@@ -314,3 +314,64 @@ mod tests {
         assert!(!f.seen && f.flagged);
     }
 }
+
+/// The most UIDs one server search returns (the newest).
+pub const MAX_SEARCH_UIDS: usize = 200;
+
+/// A search to run on the server, in one folder. Every condition must hold; text conditions
+/// match substrings, as the server defines them. A query with no condition finds nothing.
+///
+/// `Debug` prints counts only: what a person searches for is never logged.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ServerQuery {
+    /// Words or phrases anywhere in the message (headers or body).
+    pub text: Vec<String>,
+    /// In the sender.
+    pub from: Vec<String>,
+    /// In the To or Cc recipients.
+    pub to: Vec<String>,
+    /// In the subject.
+    pub subject: Vec<String>,
+    /// Only unread messages.
+    pub unread: bool,
+    /// Only starred messages.
+    pub starred: bool,
+    /// Only messages before this day (Unix milliseconds, UTC midnight).
+    pub before_ms: Option<i64>,
+    /// Only messages on or after this day (Unix milliseconds, UTC midnight).
+    pub since_ms: Option<i64>,
+}
+
+impl ServerQuery {
+    /// True when the query has no condition (nothing is sent).
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+impl fmt::Debug for ServerQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerQuery")
+            .field("text", &self.text.len())
+            .field("from", &self.from.len())
+            .field("to", &self.to.len())
+            .field("subject", &self.subject.len())
+            .field("unread", &self.unread)
+            .field("starred", &self.starred)
+            .field(
+                "dates",
+                &(self.before_ms.is_some() || self.since_ms.is_some()),
+            )
+            .finish()
+    }
+}
+
+/// What a server search gave.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchOutcome {
+    /// The UIDs of the matches, newest first, at most [`MAX_SEARCH_UIDS`].
+    Found(Vec<Uid>),
+    /// The server cannot run this search (it has no search, refused it, or the query has
+    /// characters this adapter cannot send). Local results are all there is.
+    Unsupported,
+}

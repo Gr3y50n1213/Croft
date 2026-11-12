@@ -1,10 +1,11 @@
-# T29: The thin push gateway (FCM) and the Android flavours
+# T29: The thin push gateway (FCM)
 
-Folders: `gateway/` (T29a, a separate service, AGPL-3.0) and `android/` (T29b).
+Folder: `gateway/` (a separate service, AGPL-3.0).
 
 Depends on: T28 (the Companion sends Web Push pings). Blocks T34 (phones register for push through the Companion).
 
-Built in two pull requests: **T29a** the gateway, **T29b** the Android build flavours and their checks.
+Planned as two pull requests, **T29a** the gateway and **T29b** the Android build flavours. T29b moved to T34 (see the end of this
+file and DECISIONS): the flavours would differ in nothing until T34 writes the code that registers for push.
 
 ## Read first
 `docs/PLAN.md` ("Review decisions": run a thin push gateway, never a mail-watching service), `docs/tasks/T28-companion-push-relay.md`,
@@ -39,7 +40,15 @@ decrypts with its own Web Push keys (T34). F-Droid and GitHub builds never conta
   `croft-push-gateway generate-key`, 32 random bytes, hex), the service account path, the FCM base URL. `GET /health`. A Docker image.
   Its own CI job (fmt, clippy, tests).
 
-## Spec (T29b, the Android flavours)
+## Done when
+- T29a: against a fake Google token endpoint and a fake FCM on this machine: a registered endpoint forwards a Web Push message whose
+  bytes FCM receives unchanged, with the access token from a JWT that verifies with the service account's public key; the token is
+  fetched once and reused; priority and TTL are mapped; `UNREGISTERED` gives `410`; a forged, altered or other gateway's endpoint gives
+  `404`; the limits give `429`; nothing secret is logged. Clippy is clean. An independent review (security-sensitive: it holds Google
+  credentials and is open to the internet).
+- Not checkable here: real FCM delivery (needs the owner's Firebase project and the Play build on a phone, OPEN-ITEMS).
+
+## Moved to T34: the Android flavours (was T29b)
 - Three product flavours: **`play`** (FCM, `com.google.firebase:firebase-messaging`, without the google-services plugin: Firebase is
   set up from build values, empty by default so a build without them has no push), **`fdroid`** and **`github`** (no Google libraries).
 - Checks in CI: the `fdroid` and `github` runtime classpaths contain no `com.google.firebase`, `com.google.android.gms` or
@@ -49,12 +58,3 @@ decrypts with its own Web Push keys (T34). F-Droid and GitHub builds never conta
 - CI, the preview build and `docs/TESTING-ON-A-PHONE.md` move to the flavour task names.
 - **Left out:** registering for push on the phone and decrypting pings (T34, where phones first connect to a Companion; the same for
   UnifiedPush).
-
-## Done when
-- T29a: against a fake Google token endpoint and a fake FCM on this machine: a registered endpoint forwards a Web Push message whose
-  bytes FCM receives unchanged, with the access token from a JWT that verifies with the service account's public key; the token is
-  fetched once and reused; priority and TTL are mapped; `UNREGISTERED` gives `410`; a forged, altered or other gateway's endpoint gives
-  `404`; the limits give `429`; nothing secret is logged. Clippy is clean. An independent review (security-sensitive: it holds Google
-  credentials and is open to the internet).
-- T29b: the four builds assemble in CI and the checks fail when a Google library is added to `fdroid` (shown once, then removed).
-- Not checkable here: real FCM delivery (needs the owner's Firebase project and the Play build on a phone, OPEN-ITEMS).

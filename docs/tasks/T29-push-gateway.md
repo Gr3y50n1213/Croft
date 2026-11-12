@@ -19,7 +19,8 @@ wake Play-store phones without learning anything itself: it takes the Companion'
 decrypts with its own Web Push keys (T34). F-Droid and GitHub builds never contain Google code and use UnifiedPush.
 
 ## Spec (T29a, the gateway)
-- **A Web Push endpoint per device, without state.** `POST /register` with `{"token": "<FCM registration token>"}` answers
+- **A Web Push endpoint per device, without state.** `POST /register` with `{"token": "<FCM registration token>"}` (and, after
+  the review, an optional `vapid`: the Companion's VAPID public key, which binds the endpoint to it) answers
   `{"endpoint": "<public URL>/wp/<sealed>"}`: the token sealed (AES-256-GCM, the gateway's key, a fixed context) and base64url
   encoded. The gateway stores nothing: the endpoint carries the token, and only the gateway can open it. A token is at most 4096
   characters of `[A-Za-z0-9:_-]`.
@@ -29,7 +30,9 @@ decrypts with its own Web Push keys (T34). F-Droid and GitHub builds never conta
   FCM accepted it; `410` when FCM says the token is no more (`UNREGISTERED`, or `INVALID_ARGUMENT` about the token), so the Companion
   drops the subscription; `404` for an endpoint the gateway did not make; `413` for a large body; `429` over the limits; `502` when FCM
   failed otherwise or could not be reached.
-- **Limits.** Per endpoint (60 an hour, burst 10) and per client address for `/register` (30 an hour); all in memory, bounded.
+- **Limits.** Per device (60 an hour, burst 10), per client address for `/register` (30 an hour); after the review also per sending
+  address for `/wp` (36,000 an hour), for FCM in all (720,000 an hour, 64 at once), and a day's memory of tokens FCM said are gone;
+  all in memory, bounded.
 - **FCM authentication.** A Google service account JSON (path in the config, never in the repository): `client_email`, `private_key`
   (PKCS#8 PEM, RSA), `token_uri`, `project_id`. An RS256 JWT for the scope `https://www.googleapis.com/auth/firebase.messaging` is
   exchanged at `token_uri` for an access token, kept until 5 minutes before it expires. Requests go through the core's HTTPS client

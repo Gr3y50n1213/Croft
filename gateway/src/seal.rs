@@ -82,16 +82,26 @@ impl GatewayKey {
         })
     }
 
-    /// The sealed form of a token (base64url, no padding).
-    pub fn seal(&self, token: &str) -> Result<String, KeyError> {
+    /// The sealed form of a token (base64url, no padding), bound to a Companion's VAPID public key
+    /// when one is given (then only messages that key signed are forwarded).
+    pub fn seal(&self, token: &str, vapid: Option<&[u8; 65]>) -> Result<String, KeyError> {
         let mut nonce = [0u8; NONCE_LEN];
         self.rng.fill(&mut nonce).map_err(|_| KeyError::Random)?;
-        let mut data = token.as_bytes().to_vec();
+        // [1 byte: 0 unbound, 1 bound][65 bytes: the key, when bound][the token]
+        let mut data = Zeroizing::new(Vec::with_capacity(1 + 65 + token.len() + 16));
+        match vapid {
+            Some(k) => {
+                data.push(1);
+                data.extend_from_slice(k);
+            }
+            None => data.push(0),
+        }
+        data.extend_from_slice(token.as_bytes());
         self.key
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce),
                 Aad::from(CONTEXT),
-                &mut data,
+                &mut *data,
             )
             .map_err(|_| KeyError::Random)?;
         let mut out = nonce.to_vec();
@@ -99,8 +109,8 @@ impl GatewayKey {
         Ok(URL_SAFE_NO_PAD.encode(out))
     }
 
-    /// The token a sealed part holds, when this key sealed it and it is a token.
-    pub fn open(&self, sealed: &str) -> Option<Zeroizing<String>> {
+    /// What a sealed part holds, when this key sealed it and it holds a token.
+    pub fn open(&self, sealed: &str) -> Option<Opened> {
         if sealed.len() > MAX_SEALED {
             return None;
         }
@@ -115,8 +125,33 @@ impl GatewayKey {
             .key
             .open_in_place(nonce, Aad::from(CONTEXT), &mut data[..])
             .ok()?;
-        let token = Zeroizing::new(String::from_utf8(plain.to_vec()).ok()?);
-        token_ok(&token).then_some(token)
+        let (vapid, token) = match plain.split_first()? {
+            (0, rest) => (None, rest),
+            (1, rest) if rest.len() > 65 => {
+                let mut k = [0u8; 65];
+                k.copy_from_slice(&rest[..65]);
+                (Some(k), &rest[65..])
+            }
+            _ => return None,
+        };
+        let token = Zeroizing::new(String::from_utf8(token.to_vec()).ok()?);
+        token_ok(&token).then_some(Opened { token, vapid })
+    }
+}
+
+/// What an endpoint holds.
+pub struct Opened {
+    /// The device's FCM registration token.
+    pub token: Zeroizing<String>,
+    /// The Companion's VAPID public key the endpoint is bound to, if any.
+    pub vapid: Option<[u8; 65]>,
+}
+
+impl std::fmt::Debug for Opened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Opened")
+            .field("bound", &self.vapid.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -140,10 +175,22 @@ mod tests {
         let key = GatewayKey::from_hex(&GatewayKey::generate_hex().unwrap()).unwrap();
         let other = GatewayKey::from_hex(&GatewayKey::generate_hex().unwrap()).unwrap();
         let token = "made-up-fcm-token:APA91b_x-1";
-        let sealed = key.seal(token).unwrap();
+        let sealed = key.seal(token, None).unwrap();
         assert!(!sealed.contains("made-up"));
-        assert_ne!(sealed, key.seal(token).unwrap(), "a fresh nonce each time");
-        assert_eq!(key.open(&sealed).unwrap().as_str(), token);
+        assert_ne!(
+            sealed,
+            key.seal(token, None).unwrap(),
+            "a fresh nonce each time"
+        );
+        let opened = key.open(&sealed).unwrap();
+        assert_eq!(opened.token.as_str(), token);
+        assert!(opened.vapid.is_none());
+        let bound = key.seal(token, Some(&[4u8; 65])).unwrap();
+        let opened = key.open(&bound).unwrap();
+        assert_eq!(
+            (opened.token.as_str(), opened.vapid),
+            (token, Some([4u8; 65]))
+        );
         assert!(other.open(&sealed).is_none());
         let mut altered = sealed.into_bytes();
         let last = altered.len() - 3;
@@ -153,7 +200,7 @@ mod tests {
         assert!(key.open("not base64 !").is_none());
         assert!(key.open(&"A".repeat(MAX_SEALED + 1)).is_none());
         // A sealed value that is not a token is not one.
-        assert!(key.open(&key.seal("has space").unwrap()).is_none());
+        assert!(key.open(&key.seal("has space", None).unwrap()).is_none());
     }
 
     #[test]

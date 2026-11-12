@@ -12,6 +12,7 @@ pub mod fcm;
 pub mod limits;
 pub mod seal;
 pub mod server;
+pub mod vapid;
 
 #[cfg(test)]
 mod tests;

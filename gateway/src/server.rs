@@ -20,6 +20,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
+use crate::config::{Config, Network};
 use crate::fcm::{now_ms, Delivery, Fcm, Message};
 use crate::limits::{self, Limits};
 use crate::seal::{self, GatewayKey};
@@ -66,42 +67,58 @@ pub struct App {
     key: Arc<GatewayKey>,
     fcm: Arc<Fcm>,
     public_url: Arc<str>,
-    trusted_proxies: Arc<[IpAddr]>,
+    /// The gateway's origin: the `aud` a bound endpoint's VAPID JWT must name.
+    origin: Arc<str>,
+    trusted_proxies: Arc<[Network]>,
     push_limits: Arc<Mutex<Limits>>,
+    address_limits: Arc<Mutex<Limits>>,
+    total_limits: Arc<Mutex<Limits>>,
     register_limits: Arc<Mutex<Limits>>,
+    gone: Arc<Mutex<Gone>>,
     /// The counts.
     pub counts: Arc<Counts>,
 }
 
 impl App {
-    /// The state from the settings, the key and FCM.
-    pub fn new(config: &crate::config::Config, key: GatewayKey, fcm: Fcm) -> Self {
+    /// The state from the settings (already checked by [`Config::load`]), the key and FCM.
+    pub fn new(config: &Config, key: GatewayKey, fcm: Fcm) -> Self {
+        let limits = |per_hour: u32, burst: u32| Arc::new(Mutex::new(Limits::new(per_hour, burst)));
         Self {
             key: Arc::new(key),
             fcm: Arc::new(fcm),
             public_url: Arc::from(config.public_url.as_str()),
-            trusted_proxies: Arc::from(config.trusted_proxies.as_slice()),
-            push_limits: Arc::new(Mutex::new(Limits::new(
-                config.push_per_hour,
-                config.push_burst,
-            ))),
-            register_limits: Arc::new(Mutex::new(Limits::new(
-                config.register_per_hour,
-                config.register_per_hour.min(10),
-            ))),
+            origin: Arc::from(crate::vapid::origin(&config.public_url).as_str()),
+            trusted_proxies: Arc::from(config.proxies().unwrap_or_default().as_slice()),
+            push_limits: limits(config.push_per_hour, config.push_burst),
+            address_limits: limits(
+                config.push_per_address_per_hour,
+                (config.push_per_address_per_hour / 60).max(10),
+            ),
+            total_limits: limits(
+                config.total_per_hour,
+                (config.total_per_hour / 1800).max(10),
+            ),
+            register_limits: limits(config.register_per_hour, config.register_per_hour.min(10)),
+            gone: Arc::new(Mutex::new(Gone::default())),
             counts: Arc::new(Counts::default()),
         }
     }
 
-    /// The client's address: the peer, or for a trusted proxy the last hop of `X-Forwarded-For`
-    /// that is not itself a trusted proxy.
-    fn client(&self, peer: Option<Peer>, headers: &HeaderMap) -> IpAddr {
+    fn trusted(&self, ip: IpAddr) -> bool {
+        self.trusted_proxies.iter().any(|n| n.contains(ip))
+    }
+
+    /// The client's address: the peer, or for a trusted proxy the nearest hop of `X-Forwarded-For`
+    /// that is not itself a trusted proxy. `None` when a trusted proxy did not say who the client
+    /// is (no header, or a hop that is not an address): a broken proxy set-up must not put every
+    /// client in one bucket.
+    fn client(&self, peer: Option<Peer>, headers: &HeaderMap) -> Option<IpAddr> {
         let Some(Peer(addr)) = peer else {
-            return IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+            return Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         };
-        let mut ip = addr.ip().to_canonical();
-        if !self.trusted_proxies.contains(&ip) {
-            return ip;
+        let ip = addr.ip().to_canonical();
+        if !self.trusted(ip) {
+            return Some(ip);
         }
         let forwarded: Vec<&str> = headers
             .get_all("x-forwarded-for")
@@ -110,15 +127,53 @@ impl App {
             .flat_map(|v| v.split(','))
             .collect();
         for hop in forwarded.into_iter().rev() {
-            let Ok(hop) = hop.trim().parse::<IpAddr>() else {
-                break;
-            };
-            ip = hop.to_canonical();
-            if !self.trusted_proxies.contains(&ip) {
-                break;
+            let hop = parse_hop(hop.trim())?;
+            if !self.trusted(hop) {
+                return Some(hop);
             }
         }
-        ip
+        None
+    }
+
+    fn take(limits: &Mutex<Limits>, key: u128) -> bool {
+        limits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take(key, now_ms())
+    }
+}
+
+/// An `X-Forwarded-For` hop: an address, or an address with a port (`1.2.3.4:5`, `[::1]:5`).
+fn parse_hop(hop: &str) -> Option<IpAddr> {
+    hop.parse::<IpAddr>()
+        .or_else(|_| hop.parse::<SocketAddr>().map(|s| s.ip()))
+        .ok()
+        .map(|ip| ip.to_canonical())
+}
+
+/// Tokens FCM said are no more, for a day: another message to one is answered `410` without asking
+/// FCM again. Two generations, so memory stays bounded.
+#[derive(Debug, Default)]
+struct Gone {
+    current: std::collections::HashSet<u128>,
+    previous: std::collections::HashSet<u128>,
+    since: i64,
+}
+
+impl Gone {
+    const GENERATION_MS: i64 = 12 * 60 * 60 * 1000;
+    const MAX: usize = 200_000;
+
+    fn contains(&self, key: u128) -> bool {
+        self.current.contains(&key) || self.previous.contains(&key)
+    }
+
+    fn insert(&mut self, key: u128, now: i64) {
+        if now - self.since >= Self::GENERATION_MS || self.current.len() >= Self::MAX {
+            self.previous = std::mem::take(&mut self.current);
+            self.since = now;
+        }
+        self.current.insert(key);
     }
 }
 
@@ -150,7 +205,10 @@ async fn guard(req: Request<Body>, next: Next) -> Response {
 
 #[derive(Deserialize)]
 struct Register {
-    token: String,
+    token: zeroize::Zeroizing<String>,
+    /// The Companion's VAPID public key (base64url): the endpoint then forwards only messages
+    /// that key signed for this gateway.
+    vapid: Option<String>,
 }
 
 async fn register(
@@ -159,24 +217,25 @@ async fn register(
     headers: HeaderMap,
     req: Result<Json<Register>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    let ip = app.client(peer.map(|p| p.0), &headers);
-    let allowed = app
-        .register_limits
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take(limits::who(ip), now_ms());
-    if !allowed {
+    let Some(ip) = app.client(peer.map(|p| p.0), &headers) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !App::take(&app.register_limits, limits::who(ip)) {
         app.counts.limited.fetch_add(1, Ordering::Relaxed);
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     let Ok(Json(req)) = req else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let token = zeroize::Zeroizing::new(req.token);
-    if !seal::token_ok(&token) {
+    if !seal::token_ok(&req.token) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let Ok(sealed) = app.key.seal(&token) else {
+    let vapid = match req.vapid.as_deref().map(crate::vapid::parse_key) {
+        None => None,
+        Some(Some(k)) => Some(k),
+        Some(None) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let Ok(sealed) = app.key.seal(&req.token, vapid.as_ref()) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     app.counts.registered.fetch_add(1, Ordering::Relaxed);
@@ -186,12 +245,20 @@ async fn register(
 
 async fn push(
     State(app): State<App>,
+    peer: Option<axum::Extension<Peer>>,
     Path(sealed): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
     let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let Some(token) = app.key.open(&sealed) else {
+    let Some(ip) = app.client(peer.map(|p| p.0), &headers) else {
+        return StatusCode::BAD_REQUEST;
+    };
+    if !App::take(&app.address_limits, limits::who(ip)) {
+        app.counts.limited.fetch_add(1, Ordering::Relaxed);
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
+    let Some(opened) = app.key.open(&sealed) else {
         return StatusCode::NOT_FOUND;
     };
     if body.len() > MAX_PUSH_BODY {
@@ -203,17 +270,34 @@ async fn push(
     let (true, Some(ttl), false) = (encrypted, ttl, body.is_empty()) else {
         return StatusCode::BAD_REQUEST;
     };
-    let allowed = app
-        .push_limits
+    // A bound endpoint forwards only what its Companion signed for this gateway (RFC 8292).
+    if let Some(key) = &opened.vapid {
+        let signed = text("authorization")
+            .is_some_and(|a| crate::vapid::verify(a, key, &app.origin, now_ms() / 1000));
+        if !signed {
+            return StatusCode::UNAUTHORIZED;
+        }
+    }
+    let device = limits::token_key(&opened.token);
+    if app
+        .gone
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .take(limits::token_key(&token), now_ms());
-    if !allowed {
+        .contains(device)
+    {
+        app.counts.gone.fetch_add(1, Ordering::Relaxed);
+        return StatusCode::GONE;
+    }
+    if !App::take(&app.push_limits, device) {
         app.counts.limited.fetch_add(1, Ordering::Relaxed);
         return StatusCode::TOO_MANY_REQUESTS;
     }
+    if !App::take(&app.total_limits, 0) {
+        app.counts.limited.fetch_add(1, Ordering::Relaxed);
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
     let message = Message {
-        token: &token,
+        token: &opened.token,
         body: &body,
         high: text("urgency").is_some_and(|v| v.trim().eq_ignore_ascii_case("high")),
         ttl_s: u32::try_from(ttl.min(u64::from(MAX_TTL_S))).unwrap_or(MAX_TTL_S),
@@ -224,12 +308,20 @@ async fn push(
             StatusCode::CREATED
         }
         Delivery::Gone => {
+            app.gone
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(device, now_ms());
             app.counts.gone.fetch_add(1, Ordering::Relaxed);
             StatusCode::GONE
         }
         Delivery::Failed => {
             app.counts.failed.fetch_add(1, Ordering::Relaxed);
             StatusCode::BAD_GATEWAY
+        }
+        Delivery::Busy => {
+            app.counts.limited.fetch_add(1, Ordering::Relaxed);
+            StatusCode::SERVICE_UNAVAILABLE
         }
     }
 }
@@ -285,7 +377,7 @@ pub async fn serve_on(
             () = &mut shutdown => break,
         };
         let ip = peer.ip().to_canonical();
-        let address_slot = if trusted.contains(&ip) {
+        let address_slot = if trusted.iter().any(|n| n.contains(ip)) {
             None
         } else {
             let key = limits::who(ip);

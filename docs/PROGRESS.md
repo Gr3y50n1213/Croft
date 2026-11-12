@@ -5,6 +5,39 @@ unverified, the next step.
 
 ---
 
+## T29: The push gateway (12 November 2026)
+
+**Status:** draft pull request #50 on `task/t29` (CI green before the review fixes, run 43313646883); independent review done, every
+finding fixed or accepted (DECISIONS). Merged with the pull request that carries this entry.
+
+**What was built.** `gateway/`: a small stateless service (AGPL, its own workspace, Docker image and CI job) that lets every Companion
+wake the Play build of the app through Google's FCM, which only the app's publisher can send to.
+- **Endpoints without state.** `POST /register` seals the app's FCM token (and, optionally, its Companion's VAPID key) into a Web Push
+  endpoint with the gateway's key.
+- **Forwarding.** `POST /wp/{sealed}` takes a Companion's Web Push message (T28) and hands the encrypted bytes to FCM unchanged.
+  `410` when FCM says the token is gone; a bound endpoint needs its Companion's VAPID signature.
+- **FCM.** A service account's RS256 JWT exchanged for an access token, renewed by one request at a time. Only Google's addresses.
+- **Limits.** Per device, per sending address, for FCM in all, and per address for registrations; a day's memory of gone tokens.
+- **Privacy.** It stores nothing and logs only counts every ten minutes.
+- **The plan.** The Android `play`, `fdroid` and `github` flavours (planned as T29b) moved to T34, with the code that registers for push.
+
+**Checks.** 20 gateway tests, among them, against a fake Google token endpoint (which verifies the JWT with the made-up service
+account's public key) and a fake FCM:
+- the bytes reach FCM unchanged, with priority and TTL mapped and the access token reused;
+- FCM's answers mapped (`410` only for FCM's own "unregistered", remembered; a bare `404` or another project's token is `502`);
+- one renewal for many concurrent `401`s; a failing token endpoint backed off;
+- forged, altered and other gateways' endpoints refused; bound endpoints only with their Companion's valid signature;
+- every limit; trusted proxies as ranges, and a proxy without a client address refused;
+- the server loop; the configuration pinned to Google's addresses.
+
+Clippy is clean; the core's `croft-protocols` tests pass with `post_json` and the wiped `form`.
+
+**Review** (one independent agent, opus, high effort): no high, 3 medium, lows. All fixed with regression tests; not re-reviewed.
+
+**Not verified here:** real delivery through FCM (needs the owner's Firebase project and the Play build on a phone, T34).
+
+---
+
 ## Fix: adding an account while another connection writes (12 November 2026)
 
 **Status:** its own pull request after T28.

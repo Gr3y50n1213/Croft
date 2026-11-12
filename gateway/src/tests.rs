@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::Body;
@@ -47,8 +47,12 @@ fn rsa_key() -> &'static (String, Vec<u8>) {
 struct Google {
     token_calls: AtomicUsize,
     token_uri: Mutex<String>,
-    /// FCM's answer: 200, 404 (unregistered), 403 (another sender), 500, or 401 once then 200.
+    /// FCM's answer: 200, 404 (unregistered), 4041 (a bare 404: a wrong address), 403 (another
+    /// sender), 500, 401 once then 200, or 4011 (401 for the first access token only).
     fcm_mode: AtomicU16,
+    /// The token endpoint's status (200 when 0) and the life of the tokens it gives.
+    token_status: AtomicU16,
+    expires_in: AtomicI64,
     fcm_401_given: AtomicUsize,
     sent: Mutex<Vec<(String, Value)>>,
 }
@@ -76,6 +80,11 @@ async fn token_endpoint(
     if !ok {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    let status = g.token_status.load(Ordering::SeqCst);
+    if status != 0 && status != 200 {
+        g.token_calls.fetch_add(1, Ordering::SeqCst);
+        return StatusCode::from_u16(status).unwrap().into_response();
+    }
     let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
     assert_eq!(
         claims["iss"],
@@ -88,7 +97,8 @@ async fn token_endpoint(
         3600
     );
     let n = g.token_calls.fetch_add(1, Ordering::SeqCst) + 1;
-    Json(json!({"access_token": format!("made-up-access-token-{n}"), "expires_in": 3599, "token_type": "Bearer"}))
+    let expires_in = g.expires_in.load(Ordering::SeqCst);
+    Json(json!({"access_token": format!("made-up-access-token-{n}"), "expires_in": expires_in, "token_type": "Bearer"}))
         .into_response()
 }
 
@@ -104,6 +114,11 @@ async fn fcm_endpoint(
     if mode == 401 && g.fcm_401_given.fetch_add(1, Ordering::SeqCst) == 0 {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if mode == 4011 && auth == "Bearer made-up-access-token-1" {
+        // Give every request with the old token time to see its 401 at once.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     g.sent.lock().unwrap().push((auth, body));
     match mode {
         404 => (
@@ -117,6 +132,7 @@ async fn fcm_endpoint(
             Json(json!({"error": {"details": [{"errorCode": "SENDER_ID_MISMATCH"}]}})),
         )
             .into_response(),
+        4041 => (StatusCode::NOT_FOUND, "<html>Not Found</html>").into_response(),
         500 => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         _ => Json(json!({"name": "projects/made-up-project/messages/1"})).into_response(),
     }
@@ -132,6 +148,7 @@ async fn harness(config_change: impl FnOnce(&mut Config)) -> H {
     let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let google = Arc::new(Google::default());
     google.fcm_mode.store(200, Ordering::SeqCst);
+    google.expires_in.store(3599, Ordering::SeqCst);
     *google.token_uri.lock().unwrap() = format!("{base}/token");
     let fake = Router::new()
         .route("/token", post(token_endpoint))
@@ -209,6 +226,26 @@ impl H {
     }
 
     async fn push(&self, path: &str, ttl: &str, urgency: &str, body: &[u8]) -> StatusCode {
+        self.push_as(
+            path,
+            ttl,
+            urgency,
+            body,
+            "vapid t=made-up, k=made-up",
+            "198.51.100.7:5000",
+        )
+        .await
+    }
+
+    async fn push_as(
+        &self,
+        path: &str,
+        ttl: &str,
+        urgency: &str,
+        body: &[u8],
+        authorization: &str,
+        from: &str,
+    ) -> StatusCode {
         self.call(
             Method::POST,
             path,
@@ -216,10 +253,10 @@ impl H {
                 ("content-encoding", "aes128gcm"),
                 ("ttl", ttl),
                 ("urgency", urgency),
-                ("authorization", "vapid t=made-up, k=made-up"),
+                ("authorization", authorization),
             ],
             body.to_vec(),
-            "198.51.100.7:5000",
+            from,
         )
         .await
         .0
@@ -285,14 +322,29 @@ async fn a_message_reaches_fcm_unchanged_with_a_reused_access_token() {
 #[tokio::test]
 async fn fcm_answers_become_web_push_answers() {
     let h = harness(|_| {}).await;
-    let path = h.endpoint(TOKEN).await;
     let body = ping_body();
-    // The token is no more: 410, and the Companion drops the subscription.
+    // The token is no more: 410, and the Companion drops the subscription. The gateway then
+    // remembers it and answers 410 without asking FCM again.
+    let gone = h.endpoint("made-up-fcm-token:gone").await;
     h.google.fcm_mode.store(404, Ordering::SeqCst);
-    assert_eq!(h.push(&path, "60", "normal", &body).await, StatusCode::GONE);
+    assert_eq!(h.push(&gone, "60", "normal", &body).await, StatusCode::GONE);
+    let asked = h.sent().len();
+    h.google.fcm_mode.store(200, Ordering::SeqCst);
+    assert_eq!(h.push(&gone, "60", "normal", &body).await, StatusCode::GONE);
+    assert_eq!(h.sent().len(), asked, "FCM was asked again");
+    // A bare 404 (a wrong address, a proxy's page) or another sender's token (a wrong service
+    // account, which hits every token) is the gateway's problem: never "gone".
+    let path = h.endpoint(TOKEN).await;
+    h.google.fcm_mode.store(4041, Ordering::SeqCst);
+    assert_eq!(
+        h.push(&path, "60", "normal", &body).await,
+        StatusCode::BAD_GATEWAY
+    );
     h.google.fcm_mode.store(403, Ordering::SeqCst);
-    assert_eq!(h.push(&path, "60", "normal", &body).await, StatusCode::GONE);
-    // Anything else is the gateway's or Google's problem, not the subscription's.
+    assert_eq!(
+        h.push(&path, "60", "normal", &body).await,
+        StatusCode::BAD_GATEWAY
+    );
     h.google.fcm_mode.store(500, Ordering::SeqCst);
     assert_eq!(
         h.push(&path, "60", "normal", &body).await,
@@ -306,6 +358,153 @@ async fn fcm_answers_become_web_push_answers() {
     );
     assert_eq!(h.google.token_calls.load(Ordering::SeqCst), 2);
     assert_eq!(h.sent().last().unwrap().0, "Bearer made-up-access-token-2");
+}
+
+#[tokio::test]
+async fn a_refused_access_token_is_renewed_once_for_everyone() {
+    let h = harness(|_| {}).await;
+    let body = ping_body();
+    let mut paths = Vec::new();
+    for i in 0..10 {
+        paths.push(h.endpoint(&format!("made-up-fcm-token:{i}")).await);
+    }
+    // Token 1 is fetched, then refused by FCM for every request at once.
+    assert_eq!(
+        h.push(&paths[0], "60", "normal", &body).await,
+        StatusCode::CREATED
+    );
+    h.google.fcm_mode.store(4011, Ordering::SeqCst);
+    let pushes = paths.iter().map(|p| h.push(p, "60", "normal", &body));
+    let results = futures_join_all(pushes).await;
+    assert!(
+        results.iter().all(|s| *s == StatusCode::CREATED),
+        "{results:?}"
+    );
+    assert_eq!(
+        h.google.token_calls.load(Ordering::SeqCst),
+        2,
+        "one renewal for all"
+    );
+}
+
+#[tokio::test]
+async fn a_failing_token_endpoint_is_not_hammered_and_short_lives_are_kept() {
+    let h = harness(|_| {}).await;
+    let body = ping_body();
+    let path = h.endpoint(TOKEN).await;
+    h.google.token_status.store(500, Ordering::SeqCst);
+    for _ in 0..5 {
+        assert_eq!(
+            h.push(&path, "60", "normal", &body).await,
+            StatusCode::BAD_GATEWAY
+        );
+    }
+    assert_eq!(h.google.token_calls.load(Ordering::SeqCst), 1, "backed off");
+    // A token that lives only a second is still kept for a minute.
+    let h = harness(|_| {}).await;
+    h.google.expires_in.store(1, Ordering::SeqCst);
+    let path = h.endpoint(TOKEN).await;
+    assert_eq!(
+        h.push(&path, "60", "normal", &body).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        h.push(&path, "60", "normal", &body).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(h.google.token_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_bound_endpoint_forwards_only_its_companions_signed_messages() {
+    let h = harness(|_| {}).await;
+    let body = ping_body();
+    let companion = crate::vapid::tests::Companion::new();
+    let other = crate::vapid::tests::Companion::new();
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/register",
+            &[("content-type", "application/json")],
+            json!({"token": TOKEN, "vapid": URL_SAFE_NO_PAD.encode(companion.public())})
+                .to_string()
+                .into_bytes(),
+            "203.0.113.5:4000",
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let v: Value = serde_json::from_slice(&v).unwrap();
+    let path = v["endpoint"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("https://push.test")
+        .to_owned();
+    let now = crate::fcm::now_ms() / 1000;
+    let from = "198.51.100.7:5000";
+    for bad in [
+        "vapid t=made-up, k=made-up".to_owned(),
+        other.authorization("https://push.test", now + 3600),
+        companion.authorization("https://other.test", now + 3600),
+        companion.authorization("https://push.test", now - 10),
+    ] {
+        assert_eq!(
+            h.push_as(&path, "60", "normal", &body, &bad, from).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert!(h.sent().is_empty());
+    let good = companion.authorization("https://push.test", now + 3600);
+    assert_eq!(
+        h.push_as(&path, "60", "normal", &body, &good, from).await,
+        StatusCode::CREATED
+    );
+    // A key that is not a P-256 public key is refused at registration.
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/register",
+            &[("content-type", "application/json")],
+            json!({"token": TOKEN, "vapid": "AAAA"})
+                .to_string()
+                .into_bytes(),
+            "203.0.113.5:4000",
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// Runs the futures at once (no extra crate for one test).
+async fn futures_join_all<F: std::future::Future<Output = StatusCode>>(
+    futures: impl Iterator<Item = F>,
+) -> Vec<StatusCode> {
+    let mut set = Vec::new();
+    for f in futures {
+        set.push(Box::pin(f));
+    }
+    let mut out = vec![StatusCode::OK; set.len()];
+    let mut done = vec![false; set.len()];
+    std::future::poll_fn(|cx| {
+        let mut all = true;
+        for (i, f) in set.iter_mut().enumerate() {
+            if done[i] {
+                continue;
+            }
+            match f.as_mut().poll(cx) {
+                std::task::Poll::Ready(s) => {
+                    out[i] = s;
+                    done[i] = true;
+                }
+                std::task::Poll::Pending => all = false,
+            }
+        }
+        if all {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+    out
 }
 
 #[tokio::test]
@@ -403,7 +602,7 @@ async fn the_limits_hold_per_device_and_per_address() {
     let h = harness(|c| {
         c.push_burst = 3;
         c.register_per_hour = 4;
-        c.trusted_proxies = vec!["10.0.0.1".parse().unwrap()];
+        c.trusted_proxies = vec!["10.0.0.0/24".into()];
     })
     .await;
     let path = h.endpoint(TOKEN).await;
@@ -479,6 +678,78 @@ async fn the_limits_hold_per_device_and_per_address() {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "another client behind the proxy");
+    // A hop with a port is that address; a trusted proxy that does not say who the client is (no
+    // header, or a hop that is not an address) is refused rather than counted as one client.
+    for (xff, want) in [
+        (Some("192.0.2.60:4711"), StatusCode::OK),
+        (Some("[2001:db8::7]:443"), StatusCode::OK),
+        (Some("unknown"), StatusCode::BAD_REQUEST),
+        (None, StatusCode::BAD_REQUEST),
+    ] {
+        let mut headers = vec![("content-type", "application/json")];
+        if let Some(x) = xff {
+            headers.push(("x-forwarded-for", x));
+        }
+        let (s, _) = h
+            .call(
+                Method::POST,
+                "/register",
+                &headers,
+                json!({"token": "t5"}).to_string().into_bytes(),
+                "10.0.0.7:443",
+            )
+            .await;
+        assert_eq!(s, want, "{xff:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_limits_hold_per_sender_and_in_all() {
+    // 600 an hour from one address: 10 at once.
+    let h = harness(|c| {
+        c.push_per_address_per_hour = 600;
+        c.push_burst = 100;
+    })
+    .await;
+    let body = ping_body();
+    let path = h.endpoint(TOKEN).await;
+    let auth = "vapid t=made-up, k=made-up";
+    for _ in 0..10 {
+        assert_eq!(
+            h.push_as(&path, "60", "normal", &body, auth, "198.51.100.8:1")
+                .await,
+            StatusCode::CREATED
+        );
+    }
+    assert_eq!(
+        h.push_as(&path, "60", "normal", &body, auth, "198.51.100.8:2")
+            .await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        h.push_as(&path, "60", "normal", &body, auth, "198.51.100.9:1")
+            .await,
+        StatusCode::CREATED,
+        "another sender"
+    );
+    // All messages to FCM: 10 at once here, then "busy" (503, which no Companion counts against
+    // a subscription).
+    let h = harness(|c| {
+        c.total_per_hour = 1;
+        c.push_burst = 100;
+    })
+    .await;
+    let path = h.endpoint(TOKEN).await;
+    for _ in 0..10 {
+        assert_eq!(
+            h.push(&path, "60", "normal", &body).await,
+            StatusCode::CREATED
+        );
+    }
+    assert_eq!(
+        h.push(&path, "60", "normal", &body).await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 }
 
 #[tokio::test]
@@ -487,13 +758,20 @@ async fn the_server_loop_serves_and_stops() {
     drop(h.router);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let account = ServiceAccount::from_json(
-        json!({"project_id": "p", "private_key": rsa_key().0, "client_email": "a@b",
-               "token_uri": "https://oauth2.example/token"})
-        .to_string()
-        .as_bytes(),
-    )
-    .unwrap();
+    // Only Google's token endpoint is taken (the JWT and the access token never go elsewhere).
+    let account = |uri: &str| {
+        ServiceAccount::from_json(
+            json!({"project_id": "p", "private_key": rsa_key().0, "client_email": "a@b",
+                   "token_uri": uri})
+            .to_string()
+            .as_bytes(),
+        )
+    };
+    assert_eq!(
+        account("https://oauth2.example/token").unwrap_err(),
+        crate::fcm::AccountError::Settings
+    );
+    let account = account(crate::fcm::GOOGLE_TOKEN_URI).unwrap();
     let config = Config::load(
         Some("public_url = \"https://push.test\""),
         Vec::<(String, String)>::new(),

@@ -90,6 +90,8 @@ pub(crate) struct HttpRequest<'a> {
     pub max_response: usize,
     /// Extra time on top of the deadline, for an answer known to be big (a message download).
     pub extra_time: Duration,
+    /// Also read the body of a 4xx answer (an OAuth token endpoint puts its error code there).
+    pub error_body: bool,
 }
 
 /// The HTTP side of one account: how to trust the server and how long to wait.
@@ -212,7 +214,7 @@ impl Http {
         stream.write_all(req.body).await.map_err(io_err)?;
         stream.flush().await.map_err(io_err)?;
         written.store(true, Ordering::Relaxed);
-        read_response(&mut stream, req.max_response, self.timeout).await
+        read_response(&mut stream, req.max_response, self.timeout, req.error_body).await
     }
 }
 
@@ -307,11 +309,13 @@ fn too_large() -> BackendError {
     BackendError::Permanent("the server's answer was larger than allowed".into())
 }
 
-/// Reads an HTTP/1.1 answer: headers, then (for 2xx) a body of at most `max_body` bytes.
+/// Reads an HTTP/1.1 answer: headers, then (for 2xx, and for 4xx when `error_body`) a body of
+/// at most `max_body` bytes.
 pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     reader: &mut R,
     max_body: usize,
     idle: Duration,
+    error_body: bool,
 ) -> Result<HttpResponse, BackendError> {
     let mut buf = Vec::with_capacity(4096);
     let (head_len, status, location, content_length, chunked) = loop {
@@ -350,7 +354,8 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     if !(200..600).contains(&status) {
         return Err(unreadable());
     }
-    if !(200..300).contains(&status) || status == 204 {
+    let wanted = (200..300).contains(&status) || (error_body && (400..500).contains(&status));
+    if !wanted || status == 204 {
         return Ok(HttpResponse {
             status,
             location,
@@ -473,7 +478,7 @@ mod tests {
 
     async fn parse(bytes: &[u8], max: usize) -> Result<HttpResponse, BackendError> {
         let mut r = bytes;
-        read_response(&mut r, max, IDLE).await
+        read_response(&mut r, max, IDLE, false).await
     }
 
     #[tokio::test]
@@ -617,6 +622,7 @@ mod tests {
             body: b"{}",
             max_response: 10,
             extra_time: Duration::ZERO,
+            error_body: false,
         };
         let head = request_head(&req);
         assert!(head.starts_with("POST /jmap/ HTTP/1.1\r\nHost: mail.example.org:8443\r\n"));
@@ -637,6 +643,7 @@ mod tests {
             body: &[0u8; 123_456],
             max_response: 10,
             extra_time: Duration::ZERO,
+            error_body: false,
         };
         let head = request_head(&req);
         assert!(head.contains(&format!("\r\nAuthorization: {auth}\r\n")));
@@ -659,6 +666,7 @@ mod tests {
             body: b"",
             max_response: 10,
             extra_time: Duration::ZERO,
+            error_body: false,
         };
         let err = http.send(&req).await.unwrap_err();
         assert!(matches!(err.error, BackendError::Permanent(_)));

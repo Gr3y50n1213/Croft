@@ -81,14 +81,14 @@ mod api;
 mod backend;
 mod config;
 mod error;
-mod http;
+pub(crate) mod http;
 mod idmap;
 mod mapping;
 mod probe;
 mod session;
 mod submit;
-mod tls;
-mod url;
+pub(crate) mod tls;
+pub(crate) mod url;
 
 pub use backend::JmapBackend;
 pub use config::{JmapConfig, DEFAULT_DEADLINE, DEFAULT_MAX_RESPONSE_BYTES};

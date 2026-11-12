@@ -514,6 +514,7 @@ dependencies = [
  "log",
  "quick-xml",
  "rcgen",
+ "ring",
  "rustls-native-certs",
  "serde",
  "serde_json",

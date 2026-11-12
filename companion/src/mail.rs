@@ -100,7 +100,7 @@ pub fn address_policy(
 
 /// One user's slot: its core, opened at most once at a time (the slot's lock is held while it
 /// opens, so two first uses at once never open two engines on one database).
-type Slot = Arc<Mutex<Option<Arc<Core>>>>;
+type Slot = Arc<Mutex<Option<(Arc<Core>, u64)>>>;
 
 /// The open cores, one per user.
 pub struct MailCores {
@@ -161,10 +161,22 @@ impl MailCores {
         master: &Key,
         user_id: i64,
     ) -> Result<Arc<Core>, MailError> {
+        self.core_and_epoch(store, master, user_id).map(|(c, _)| c)
+    }
+
+    /// The user's core and a random number naming this opening of it (T27: JMAP states carry it,
+    /// so a state from before a restart, when the core's change numbers start again, never looks
+    /// current). Blocking: call it off the async threads.
+    pub fn core_and_epoch(
+        &self,
+        store: &Arc<Mutex<Store>>,
+        master: &Key,
+        user_id: i64,
+    ) -> Result<(Arc<Core>, u64), MailError> {
         let slot = self.slot(user_id);
         let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(core) = held.as_ref() {
-            return Ok(core.clone());
+        if let Some((core, epoch)) = held.as_ref() {
+            return Ok((core.clone(), *epoch));
         }
         let data_key = {
             let s = store.lock().unwrap_or_else(PoisonError::into_inner);
@@ -190,8 +202,12 @@ impl MailCores {
             provider,
         )
         .map_err(|_| MailError::Open)?;
-        *held = Some(core.clone());
-        Ok(core)
+        let mut bytes = [0u8; 8];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
+            .map_err(|_| MailError::Open)?;
+        let epoch = u64::from_le_bytes(bytes) >> 12;
+        *held = Some((core.clone(), epoch));
+        Ok((core, epoch))
     }
 
     /// The user's core if it is open (no opening).
@@ -199,7 +215,8 @@ impl MailCores {
         self.slot(user_id)
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .as_ref()
+            .map(|(c, _)| c.clone())
     }
 
     /// Stops the user's core (a disabled user). Blocking: call it off the async threads.

@@ -112,6 +112,11 @@ impl Auth {
         self
     }
 
+    /// The Companion's public address (no trailing slash).
+    pub(crate) fn public_url(&self) -> &str {
+        &self.public_url
+    }
+
     /// The master key (to open users' data keys).
     pub(crate) fn master(&self) -> &Key {
         &self.master
@@ -526,6 +531,8 @@ pub fn routes() -> Vec<Route> {
             post(mail_api::verify),
         ),
         route(Method::POST, "/api/accounts", F, post(mail_api::add)),
+        route(Method::GET, "/jmap/session", F, get(jmap_api::session)),
+        route(Method::POST, "/jmap/api", F, post(jmap_api::api)),
         route(Method::GET, "/api/accounts", F, get(mail_api::list)),
         route(
             Method::DELETE,
@@ -1253,6 +1260,9 @@ pub(crate) mod oidc_api;
 #[path = "mail_api.rs"]
 pub(crate) mod mail_api;
 
+#[path = "jmap_api.rs"]
+pub(crate) mod jmap_api;
+
 #[cfg(test)]
 #[path = "api_tests.rs"]
 mod tests;
@@ -1264,3 +1274,7 @@ mod oidc_tests;
 #[cfg(test)]
 #[path = "mail_tests.rs"]
 mod mail_tests;
+
+#[cfg(test)]
+#[path = "jmap_tests.rs"]
+mod jmap_tests;

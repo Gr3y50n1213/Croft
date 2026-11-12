@@ -112,6 +112,9 @@ class CheckRunner(
     }
 
     private suspend fun deliver(account: CheckAccount, mail: List<NewMail>) {
+        // Removed while it was being checked: its mail is never shown (the removal already cleared its notifications).
+        val still = try { checker.accounts().any { it.id == account.id } } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
+        if (!still) return
         val s = settings.current()
         val handled = if (!s.wants(account.id)) {
             mail.map { it.uid }

@@ -23,13 +23,14 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 /** The action layer the buttons call: records the calls; Archive and Delete return made-up operation ids. */
-class FakeActions(private val fail: Boolean = false) : NotifyActionsBackend {
+class FakeActions(private val fail: Boolean = false, var stillThere: Boolean = true, var undoWorks: Boolean = true) : NotifyActionsBackend {
     val calls = ArrayList<String>()
-    override suspend fun undoWindowMs() = 5_000L
+    override suspend fun undoWindowMs(): Long { calls += "window"; return 5_000L }
+    override suspend fun isStillThere(account: Long, messageId: Long, uid: UInt): Boolean { calls += "check:$account:$messageId:$uid"; return stillThere }
     override suspend fun archive(messageId: Long): List<Long> { calls += "archive:$messageId"; if (fail) error("no Archive folder"); return listOf(41) }
     override suspend fun trash(messageId: Long): List<Long> { calls += "trash:$messageId"; return listOf(42, 43) }
     override suspend fun markRead(messageId: Long) { calls += "read:$messageId" }
-    override suspend fun undo(ops: List<Long>) { calls += "undo:${ops.joinToString(",")}" }
+    override suspend fun undo(ops: List<Long>): Boolean { calls += "undo:${ops.joinToString(",")}"; return undoWorks }
 }
 
 @RunWith(CroftRobolectricRunner::class)
@@ -54,7 +55,7 @@ class NotifyActionHandlerTest {
         posted(listOf(NotifyAction.ARCHIVE))
         val actions = FakeActions()
         NotifyActionHandler(context, actions).handle(button(10, 0))
-        assertEquals(listOf("archive:10"), actions.calls)
+        assertEquals("the Undo time reaches the core before the move", listOf("check:1:10:5", "window", "archive:10"), actions.calls)
         assertEquals(setOf(AndroidNotifier.notificationId(11)), mailIds())
         val d = done()!!
         assertEquals("Archived", d.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
@@ -62,8 +63,27 @@ class NotifyActionHandlerTest {
         assertEquals("Undo", d.actions.single().title.toString())
 
         NotifyActionHandler(context, actions).handle(shadowOf(d.actions.single().actionIntent).savedIntent)
-        assertEquals(listOf("archive:10", "undo:41"), actions.calls)
+        assertEquals("undo:41", actions.calls.last())
         assertNull(done())
+    }
+
+    @Test
+    fun aStaleNotificationActsOnNothingAndGoesAway() = runBlocking {
+        posted(listOf(NotifyAction.DELETE))
+        val actions = FakeActions(stillThere = false)
+        NotifyActionHandler(context, actions).handle(button(10, 0))
+        assertEquals("checked, never moved", listOf("check:1:10:5"), actions.calls)
+        assertEquals(setOf(AndroidNotifier.notificationId(11)), mailIds())
+        assertNull(done())
+    }
+
+    @Test
+    fun anUndoThatCameTooLateSaysSo() = runBlocking {
+        posted(listOf(NotifyAction.ARCHIVE))
+        val actions = FakeActions(undoWorks = false)
+        NotifyActionHandler(context, actions).handle(button(10, 0))
+        NotifyActionHandler(context, actions).handle(shadowOf(done()!!.actions.single().actionIntent).savedIntent)
+        assertEquals("Too late to undo: it was already done.", done()!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
     }
 
     @Test
@@ -71,7 +91,7 @@ class NotifyActionHandlerTest {
         posted(listOf(NotifyAction.DELETE))
         val actions = FakeActions()
         NotifyActionHandler(context, actions).handle(button(11, 0))
-        assertEquals(listOf("trash:11"), actions.calls)
+        assertEquals("trash:11", actions.calls.last())
         assertEquals("Moved to Trash", done()!!.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
         NotifyActionHandler(context, actions).handle(shadowOf(done()!!.actions.single().actionIntent).savedIntent)
         assertEquals("undo:42,43", actions.calls.last())
@@ -83,7 +103,7 @@ class NotifyActionHandlerTest {
         val actions = FakeActions()
         NotifyActionHandler(context, actions).handle(button(10, 0))
         NotifyActionHandler(context, actions).handle(button(11, 0))
-        assertEquals(listOf("read:10", "read:11"), actions.calls)
+        assertEquals(listOf("read:10", "read:11"), actions.calls.filter { it.startsWith("read") })
         assertTrue(manager.activeNotifications.isEmpty())
     }
 
@@ -100,14 +120,17 @@ class NotifyActionHandlerTest {
         val actions = FakeActions()
         NotifyActionHandler(context, actions).handle(Intent("other").setData(Uri.parse("croft-action://archive/1/10")))
         NotifyActionHandler(context, actions).handle(Intent(NotificationActionReceiver.ACTION).setData(Uri.parse("https://archive/1/10")))
-        NotifyActionHandler(context, actions).handle(Intent(NotificationActionReceiver.ACTION).setData(Uri.parse("croft-action://archive/x/10")))
+        NotifyActionHandler(context, actions).handle(Intent(NotificationActionReceiver.ACTION).setData(Uri.parse("croft-action://archive/x/10/5")))
+        NotifyActionHandler(context, actions).handle(Intent(NotificationActionReceiver.ACTION).setData(Uri.parse("croft-action://archive/1/10")))
         assertTrue(actions.calls.isEmpty())
     }
 
     @Test
     fun onlyTheNonExportedAliasCanOpenAMessage() {
-        val viaAlias = Intent(Intent.ACTION_VIEW, Uri.parse("croft://message/1/10")).setClassName(context.packageName, AndroidNotifier.OPEN_ALIAS)
-        assertEquals(NotificationOpen.Message(1, 10), NotificationIntents.parse(viaAlias, context))
+        val viaAlias = Intent(Intent.ACTION_VIEW, Uri.parse("croft://message/1/10/5")).setClassName(context.packageName, AndroidNotifier.OPEN_ALIAS)
+        assertEquals(NotificationOpen.Message(1, 10, 5u), NotificationIntents.parse(viaAlias, context))
+        val noUid = Intent(Intent.ACTION_VIEW, Uri.parse("croft://message/1/10")).setClassName(context.packageName, AndroidNotifier.OPEN_ALIAS)
+        assertEquals("without its UID it cannot be checked: the Inbox", NotificationOpen.Inbox, NotificationIntents.parse(noUid, context))
         // Another app can start MainActivity (it is exported for mailto: and shares), but not send it to a message.
         val direct = Intent(Intent.ACTION_VIEW, Uri.parse("croft://message/1/10")).setComponent(ComponentName(context, MainActivity::class.java))
         assertNull(NotificationIntents.parse(direct, context))

@@ -126,6 +126,7 @@ fun CroftApp(
                         // notification and per-account channel of Croft goes.
                         notifyStore?.set(com.example.croft.notify.NotifySettings())
                         try { com.example.croft.notify.AndroidNotifier(context).forgetAll() } catch (e: Exception) { /* nothing showing */ }
+                        com.example.croft.notify.CheckSchedule.cancel(context)
                         settings = ThemeSettings.Default; swipe = SwipeSettings.Default; mail = MailSettings(); accountPrefs = AccountPrefs()
                         // No core is opened here: an erase leaves no Croft file, and the next one is made when the person adds an account (the
                         // sign-in flow and "Try with sample mail" open the core when they first need it, then `onAccountReady` builds the session).

@@ -92,9 +92,9 @@ class AndroidNotifierTest {
     fun theTapOpensTheMessageThroughTheNonExportedAlias() {
         AndroidNotifier(context).postNewMail(work, listOf(mail(1, 10, 5)), NotifySettings())
         val tap = savedIntent(children(1).single().notification.contentIntent)
-        assertEquals("croft://message/1/10", tap.dataString)
+        assertEquals("croft://message/1/10/5", tap.dataString)
         assertEquals(AndroidNotifier.OPEN_ALIAS, tap.component!!.className)
-        assertEquals(NotificationOpen.Message(1, 10), NotificationIntents.parse(tap, context))
+        assertEquals(NotificationOpen.Message(1, 10, 5u), NotificationIntents.parse(tap, context))
     }
 
     @Test
@@ -106,12 +106,15 @@ class AndroidNotifierTest {
         val archive = savedIntent(actions[0].actionIntent)
         assertEquals(NotificationActionReceiver::class.java.name, archive.component!!.className)
         assertEquals(NotificationActionReceiver.ACTION, archive.action)
-        assertEquals("croft-action://archive/1/10", archive.dataString)
-        assertEquals("croft-action://delete/1/10", savedIntent(actions[1].actionIntent).dataString)
+        assertEquals("croft-action://archive/1/10/5", archive.dataString)
+        assertEquals("croft-action://delete/1/10/5", savedIntent(actions[1].actionIntent).dataString)
         val reply = savedIntent(actions[2].actionIntent)
-        assertEquals("croft://reply/1/10", reply.dataString)
-        assertEquals(NotificationOpen.Reply(1, 10), NotificationIntents.parse(reply, context))
+        assertEquals("croft://reply/1/10/5", reply.dataString)
+        assertEquals(NotificationOpen.Reply(1, 10, 5u), NotificationIntents.parse(reply, context))
         assertTrue(actions.all { shadowOf(it.actionIntent).isImmutable })
+        // Archive and Delete change mail without opening Croft: a locked phone asks to unlock first. Reply opens Croft anyway.
+        assertTrue(actions[0].isAuthenticationRequired && actions[1].isAuthenticationRequired)
+        assertFalse(actions[2].isAuthenticationRequired)
     }
 
     @Test

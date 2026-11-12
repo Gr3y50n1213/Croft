@@ -108,7 +108,7 @@ class AndroidNotifier(context: Context) : Notifier {
     private fun message(account: CheckAccount, m: NewMail, settings: NotifySettings): android.app.Notification {
         val title = m.sender.ifBlank { context.getString(R.string.notify_unknown_sender) }
         val subject = m.subject.ifBlank { context.getString(R.string.notify_no_subject) }
-        val tap = if (m.messageId == TEST_MESSAGE_ID) Uri.parse("croft://inbox") else Uri.parse("croft://message/${m.account}/${m.messageId}")
+        val tap = if (m.messageId == TEST_MESSAGE_ID) Uri.parse("croft://inbox") else Uri.parse("croft://message/${m.account}/${m.messageId}/${m.uid}")
         val b = NotificationCompat.Builder(context, channelId(account.id))
             .setSmallIcon(R.drawable.ic_stat_croft)
             .setContentTitle(title)
@@ -124,7 +124,13 @@ class AndroidNotifier(context: Context) : Notifier {
         lockScreen(b, account, settings, count = 1)
         if (m.messageId != TEST_MESSAGE_ID) {
             for (action in settings.actions.take(NotifySettings.MAX_ACTIONS)) {
-                b.addAction(0, context.getString(actionLabel(action)), actionIntent(action, m))
+                // Archive, Delete and Mark read change mail without opening Croft: on a locked phone they ask to unlock first (Android 12
+                // and later), even when the person shows the whole notification on the lock screen. Reply opens Croft, which unlocks anyway.
+                b.addAction(
+                    NotificationCompat.Action.Builder(0, context.getString(actionLabel(action)), actionIntent(action, m))
+                        .setAuthenticationRequired(action != NotifyAction.REPLY)
+                        .build(),
+                )
             }
         }
         return b.build()
@@ -194,10 +200,10 @@ class AndroidNotifier(context: Context) : Notifier {
     }
 
     private fun actionIntent(action: NotifyAction, m: NewMail): PendingIntent {
-        if (action == NotifyAction.REPLY) return openIntent(Uri.parse("croft://reply/${m.account}/${m.messageId}"))
+        if (action == NotifyAction.REPLY) return openIntent(Uri.parse("croft://reply/${m.account}/${m.messageId}/${m.uid}"))
         val intent = Intent(context, NotificationActionReceiver::class.java)
             .setAction(NotificationActionReceiver.ACTION)
-            .setData(Uri.parse("croft-action://${action.key}/${m.account}/${m.messageId}"))
+            .setData(Uri.parse("croft-action://${action.key}/${m.account}/${m.messageId}/${m.uid}"))
         return PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 

@@ -196,6 +196,21 @@ class CheckRunnerTest {
     }
 
     @Test
+    fun anAccountRemovedDuringTheCheckIsNeverShown() = runBlocking {
+        val fake = FakeChecker(listOf(a1), mutableMapOf(1L to CheckOutcome(listOf(mail(1, 10, 5)))))
+        val checker = object : BackgroundChecker by fake {
+            override suspend fun syncOnce(account: Long, deadlineMs: Long): CheckOutcome {
+                val out = fake.syncOnce(account, deadlineMs)
+                fake.accounts = emptyList() // removed while it synced
+                return out
+            }
+        }
+        val notifier = FakeNotifier()
+        CheckRunner(checker, notifier, store()).run()
+        assertTrue(notifier.posted.isEmpty())
+    }
+
+    @Test
     fun theDebugTextOfNewMailHasNoSenderOrSubject() {
         val text = mail(1, 10, 5, subject = "Secret plans").toString()
         assertTrue(text, "Secret" !in text && "ann@" !in text && "Ann" !in text)

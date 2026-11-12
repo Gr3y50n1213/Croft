@@ -65,8 +65,14 @@ import kotlinx.coroutines.withContext
 /** A request from outside to open compose ([ComposeIntents]). Compared by identity, so the same link opened twice is two requests. */
 class ComposeRequest(val start: ComposeStart)
 
-/** A tap on a notification (S32): the message [messageId] with the Inbox under it, or the Inbox when null. Compared by identity. */
-class OpenMessageRequest(val messageId: Long?)
+/** The message a notification was posted for: its row id and its Inbox UID in that account. */
+data class NotifiedMessage(val account: Long, val messageId: Long, val uid: UInt)
+
+/**
+ * A tap on a notification (S32): [message] with the Inbox under it (or compose with a reply to it when [reply]), or the Inbox when null.
+ * Compared by identity.
+ */
+class OpenMessageRequest(val message: NotifiedMessage?, val reply: Boolean)
 
 /** The screens reachable today. S50 and its drill-down live inside [APPEARANCE] (see `AppearanceFlow`). S02 to S05 and S09 live inside [ONBOARDING] and [ADD_ACCOUNT]. */
 enum class Route(val parent: Route?) {
@@ -232,14 +238,24 @@ fun CroftNavHost(
     LaunchedEffect(openRequest, route) {
         val open = openRequest ?: return@LaunchedEffect
         if (route == Route.ONBOARDING || route == Route.ADD_ACCOUNT || route == Route.COMPOSE) return@LaunchedEffect
-        val id = open.messageId
-        if (id != null) { conversationId = id; conversationReturn = Route.HOME; route = Route.CONVERSATION } else route = Route.HOME
+        val m = open.message
+        // The row must still be the message the notification was posted for (a deleted message's row id can be reused): else the Inbox.
+        val same = m != null && withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { com.example.croft.mail.MailRuntime.core?.core?.notifiedMessageIs(m.account, m.messageId, m.uid) == true }.getOrDefault(false)
+        }
         onOpenRequestHandled()
+        when {
+            m == null || !same -> route = Route.HOME
+            open.reply -> openCompose(ComposeStart.Reply(m.account, m.messageId))
+            else -> { conversationId = m.messageId; conversationReturn = Route.HOME; route = Route.CONVERSATION }
+        }
     }
     // After an account was added: S07 once (not for the sample mailbox, which never notifies), else where the flow returns to.
     val afterAccountAdded: suspend (Route) -> Unit = { next ->
         val intro = notifyStore != null && !(runCatching { notifyStore.current().introDone }.getOrDefault(true))
         route = if (intro) Route.NOTIFY_INTRO else next
+        // A real account exists now: the periodic check runs (it is kept as it is if it already did).
+        if (notifyStore != null) runCatching { CheckSchedule.forAccounts(context, notifyStore.current(), hasRealAccount(sessionNow)) }
     }
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
     // Compose and the Outbox handle their own Back (compose saves first).
@@ -266,6 +282,8 @@ fun CroftNavHost(
             try { notifyStore?.update { it.forget(id) } } catch (e: Exception) { /* harmless: an id that is never used again */ }
             try { com.example.croft.notify.AndroidNotifier(context).forgetAccount(id) } catch (e: Exception) { /* nothing showing */ }
             try { onAccountReady() } catch (e: Exception) { /* the next screen reads the core again */ }
+            // No real account left: the periodic check stops.
+            if (notifyStore != null) try { CheckSchedule.forAccounts(context, notifyStore.current(), hasRealAccount(sessionNow)) } catch (e: Exception) { /* the next start */ }
             try { sessionNow.repository.listAccounts().size } catch (e: Exception) { REMOVED_COUNT_UNKNOWN }
         }
     }
@@ -439,3 +457,7 @@ fun CroftNavHost(
 /** The accounts S07 and S46 list, from the session (the sample mailbox is marked and never notifies). */
 private suspend fun notifyAccounts(session: MailSession): List<CheckAccount> =
     session.repository.listAccounts().map { CheckAccount(it.id, it.label.ifBlank { it.email }, isDemo = it.isDemo) }
+
+/** Whether the session has an account that can notify (the sample mailbox never does). */
+private suspend fun hasRealAccount(session: MailSession): Boolean =
+    runCatching { session.repository.listAccounts().any { !it.isDemo } }.getOrDefault(false)

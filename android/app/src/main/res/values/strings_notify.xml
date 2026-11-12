@@ -24,6 +24,7 @@
     <string name="notify_action_undo">Undo</string>
     <string name="notify_done_archived">Archived</string>
     <string name="notify_done_deleted">Moved to Trash</string>
+    <string name="notify_undo_too_late">Too late to undo: it was already done.</string>
     <string name="notify_test_sender">Croft</string>
     <string name="notify_test_subject">This is how new mail will look</string>
 

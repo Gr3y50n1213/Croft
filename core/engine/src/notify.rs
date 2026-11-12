@@ -87,7 +87,12 @@ impl EngineHandle {
             }
             Err(_) => true,
         };
-        let new_mail = {
+        // A sync cut short stored only some of the new headers (the newest first): deciding now
+        // would move the marker past older new mail that arrives next time and never notifies.
+        // Nothing is decided until a sync finishes.
+        let new_mail = if timed_out {
+            Vec::new()
+        } else {
             let shared = self.shared().clone();
             let q = shared.lock();
             new_mail(q.store().db(), account, demo).map_err(EngineError::Storage)?
@@ -99,7 +104,8 @@ impl EngineHandle {
     }
 
     /// The app posted notifications for these UIDs of the account's Inbox: the marker moves up
-    /// to the highest of them (never back). A UID of another Inbox numbering is ignored.
+    /// to the highest of them (never back). When the Inbox was renumbered meanwhile (another
+    /// UIDVALIDITY than the marker's) the UIDs belong to the old numbering and are ignored.
     pub fn mark_notified(&self, account: AccountId, uids: &[u32]) -> Result<(), EngineError> {
         let shared = self.shared().clone();
         let q = shared.lock();
@@ -107,6 +113,10 @@ impl EngineHandle {
         let Some(stored) = store::marker(conn, account).map_err(EngineError::Storage)? else {
             return Ok(());
         };
+        match inbox(q.store().db(), account).map_err(EngineError::Storage)? {
+            Some((_, validity)) if validity == stored.uid_validity => {}
+            _ => return Ok(()),
+        }
         let next = notify::advance(
             Marker {
                 uid_validity: stored.uid_validity,
@@ -124,6 +134,25 @@ impl EngineHandle {
             0,
         )
         .map_err(EngineError::Storage)
+    }
+
+    /// Whether `message_id` is still the Inbox message with `uid` of `account`. A notification's
+    /// button and tap check this first: a row id can be reused once its message is gone, and a
+    /// stale notification must never act on another message.
+    pub fn notified_message_is(
+        &self,
+        account: AccountId,
+        message_id: i64,
+        uid: u32,
+    ) -> Result<bool, EngineError> {
+        let shared = self.shared().clone();
+        let q = shared.lock();
+        let db = q.store().db();
+        let Some((folder, _)) = inbox(db, account).map_err(EngineError::Storage)? else {
+            return Ok(false);
+        };
+        store::is_message(db.connection(), account, folder, message_id, uid)
+            .map_err(EngineError::Storage)
     }
 
     /// Forgets the marker of a removed account.

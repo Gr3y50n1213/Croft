@@ -23,6 +23,18 @@ fn the_first_check_notifies_nothing_then_new_mail_once_until_marked() {
     assert_eq!(second.new_mail[0].subject, "Lunch tomorrow");
     assert_eq!(second.new_mail[0].uid, uid);
 
+    // The buttons and the tap check the message is still this one (a row id can be reused).
+    let id = second.new_mail[0].message_id;
+    assert!(rig.core.notified_message_is(rig.account, id, uid).unwrap());
+    assert!(!rig
+        .core
+        .notified_message_is(rig.account, id, uid + 1)
+        .unwrap());
+    assert!(!rig
+        .core
+        .notified_message_is(rig.account + 99, id, uid)
+        .unwrap());
+
     rig.core.mark_notified(rig.account, vec![uid]).unwrap();
     assert!(block(rig.core.sync_once(rig.account, 8_000))
         .unwrap()

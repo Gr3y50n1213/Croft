@@ -22,12 +22,12 @@ import com.example.croft.mail.MailSettingsStore
 import com.example.croft.mail.accounts.AccountPrefsStore
 import com.example.croft.theme.ThemeStore
 import com.example.croft.ui.compose.ComposeIntents
-import com.example.croft.mail.compose.ComposeStart
 import com.example.croft.notify.CheckSchedule
 import com.example.croft.notify.NotificationIntents
 import com.example.croft.notify.NotificationOpen
 import com.example.croft.notify.NotifySettingsStore
 import com.example.croft.ui.nav.ComposeRequest
+import com.example.croft.ui.nav.NotifiedMessage
 import com.example.croft.ui.nav.OpenMessageRequest
 import com.example.croft.ui.nav.CroftApp
 import com.example.croft.ui.nav.Route
@@ -58,9 +58,9 @@ class MainActivity : ComponentActivity() {
     /** What [intent] asks for: compose (a link, a share, a notification's Reply) or a message (a notification's tap). */
     private fun take(intent: Intent?) {
         when (val open = NotificationIntents.parse(intent, this)) {
-            is NotificationOpen.Message -> openRequest = OpenMessageRequest(open.messageId)
-            is NotificationOpen.Reply -> composeRequest = ComposeRequest(ComposeStart.Reply(open.account, open.messageId))
-            NotificationOpen.Inbox -> openRequest = OpenMessageRequest(null)
+            is NotificationOpen.Message -> openRequest = OpenMessageRequest(NotifiedMessage(open.account, open.messageId, open.uid), reply = false)
+            is NotificationOpen.Reply -> openRequest = OpenMessageRequest(NotifiedMessage(open.account, open.messageId, open.uid), reply = true)
+            NotificationOpen.Inbox -> openRequest = OpenMessageRequest(null, reply = false)
             null -> ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
         }
     }
@@ -92,8 +92,10 @@ class MainActivity : ComponentActivity() {
                 if (count == null) { problem = true; return@LaunchedEffect }
                 startAt = if (count > 0) Route.HOME else Route.ONBOARDING
                 session = ready
-                // The periodic check (T20): scheduled once, kept as it is when it already runs (KEEP).
-                try { CheckSchedule.apply(applicationContext, notifyStore.current(), changed = false) } catch (e: IllegalStateException) { /* WorkManager not ready: the next start */ }
+                // The periodic check (T20): kept as it is when it already runs (KEEP), and only while an account can notify (the sample
+                // mailbox never does): otherwise it is stopped, so it never creates Croft files on its own.
+                val real = !ready.coreUnavailable && runCatching { ready.repository.listAccounts().any { !it.isDemo } }.getOrDefault(false)
+                CheckSchedule.forAccounts(applicationContext, notifyStore.current(), real)
             }
             val ready = session
             val start = startAt

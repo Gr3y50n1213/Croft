@@ -137,3 +137,69 @@ async fn a_hanging_server_stops_at_the_deadline() {
     );
     r.server.set_hang(false);
 }
+
+#[tokio::test]
+async fn a_sync_cut_short_decides_nothing_so_older_new_mail_still_notifies_later() {
+    let r = rig().await;
+    r.ui.sync_once(r.account, DEADLINE, false).await.unwrap();
+    let uid = r.server.add_message(
+        "INBOX",
+        &sample_message("late@x", "Arrived while offline", "Ann <ann@example.org>"),
+    );
+    r.server.set_hang(true);
+    let cut =
+        r.ui.sync_once(r.account, Duration::from_millis(300), false)
+            .await
+            .unwrap();
+    assert!(cut.timed_out);
+    assert!(cut.new_mail.is_empty(), "nothing decided on a partial sync");
+    r.server.set_hang(false);
+    // The connection the hang left behind may fail once (a transient error): the next periodic
+    // run is simply another call.
+    let mut next = None;
+    for _ in 0..3 {
+        if let Ok(out) = r.ui.sync_once(r.account, DEADLINE, false).await {
+            next = Some(out);
+            break;
+        }
+    }
+    let next = next.expect("a later check works");
+    assert_eq!(
+        next.new_mail.iter().map(|m| m.uid).collect::<Vec<_>>(),
+        vec![uid]
+    );
+}
+
+#[tokio::test]
+async fn a_notification_acts_only_on_the_message_it_was_posted_for() {
+    let r = rig().await;
+    r.ui.sync_once(r.account, DEADLINE, false).await.unwrap();
+    let uid = r.server.add_message(
+        "INBOX",
+        &sample_message("n@x", "New", "Ann <ann@example.org>"),
+    );
+    let out = r.ui.sync_once(r.account, DEADLINE, false).await.unwrap();
+    let m = &out.new_mail[0];
+    assert!(r
+        .ui
+        .notified_message_is(r.account, m.message_id, uid)
+        .unwrap());
+    assert!(
+        !r.ui
+            .notified_message_is(r.account, m.message_id, uid + 1)
+            .unwrap(),
+        "another UID"
+    );
+    assert!(
+        !r.ui
+            .notified_message_is(r.account + 1, m.message_id, uid)
+            .unwrap(),
+        "another account"
+    );
+    assert!(
+        !r.ui
+            .notified_message_is(r.account, m.message_id + 1000, uid)
+            .unwrap(),
+        "another row"
+    );
+}

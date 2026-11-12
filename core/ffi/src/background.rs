@@ -108,6 +108,24 @@ impl Core {
         Ok(out)
     }
 
+    /// Whether `message_id` is still the Inbox message with `uid` of the account. A
+    /// notification's buttons and tap check this before acting: a deleted message's row id can be
+    /// given to a new message, and a stale notification must never act on that one.
+    pub fn notified_message_is(
+        &self,
+        account_id: i64,
+        message_id: i64,
+        uid: u32,
+    ) -> Result<bool, CoreError> {
+        self.inner
+            .handle
+            .notified_message_is(account_id, message_id, uid)
+            .map_err(|e| match e {
+                EngineError::Storage(s) => s.into(),
+                _ => CoreError::Internal,
+            })
+    }
+
     /// The app posted notifications for these Inbox UIDs of the account: they are never offered
     /// again (the marker moves up to the highest; never back).
     pub fn mark_notified(&self, account_id: i64, uids: Vec<u32>) -> Result<(), CoreError> {

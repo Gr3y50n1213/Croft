@@ -328,4 +328,7 @@ The WorkManager job calls `sync_once(account, deadline_ms)` for each enabled acc
 of an account returns nothing (it sets a baseline, so mail already there never notifies), and so does the sample mailbox.
 Post a notification for each, then call `mark_notified(account, uids)`: until then they are offered again (a failed post
 is not lost). Flags: `timed_out` (the deadline passed; not a failure), `transient_failure` (ask WorkManager for a retry),
-`needs_sign_in` (nothing was asked of the server).
+`needs_sign_in` (nothing was asked of the server). A check that timed out decides nothing (only some of the new headers
+were stored; the next full sync decides). Before a notification's button or tap acts on a message, call
+`notified_message_is(account, message_id, uid)`: a deleted message's row id can be given to a new message, and a stale
+notification must never act on that one.

@@ -32,7 +32,11 @@ interface NotifyActionsBackend {
 
     suspend fun markRead(messageId: Long)
 
-    suspend fun undo(ops: List<Long>)
+    /** Whether [messageId] is still the Inbox message [uid] of [account] the notification was posted for. */
+    suspend fun isStillThere(account: Long, messageId: Long, uid: UInt): Boolean
+
+    /** Cancels [ops]; false when one was already sent (too late). */
+    suspend fun undo(ops: List<Long>): Boolean
 }
 
 /** [NotifyActionsBackend] over the process's mail session (opened if the process was cold). */
@@ -52,7 +56,14 @@ class SessionActionsBackend(private val context: Context) : NotifyActionsBackend
 
     override suspend fun markRead(messageId: Long) = repository().markSeen(listOf(messageId), true)
 
-    override suspend fun undo(ops: List<Long>) { ops.forEach { repository().undo(it) } }
+    override suspend fun isStillThere(account: Long, messageId: Long, uid: UInt): Boolean =
+        kotlinx.coroutines.withContext(Dispatchers.IO) { MailRuntime.openedCore(context).core.notifiedMessageIs(account, messageId, uid) }
+
+    override suspend fun undo(ops: List<Long>): Boolean {
+        var all = true
+        ops.forEach { if (!repository().undo(it)) all = false }
+        return all
+    }
 }
 
 /**
@@ -72,15 +83,21 @@ class NotifyActionHandler(private val context: Context, private val backend: Not
         val account = segments.getOrNull(0)?.toLongOrNull() ?: return
         val message = segments.getOrNull(1)?.toLongOrNull() ?: return
         try {
+            if (parts.host == UNDO) {
+                val ops = parts.getQueryParameter("ops")?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty()
+                val undone = backend.undo(ops)
+                manager.cancel(AndroidNotifier.doneTag(account), AndroidNotifier.notificationId(message))
+                if (!undone) tooLate(account, message)
+                return
+            }
+            val uid = segments.getOrNull(2)?.toUIntOrNull() ?: return
+            // A stale notification (its message was deleted or moved meanwhile, and the row id may now be another message's) acts on
+            // nothing: it just goes away.
+            if (!backend.isStillThere(account, message, uid)) { notifier.cancelMessage(account, message); return }
             when (parts.host) {
-                NotifyAction.ARCHIVE.key -> moved(account, message, backend.archive(message), R.string.notify_done_archived)
-                NotifyAction.DELETE.key -> moved(account, message, backend.trash(message), R.string.notify_done_deleted)
+                NotifyAction.ARCHIVE.key -> moved(account, message, R.string.notify_done_archived) { backend.archive(message) }
+                NotifyAction.DELETE.key -> moved(account, message, R.string.notify_done_deleted) { backend.trash(message) }
                 NotifyAction.MARK_READ.key -> { backend.markRead(message); notifier.cancelMessage(account, message) }
-                UNDO -> {
-                    val ops = parts.getQueryParameter("ops")?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty()
-                    backend.undo(ops)
-                    manager.cancel(AndroidNotifier.doneTag(account), AndroidNotifier.notificationId(message))
-                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -89,8 +106,10 @@ class NotifyActionHandler(private val context: Context, private val backend: Not
         }
     }
 
-    private suspend fun moved(account: Long, message: Long, ops: List<Long>, done: Int) {
+    private suspend fun moved(account: Long, message: Long, done: Int, move: suspend () -> List<Long>) {
+        // The person's Undo time goes to the core first (a cold process has the default), so the notice and the core agree.
         val window = backend.undoWindowMs()
+        val ops = move()
         notifier.cancelMessage(account, message)
         if (ops.isEmpty() || !manager.areNotificationsEnabled()) return
         val undo = Intent(context, NotificationActionReceiver::class.java)
@@ -107,8 +126,22 @@ class NotifyActionHandler(private val context: Context, private val backend: Not
         try { manager.notify(AndroidNotifier.doneTag(account), AndroidNotifier.notificationId(message), n) } catch (e: SecurityException) { /* nothing shows */ }
     }
 
+    /** Undo came after the core had sent the move: say so briefly instead of pretending it worked. */
+    private fun tooLate(account: Long, message: Long) {
+        if (!manager.areNotificationsEnabled()) return
+        val n = NotificationCompat.Builder(context, AndroidNotifier.channelId(account))
+            .setSmallIcon(R.drawable.ic_stat_croft)
+            .setContentTitle(context.getString(R.string.notify_undo_too_late))
+            .setSilent(true)
+            .setTimeoutAfter(TOO_LATE_SHOWN_MS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
+        try { manager.notify(AndroidNotifier.doneTag(account), AndroidNotifier.notificationId(message), n) } catch (e: SecurityException) { /* nothing shows */ }
+    }
+
     companion object {
         const val UNDO = "undo"
+        private const val TOO_LATE_SHOWN_MS = 6_000L
     }
 }
 

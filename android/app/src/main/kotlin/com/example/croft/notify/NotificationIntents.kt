@@ -9,11 +9,14 @@ import android.content.Intent
 
 /** What a tap on a notification asks the app to open (S32). */
 sealed interface NotificationOpen {
-    /** `croft://message/<account>/<id>`: the message, with the Inbox under it. */
-    data class Message(val account: Long, val messageId: Long) : NotificationOpen
+    /**
+     * `croft://message/<account>/<id>/<uid>`: the message, with the Inbox under it. The app checks the row is still that Inbox message
+     * of that account ([uid]) before it opens it: a deleted message's row id can be given to a new one.
+     */
+    data class Message(val account: Long, val messageId: Long, val uid: UInt) : NotificationOpen
 
-    /** `croft://reply/<account>/<id>`: compose, filled in as a reply. */
-    data class Reply(val account: Long, val messageId: Long) : NotificationOpen
+    /** `croft://reply/<account>/<id>/<uid>`: compose, filled in as a reply (checked the same way). */
+    data class Reply(val account: Long, val messageId: Long, val uid: UInt) : NotificationOpen
 
     /** `croft://inbox`: the Inbox (the summary, the test notification, "Sign in again"). */
     data object Inbox : NotificationOpen
@@ -33,9 +36,11 @@ object NotificationIntents {
         val parts = uri.pathSegments
         val account = parts.getOrNull(0)?.toLongOrNull()
         val message = parts.getOrNull(1)?.toLongOrNull()
+        val uid = parts.getOrNull(2)?.toUIntOrNull()
+        val ok = account != null && message != null && message > 0 && uid != null
         return when (uri.host) {
-            "message" -> if (account != null && message != null && message > 0) NotificationOpen.Message(account, message) else NotificationOpen.Inbox
-            "reply" -> if (account != null && message != null && message > 0) NotificationOpen.Reply(account, message) else NotificationOpen.Inbox
+            "message" -> if (ok) NotificationOpen.Message(account!!, message!!, uid!!) else NotificationOpen.Inbox
+            "reply" -> if (ok) NotificationOpen.Reply(account!!, message!!, uid!!) else NotificationOpen.Inbox
             "inbox" -> NotificationOpen.Inbox
             else -> null
         }

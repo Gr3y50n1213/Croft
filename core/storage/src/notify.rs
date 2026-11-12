@@ -65,6 +65,22 @@ pub fn rows_above(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Whether row `message_id` is the message with `uid` in `folder_id` of this account (and not
+/// hidden by a waiting move or delete).
+pub fn is_message(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    message_id: i64,
+    uid: u32,
+) -> Result<bool> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT 1 FROM message
+          WHERE id = ?1 AND account_id = ?2 AND folder_id = ?3 AND uid = ?4 AND local_hidden = 0",
+    )?;
+    Ok(stmt.exists(params![message_id, account_id, folder_id, uid])?)
+}
+
 /// What a notification shows of a message: `(sender name, sender address, subject, date)`.
 pub type Shown = (Option<String>, Option<String>, String, i64);
 

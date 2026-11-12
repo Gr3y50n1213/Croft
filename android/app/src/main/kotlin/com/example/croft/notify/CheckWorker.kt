@@ -40,6 +40,8 @@ class CheckWorker internal constructor(
 
     companion object {
         private suspend fun appRunner(context: Context): CheckRunner? {
+            // No database (a fresh install, or after "Erase all Croft data"): nothing to check, and opening the core here would create one.
+            if (!MailRuntime.databaseFile(context).exists()) return null
             val core = try { MailRuntime.openedCore(context).core } catch (e: Exception) { return null } catch (e: UnsatisfiedLinkError) { return null }
             return CheckRunner(CoreBackgroundChecker(core), AndroidNotifier(context), NotifySettingsStore.shared(context))
         }
@@ -48,6 +50,20 @@ class CheckWorker internal constructor(
 
 /** Schedules [CheckWorker] as one unique periodic work. */
 object CheckSchedule {
+    /** Stops the periodic check ("Erase all Croft data", the last real account removed). */
+    fun cancel(context: Context) {
+        try { WorkManager.getInstance(context.applicationContext).cancelUniqueWork(UNIQUE_NAME) } catch (e: IllegalStateException) { /* not initialised */ }
+    }
+
+    /** Schedules the check (KEEP) when there is an account that can notify, else stops it. */
+    fun forAccounts(context: Context, settings: NotifySettings, hasRealAccount: Boolean) {
+        if (hasRealAccount) {
+            try { apply(context, settings, changed = false) } catch (e: IllegalStateException) { /* not initialised: the next start */ }
+        } else {
+            cancel(context)
+        }
+    }
+
     /** The unique work name. */
     const val UNIQUE_NAME = "croft-mail-check"
 

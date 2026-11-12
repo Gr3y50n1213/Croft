@@ -1,0 +1,212 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * A small JMAP client (RFC 8620, RFC 8621) for the Companion's `/jmap` API (T27): the session,
+ * batched method calls with result references, and typed helpers for what W01 needs. The Companion
+ * runs each change through the core's operation queue, so a change shows at once and Undo cancels
+ * it while it waits.
+ */
+
+import { ApiError, type Api } from '../api.ts';
+
+export const MAIL = 'urn:ietf:params:jmap:mail';
+const USING = ['urn:ietf:params:jmap:core', MAIL];
+
+/** One mail account (a JMAP account). */
+export interface Account {
+  id: string;
+  name: string;
+}
+
+export type Role = 'inbox' | 'archive' | 'drafts' | 'sent' | 'junk' | 'trash' | 'outbox' | null;
+
+export interface Mailbox {
+  id: string;
+  name: string;
+  role: Role;
+  totalEmails: number;
+  unreadEmails: number;
+}
+
+export interface Address {
+  name: string | null;
+  email: string;
+}
+
+/** An email as the list shows it. */
+export interface EmailSummary {
+  id: string;
+  threadId: string;
+  mailboxIds: Record<string, boolean>;
+  keywords: Record<string, boolean>;
+  from: Address[] | null;
+  to: Address[] | null;
+  cc: Address[] | null;
+  subject: string | null;
+  receivedAt: string;
+  preview: string;
+  hasAttachment: boolean;
+}
+
+/** An email with its body (the Companion's sanitised HTML, remote content blocked, or text). */
+export interface EmailBody extends EmailSummary {
+  html: string | null;
+  text: string | null;
+}
+
+export const SUMMARY_PROPERTIES = [
+  'id',
+  'threadId',
+  'mailboxIds',
+  'keywords',
+  'from',
+  'to',
+  'cc',
+  'subject',
+  'receivedAt',
+  'preview',
+  'hasAttachment'
+] as const;
+
+/** A method call: name, arguments, call id. */
+export type Invocation = [string, Record<string, unknown>, string];
+
+/** A JMAP method error (`["error", {type}, id]`). */
+export class MethodError extends Error {
+  readonly type: string;
+  constructor(type: string) {
+    super(type);
+    this.type = type;
+  }
+}
+
+/** The order the sidebar lists folders by role (others follow, by name). */
+const ROLE_ORDER: Role[] = ['inbox', 'drafts', 'sent', 'outbox', 'archive', 'junk', 'trash'];
+
+export function sortMailboxes(list: Mailbox[]): Mailbox[] {
+  const rank = (m: Mailbox) => {
+    const i = ROLE_ORDER.indexOf(m.role);
+    return i < 0 ? ROLE_ORDER.length : i;
+  };
+  return [...list].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+}
+
+export class Jmap {
+  #api: Api;
+
+  constructor(api: Api) {
+    this.#api = api;
+  }
+
+  /** The user's mail accounts, the primary one first. */
+  async accounts(): Promise<Account[]> {
+    const s = await this.#api.call<{ accounts: Record<string, { name: string }>; primaryAccounts: Record<string, string> }>(
+      'GET',
+      '/jmap/session'
+    );
+    const primary = s.primaryAccounts[MAIL];
+    const list = Object.entries(s.accounts).map(([id, a]) => ({ id, name: a.name }));
+    return list.sort((a, b) => (a.id === primary ? -1 : b.id === primary ? 1 : 0));
+  }
+
+  /** Runs method calls in one request; the answers in order. A method error is thrown. */
+  async request(calls: Invocation[]): Promise<Invocation[]> {
+    const r = await this.#api.call<{ methodResponses: Invocation[] }>('POST', '/jmap/api', {
+      using: USING,
+      methodCalls: calls
+    });
+    for (const [name, args] of r.methodResponses) {
+      if (name === 'error') throw new MethodError(String(args['type'] ?? 'serverFail'));
+    }
+    return r.methodResponses;
+  }
+
+  async mailboxes(accountId: string): Promise<Mailbox[]> {
+    const [[, res]] = (await this.request([['Mailbox/get', { accountId, ids: null }, 'm']])) as [Invocation];
+    return sortMailboxes(res['list'] as Mailbox[]);
+  }
+
+  /** A page of a mailbox, newest first: the emails and the mailbox's total. */
+  async page(
+    accountId: string,
+    mailboxId: string,
+    position: number,
+    limit: number
+  ): Promise<{ emails: EmailSummary[]; total: number }> {
+    const r = await this.request([
+      [
+        'Email/query',
+        {
+          accountId,
+          filter: { inMailbox: mailboxId },
+          sort: [{ property: 'receivedAt', isAscending: false }],
+          position,
+          limit,
+          calculateTotal: true
+        },
+        'q'
+      ],
+      [
+        'Email/get',
+        {
+          accountId,
+          '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
+          properties: SUMMARY_PROPERTIES
+        },
+        'g'
+      ]
+    ]);
+    const query = r[0]![1];
+    const got = r[1]![1];
+    return { emails: got['list'] as EmailSummary[], total: Number(query['total'] ?? 0) };
+  }
+
+  /** One email with its body. */
+  async body(accountId: string, id: string): Promise<EmailBody | null> {
+    const [[, res]] = (await this.request([
+      [
+        'Email/get',
+        {
+          accountId,
+          ids: [id],
+          properties: [...SUMMARY_PROPERTIES, 'htmlBody', 'textBody', 'bodyValues'],
+          fetchHTMLBodyValues: true,
+          fetchTextBodyValues: true
+        },
+        'b'
+      ]
+    ])) as [Invocation];
+    const e = (res['list'] as Record<string, unknown>[])[0];
+    if (!e) return null;
+    const values = (e['bodyValues'] ?? {}) as Record<string, { value: string }>;
+    const part = (key: 'htmlBody' | 'textBody', type: string) => {
+      const parts = (e[key] ?? []) as { partId: string; type: string }[];
+      const p = parts.find((x) => x.type === type);
+      return p ? (values[p.partId]?.value ?? null) : null;
+    };
+    return { ...(e as unknown as EmailSummary), html: part('htmlBody', 'text/html'), text: part('textBody', 'text/plain') };
+  }
+
+  /** Applies patches (`{id: {keywords/$seen: true}}`, `{id: {mailboxIds: {...}}}`); the ids it refused. */
+  async update(accountId: string, update: Record<string, Record<string, unknown>>): Promise<string[]> {
+    const [[, res]] = (await this.request([['Email/set', { accountId, update }, 's']])) as [Invocation];
+    return Object.keys((res['notUpdated'] ?? {}) as object);
+  }
+
+  /** Destroys emails (to Trash, or for good when already in Trash); the ids it refused. */
+  async destroy(accountId: string, ids: string[]): Promise<string[]> {
+    const [[, res]] = (await this.request([['Email/set', { accountId, destroy: ids }, 'd']])) as [Invocation];
+    return Object.keys((res['notDestroyed'] ?? {}) as object);
+  }
+}
+
+/** Plain words for a JMAP or API failure. */
+export function explainMail(e: unknown): string {
+  if (e instanceof ApiError && e.code === 'offline') return "Can't reach your Companion. Check your connection.";
+  if (e instanceof ApiError && e.status === 401) return 'Your sign-in ended. Sign in again.';
+  if (e instanceof MethodError && e.type === 'requestTooLarge') return 'That is too much at once. Try fewer.';
+  if (e instanceof ApiError && e.code === 'rate_limited') return 'Too many requests. Wait a moment.';
+  return 'Something went wrong. Try again.';
+}

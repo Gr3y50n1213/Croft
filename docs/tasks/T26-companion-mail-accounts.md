@@ -30,6 +30,12 @@ or credentials is reachable through another user, and a stolen database reveals 
   - `GET /api/accounts` → the caller's accounts (id, address, kind, state); `DELETE /api/accounts/{id}` → removes it and its sealed
     credential.
   - Passwords are taken in request bodies only, wiped after use, and never returned.
+- **No reaching into the Companion's own network (SSRF).** A user chooses the servers their account connects to, so a user could
+  aim the Companion at a service on its private network. The protocols crate gets a process-wide address policy, checked after every
+  name lookup and before every connection (IMAP, SMTP, JMAP, discovery), so a name that resolves to a forbidden address (DNS
+  rebinding included) is refused. Phones keep the default (everything allowed); the Companion refuses loopback, private, link-local,
+  unique-local, CGNAT, multicast and unspecified addresses unless a setting (`mail_allowed_networks`, CIDR list) allows them, for a
+  mail server on the same LAN or Docker network.
 - **What T26 leaves out.** OAuth providers (Gmail, Outlook) through the Companion need a browser redirect to the Companion rather than
   the device's loopback; they come later (DECISIONS). The demo account is not offered.
 - **Re-enrolment and disabling** do not touch mail accounts; a disabled user's core stops (no syncing for a disabled user).
@@ -44,4 +50,5 @@ or credentials is reachable through another user, and a stolen database reveals 
 - No password in the Companion's database in the clear, in the mail database, in an answer or in the audit log; a wrong master key opens
   neither the credentials nor the mail database.
 - The cross-user test of T24 covers the new routes.
+- The address policy refuses a loopback or private server (also behind a name), and allows one inside `mail_allowed_networks`.
 - Not checkable here: real mail servers (covered by the core's own integration tests), many users on one host (memory and threads).

@@ -152,8 +152,9 @@ class ComposeScreenTest {
     @Test
     fun aFileSchemeResultIsNeverRead() {
         val resolver = RuntimeEnvironment.getApplication().contentResolver
-        assertNull(ComposeFiles.resolve(resolver, Uri.parse("file:///data/data/com.example.croft/databases/croft.db")))
-        assertNotNull(ComposeFiles.resolve(resolver, Uri.parse(ContentResolver.SCHEME_CONTENT + "://media/1")))
+        val context = RuntimeEnvironment.getApplication()
+        assertNull(ComposeFiles.resolve(context, Uri.parse("file:///data/data/com.example.croft/databases/croft.db")))
+        assertNotNull(ComposeFiles.resolve(context, Uri.parse(ContentResolver.SCHEME_CONTENT + "://media/1")))
     }
 
     // ---- Back ----

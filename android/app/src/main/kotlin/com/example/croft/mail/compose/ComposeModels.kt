@@ -50,6 +50,8 @@ data class ComposeFill(
     val subject: String = "",
     val body: String = "",
     val attachments: List<String> = emptyList(),
+    /** True when a subject or text was cut to its limit (the person is told). */
+    val truncated: Boolean = false,
 ) {
     // Recipients, subject and body are not printed (CLAUDE.md, security rules).
     override fun toString(): String = "ComposeFill(${to.size + cc.size + bcc.size} recipients, ${attachments.size} files)"
@@ -65,8 +67,15 @@ enum class RecipientField { TO, CC, BCC }
 
 /** A recipient chip: the address as typed, and whether the core accepts it (`is_valid_address`). An invalid one is an error chip. */
 data class RecipientChipData(val address: FfiAddress, val valid: Boolean) {
-    /** What the chip says: the name when there is one, else the address. */
-    val label: String get() = address.name?.takeIf { it.isNotBlank() } ?: address.address
+    /**
+     * What the chip says. The address is always part of it: a name alone could read as another address ("boss@corp.com" as a name with a
+     * different address behind it). With a name: `Name <address>`; without: the address.
+     */
+    val label: String
+        get() {
+            val name = address.name?.trim()?.takeIf { it.isNotEmpty() && !it.equals(address.address, ignoreCase = true) }
+            return if (name == null) address.address else "$name <${address.address}>"
+        }
 
     override fun toString(): String = "RecipientChipData(valid=$valid)"
 }
@@ -94,7 +103,7 @@ sealed interface SendPrompt {
 }
 
 /** Why a picked file was not attached. */
-enum class AttachmentError { TOO_LARGE, TOO_MANY, TOTAL_TOO_LARGE, UNREADABLE, FAILED }
+enum class AttachmentError { TOO_LARGE, TOO_MANY, TOTAL_TOO_LARGE, UNREADABLE, TIMED_OUT, FAILED }
 
 /** How compose ended, for the screen that opened it (the Inbox shows the snackbar). */
 sealed interface ComposeClosed {
@@ -132,9 +141,15 @@ data class ComposeState(
     /** Where the cursor goes when the body first shows (a reopened draft); null: the end. */
     val initialCursor: BodyCursor? = null,
     val attachments: List<DraftAttachment> = emptyList(),
-    /** Files being copied now. */
-    val attachmentsBusy: Int = 0,
+    /** Files being copied now, each with its own Cancel. */
+    val pending: List<PendingAttachment> = emptyList(),
+    /** Attachments the person removed and may still take back (Undo): hidden from [attachments], removed for good when the window ends. */
+    val removedAttachment: DraftAttachment? = null,
     val attachmentError: AttachmentError? = null,
+    /** A shared text or subject was cut to its limit: the screen says so once. */
+    val truncatedNotice: Boolean = false,
+    /** Counts up each time Send committed the text typed in the recipient fields: the fields clear theirs. */
+    val recipientTextTick: Int = 0,
     val sendState: SendState = SendState.NO_RECIPIENT,
     val sizeLimitMb: Int = 25,
     val saveStatus: SaveStatus = SaveStatus.NONE,
@@ -161,8 +176,17 @@ data class ComposeState(
         RecipientField.BCC -> bcc
     }
 
-    val canSwitchAccount: Boolean get() = attachments.isEmpty() && attachmentsBusy == 0
+    /** How many files are being copied. */
+    val attachmentsBusy: Int get() = pending.size
+
+    val canSwitchAccount: Boolean get() = attachments.isEmpty() && pending.isEmpty() && removedAttachment == null
+
+    // Subject, body, addresses and file names are not printed (CLAUDE.md, security rules).
+    override fun toString(): String = "ComposeState(phase=$phase, account=$account, draftId=$draftId, sendState=$sendState, recipients=${allRecipients.size}, attachments=${attachments.size})"
 }
+
+/** A file being copied into the draft. It has no name here: the provider may not have said it yet. */
+data class PendingAttachment(val id: Long)
 
 /** The cursor positions of this session's drafts, by draft id: kept in memory only, which is enough for Undo (a restart is a reopen). */
 class CursorMemory {

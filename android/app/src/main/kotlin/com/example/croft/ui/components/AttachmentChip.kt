@@ -141,7 +141,8 @@ fun AttachmentChip(
             else -> Icon(CroftIcons.Attachment, null, Modifier.size(20.dp), tint = content)
         }
         Column {
-            Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = lineCap, overflow = TextOverflow.Ellipsis)
+            // Middle ellipsis: a long name keeps its extension.
+            Text(name, style = MaterialTheme.typography.labelLarge, color = content, maxLines = lineCap, overflow = TextOverflow.MiddleEllipsis)
             Text(
                 when (state) {
                     AttachmentState.FAILED -> stringResource(R.string.attachment_failed_line, size)

@@ -177,6 +177,9 @@ class InboxController(
     var localDrafts by mutableStateOf<List<uniffi.croft_ffi.DraftSummary>>(emptyList())
         private set
 
+    /** The rows the list shows: [rows] without the server's copy of a draft of this device (see [LocalDraftMatch]). What is selected is chosen from these. */
+    val shownRows: List<MessageRowData> get() = com.example.croft.mail.compose.LocalDraftMatch.withoutCopies(rows, localDrafts)
+
     /** After Send, focus goes to the first row of the list (docs/ux/accessibility.md): set until the rows are there and focus was asked for. */
     var focusFirstPending by mutableStateOf(false)
 
@@ -588,6 +591,8 @@ class InboxController(
         newCount = 0
         arrived = emptySet()
         messageScope = target
+        // The drafts of the folder left must not hide rows of the one entered, not even for a moment.
+        if (localDrafts.isNotEmpty()) localDrafts = emptyList()
         pendingAnchor = session.anchors.load(target.key)
         restoring = true
         restoreTarget = null
@@ -630,14 +635,14 @@ class InboxController(
     /** Select every loaded row. */
     fun selectAllLoaded() {
         haptics.perform(HapticEvent.SelectionTick)
-        selected = rows.mapTo(LinkedHashSet()) { it.id }
+        selected = shownRows.mapTo(LinkedHashSet()) { it.id }
         allInFolderSelected = false
     }
 
     /** "Select all N in this folder". */
     fun selectAllInFolder() {
         haptics.perform(HapticEvent.SelectionTick)
-        selected = rows.mapTo(LinkedHashSet()) { it.id }
+        selected = shownRows.mapTo(LinkedHashSet()) { it.id }
         allInFolderSelected = true
     }
 
@@ -1010,11 +1015,13 @@ class InboxController(
             if (localDrafts.isNotEmpty()) localDrafts = emptyList()
             return
         }
-        localDrafts = try {
+        val found = try {
             compose.listDrafts(s.account).filter { it.outboxId == null }.sortedByDescending { it.updatedMs }
         } catch (e: com.example.croft.mail.compose.ComposeFailure) {
             emptyList()
         }
+        // The read took time: if the person moved to another folder meanwhile, these drafts are not for it (they would hide rows of that folder).
+        localDrafts = if (messageScope == s && scopeRole == FolderRole.DRAFTS) found else emptyList()
     }
 
     /**

@@ -25,6 +25,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,6 +78,8 @@ internal fun RecipientRow(
     controller: ComposeController,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
+    /** Counts up when Send or Back turned the typed text into chips: this field clears its text then. */
+    clearTick: Int = 0,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
@@ -86,6 +90,10 @@ internal fun RecipientRow(
     val chosen = chips.map { it.address.address.lowercase() }.toSet()
 
     LaunchedEffect(text) { suggestions = if (text.isBlank()) emptyList() else controller.suggest(text) }
+    // What is typed and not a chip yet is also held by the controller, so that Send and Back turn it into a chip instead of losing it.
+    SideEffect { controller.setPendingRecipientText(field, text) }
+    var seenTick by rememberSaveable(field.name + "-tick") { mutableIntStateOf(clearTick) }
+    LaunchedEffect(clearTick) { if (clearTick != seenTick) { seenTick = clearTick; text = "" } }
 
     fun commit(raw: String) {
         if (raw.isBlank()) return
@@ -117,6 +125,8 @@ internal fun RecipientRow(
                             expanded = menuChip == chip,
                             onDismiss = { menuChip = null },
                             items = chipMenu(field, chip, controller, scope),
+                            // The menu always shows the address, whatever name the chip carries.
+                            header = { Text(chip.address.address, Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge) },
                         )
                     }
                 }

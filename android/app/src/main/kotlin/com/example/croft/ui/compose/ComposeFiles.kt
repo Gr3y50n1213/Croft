@@ -22,17 +22,70 @@ object ComposeFiles {
     fun directory(context: Context): File = File(context.applicationContext.cacheDir, "compose-attach")
 
     /**
-     * [uri] (text) as a file to copy, or null when it is not a `content:` URI. A `file:` URI, or any other scheme, is never read: a
-     * link or a share must not be able to make Croft read a file of its own (or of the phone) by path.
+     * [uri] (text) as a file to copy, or null when it is not the `content:` URI of another app's provider. A `file:` URI, or any other
+     * scheme, is never read: a link or a share must not be able to make Croft read a file of its own (or of the phone) by path.
      */
     fun resolve(context: Context, uri: String): PickedFile? {
         val parsed = try { Uri.parse(uri) } catch (e: RuntimeException) { return null }
-        return resolve(context.contentResolver, parsed)
+        return resolve(context, parsed)
     }
 
-    /** [uri] as a file to copy, or null unless its scheme is `content`. */
-    fun resolve(resolver: ContentResolver, uri: Uri): PickedFile? =
-        if (uri.scheme.equals(ContentResolver.SCHEME_CONTENT, ignoreCase = true)) ContentFile(resolver, uri) else null
+    /** [uri] as a file to copy, or null unless it is a `content:` URI of another app's provider ([isForeign]). */
+    fun resolve(context: Context, uri: Uri): PickedFile? =
+        if (isForeign(context, uri)) ContentFile(context.contentResolver, uri) else null
+
+    /**
+     * Whether [uri] is a `content:` URI served by **another app**. Shared content is accepted only from other apps' providers: a link or a
+     * share that names one of Croft's own providers (the FileProvider the reading screens add, which serves Croft's own files) would
+     * otherwise make Croft attach its own data to a message.
+     *
+     * - The scheme must be `content`; a `userId@` prefix in the authority (`0@media`) is stripped before the lookup.
+     * - Refused when the authority belongs to this package: the providers of this package are listed from its own package info (which
+     *   needs no package visibility), and `resolveContentProvider` is asked for the rest (refused when it names this package or this uid).
+     * - Refused for a MediaStore item that this app owns (API 29 and later: `OWNER_PACKAGE_NAME`). On API 26 to 28 MediaStore has no owner
+     *   column; Croft saves nothing to MediaStore, so there is nothing of its own to protect there.
+     * - An authority that does not resolve is accepted: no app serves it, so a read just fails, and refusing it would also refuse real
+     *   shares from apps that package visibility hides from this one.
+     */
+    fun isForeign(context: Context, uri: Uri): Boolean {
+        try {
+            if (!uri.scheme.equals(ContentResolver.SCHEME_CONTENT, ignoreCase = true)) return false
+            val authority = uri.authority?.substringAfterLast('@')?.takeIf { it.isNotEmpty() } ?: return false
+            val pm = context.packageManager
+            val own = context.packageName
+            if (authority in ownAuthorities(context)) return false
+            val info = pm.resolveContentProvider(authority, 0)
+            if (info != null && (info.packageName == own || info.applicationInfo?.uid == android.os.Process.myUid())) return false
+            if (authority == MEDIA_AUTHORITY && ownsMediaItem(context, uri)) return false
+            return true
+        } catch (e: RuntimeException) {
+            // Anything unexpected while deciding: refuse.
+            return false
+        }
+    }
+
+    /** The authorities of this package's own providers. */
+    private fun ownAuthorities(context: Context): Set<String> = try {
+        @Suppress("DEPRECATION")
+        val info = context.packageManager.getPackageInfo(context.packageName, android.content.pm.PackageManager.GET_PROVIDERS)
+        info.providers.orEmpty().flatMap { it.authority.orEmpty().split(';') }.filter { it.isNotEmpty() }.toSet()
+    } catch (e: android.content.pm.PackageManager.NameNotFoundException) {
+        emptySet()
+    }
+
+    private const val MEDIA_AUTHORITY = "media"
+
+    /** Whether this app put the MediaStore item at [uri] there (it can read its own items without any permission). */
+    private fun ownsMediaItem(context: Context, uri: Uri): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return false
+        return try {
+            context.contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.OWNER_PACKAGE_NAME), null, null, null)?.use { c ->
+                c.moveToFirst() && c.getString(0) == context.packageName
+            } ?: false
+        } catch (e: RuntimeException) {
+            false
+        }
+    }
 }
 
 /** A `content:` URI seen as a [PickedFile]. Names and sizes come from the provider's `OpenableColumns` when it has them. */

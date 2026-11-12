@@ -195,10 +195,11 @@ class OnboardingFlow(
     private fun onDiscovered(found: FfiDiscovered, email: String) {
         mutable.update { s ->
             if (s.step != Step.FINDING) return@update s
-            if (found.imap == null) {
-                // JMAP only: Croft cannot sign in over JMAP yet. S03 says so and offers the manual route.
+            if (found.imap == null && found.jmap == null) {
+                // Nothing Croft can sign in to: S03 says so and offers the manual route.
                 s.copy(lookup = Lookup.Failed(OnboardingFailure.Verify(VerifyFailure.JmapOnly(), EmailInput.domainOf(email))))
             } else {
+                // IMAP, JMAP (T22: a JMAP server is used over JMAP), or both.
                 s.copy(
                     discovered = found, form = ServerForm.from(found), formGuessed = false, lookup = Lookup.Idle,
                     attempt = Attempt.Idle, test = null, pinnedFingerprint = null,

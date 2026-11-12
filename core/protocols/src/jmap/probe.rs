@@ -60,3 +60,61 @@ pub async fn probe_certificate(config: &JmapConfig) -> Result<CertFingerprint, B
     fingerprint
         .ok_or_else(|| BackendError::Transient("the server did not present a certificate".into()))
 }
+
+/// Checks the server's certificate **without sending anything**: one TLS handshake with the
+/// account's trust (the pin when `config` has one, else the webpki and platform roots), no HTTP
+/// request and no credential. Used before a sign-in check, so that a password is only ever sent
+/// to a certificate that validates or that the person confirmed (T22). An `http` address (allowed
+/// for loopback only) has no certificate and passes.
+pub async fn check_certificate(config: &JmapConfig) -> Result<(), crate::imap::CertificateProblem> {
+    use crate::imap::CertificateProblem as P;
+    let url = config.validate().map_err(|_| P::Other)?;
+    if !url.secure {
+        return Ok(());
+    }
+    let addrs: Vec<_> = match timeout(
+        config.timeout,
+        tokio::net::lookup_host((url.host.as_str(), url.port)),
+    )
+    .await
+    {
+        Ok(Ok(a)) => a.take(4).collect(),
+        _ => return Err(P::CannotConnect),
+    };
+    let per_address = (config.timeout / 3).max(std::time::Duration::from_millis(200));
+    let mut tcp = None;
+    for addr in addrs {
+        if let Ok(Ok(s)) = timeout(per_address, TcpStream::connect(addr)).await {
+            tcp = Some(s);
+            break;
+        }
+    }
+    let tcp = tcp.ok_or(P::CannotConnect)?;
+    let trust = match config.pinned_cert {
+        Some(pin) => Trust::Pinned(pin),
+        None => Trust::Roots,
+    };
+    let connector = TlsConnector::from(tls::client_config(&trust).await.map_err(|_| P::Other)?);
+    let name = ServerName::try_from(url.host.clone()).map_err(|_| P::Other)?;
+    let failed = match timeout(config.timeout, connector.connect(name, tcp)).await {
+        Ok(Ok(_)) => return Ok(()),
+        Ok(Err(e)) => e,
+        Err(_) => return Err(P::CannotConnect),
+    };
+    let Some(tls_error) = failed
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<tokio_rustls::rustls::Error>())
+    else {
+        // Not a certificate problem: the connection broke.
+        return Err(P::CannotConnect);
+    };
+    // The certificate the person would be shown (a second handshake that trusts nothing).
+    let fingerprint = probe_certificate(config).await.ok();
+    if tls::is_pin_mismatch(tls_error) {
+        return Err(match fingerprint {
+            Some(fingerprint) => P::PinMismatch { fingerprint },
+            None => P::Other,
+        });
+    }
+    Err(P::from_tls(tls_error, fingerprint))
+}

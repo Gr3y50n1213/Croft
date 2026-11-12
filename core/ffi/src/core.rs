@@ -19,7 +19,7 @@ use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{
     provider_for_host, verify, Discoverer, EmailAddress, ProbeUpdate, VerifyError, VerifyOptions,
 };
-use croft_protocols::{clean_host, CertFingerprint, DemoBackend};
+use croft_protocols::{clean_host, CertFingerprint, Credential, DemoBackend};
 use croft_storage::accounts::{self, Account, NewAccount, Protocol};
 use croft_storage::messages::{self, Message};
 use croft_storage::{folders, Db};
@@ -35,7 +35,8 @@ use crate::credentials::{
 use crate::error::{CoreError, DiscoverError, VerifyFailure};
 use crate::list;
 use crate::settings::{
-    demo_config, is_demo, StoredSecurity, StoredServer, StoredSettings, SETTINGS_VERSION,
+    demo_config, is_demo, url_host, AccountSettings, StoredJmap, StoredJmapSettings,
+    StoredSecurity, StoredServer, StoredSettings, SETTINGS_VERSION,
 };
 use crate::submit::AccountSubmitter;
 use crate::types::{
@@ -122,6 +123,8 @@ pub(crate) struct Inner {
     previous: Mutex<HashMap<i64, Previous>>,
     /// Source of `AddedAccount::update_token`.
     update_tokens: std::sync::atomic::AtomicU64,
+    /// The connection the JMAP accounts' id maps use (T22).
+    jmap_ids_db: Arc<Mutex<Db>>,
 }
 
 /// What `add_account` has worked out for the account, ready to be stored and started.
@@ -130,7 +133,7 @@ struct Added {
     email: String,
     provider: String,
     json: serde_json::Value,
-    settings: StoredSettings,
+    settings: AccountSettings,
     credential: Asked,
     /// The certificate the person confirmed on the changed-certificate warning (see
     /// `Core::add_account`).
@@ -142,7 +145,7 @@ struct Added {
 struct Previous {
     provider: String,
     config: serde_json::Value,
-    settings: StoredSettings,
+    settings: AccountSettings,
     /// Names the update this undoes (`AddedAccount::update_token`): only that update can be rolled
     /// back or committed, never a later one.
     token: u64,
@@ -162,13 +165,26 @@ fn same_stored_server(a: &StoredServer, b: &StoredServer) -> bool {
 /// Whether two settings records name the same servers: the IMAP server and the SMTP server (both
 /// or neither), each by [`same_stored_server`]. A re-add that differs in any of them is a different
 /// account: it must never silently repoint where mail is read or sent.
-fn same_servers(a: &StoredSettings, b: &StoredSettings) -> bool {
-    same_stored_server(&a.imap, &b.imap)
-        && match (&a.smtp, &b.smtp) {
-            (None, None) => true,
-            (Some(x), Some(y)) => same_stored_server(x, y),
-            _ => false,
+fn same_servers(a: &AccountSettings, b: &AccountSettings) -> bool {
+    match (a, b) {
+        (AccountSettings::Imap(a), AccountSettings::Imap(b)) => {
+            same_stored_server(&a.imap, &b.imap)
+                && match (&a.smtp, &b.smtp) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => same_stored_server(x, y),
+                    _ => false,
+                }
         }
+        // T22: the same session URL (the host without regard to case) and login name.
+        (AccountSettings::Jmap(a), AccountSettings::Jmap(b)) => {
+            a.jmap
+                .session_url
+                .trim_end_matches('/')
+                .eq_ignore_ascii_case(b.jmap.session_url.trim_end_matches('/'))
+                && a.jmap.username == b.jmap.username
+        }
+        _ => false,
+    }
 }
 
 /// Whether two addresses are the same account's: compared with full Unicode lower-casing, after
@@ -197,9 +213,13 @@ impl Inner {
     fn start_account(
         &self,
         id: i64,
-        settings: &StoredSettings,
+        settings: &AccountSettings,
         credential: Asked,
     ) -> Result<(), CoreError> {
+        let settings = match settings {
+            AccountSettings::Imap(s) => s,
+            AccountSettings::Jmap(s) => return self.start_jmap_account(id, s, credential),
+        };
         let config = settings.imap_config().map_err(|_| CoreError::BadSettings)?;
         config.validate().map_err(|_| CoreError::BadSettings)?;
         let backend = Arc::new(AccountBackend::new(config, self.provider.clone(), id));
@@ -239,6 +259,40 @@ impl Inner {
         Ok(())
     }
 
+    /// A JMAP account (T22): the JMAP adapter over the persistent id map, and EmailSubmission for
+    /// sending (the server files the sent copy itself).
+    fn start_jmap_account(
+        &self,
+        id: i64,
+        settings: &StoredJmapSettings,
+        credential: Asked,
+    ) -> Result<(), CoreError> {
+        let config = settings.jmap_config().map_err(|_| CoreError::BadSettings)?;
+        let backend = Arc::new(crate::jmap_account::backend(
+            config.clone(),
+            &self.jmap_ids_db,
+            self.provider.clone(),
+            id,
+        ));
+        match backend.set_asked(credential) {
+            Readiness::Ready | Readiness::NotReady => {}
+            Readiness::NeedsSignIn => self.hub.sign_in_needed(id),
+            Readiness::Broken => return Err(CoreError::BadSettings),
+        }
+        let submitter = Arc::new(crate::jmap_account::JmapAccountSubmitter::new(
+            id,
+            config,
+            self.provider.clone(),
+        ));
+        self.engine
+            .add_account_with_submitter(id, backend.clone(), submitter)?;
+        self.backends().insert(id, backend);
+        if self.hub.is_offline() {
+            self.handle.set_online(id, false);
+        }
+        Ok(())
+    }
+
     /// The account with this address that `add_account` would update: not the sample mailbox, and
     /// the same address without regard to case ([`same_address`]: the domain never has case, and no
     /// provider tells `Alice@` from `alice@`). Reads the database: call it from a blocking thread.
@@ -259,18 +313,15 @@ impl Inner {
     fn stored_match_for(
         &self,
         email: &str,
-        settings: &StoredSettings,
+        settings: &AccountSettings,
     ) -> Option<Option<CertFingerprint>> {
         let account = self.account_with_address(email).ok()??;
-        if account.protocol != Protocol::Imap {
+        let old = AccountSettings::from_json(&account.config).ok()?;
+        if account.protocol != old.protocol() || !same_servers(&old, settings) {
             return None;
         }
-        let old = StoredSettings::from_json(&account.config).ok()?;
-        if !same_servers(&old, settings) {
-            return None;
-        }
-        // `imap_config` leaves the pin out for a provider's host and for an unusable pin.
-        Some(old.imap_config().ok().and_then(|c| c.pinned_cert))
+        // The pin the connection uses: none for a provider's host or an unusable pin.
+        Some(old.applied_pin())
     }
 
     fn previous(&self) -> MutexGuard<'_, HashMap<i64, Previous>> {
@@ -297,7 +348,7 @@ impl Inner {
                 &NewAccount {
                     label: display_name,
                     email,
-                    protocol: Protocol::Imap,
+                    protocol: settings.protocol(),
                     provider,
                     config: json,
                     color: None,
@@ -326,8 +377,8 @@ impl Inner {
         let id = existing.id;
         // Settings this version cannot read (a newer app wrote them) are never overwritten.
         let old =
-            StoredSettings::from_json(&existing.config).map_err(|_| CoreError::AccountExists)?;
-        if existing.protocol != Protocol::Imap || !same_servers(&old, &new.settings) {
+            AccountSettings::from_json(&existing.config).map_err(|_| CoreError::AccountExists)?;
+        if existing.protocol != old.protocol() || !same_servers(&old, &new.settings) {
             return Err(CoreError::AccountExists);
         }
         // A trusted certificate is never replaced, added to an account that had none (it used to
@@ -335,8 +386,8 @@ impl Inner {
         // one the connection would use (none for a provider's host, and none when the stored pin is
         // unusable). Another pin needs the person to have confirmed exactly that fingerprint on the
         // changed-certificate warning; dropping a pin is never possible this way.
-        let old_pin = old.imap_config().ok().and_then(|c| c.pinned_cert);
-        let new_pin = new.settings.imap_config().ok().and_then(|c| c.pinned_cert);
+        let old_pin = old.applied_pin();
+        let new_pin = new.settings.applied_pin();
         if old_pin != new_pin && !matches!((new_pin, new.confirmed), (Some(n), Some(c)) if n == c) {
             return Err(CoreError::CertificateChanged);
         }
@@ -497,7 +548,7 @@ impl Inner {
     /// while the provider answers: call it from `open` or a blocking thread. The provider is
     /// never asked about an account the app has not stored a secret for (a new account's
     /// credential arrives with `add_account`).
-    fn start_stored_account(&self, id: i64, settings: &StoredSettings) -> Result<(), CoreError> {
+    fn start_stored_account(&self, id: i64, settings: &AccountSettings) -> Result<(), CoreError> {
         self.start_account(id, settings, ask(&*self.provider, id))
     }
 
@@ -684,6 +735,7 @@ impl Core {
         // (WAL lets them write in turn); see `Engine::open_with_outbox` and `compose.rs`.
         let outbox_db = Db::open(path, key_bytes)?;
         let compose_db = Db::open(path, key_bytes)?;
+        let jmap_ids_db = Arc::new(Mutex::new(Db::open(path, key_bytes)?));
         drop(key);
 
         let runtime = Builder::new_multi_thread()
@@ -718,6 +770,7 @@ impl Core {
             account_changes: tokio::sync::Mutex::new(()),
             previous: Mutex::new(HashMap::new()),
             update_tokens: std::sync::atomic::AtomicU64::new(0),
+            jmap_ids_db,
         });
 
         watch_outbox(&inner, outbox_changes);
@@ -739,9 +792,9 @@ impl Core {
                 }
                 continue;
             }
-            let usable = (account.protocol == Protocol::Imap)
-                .then(|| StoredSettings::from_json(&account.config).ok())
-                .flatten();
+            let usable = AccountSettings::from_json(&account.config)
+                .ok()
+                .filter(|s| s.protocol() == account.protocol);
             let started = match usable {
                 Some(settings) => inner.start_stored_account(account.id, &settings),
                 None => Err(CoreError::BadSettings),
@@ -816,6 +869,38 @@ impl Core {
             .map(|p| CertFingerprint::from_hex(&p))
             .transpose()
             .map_err(|_| VerifyFailure::BadSettings)?;
+        // T22: a JMAP account is checked by opening its JMAP session.
+        if let Some(url) = self.jmap_url_for(&discovered) {
+            let jmap = StoredJmapSettings {
+                version: SETTINGS_VERSION,
+                jmap: StoredJmap {
+                    session_url: url,
+                    username: jmap_username_of(&discovered),
+                },
+                pinned_fingerprint: None,
+            };
+            let config = jmap.jmap_config().map_err(|_| VerifyFailure::BadSettings)?;
+            let probe = AccountSettings::Jmap(jmap);
+            let email = discovered.email;
+            let inner = self.inner.clone();
+            let task = self.spawn(
+                async move {
+                    let stored = match pin {
+                        None => tokio::task::spawn_blocking(move || {
+                            inner.stored_match_for(&email, &probe)
+                        })
+                        .await
+                        .map_err(|_| VerifyFailure::Internal)?,
+                        Some(_) => None,
+                    };
+                    let used = pin.or(stored.flatten());
+                    let had_no_pin = pin.is_none() && stored == Some(None);
+                    crate::jmap_account::verify(config, &credential, used, had_no_pin).await
+                },
+                true,
+            );
+            return task.await?;
+        }
         let settings = discovered.to_settings();
         // Not valid UTF-8 (the bytes are wiped): no server would accept it as a password. An
         // OAuth sign-in is checked with the access token it just got.
@@ -838,11 +923,13 @@ impl Core {
             Asked::NoCredential | Asked::NotReady => return Err(VerifyFailure::WrongPassword),
         };
         // What the stored account of this address would be compared with (servers only).
-        let probe = discovered.imap.as_ref().map(|imap| StoredSettings {
-            version: SETTINGS_VERSION,
-            imap: stored_server(imap),
-            smtp: discovered.smtp.as_ref().map(stored_server),
-            pinned_fingerprint: None,
+        let probe = discovered.imap.as_ref().map(|imap| {
+            AccountSettings::Imap(StoredSettings {
+                version: SETTINGS_VERSION,
+                imap: stored_server(imap),
+                smtp: discovered.smtp.as_ref().map(stored_server),
+                pinned_fingerprint: None,
+            })
         });
         let email = discovered.email;
         let inner = self.inner.clone();
@@ -879,6 +966,18 @@ impl Core {
             true,
         );
         task.await?
+    }
+
+    /// The JMAP session URL when this sign-in is for a JMAP account (T22): the server offers JMAP,
+    /// is not a well-known provider's, and the address is not already an IMAP account (signing in
+    /// again keeps the protocol the account has; only a new account is made a JMAP one).
+    fn jmap_url_for(&self, d: &FfiDiscovered) -> Option<String> {
+        let url = jmap_url_of(d)?;
+        let existing = self.inner.account_with_address(&d.email).ok().flatten();
+        match existing {
+            Some(a) if a.protocol == Protocol::Imap => None,
+            _ => Some(url),
+        }
     }
 
     /// Adds the account and starts syncing it. Stores the settings (no secret) in the account
@@ -931,31 +1030,6 @@ impl Core {
         confirmed_fingerprint: Option<String>,
         credential: Arc<FfiCredential>,
     ) -> Result<AddedAccount, CoreError> {
-        let imap = discovered
-            .imap
-            .clone()
-            .ok_or(CoreError::UnsupportedServer)?;
-        let pin = match (
-            &pinned_fingerprint,
-            discovered.provider,
-            provider_for_host(&imap.host),
-        ) {
-            (Some(text), None, None) => Some(Self::pin_from_text(text)?.to_string()),
-            (Some(_), None, Some(_)) => return Err(CoreError::BadSettings),
-            _ => None,
-        };
-        let settings = StoredSettings {
-            version: SETTINGS_VERSION,
-            imap: stored_server(&imap),
-            smtp: discovered.smtp.as_ref().map(stored_server),
-            pinned_fingerprint: pin,
-        };
-        let json = settings.to_json().map_err(|_| CoreError::BadSettings)?;
-        settings
-            .imap_config()
-            .map_err(|_| CoreError::BadSettings)?
-            .validate()
-            .map_err(|_| CoreError::BadSettings)?;
         let confirmed = confirmed_fingerprint
             .map(|text| Self::pin_from_text(&text))
             .transpose()?;
@@ -963,23 +1037,74 @@ impl Core {
             .provider
             .map_or("generic", |p| p.db_name())
             .to_owned();
-        let email = discovered.email;
+        // T22: a server that offers JMAP (and is not a well-known provider's) is a JMAP account.
+        let settings = if let Some(url) = self.jmap_url_for(&discovered) {
+            let pin = match (&pinned_fingerprint, provider_for_host(&url_host(&url))) {
+                (Some(text), None) => Some(Self::pin_from_text(text)?.to_string()),
+                (Some(_), Some(_)) => return Err(CoreError::BadSettings),
+                (None, _) => None,
+            };
+            AccountSettings::Jmap(StoredJmapSettings {
+                version: SETTINGS_VERSION,
+                jmap: StoredJmap {
+                    session_url: url,
+                    username: jmap_username_of(&discovered),
+                },
+                pinned_fingerprint: pin,
+            })
+        } else {
+            let imap = discovered
+                .imap
+                .clone()
+                .ok_or(CoreError::UnsupportedServer)?;
+            let pin = match (
+                &pinned_fingerprint,
+                discovered.provider,
+                provider_for_host(&imap.host),
+            ) {
+                (Some(text), None, None) => Some(Self::pin_from_text(text)?.to_string()),
+                (Some(_), None, Some(_)) => return Err(CoreError::BadSettings),
+                _ => None,
+            };
+            let settings = StoredSettings {
+                version: SETTINGS_VERSION,
+                imap: stored_server(&imap),
+                smtp: discovered.smtp.as_ref().map(stored_server),
+                pinned_fingerprint: pin,
+            };
+            settings
+                .imap_config()
+                .map_err(|_| CoreError::BadSettings)?
+                .validate()
+                .map_err(|_| CoreError::BadSettings)?;
+            AccountSettings::Imap(settings)
+        };
+        let json = settings.to_json().map_err(|_| CoreError::BadSettings)?;
         // Not valid UTF-8 (the bytes are wiped), or an OAuth secret this version cannot read.
         let credential = match credential.to_asked() {
             Asked::NoCredential | Asked::NotReady => return Err(CoreError::NoCredential),
-            // The token only ever goes to the provider's own servers (IMAP and SMTP).
+            // A JMAP account signs in with a password only.
+            Asked::Credential(Credential::OAuth2 { .. })
+                if matches!(&settings, AccountSettings::Jmap(_)) =>
+            {
+                return Err(CoreError::BadSettings)
+            }
+            // The token only ever goes to the provider's own servers (IMAP and SMTP); OAuth is
+            // never for a JMAP account.
             Asked::OAuth(stored)
-                if !crate::oauth::servers_belong_to(
-                    stored.provider,
-                    Some(&imap),
-                    discovered.smtp.as_ref(),
-                    discovered.jmap.is_some(),
-                ) =>
+                if !matches!(&settings, AccountSettings::Imap(_))
+                    || !crate::oauth::servers_belong_to(
+                        stored.provider,
+                        discovered.imap.as_ref(),
+                        discovered.smtp.as_ref(),
+                        discovered.jmap.is_some(),
+                    ) =>
             {
                 return Err(CoreError::BadSettings)
             }
             usable => usable,
         };
+        let email = discovered.email;
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
@@ -1407,6 +1532,24 @@ fn add_demo(inner: &Inner) -> Result<AccountInfo, CoreError> {
         .into_iter()
         .find(|a| a.id == id)
         .ok_or(CoreError::Internal)
+}
+
+/// The JMAP session URL when the account should use JMAP (T22): the server offers JMAP and is not
+/// a well-known provider's (those stay IMAP; Gmail and Outlook may use OAuth).
+fn jmap_url_of(d: &FfiDiscovered) -> Option<String> {
+    d.jmap
+        .clone()
+        .filter(|url| d.provider.is_none() && provider_for_host(&url_host(url)).is_none())
+}
+
+/// The JMAP login name: the one the person may have edited on S04 (kept with the IMAP settings),
+/// else the address.
+fn jmap_username_of(d: &FfiDiscovered) -> String {
+    d.imap
+        .as_ref()
+        .map(|i| i.username.trim().to_owned())
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| d.email.trim().to_owned())
 }
 
 fn stored_server(s: &ServerSettings) -> StoredServer {

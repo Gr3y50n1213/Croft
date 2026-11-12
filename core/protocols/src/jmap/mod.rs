@@ -93,5 +93,5 @@ pub(crate) mod url;
 pub use backend::JmapBackend;
 pub use config::{JmapConfig, DEFAULT_DEADLINE, DEFAULT_MAX_RESPONSE_BYTES};
 pub use idmap::{fresh_uid_validity, IdStoreError, JmapIdStore, MemoryIdStore};
-pub use probe::probe_certificate;
+pub use probe::{check_certificate, probe_certificate};
 pub use submit::JmapSubmitter;

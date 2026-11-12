@@ -190,9 +190,10 @@ class SecretStoreCredentialsTest {
     @Test
     fun ifAddAccountFailsNothingIsStored() {
         val core = core(provider())
-        val jmapOnly = deadServer().copy(imap = null, jmap = "https://example.org/.well-known/jmap")
+        // No server the core can use (a JMAP-only one is a JMAP account since T22): the core refuses it.
+        val noServer = deadServer().copy(imap = null, jmap = null)
         try {
-            runBlocking { accounts().addPasswordAccount(core, jmapOnly, "Alice", null, null, Fixture.PASSWORD.toByteArray()) }
+            runBlocking { accounts().addPasswordAccount(core, noServer, "Alice", null, null, Fixture.PASSWORD.toByteArray()) }
             fail("expected CoreException")
         } catch (e: CoreException) {
             // refused by the core

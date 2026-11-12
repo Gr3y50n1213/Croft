@@ -1171,13 +1171,14 @@ fn add_account_refuses_unusable_input_before_touching_the_database() {
         provider: None,
         auth_hint: AuthKind::Password,
     };
-    let jmap_only = FfiDiscovered {
+    // Neither IMAP nor JMAP (a JMAP-only server is a JMAP account since T22).
+    let no_server = FfiDiscovered {
         imap: None,
-        jmap: Some("https://example.org/.well-known/jmap".into()),
+        jmap: None,
         ..base.clone()
     };
     assert_eq!(
-        block(core.add_account(jmap_only, "x".into(), None, None, password_cred("x"))),
+        block(core.add_account(no_server, "x".into(), None, None, password_cred("x"))),
         Err(CoreError::UnsupportedServer)
     );
     assert_eq!(

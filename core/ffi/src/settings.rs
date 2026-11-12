@@ -9,7 +9,7 @@
 use croft_protocols::demo::DEMO_ADDRESS;
 use croft_protocols::discovery::{provider_for_host, Provider};
 use croft_protocols::{
-    clean_host, CertFingerprint, ImapConfig, Security, SmtpConfig, SmtpSecurity,
+    clean_host, CertFingerprint, ImapConfig, JmapConfig, Security, SmtpConfig, SmtpSecurity,
 };
 use serde::{Deserialize, Serialize};
 
@@ -191,6 +191,125 @@ impl StoredSettings {
 }
 
 /// The `kind` of the sample mailbox's settings record.
+/// A JMAP account's server (T22): the session URL as discovery found it, and the login name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StoredJmap {
+    /// `https://<host>/.well-known/jmap` or the session resource.
+    pub(crate) session_url: String,
+    /// The login name.
+    pub(crate) username: String,
+}
+
+/// What a **JMAP** account stores (T22). Told apart from [`StoredSettings`] by its `jmap` key:
+/// an app from before T22 cannot read it (no `imap`), and refuses it rather than misreading it.
+/// Never a secret. The account uses JMAP for mail and for sending (EmailSubmission); it has no
+/// IMAP or SMTP settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StoredJmapSettings {
+    /// [`SETTINGS_VERSION`].
+    pub(crate) version: u32,
+    /// The JMAP server.
+    pub(crate) jmap: StoredJmap,
+    /// The one certificate to trust (as for IMAP), when the person trusted a self-signed one.
+    #[serde(default)]
+    pub(crate) pinned_fingerprint: Option<String>,
+}
+
+/// The host of a session URL (`https://host[:port]/...`), lower-case.
+pub(crate) fn url_host(url: &str) -> String {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("")
+    } else {
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+    };
+    host.to_ascii_lowercase()
+}
+
+impl StoredJmapSettings {
+    /// Reads JMAP settings; anything else (IMAP settings, the sample mailbox, a newer version) is
+    /// [`SettingsError::Unreadable`].
+    pub(crate) fn from_json(value: &serde_json::Value) -> Result<Self, SettingsError> {
+        if value.get("kind").is_some() || value.get("imap").is_some() || value.get("jmap").is_none()
+        {
+            return Err(SettingsError::Unreadable);
+        }
+        let s: Self =
+            serde_json::from_value(value.clone()).map_err(|_| SettingsError::Unreadable)?;
+        if s.version > SETTINGS_VERSION {
+            return Err(SettingsError::Unreadable);
+        }
+        Ok(s)
+    }
+
+    /// The stored form.
+    pub(crate) fn to_json(&self) -> Result<serde_json::Value, SettingsError> {
+        serde_json::to_value(self).map_err(|_| SettingsError::Unreadable)
+    }
+
+    /// The adapter's settings, with the pin unless the host is a well-known provider's (the same
+    /// rule as IMAP).
+    pub(crate) fn jmap_config(&self) -> Result<JmapConfig, SettingsError> {
+        let mut config = JmapConfig::new(self.jmap.session_url.clone(), self.jmap.username.clone());
+        if provider_for_host(&url_host(&self.jmap.session_url)).is_some() {
+            return Ok(config);
+        }
+        if let Some(pin) = &self.pinned_fingerprint {
+            let pin = CertFingerprint::from_hex(pin).map_err(|_| SettingsError::BadFingerprint)?;
+            config = config.with_pinned_cert(pin);
+        }
+        Ok(config)
+    }
+}
+
+/// An account's stored settings, whichever protocol it uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AccountSettings {
+    /// IMAP and SMTP.
+    Imap(StoredSettings),
+    /// JMAP (T22).
+    Jmap(StoredJmapSettings),
+}
+
+impl AccountSettings {
+    /// Reads either shape (by the `jmap` key).
+    pub(crate) fn from_json(value: &serde_json::Value) -> Result<Self, SettingsError> {
+        if value.get("jmap").is_some() {
+            StoredJmapSettings::from_json(value).map(Self::Jmap)
+        } else {
+            StoredSettings::from_json(value).map(Self::Imap)
+        }
+    }
+
+    /// The pin the connection uses: none for a provider's host or an unusable pin.
+    pub(crate) fn applied_pin(&self) -> Option<CertFingerprint> {
+        match self {
+            Self::Imap(s) => s.imap_config().ok().and_then(|c| c.pinned_cert),
+            Self::Jmap(s) => s.jmap_config().ok().and_then(|c| c.pinned_cert),
+        }
+    }
+
+    /// The account row's protocol.
+    pub(crate) fn protocol(&self) -> croft_storage::accounts::Protocol {
+        match self {
+            Self::Imap(_) => croft_storage::accounts::Protocol::Imap,
+            Self::Jmap(_) => croft_storage::accounts::Protocol::Jmap,
+        }
+    }
+
+    /// The stored form.
+    pub(crate) fn to_json(&self) -> Result<serde_json::Value, SettingsError> {
+        match self {
+            Self::Imap(s) => s.to_json(),
+            Self::Jmap(s) => s.to_json(),
+        }
+    }
+}
+
 const DEMO_KIND: &str = "demo";
 
 /// The settings record of the sample mailbox: no server, no secret, just the marker. It is not a

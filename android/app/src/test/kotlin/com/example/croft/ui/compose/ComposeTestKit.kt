@@ -24,13 +24,13 @@ import uniffi.croft_ffi.OutboxReason
 /** A mailbox with the compose calls on an in-memory backend: the Inbox rows of [InboxFixture], accounts 1 to 3, and a [FakeComposeBackend]. */
 class ComposeFixture(
     val policy: EncryptionPolicy = NoEncryptionPolicy,
-    backend: FakeComposeBackend? = null,
+    backendOverride: FakeComposeBackend? = null,
     rows: Int = 30,
 ) {
     val inbox = InboxFixture(rows)
 
     /** On the fixture's fixed clock, so that the end of an Undo window is a known time after "now". */
-    val backend: FakeComposeBackend = backend ?: FakeComposeBackend(clock = { inbox.clockMs })
+    val backend: FakeComposeBackend = backendOverride ?: FakeComposeBackend(clock = { inbox.clockMs })
     val session = MailSession(
         inbox.repo, inbox.anchors, { inbox.clockMs }, ZoneId.of("UTC"), inbox.actions,
         compose = backend, encryptionPolicy = policy,

@@ -40,6 +40,11 @@ pub async fn probe_certificate(config: &JmapConfig) -> Result<CertFingerprint, B
     .map_err(|_| unreachable())?
     .take(4)
     .collect();
+    // T26: the process's address policy (the Companion refuses its own network).
+    let addrs = crate::netpolicy::filter(addrs);
+    if addrs.is_empty() {
+        return Err(BackendError::Permanent(crate::netpolicy::REFUSED.into()));
+    }
     let per_address = (config.timeout / 3).max(std::time::Duration::from_millis(200));
     let mut tcp = None;
     for addr in addrs {
@@ -81,6 +86,11 @@ pub async fn check_certificate(config: &JmapConfig) -> Result<(), crate::imap::C
         Ok(Ok(a)) => a.take(4).collect(),
         _ => return Err(P::CannotConnect),
     };
+    // T26: the process's address policy (the Companion refuses its own network).
+    let addrs = crate::netpolicy::filter(addrs);
+    if addrs.is_empty() {
+        return Err(P::CannotConnect);
+    }
     let per_address = (config.timeout / 3).max(std::time::Duration::from_millis(200));
     let mut tcp = None;
     for addr in addrs {

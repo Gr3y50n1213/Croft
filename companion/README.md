@@ -3,8 +3,9 @@
 The optional, self-hosted, multi-user server of Croft (roadmap phase 2). It will serve the web app, instant push and server-side
 search; phones work without it. Licence: AGPL-3.0-or-later (see `LICENSES.md`).
 
-**Status:** the foundation (T23) and sign-in (T24): passkeys, an authenticator app with recovery codes, tokens for the apps, and the
-admin's user management. No mail yet; see `docs/tasks/PHASE-2.md`.
+**Status:** the foundation (T23), sign-in (T24, T25: passkeys, an authenticator app with recovery codes, OIDC, tokens for the apps,
+the admin's user management) and mail accounts (T26: each user's own IMAP/SMTP or JMAP accounts, synced by the same core the phones
+run). The JMAP API for the web app and the phones comes next; see `docs/tasks/PHASE-2.md`.
 
 ## Run it with Docker
 
@@ -35,6 +36,13 @@ A TOML file (`--config FILE`) and environment variables; the variable wins.
 | `trusted_proxies` | `CROFT_COMPANION_TRUSTED_PROXIES` (comma-separated) | none |
 | `[oidc]` `issuer`, `client_id`, `client_secret_file` | `CROFT_COMPANION_OIDC_ISSUER`, `_OIDC_CLIENT_ID`, `_OIDC_CLIENT_SECRET_FILE` | not set (no OIDC) |
 | `[oidc]` `name`, `create_users`, `required_group`, `groups_claim` | (file only) | `single sign-on`, `false`, none, `groups` |
+| `mail_allowed_networks` | `CROFT_COMPANION_MAIL_ALLOWED_NETWORKS` (comma-separated) | none |
+
+`mail_allowed_networks` lists private networks a mail server may be on, such as `192.168.1.0/24` or your Docker network: the Companion
+refuses to connect to its own machine and to private, link-local and similar addresses unless they are listed here, so nobody can use
+"their mail server" to reach other services on your network. Your OIDC provider (which you configure, not your users) is not limited
+by it. Public addresses that lead back into your network (your own public address through the router, a cloud provider's special
+public addresses) are not recognised as internal: keep such services behind their own sign-in.
 
 `public_url` must use a domain name (passkeys do not work with an IP address) and is the address passkeys are bound to: changing it
 later means everyone enrols again. `trusted_proxies` lists the reverse proxy's own addresses (as the Companion sees them, for example
@@ -105,6 +113,17 @@ If you run Authelia, Authentik, Keycloak or Microsoft Entra ID, people can sign 
   `https://login.microsoftonline.com/<tenant id>/v2.0`; Authelia and Authentik give theirs on the client's page. Group claims may need
   a mapper (Keycloak) or the `groups` scope (Authelia).
 
+## Mail accounts
+
+Each user adds their own mail accounts (IMAP and SMTP, or JMAP, with a password) from the web app; the Companion then keeps them in sync
+with the same Rust core the phones use. Each user's mail lives in a database of its own (`/data/users/<id>/mail.db`), encrypted with a
+key derived from that user's data key; each account's password is sealed with the same data key. Without the master key, neither can be
+read. Gmail and Outlook accounts that need OAuth cannot be added through the Companion yet (an app password works where the provider
+allows one). Each user can have up to 20 accounts; an account is added only after its server accepted the password, and a password the
+server later refuses is not tried again until the user gives a new one.
+
+Each user with mail runs a small sync engine of its own (two threads): fine for a household or a small company.
+
 ## Commands
 
 ```
@@ -133,3 +152,4 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `GET /api/oidc`, `GET /api/sign-in/oidc/start?app_challenge&app_redirect`, `GET /oidc/callback`, `POST /api/sign-in/oidc/exchange` (`{"code", "verifier"}`) | anyone |
 | `POST /api/oidc/link/start`, `/api/oidc/link/finish`, `DELETE /api/oidc/link` | signed in |
 | `POST /api/admin/users/{id}/oidc/unlink` | admins |
+| `POST /api/accounts/discover` (`{"email"}`), `/api/accounts/verify` and `POST /api/accounts` (`{"discovered", "password", "pin"?}`), `GET /api/accounts`, `DELETE /api/accounts/{id}` | signed in (not a recovery sign-in); 30 a minute per user |

@@ -5,10 +5,49 @@ unverified, the next step.
 
 ---
 
+## T26: Mail accounts in the Companion (12 November 2026)
+
+**Status:** draft pull request #43 on `task/t26` (CI green before the review fixes, run 43287485947); independent review done, every
+finding fixed or accepted (DECISIONS). Merged with the pull request that carries this entry.
+
+**What was built.**
+- **One core per user.** The Companion runs one `croft_ffi::Core` (the phones' own core) per user, over that user's SQLCipher database,
+  keyed by HKDF of the user's data key.
+- **Passwords.** They are sealed with the same data key and bound to (user, account), and read by the core through a credential
+  provider; a password the server refused is not replayed.
+- **Routes.** Discover, verify, add (verified first, at most 20 accounts per user), list, remove; limited per user.
+- **Address policy.** A process-wide policy in `croft-protocols`, checked after every lookup at every connection. The Companion refuses
+  its own network, embedded-IPv4 forms and NAT64 included, unless `mail_allowed_networks` allows it; the admin's OIDC provider is
+  exempt.
+- **Build.** The Companion builds the core with all its patched crates (guarded); the image builds SQLCipher against OpenSSL.
+
+**Checks.** 112 companion tests and 200 protocols tests. Against the core's IMAP test server (self-signed) and JMAP test server:
+- add after confirming the certificate; list; remove;
+- two users with accounts on both sides;
+- another user's key not opening a mail database;
+- the decrypted mail database holding no password;
+- a reopened core signing in with the sealed password;
+- one core under concurrent first uses;
+- a wrong password refused at add, and the account cap;
+- a failed store when signing in again keeping the account;
+- a disabled user's core stopping and staying stopped;
+- a wrong master key opening nothing;
+- the address policy end to end in the core, and the Companion's policy function.
+
+Clippy is clean in both workspaces.
+
+**Review** (one independent agent, opus, high effort): no high, 5 medium, 6 low. All fixed with regression tests, except those
+accepted in DECISIONS. The fixes were not re-reviewed.
+
+**Not verified here:** real mail servers through the Companion (the core's own integration tests cover the protocols); IPv6 NAT64
+networks; many users on one host.
+
+---
+
 ## T25: Companion sign-in with OIDC (12 November 2026)
 
-**Status:** draft pull request #40 on `task/t25` (CI green before the review fixes, run 43279059870); independent review done, every
-finding fixed or accepted (DECISIONS). Merged with the pull request that carries this entry.
+**Status:** merged to main (pull request #41; CI green, run 43283169445); independent review done, every finding fixed or accepted
+(DECISIONS).
 
 **What was built.**
 - **Settings.** An optional `[oidc]` section: issuer, client id, a client secret file (with the master key's rules), and optional

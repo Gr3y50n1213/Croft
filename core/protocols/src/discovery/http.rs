@@ -107,6 +107,14 @@ impl HttpsFetcher {
         if addrs.is_empty() {
             return Err(FetchError::NameNotFound);
         }
+        // T26: the process's address policy (the Companion refuses its own network).
+        let addrs: Vec<_> = addrs
+            .into_iter()
+            .filter(|ip| crate::netpolicy::allowed(*ip))
+            .collect();
+        if addrs.is_empty() {
+            return Err(FetchError::Connect);
+        }
         let per_address = (limits.timeout / 3).max(Duration::from_millis(100));
         let mut tcp = None;
         for ip in addrs.iter().take(MAX_ADDRS) {

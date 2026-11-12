@@ -51,9 +51,22 @@ fn run(args: &[String]) -> Result<String, CliError> {
         }
         None => auth,
     };
+    // T26: the Companion's own network is off limits to mail connections, except the networks
+    // the admin allows (a mail server on the same LAN or Docker network).
+    croft_protocols::netpolicy::set_address_policy(croft_companion::mail::address_policy(
+        config.mail_allowed_networks.clone(),
+    ));
     let runtime = tokio::runtime::Runtime::new().map_err(|e| CliError::Serve(e.to_string()))?;
     runtime
-        .block_on(http::serve(&config.listen, http::App::new(store, auth)))
+        .block_on(async {
+            let app = http::App::new(store, auth).with_mail(croft_companion::mail::MailCores::new(
+                config.data_dir.clone(),
+            ));
+            // The cores of users who have mail accounts start syncing at once.
+            let opening = app.clone();
+            tokio::task::spawn_blocking(move || opening.open_all_mail());
+            http::serve(&config.listen, app).await
+        })
         .map_err(|e| CliError::Serve(e.to_string()))?;
     Ok(String::new())
 }

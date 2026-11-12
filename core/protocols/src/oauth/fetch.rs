@@ -8,7 +8,8 @@
 //! and Mozilla's roots, TLS 1.2 and newer, no redirects followed, no cookies, no proxies, every
 //! wait and the whole request bounded, the answer's size capped), offered to code outside this
 //! crate. Plain `http` is accepted only to a loopback address (tests); the caller decides whether
-//! it allows even that.
+//! it allows even that. It is for addresses the server's admin configured, so the process's address
+//! policy (`crate::netpolicy`, for addresses users choose) does not restrict it.
 
 use std::time::Duration;
 
@@ -86,7 +87,9 @@ async fn send(
     if !url.is_allowed() {
         return Err(FetchError::BadUrl);
     }
-    let http = Http::new(Trust::Roots, TIMEOUT, DEADLINE);
+    // The OIDC provider is the admin's own choice, so the address policy (for what users choose)
+    // does not apply: a provider on the same LAN or Docker network keeps working.
+    let http = Http::new(Trust::Roots, TIMEOUT, DEADLINE).admin_configured();
     let req = HttpRequest {
         method,
         url: &url,

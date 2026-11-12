@@ -19,6 +19,7 @@ mod host;
 pub mod imap;
 pub mod jmap;
 pub mod lines;
+pub mod netpolicy;
 pub mod oauth;
 pub mod smtp;
 pub mod submit;

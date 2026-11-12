@@ -334,6 +334,7 @@ mod tests {
             master_key_file: dir.join("keys").join("master.key"),
             trusted_proxies: Vec::new(),
             oidc: None,
+            mail_allowed_networks: Vec::new(),
         }
     }
 

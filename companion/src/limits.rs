@@ -58,7 +58,12 @@ pub struct Refused {
 impl Limits {
     /// Counts a request from `ip`; refuses it when the address is over either limit.
     pub fn request(&mut self, ip: IpAddr, now: i64) -> Result<(), Refused> {
-        let e = self.entry(ip, now);
+        self.request_key(who(ip), now)
+    }
+
+    /// The same for any key (T26: per user, for the routes that make outbound connections).
+    pub fn request_key(&mut self, key: u128, now: i64) -> Result<(), Refused> {
+        let e = self.entry(key, now);
         while e
             .failures
             .front()
@@ -88,15 +93,14 @@ impl Limits {
 
     /// Records a failure from `ip`.
     pub fn failed(&mut self, ip: IpAddr, now: i64) {
-        let e = self.entry(ip, now);
+        let e = self.entry(who(ip), now);
         e.failures.push_back(now);
         while e.failures.len() > FAILURES_PER_WINDOW {
             e.failures.pop_front();
         }
     }
 
-    fn entry(&mut self, ip: IpAddr, now: i64) -> &mut Entry {
-        let key = who(ip);
+    fn entry(&mut self, key: u128, now: i64) -> &mut Entry {
         if !self.current.contains_key(&key)
             && (now - self.since >= FAILURE_WINDOW_MS || self.current.len() >= MAX_ADDRESSES)
         {

@@ -22,6 +22,7 @@ pub mod oidc;
 pub mod oidc_store;
 pub mod store;
 pub mod totp;
+pub mod webpush;
 
 #[cfg(test)]
 mod tests {

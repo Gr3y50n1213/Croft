@@ -670,6 +670,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "p256",
  "qrcode",
  "ring",
  "rusqlite",

@@ -249,13 +249,23 @@ async fn private_and_plain_addresses_are_refused_before_anything_is_sent() {
         FetchError::BadUrl
     );
     // https to a private or loopback address: refused by the public-only reach.
+    // Refused outright (T39c review): never "unreachable", which would be tried again later.
     for url in [
         "https://127.0.0.1/team.ics",
         "https://10.0.0.1/team.ics",
         "https://[::1]/team.ics",
         "https://192.168.1.10/team.ics",
+        "https://localhost/team.ics",
+        "https://[::ffff:127.0.0.1]/team.ics",
+        "https://2130706433/team.ics",
+        "https://169.254.169.254/latest/meta-data",
+        "webcal://[fe80::1]/team.ics",
     ] {
-        assert!(get_calendar_link(url, None, None).await.is_err(), "{url}");
+        let err = get_calendar_link(url, None, None).await.unwrap_err();
+        assert!(
+            matches!(err, FetchError::Refused | FetchError::BadUrl),
+            "{url}: {err:?}"
+        );
     }
     assert!(seen.lock().unwrap().is_empty());
 }

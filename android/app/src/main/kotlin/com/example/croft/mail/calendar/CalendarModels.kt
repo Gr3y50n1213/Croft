@@ -113,7 +113,7 @@ data class Reminder(val eventId: Long, val account: Long, val keyMs: Long, val a
 data class EventsInWindow(val occurrences: List<Occurrence>, val truncated: Boolean)
 
 /** Why a calendar link could not be added (T39c). */
-enum class LinkProblem { BAD_ADDRESS, NOT_A_CALENDAR, UNREACHABLE, REFUSED, ALREADY_ADDED }
+enum class LinkProblem { BAD_ADDRESS, NOT_A_CALENDAR, UNREACHABLE, REFUSED, ALREADY_ADDED, TOO_MANY }
 
 /** How a calendar sync of one account went. */
 enum class CalendarSync { DONE, NOT_OFFERED, UNREACHABLE, SIGN_IN_NEEDED }

@@ -114,6 +114,7 @@
     <string name="calendars_link_unreachable">Couldn\'t reach this link. Try again later.</string>
     <string name="calendars_link_refused">The server refused, or sent something Croft doesn\'t take (too large or too many redirects).</string>
     <string name="calendars_link_already">This account already has this calendar.</string>
+    <string name="calendars_link_too_many">This account already has 20 calendar links. Remove one to add another.</string>
     <string name="calendars_linked">From a link, read-only</string>
     <string name="calendars_remove">Remove %1$s</string>
     <string name="calendars_remove_title">Remove this calendar?</string>

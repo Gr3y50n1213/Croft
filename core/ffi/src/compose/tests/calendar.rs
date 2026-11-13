@@ -617,3 +617,68 @@ fn only_https_and_webcal_links_are_taken() {
         assert!(out.calendar.is_none(), "{bad}");
     }
 }
+
+#[test]
+fn a_link_never_gets_in_the_way_of_the_caldav_sync_and_never_sets_reminders() {
+    crate::calendar::LINK_LOOPBACK_FOR_TESTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let m = Mail::new();
+    // A link with an alarm, added before the account's CalDAV calendars are known (so listed first).
+    let alarm = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:talk\r\nDTSTART:20261116T120000Z\r\nDURATION:PT1H\r\nSUMMARY:Linked talk\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nDESCRIPTION:Chosen by a stranger\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let file = std::sync::Arc::new(std::sync::Mutex::new(alarm.to_owned()));
+    let url = feed_server(file.clone());
+    let link = block(
+        m.core()
+            .clone()
+            .subscribe_calendar(m.account, url, "Talks".into()),
+    )
+    .unwrap()
+    .calendar
+    .expect("added");
+    // Listed before the server's calendars, as when a server gives no order and the names sort so.
+    {
+        let d = croft_storage::Db::open(&m.db.path, None).unwrap();
+        d.connection()
+            .execute("UPDATE calendar SET sort_order = 0 WHERE id = ?1", [link])
+            .unwrap();
+    }
+    let dav = block(DavServer::start_with("alice", crate::tests::PASSWORD));
+    dav.put_event("standup.ics", &standup());
+    m.core().set_carddav_url_for_tests(m.account, &dav.origin());
+    assert_eq!(sync(&m), CalendarSyncResult::Done);
+    let week: Vec<String> = titles(&m, MON, MON + WEEK)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert!(week.contains(&"Stand-up".to_owned()), "{week:?}");
+    assert!(week.contains(&"Linked talk".to_owned()), "{week:?}");
+    // The link is never asked of the CalDAV server.
+    assert!(dav.requests().iter().all(|r| !r.path.contains("holidays")));
+    // Only the CalDAV event's alarm is taken.
+    let due: Vec<String> = m
+        .core()
+        .next_reminders(MON, MON + WEEK, LONDON.into())
+        .unwrap()
+        .into_iter()
+        .map(|r| r.title)
+        .collect();
+    assert!(
+        !due.is_empty() && due.iter().all(|t| t == "Stand-up"),
+        "{due:?}"
+    );
+
+    // A fetch that fails is recorded: not tried again within the hour, its events kept.
+    *file.lock().unwrap() = "<html>down for maintenance</html>".into();
+    block(m.core().refresh_links(m.account, true)).unwrap();
+    *file.lock().unwrap() = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n".into();
+    block(m.core().refresh_links(m.account, false)).unwrap();
+    let still = |m: &Mail| {
+        titles(m, MON, MON + WEEK)
+            .iter()
+            .any(|(t, _)| t == "Linked talk")
+    };
+    assert!(still(&m));
+    // Once due, a calendar that now has no events clears the link's.
+    block(m.core().refresh_links(m.account, true)).unwrap();
+    assert!(!still(&m));
+    assert!(m.core().unsubscribe_calendar(m.account, link).unwrap());
+}

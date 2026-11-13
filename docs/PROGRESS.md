@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T39c: The week view and calendar links (13 November 2026)
 
-**Status:** on `task/t39c`, its own pull request; the independent review of the link fetch is running.
+**Status:** on `task/t39c`, its own pull request. The independent review of the link fetch is done; its findings are fixed (`docs/REVIEW-QUEUE.md`).
 
 **What was built.**
 - **Calendar links (core, migration 0014, FFI v21).**
@@ -21,8 +21,15 @@ unverified, the next step.
     the account.
   - Each calendar sync fetches it again at most hourly, asking with `If-None-Match` and `If-Modified-Since`, and replaces
     the events that changed or went.
-  - Edits to its events are refused. `unsubscribe_calendar` removes it with its events. The CalDAV clean-up never touches
-    links.
+  - Edits to its events are refused. `unsubscribe_calendar` removes it with its events. The CalDAV clean-up and sync never
+    touch links.
+  - After the review:
+    - a split copies only four top-level lines and small zones, within twice the file's cap;
+    - a failed fetch waits its hour;
+    - one deadline per fetch, 20 links per account, 2 minutes of links per sync;
+    - unchanged events are not rewritten, and each fetch is stored all or nothing;
+    - a feed that empties clears its events;
+    - a link's alarms never set reminders.
 - **S35 Week.**
   - Three days (seven on wide screens), with an hour grid, an all-day strip, blocks side by side where they overlap, and
     the current-time line.
@@ -42,8 +49,9 @@ unverified, the next step.
 - `cargo test` for the whole core, including:
   - calendar link fetch tests against an in-process server: the bare `GET`, the conditional fetch, redirects, the size
     cap, and private and plain addresses refused before anything is sent;
-  - the split by `UID`;
-  - storage and FFI tests of link calendars;
+  - the split by `UID`, and a hostile file that cannot grow when split;
+  - storage and FFI tests of link calendars: all-or-nothing adds, the cap, failed tries, and a link listed before a
+    CalDAV calendar (that test fails without the fix);
 - SQLCipher;
 - `check_schema.py`.
 

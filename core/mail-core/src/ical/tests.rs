@@ -985,7 +985,10 @@ fn a_feed_is_split_into_one_object_per_uid_with_the_zones_it_uses() {
             .collect::<Vec<_>>(),
         ["Own Zone"]
     );
-    assert!(a.to_text().contains("X-WR-CALNAME:Holidays"));
+    // Only VERSION, PRODID, CALSCALE and METHOD are copied from the top level (T39c review: a
+    // deliberate change, so a big top-level line cannot be multiplied by the number of events).
+    assert!(a.to_text().contains("VERSION:2.0"));
+    assert!(!a.to_text().contains("X-WR-CALNAME"));
     // Each part reads back on its own, within the usual bounds.
     assert!(parse(&a.to_text()).is_ok());
     assert!(parts[1].1.time_zones().is_empty());
@@ -996,4 +999,29 @@ fn a_feed_is_split_into_one_object_per_uid_with_the_zones_it_uses() {
     );
     assert!(parse(&big).is_err());
     assert!(parse_feed(&big).is_ok());
+}
+
+#[test]
+fn a_hostile_feed_cannot_grow_when_split() {
+    // One big top-level line and one big zone, named by every event: neither is copied into each part.
+    let pad = "x".repeat(200 * 1024);
+    let mut text = format!("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-PAD:{pad}\r\nBEGIN:VTIMEZONE\r\nTZID:Big\r\nX-PAD:{pad}\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n");
+    for i in 0..1500 {
+        text.push_str(&format!(
+            "BEGIN:VEVENT\r\nUID:e{i}\r\nDTSTART;TZID=Big:20261113T090000\r\nEND:VEVENT\r\n"
+        ));
+    }
+    text.push_str("END:VCALENDAR\r\n");
+    let feed = parse_feed(&text).expect("parses");
+    let parts = split_by_uid(&feed);
+    assert_eq!(parts.len(), MAX_COMPONENTS);
+    let total: usize = parts.iter().map(|(_, c)| c.to_text().len()).sum();
+    assert!(
+        total < text.len(),
+        "{total} bytes from a {}-byte file",
+        text.len()
+    );
+    assert!(!parts[0].1.to_text().contains("X-PAD"));
+    // Within the budget, ordinary zones are still copied.
+    assert!(total <= super::MAX_SPLIT_TOTAL);
 }

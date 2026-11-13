@@ -80,6 +80,7 @@ class CoreCalendarBackend(private val core: Core, private val io: CoroutineDispa
             uniffi.croft_ffi.LinkFailure.UNREACHABLE -> LinkProblem.UNREACHABLE
             uniffi.croft_ffi.LinkFailure.REFUSED -> LinkProblem.REFUSED
             uniffi.croft_ffi.LinkFailure.ALREADY_ADDED -> LinkProblem.ALREADY_ADDED
+            uniffi.croft_ffi.LinkFailure.TOO_MANY -> LinkProblem.TOO_MANY
         }
 
         internal fun RepeatPreset.toApp(): RepeatChoice = when (this) {

@@ -343,8 +343,8 @@ pub const MAX_CALENDAR_FILE: usize = 5 * 1024 * 1024;
 pub const MAX_CALENDAR_LINK: usize = 2048;
 /// How many redirects a calendar link may take (each to a public `https` address).
 const MAX_LINK_REDIRECTS: usize = 2;
-/// One whole fetch of a calendar link (a big file may take a while).
-const LINK_DEADLINE: Duration = Duration::from_secs(60);
+/// One whole fetch of a calendar link, all redirects included (a big file may take a while).
+pub const LINK_DEADLINE: Duration = Duration::from_secs(60);
 
 /// What fetching a calendar link gave.
 pub enum LinkAnswer {
@@ -430,6 +430,21 @@ pub async fn get_calendar_link_from_loopback_for_tests(
 }
 
 async fn calendar_link_with(
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    reach: Reach,
+) -> Result<LinkAnswer, FetchError> {
+    // One deadline for the whole fetch, not one per hop (T39c review).
+    tokio::time::timeout(
+        LINK_DEADLINE,
+        calendar_link_hops(url, etag, last_modified, reach),
+    )
+    .await
+    .unwrap_or(Err(FetchError::Unreachable))
+}
+
+async fn calendar_link_hops(
     url: &str,
     etag: Option<&str>,
     last_modified: Option<&str>,

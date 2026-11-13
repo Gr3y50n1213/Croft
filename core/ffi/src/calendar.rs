@@ -318,9 +318,10 @@ impl Core {
         })
     }
 
-    /// Fetches the account's calendar links (those last fetched over an hour ago, or all when
-    /// `all`), each on its own: one that fails is left as it was until the next time. Returns
-    /// whether the account has any link.
+    /// Fetches the account's calendar links (those last tried over an hour ago, or all when
+    /// `all`), each on its own: one that fails keeps its events and waits its turn like one that
+    /// worked. One sync spends at most [`LINKS_BUDGET`] on links; those not reached are due next
+    /// time. Returns whether the account has any link.
     pub(crate) async fn refresh_links(&self, account: i64, all: bool) -> Result<bool, CoreError> {
         let links: Vec<store::CalendarRow> = self
             .inner
@@ -330,14 +331,18 @@ impl Core {
             .filter(|c| c.source_url.is_some())
             .collect();
         let now = now_ms();
+        let budget = std::time::Instant::now() + LINKS_BUDGET;
         for c in &links {
+            if std::time::Instant::now() > budget {
+                break;
+            }
             let due = all
                 || c.link_fetched_at
                     .is_none_or(|t| now.saturating_sub(t) >= LINK_EVERY_MS);
             let Some(url) = c.source_url.as_deref().filter(|_| due) else {
                 continue;
             };
-            let _ = self
+            let fetched = self
                 .fetch_link(
                     account,
                     c.id,
@@ -346,6 +351,12 @@ impl Core {
                     c.link_modified.as_deref(),
                 )
                 .await;
+            if fetched.is_err() {
+                // Tried: not again before its hour is up (T39c review).
+                self.inner
+                    .handle
+                    .read(|db| store::set_link_tried(db.connection(), account, c.id, now_ms()))?;
+            }
         }
         Ok(!links.is_empty())
     }
@@ -386,12 +397,11 @@ impl Core {
                 self.inner
                     .handle
                     .read(|db| {
-                        let c = db.connection();
-                        store::replace_link_events(c, account, calendar, &parts, now)?;
-                        store::set_link_fetched(
-                            c,
+                        store::refresh_link(
+                            db.connection(),
                             account,
                             calendar,
+                            &parts,
                             etag.as_deref(),
                             last_modified.as_deref(),
                             now,
@@ -543,12 +553,13 @@ impl Core {
             }
         }
 
-        // In: what changed on the server, stored one batch at a time.
+        // In: what changed on the server, stored one batch at a time. Calendar links are not on the
+        // CalDAV server and are fetched on their own (T39c review).
         let stored = self
             .inner
             .handle
             .read(|db| store::calendars(db.connection(), account))?;
-        for cal in stored {
+        for cal in stored.into_iter().filter(|c| c.source_url.is_none()) {
             let changes = match dav.changes(&cal.path, cal.sync_token.as_deref()).await {
                 Ok(c) => c,
                 Err(e) => return Ok(outcome(net(e), conflicts)),
@@ -625,6 +636,8 @@ impl Core {
 
 /// How often a calendar link is fetched again, at most.
 const LINK_EVERY_MS: i64 = 60 * 60 * 1000;
+/// The most time one sync spends fetching an account's links (each fetch has its own deadline).
+const LINKS_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Why a calendar link could not be added (or fetched).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -639,6 +652,8 @@ pub enum LinkFailure {
     Refused,
     /// This account already has this link.
     AlreadyAdded,
+    /// This account already has as many links as Croft keeps (20).
+    TooMany,
 }
 
 /// What adding a calendar link gave.
@@ -681,7 +696,9 @@ async fn fetch_link_answer(
     })
 }
 
-/// The file's events, one object per `UID`, as text; a file with none is not a calendar.
+/// The file's events, one object per `UID`, as text. A calendar with no events gives none (a feed
+/// that empties clears its calendar: T39c review); one whose events Croft cannot read, or anything
+/// that is not a calendar, is refused.
 fn feed_parts(body: &[u8]) -> Result<Vec<(String, String)>, LinkFailure> {
     let text = std::str::from_utf8(body).map_err(|_| LinkFailure::NotACalendar)?;
     let feed = ical::parse_feed(text).map_err(|_| LinkFailure::NotACalendar)?;
@@ -690,7 +707,7 @@ fn feed_parts(body: &[u8]) -> Result<Vec<(String, String)>, LinkFailure> {
         .map(|(uid, cal)| (uid, cal.to_text()))
         .filter(|(_, t)| t.len() <= ical::MAX_OBJECT)
         .collect();
-    if parts.is_empty() {
+    if parts.is_empty() && !feed.events().is_empty() {
         return Err(LinkFailure::NotACalendar);
     }
     Ok(parts)
@@ -835,7 +852,7 @@ impl Core {
         let mut kept: Vec<OccurrenceInfo> = Vec::new();
         let mut truncated = false;
         let clip = |t: &str| -> String { t.chars().take(LIST_TEXT_CHARS).collect() };
-        let cut = self.each_in_window(from_ms, to_ms, |row, account, color, cal| {
+        let cut = self.each_in_window(from_ms, to_ms, |row, account, look, cal| {
             let events = cal.events();
             let exp = occurrences(cal, &tz, from, to);
             truncated |= exp.truncated;
@@ -851,7 +868,7 @@ impl Core {
                     event_id: row.id,
                     account,
                     calendar: row.calendar_id,
-                    color: color.map(str::to_owned),
+                    color: look.color.clone(),
                     start_ms: o.start.as_millisecond(),
                     end_ms: o.end.as_millisecond(),
                     all_day: o.all_day,
@@ -1070,7 +1087,12 @@ impl Core {
         let tz = zone_or_utc(&zone);
         let horizon = to_ms.saturating_add(REMINDER_LEAD_MS);
         let mut out = Vec::new();
-        self.each_in_window(from_ms, horizon, |row, account, _, cal| {
+        self.each_in_window(from_ms, horizon, |row, account, look, cal| {
+            // A calendar link's alarms are not taken: a stranger's server does not choose when the
+            // phone notifies, or what it says (T39c review).
+            if look.read_only {
+                return;
+            }
             let events = cal.events();
             let exp = occurrences(cal, &tz, ts(from_ms), ts(horizon));
             for o in &exp.occurrences {
@@ -1107,14 +1129,14 @@ impl Core {
 
 impl Core {
     /// Calls `visit` with each event of every account's shown calendars that may touch
-    /// `[from_ms, to_ms)`: its row, account, calendar colour and parsed object, one object at a time
+    /// `[from_ms, to_ms)`: its row, account, calendar's look and parsed object, one object at a time
     /// (T39a review: never every object in memory at once). Stops after [`WINDOW_DEADLINE`]. Returns
     /// whether some were left out (the row limit or the deadline).
     fn each_in_window(
         &self,
         from_ms: i64,
         to_ms: i64,
-        mut visit: impl FnMut(&store::WindowRow, i64, Option<&str>, &Calendar),
+        mut visit: impl FnMut(&store::WindowRow, i64, &CalendarLook, &Calendar),
     ) -> Result<bool, CoreError> {
         let deadline = std::time::Instant::now() + WINDOW_DEADLINE;
         let accounts = self
@@ -1127,9 +1149,17 @@ impl Core {
                 let c = db.connection();
                 let (rows, more) = store::in_window(c, a.id, from_ms, to_ms)?;
                 cut |= more;
-                let colors: HashMap<i64, Option<String>> = store::calendars(c, a.id)?
+                let colors: HashMap<i64, CalendarLook> = store::calendars(c, a.id)?
                     .into_iter()
-                    .map(|k| (k.id, k.color))
+                    .map(|k| {
+                        (
+                            k.id,
+                            CalendarLook {
+                                color: k.color,
+                                read_only: k.read_only,
+                            },
+                        )
+                    })
                     .collect();
                 Ok::<_, CoreError>((rows, colors))
             })?;
@@ -1147,12 +1177,19 @@ impl Core {
                 let Ok(cal) = ical::parse(&stored.object) else {
                     continue;
                 };
-                let color = colors.get(&row.calendar_id).cloned().flatten();
-                visit(&row, a.id, color.as_deref(), &cal);
+                let look = colors.get(&row.calendar_id).cloned().unwrap_or_default();
+                visit(&row, a.id, &look, &cal);
             }
         }
         Ok(cut)
     }
+}
+
+/// What a window visitor needs of an event's calendar.
+#[derive(Clone, Default)]
+struct CalendarLook {
+    color: Option<String>,
+    read_only: bool,
 }
 
 fn sort_occurrences(list: &mut [OccurrenceInfo]) {
@@ -1286,31 +1323,26 @@ impl Core {
             name
         };
         let now = now_ms();
+        // The calendar, its events and its version together, or nothing (T39c review).
         let added = self.inner.handle.read(|db| {
-            let c = db.connection();
-            let Some(id) = store::add_link(c, account, &url, &name)? else {
-                return Ok::<_, croft_storage::StorageError>(None);
-            };
-            store::replace_link_events(c, account, id, &parts, now)?;
-            store::set_link_fetched(
-                c,
+            store::add_link_with_events(
+                db.connection(),
                 account,
-                id,
+                &url,
+                &name,
+                &parts,
                 etag.as_deref(),
                 last_modified.as_deref(),
                 now,
-            )?;
-            Ok(Some(id))
+            )
         })?;
-        Ok(match added {
-            Some(id) => LinkAdded {
+        match added {
+            store::LinkInsert::Added(id) => Ok(LinkAdded {
                 calendar: Some(id),
                 failure: None,
-            },
-            None => LinkAdded {
-                calendar: None,
-                failure: Some(LinkFailure::AlreadyAdded),
-            },
-        })
+            }),
+            store::LinkInsert::AlreadyAdded => failed(LinkFailure::AlreadyAdded),
+            store::LinkInsert::TooMany => failed(LinkFailure::TooMany),
+        }
     }
 }

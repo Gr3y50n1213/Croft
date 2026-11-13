@@ -44,7 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Link
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
@@ -58,6 +57,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import com.example.croft.R
 import com.example.croft.mail.calendar.CalendarController
 import com.example.croft.mail.calendar.LinkProblem
+import com.example.croft.ui.components.CroftIcons
 import com.example.croft.ui.components.ButtonKind
 import com.example.croft.ui.components.ButtonProgress
 import com.example.croft.ui.components.CroftButton
@@ -113,7 +113,7 @@ fun CalendarsScreen(controller: CalendarController, onBack: () -> Unit, modifier
                         Checkbox(checked = c.shown, onCheckedChange = null)
                         Text(c.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
                         if (c.linked) {
-                            Icon(Icons.Filled.Link, contentDescription = stringResource(R.string.calendars_linked), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(CroftIcons.Link, contentDescription = stringResource(R.string.calendars_linked), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             CroftIconButton(Icons.Filled.Delete, stringResource(R.string.calendars_remove, c.name), { removing = c }, Modifier.testTag(CalendarsTags.remove(c.id)))
                         }
                         Box(Modifier.size(16.dp).clip(CircleShape).background(color).clearAndSetSemantics { })
@@ -174,6 +174,7 @@ private fun SubscribeDialog(controller: CalendarController, onDone: () -> Unit) 
                                 LinkProblem.UNREACHABLE -> R.string.calendars_link_unreachable
                                 LinkProblem.REFUSED -> R.string.calendars_link_refused
                                 LinkProblem.ALREADY_ADDED -> R.string.calendars_link_already
+                                LinkProblem.TOO_MANY -> R.string.calendars_link_too_many
                             },
                         ),
                         Modifier.testTag(CalendarsTags.LINK_ERROR).semantics { liveRegion = LiveRegionMode.Polite },

@@ -352,19 +352,136 @@ pub fn is_read_only_event(conn: &Connection, account: i64, id: i64) -> Result<bo
         .unwrap_or(false))
 }
 
+/// The most calendar links one account may have (T39c review: each is fetched every hour).
+pub const MAX_LINKS: i64 = 20;
+
 /// Adds a read-only calendar of the account made from `url` (T39c). `None` when the account
-/// already has that link.
+/// already has that link, or already has [`MAX_LINKS`] links.
 pub fn add_link(conn: &Connection, account: i64, url: &str, name: &str) -> Result<Option<i64>> {
     Ok(conn
         .query_row(
             r#"INSERT INTO calendar (account_id, path, name, source_url, read_only)
                SELECT ?1, ?2, ?3, ?2, 1 WHERE EXISTS (SELECT 1 FROM account WHERE id = ?1)
+                 AND (SELECT COUNT(*) FROM calendar
+                       WHERE account_id = ?1 AND source_url IS NOT NULL) < ?4
                ON CONFLICT (account_id, path) DO NOTHING
                RETURNING id"#,
-            params![account, url, name],
+            params![account, url, name, MAX_LINKS],
             |r| r.get(0),
         )
         .optional()?)
+}
+
+/// What adding a link with its first fetch gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkInsert {
+    /// Added, as this calendar.
+    Added(i64),
+    /// The account already has this link.
+    AlreadyAdded,
+    /// The account already has [`MAX_LINKS`] links.
+    TooMany,
+}
+
+/// Adds a link calendar with its first fetch's events and version, all or nothing (T39c review).
+#[allow(clippy::too_many_arguments)]
+pub fn add_link_with_events(
+    conn: &Connection,
+    account: i64,
+    url: &str,
+    name: &str,
+    parts: &[(String, String)],
+    etag: Option<&str>,
+    modified: Option<&str>,
+    now_ms: i64,
+) -> Result<LinkInsert> {
+    atomically(conn, |conn| {
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM calendar WHERE account_id = ?1 AND path = ?2",
+                params![account, url],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if exists {
+            return Ok(LinkInsert::AlreadyAdded);
+        }
+        let Some(id) = add_link(conn, account, url, name)? else {
+            let links: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM calendar WHERE account_id = ?1 AND source_url IS NOT NULL",
+                params![account],
+                |r| r.get(0),
+            )?;
+            if links >= MAX_LINKS {
+                return Ok(LinkInsert::TooMany);
+            }
+            return Err(StorageError::NotFound("account"));
+        };
+        refresh_link(conn, account, id, parts, etag, modified, now_ms)?;
+        Ok(LinkInsert::Added(id))
+    })
+}
+
+/// Stores a fetch of a link calendar: its events and the version the server gave, all or nothing.
+pub fn refresh_link(
+    conn: &Connection,
+    account: i64,
+    id: i64,
+    parts: &[(String, String)],
+    etag: Option<&str>,
+    modified: Option<&str>,
+    now_ms: i64,
+) -> Result<usize> {
+    atomically(conn, |conn| {
+        let stored = replace_link_events(conn, account, id, parts, now_ms)?;
+        set_link_fetched(conn, account, id, etag, modified, now_ms)?;
+        Ok(stored)
+    })
+}
+
+/// Records a fetch of a link calendar that failed: when it was tried, so it waits its turn like
+/// one that worked (T39c review), with its version and events kept.
+pub fn set_link_tried(conn: &Connection, account: i64, id: i64, now_ms: i64) -> Result<()> {
+    conn.execute(
+        r#"UPDATE calendar SET link_fetched_at = ?3
+            WHERE account_id = ?1 AND id = ?2 AND source_url IS NOT NULL"#,
+        params![account, id, now_ms],
+    )?;
+    Ok(())
+}
+
+/// Runs `f` in one transaction (a savepoint inside the caller's), undone if it fails.
+fn atomically<T>(conn: &Connection, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    // On its own it takes the write lock first (see `accounts::insert`).
+    let own = conn.is_autocommit();
+    conn.execute_batch(if own {
+        "BEGIN IMMEDIATE"
+    } else {
+        "SAVEPOINT calendar_link"
+    })?;
+    match f(conn) {
+        Ok(v) if own => {
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                // Never leave the shared connection inside a transaction.
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.into());
+            }
+            Ok(v)
+        }
+        Ok(v) => {
+            conn.execute_batch("RELEASE calendar_link")?;
+            Ok(v)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch(if own {
+                "ROLLBACK"
+            } else {
+                "ROLLBACK TO calendar_link; RELEASE calendar_link"
+            });
+            Err(e)
+        }
+    }
 }
 
 /// Removes calendar `id` of the account if it is one from a link, with its events.
@@ -392,10 +509,22 @@ pub fn set_link_fetched(
     Ok(())
 }
 
-/// Replaces a link calendar's events with `parts` (one object per `UID`): new and changed ones are
-/// stored, and those no longer in the file go. Objects that cannot be read are left out. Returns how
-/// many were stored.
+/// Replaces a link calendar's events with `parts` (one object per `UID`), in one transaction: new
+/// and changed ones are stored, unchanged ones are not written again, and those no longer in the
+/// file go. Objects that cannot be read are left out. Returns how many were written.
 pub fn replace_link_events(
+    conn: &Connection,
+    account: i64,
+    calendar: i64,
+    parts: &[(String, String)],
+    now_ms: i64,
+) -> Result<usize> {
+    atomically(conn, |conn| {
+        replace_link_events_in(conn, account, calendar, parts, now_ms)
+    })
+}
+
+fn replace_link_events_in(
     conn: &Connection,
     account: i64,
     calendar: i64,
@@ -413,29 +542,29 @@ pub fn replace_link_events(
     if !link {
         return Err(StorageError::NotFound("calendar"));
     }
-    let mut keep: Vec<String> = Vec::with_capacity(parts.len());
+    let known: std::collections::HashMap<String, String> = server_events(conn, account, calendar)?
+        .into_iter()
+        .collect();
+    let mut keep: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(parts.len());
     let mut stored = 0usize;
     for (uid, text) in parts {
         let href = format!("link:{uid}");
-        // The text itself is the version: a changed event is stored again, an unchanged one is not.
-        if store_from_server(
-            conn,
-            account,
-            calendar,
-            &href,
-            &fingerprint(text),
-            text,
-            now_ms,
-        )?
-        .is_some()
-        {
+        // The text itself is the version: a changed event is stored again, an unchanged one is not
+        // even written (T39c review).
+        let version = fingerprint(text);
+        if known.get(&href) == Some(&version) {
+            keep.insert(href);
+            continue;
+        }
+        if store_from_server(conn, account, calendar, &href, &version, text, now_ms)?.is_some() {
             stored += 1;
-            keep.push(href);
+            keep.insert(href);
         }
     }
-    for (href, _) in server_events(conn, account, calendar)? {
-        if !keep.contains(&href) {
-            remove_from_server(conn, account, calendar, &href)?;
+    for href in known.keys() {
+        if !keep.contains(href) {
+            remove_from_server(conn, account, calendar, href)?;
         }
     }
     Ok(stored)
@@ -835,7 +964,9 @@ mod tests {
             ("x".to_owned(), event("x", "20261225T120000Z", "")),
             ("z".to_owned(), event("z", "20261227T000000Z", "")),
         ];
-        replace_link_events(c, a, link, &next, 3).unwrap();
+        assert_eq!(replace_link_events(c, a, link, &next, 3).unwrap(), 2);
+        // The same file again: nothing is written.
+        assert_eq!(replace_link_events(c, a, link, &next, 3).unwrap(), 0);
         let hrefs: Vec<String> = server_events(c, a, link)
             .unwrap()
             .into_iter()
@@ -858,5 +989,73 @@ mod tests {
         assert!(!remove_link(c, b, link).unwrap());
         assert!(remove_link(c, a, link).unwrap());
         assert!(in_window(c, a, 0, i64::MAX / 2).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn a_link_is_added_with_its_events_all_or_nothing_and_links_are_capped() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        let a = account(c, 1);
+        let parts = vec![("x".to_owned(), event("x", "20261225T000000Z", ""))];
+        let url = "https://cal.example.org/a.ics";
+        let LinkInsert::Added(id) =
+            add_link_with_events(c, a, url, "A", &parts, Some("\"v1\""), None, 1).unwrap()
+        else {
+            panic!("not added")
+        };
+        assert!(c.is_autocommit(), "the transaction ended");
+        let row = calendars(c, a).unwrap().remove(0);
+        assert_eq!((row.id, row.link_etag.as_deref()), (id, Some("\"v1\"")));
+        assert_eq!(server_events(c, a, id).unwrap().len(), 1);
+        assert_eq!(
+            add_link_with_events(c, a, url, "A", &parts, None, None, 2).unwrap(),
+            LinkInsert::AlreadyAdded
+        );
+        // A failed try is recorded, with the version and events kept.
+        set_link_tried(c, a, id, 7).unwrap();
+        let row = calendars(c, a).unwrap().remove(0);
+        assert_eq!(row.link_fetched_at, Some(7));
+        assert_eq!(row.link_etag.as_deref(), Some("\"v1\""));
+        // Refused (no such account): nothing is left behind and the transaction is closed.
+        let broken = vec![("y".to_owned(), event("y", "20261225T000000Z", ""))];
+        assert!(add_link_with_events(
+            c,
+            99,
+            "https://cal.example.org/b.ics",
+            "B",
+            &broken,
+            None,
+            None,
+            3
+        )
+        .is_err());
+        assert!(c.is_autocommit());
+        assert_eq!(calendars(c, a).unwrap().len(), 1);
+        // At most MAX_LINKS links per account.
+        for i in 1..MAX_LINKS {
+            let u = format!("https://cal.example.org/{i}.ics");
+            assert!(matches!(
+                add_link_with_events(c, a, &u, "n", &parts, None, None, 4).unwrap(),
+                LinkInsert::Added(_)
+            ));
+        }
+        assert_eq!(
+            add_link_with_events(
+                c,
+                a,
+                "https://cal.example.org/last.ics",
+                "n",
+                &parts,
+                None,
+                None,
+                5
+            )
+            .unwrap(),
+            LinkInsert::TooMany
+        );
+        assert_eq!(
+            add_link(c, a, "https://cal.example.org/last.ics", "n").unwrap(),
+            None
+        );
     }
 }

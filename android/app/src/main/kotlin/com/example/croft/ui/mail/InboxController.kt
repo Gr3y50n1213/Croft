@@ -276,7 +276,7 @@ class InboxController(
         val ops = block()
         refreshPinned()
         if (ops.isEmpty()) return
-        snackbar.show(text, texts.undo) {
+        snackbar.show(text, texts.undo, stayMs = session.undoWindowMs) {
             scope.launch {
                 session.rowActions.undo(ops)
                 refreshPinned()

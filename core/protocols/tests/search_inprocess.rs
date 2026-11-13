@@ -154,3 +154,39 @@ async fn a_word_this_adapter_cannot_send_is_unsupported_and_nothing_is_sent() {
         SearchOutcome::Unsupported
     );
 }
+
+#[tokio::test]
+async fn a_search_cancelled_mid_command_never_leaks_its_answer_into_the_next_command() {
+    let server = TestServer::start_default().await;
+    let dinner = server.add_message(
+        "INBOX",
+        &mail("bob@example.org", "me@example.org", "Dinner", "x"),
+    );
+    // Added later: a higher UID, so a leaked answer would win a "newest" lookup.
+    server.add_message(
+        "INBOX",
+        &mail("ann@example.org", "me@example.org", "Lunch", "x"),
+    );
+    let be = backend(&server);
+    assert!(be.folder_status("INBOX").await.is_ok());
+    server.set_misbehavior(Misbehavior::SlowSearch(400));
+    let q = ServerQuery {
+        text: vec!["lunch".into()],
+        ..ServerQuery::default()
+    };
+    // The person types again: the search is dropped while the server is still answering it.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), be.search("INBOX", &q))
+            .await
+            .is_err()
+    );
+    server.set_misbehavior(Misbehavior::None);
+    let before = server.connection_count();
+    // The next command gets its own answer, not the old search's: the half-finished connection is
+    // replaced (its unread replies would otherwise be read as the next command's).
+    assert_eq!(
+        be.find_by_message_id("INBOX", "<Dinner@x>").await.unwrap(),
+        Some(dinner)
+    );
+    assert_eq!(server.connection_count(), before + 1);
+}

@@ -129,6 +129,9 @@ pub enum Misbehavior {
     /// Refuse the text search keys (`TEXT`, `FROM`, `TO`, `CC`, `SUBJECT`, `OR`) with `BAD`, as a
     /// server without full-text search might. `HEADER`, `UID`, `ALL` and the flag keys still work.
     NoTextSearch,
+    /// Wait this many milliseconds before answering any `UID SEARCH`, as a slow server would (for
+    /// tests of a search cancelled while the server is still working on it).
+    SlowSearch(u64),
 }
 
 /// Settings for [`TestServer::start`].

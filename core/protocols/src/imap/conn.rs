@@ -128,6 +128,12 @@ pub(crate) struct Conn {
     max_items: usize,
     /// Last-known flags per folder, kept across reconnects by the owner.
     pub cache: HashMap<String, FolderCache>,
+    /// A command was sent and its tagged reply not yet read. True between sending and the tagged
+    /// reply; still true when that was never read (the caller's future was dropped, for example a
+    /// search the person cancelled, or a reply timed out). The session is then out of step: the
+    /// next command would read the old command's replies as its own (T33 review), so it is refused
+    /// as a dropped connection and the owner reconnects.
+    pending: bool,
 }
 
 impl fmt::Debug for Conn {
@@ -439,6 +445,7 @@ impl Conn {
             deadline: config.command_deadline,
             max_items: config.max_untagged_replies,
             cache: HashMap::new(),
+            pending: false,
         };
         if conn.caps.qresync {
             match conn.exec("ENABLE QRESYNC", "enable QRESYNC").await {
@@ -483,9 +490,21 @@ impl Conn {
         }
     }
 
+    /// Marks a command as started; refused when the last one never finished (see `pending`).
+    fn begin(&mut self) -> Result<(), OpError> {
+        if self.pending {
+            return Err(OpError::dropped(
+                "the connection was left in the middle of a command",
+            ));
+        }
+        self.pending = true;
+        Ok(())
+    }
+
     async fn exec_inner(&mut self, command: &str, doing: &str) -> Result<Reply, OpError> {
         let t = self.timeout;
         let mut untagged = 0usize;
+        self.begin()?;
         let id = match timeout(t, self.session.run_command(command)).await {
             Err(_) => return Err(OpError::timed_out(&format!("while trying to {doing}"))),
             Ok(Err(e)) => return Err(error::from_command(&e, doing)),
@@ -542,6 +561,10 @@ impl Conn {
                 },
                 other => Step::Keep(item_of(other)),
             };
+            if matches!(step, Step::Done(..)) {
+                // The tagged reply is read: the session is in step again.
+                self.pending = false;
+            }
             if !matches!(step, Step::Done(..)) {
                 untagged += 1;
                 if untagged > self.max_items {
@@ -1164,6 +1187,7 @@ impl Conn {
             .join(" ");
         let cmd = format!("APPEND {q} ({flag_list}) {{{}}}", message.len());
         let t = self.timeout;
+        self.begin()?;
         let id = match timeout(t, self.session.run_command(&cmd)).await {
             Err(_) => return Err(OpError::timed_out("while trying to add a message")),
             Ok(Err(e)) => return Err(error::from_command(&e, "add a message")),
@@ -1199,6 +1223,7 @@ impl Conn {
                     status,
                     outcome,
                 } if *tag == id => {
+                    self.pending = false;
                     return match status {
                         Status::Ok => Ok(match &outcome.code {
                             Some(ResponseCode::AppendUid(_, set)) => {

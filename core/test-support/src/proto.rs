@@ -155,6 +155,16 @@ async fn run<S: AsyncRead + AsyncWrite + Unpin>(
                 .await;
             return End::Closed;
         }
+        if let Misbehavior::SlowSearch(ms) = how {
+            if cmd == "UID"
+                && toks
+                    .first()
+                    .and_then(Tok::text)
+                    .is_some_and(|k| k.eq_ignore_ascii_case("SEARCH"))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            }
+        }
         if cmd == "LIST" && sess.authed {
             match how {
                 Misbehavior::HugeLiteral(n) => {

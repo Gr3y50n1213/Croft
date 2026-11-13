@@ -121,5 +121,8 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 - **Contacts for Google and Microsoft accounts, JMAP Contacts (RFC 9610), groups and photos (T38a).** Not synced yet.
 - **Favourite contacts and photos on S41 and S42 (T38b).** The wireframe's star and "Add photo" wait for the core to store them.
   S41's Invite waits for the calendar (T39).
+- **Calendar repeats Croft does not expand (T39a).** `BYHOUR`, `BYMINUTE`, `BYSECOND`, `BYWEEKNO`, `BYYEARDAY` and
+  `HOURLY` or finer rules show only their first occurrence. `VTIMEZONE`s with irregular rules (not a yearly `BYDAY` in
+  `BYMONTH`) fall back to their standard offset. JMAP Calendars, tasks (`VTODO`) and attachments are not synced.
 - **CardDAV against Radicale (T38a).** Only Stalwart's CardDAV is in the CI integration job; Radicale (in `test-servers/`) needs a
   config and an address book created before it can be tested.

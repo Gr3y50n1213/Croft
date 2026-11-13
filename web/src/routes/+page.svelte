@@ -21,12 +21,16 @@
   import Dialog from '#lib/ui/Dialog.svelte';
   import IconButton from '#lib/ui/IconButton.svelte';
   import Icon from '#lib/ui/Icon.svelte';
+  import { keepPush } from '#lib/pwa/push.ts';
+  import { NEW_MAIL, PUSH_CHANGED } from '#lib/pwa/route.ts';
 
   let me: Me | null = $state(null);
   const jmap = new Jmap(api);
   const mail = new MailState(jmap);
   const compose = new ComposeState(jmap, () => mail.account, (m, u) => mail.notify(m, u));
   let error = $state('');
+  /** Opened without a connection to the Companion: not signed out, just offline. */
+  let offline = $state(false);
   let noAccounts = $state(false);
   let help = $state(false);
   let picking = $state(false);
@@ -58,8 +62,23 @@
       void mail.refresh().catch(() => {});
     };
 
+    // The service worker's word that mail came (a push ping) or that push needs giving again.
+    const fromWorker = (e: MessageEvent) => {
+      const type = (e.data as { type?: unknown } | null)?.type;
+      if (type === NEW_MAIL && me) void mail.refresh().catch(() => {});
+      if (type === PUSH_CHANGED && me) void keepPush(api).catch(() => {});
+    };
+    navigator.serviceWorker?.addEventListener('message', fromWorker);
+
     (async () => {
-      if (!(await api.current())) return goto('/sign-in', { replaceState: true });
+      if (!(await api.current())) {
+        if (api.unreachable) {
+          offline = true;
+          window.addEventListener('online', () => location.reload(), { once: true });
+          return;
+        }
+        return goto('/sign-in', { replaceState: true });
+      }
       try {
         me = await api.call<Me>('GET', '/api/me');
       } catch {
@@ -67,13 +86,15 @@
       }
       if (me.recovery) return goto('/passkey', { replaceState: true });
       schedule();
+      // Push on in this browser: the Companion holds this session's current subscription.
+      void keepPush(api).catch(() => {});
       try {
         await mail.start();
         noAccounts = mail.accounts.length === 0;
       } catch (e) {
         error = explainMail(e);
       }
-      // Fresh mail: every minute while open (push in the browser comes with T32).
+      // Fresh mail: every minute while open, and at once on a push ping (T32b).
       poll = setInterval(() => void mail.refresh().catch(() => {}), 60_000);
     })();
     document.addEventListener('visibilitychange', woke);
@@ -82,6 +103,7 @@
       clearTimeout(timer);
       clearInterval(poll);
       document.removeEventListener('visibilitychange', woke);
+      navigator.serviceWorker?.removeEventListener('message', fromWorker);
     };
   });
 
@@ -318,6 +340,11 @@
       </ul>
     </Dialog>
   {/if}
+{:else if offline}
+  <main class="offline-start">
+    <h1>You're offline</h1>
+    <p>Croft can't reach your Companion. It opens your mail as soon as the connection is back.</p>
+  </main>
 {:else}
   <p class="loading" aria-busy="true">Loading…</p>
 {/if}
@@ -373,6 +400,13 @@
 
   .content {
     display: contents;
+  }
+
+  .offline-start {
+    max-width: 480px;
+    margin: 15vh auto;
+    padding: 0 16px;
+    text-align: center;
   }
 
   .settings {

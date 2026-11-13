@@ -39,6 +39,8 @@ struct Asset {
     body: Bytes,
     content_type: &'static str,
     immutable: bool,
+    /// The service worker script (its own CSP).
+    service_worker: bool,
 }
 
 /// The built web app, in memory.
@@ -93,6 +95,7 @@ impl WebApp {
                     let asset = Asset {
                         content_type: content_type(&name),
                         immutable: key.starts_with("/_app/immutable/"),
+                        service_worker: key == SERVICE_WORKER,
                         body: Bytes::from(body),
                     };
                     files.insert(key, asset);
@@ -156,10 +159,25 @@ impl WebApp {
         );
         if asset.content_type.starts_with("text/html") {
             h.insert(header::CONTENT_SECURITY_POLICY, self.csp.clone());
+        } else if asset.service_worker {
+            // A worker runs under its own script's CSP, not the page's: the service worker may
+            // reach this origin only (its cache of the app's files), never another.
+            h.insert(
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(SERVICE_WORKER_CSP),
+            );
         }
         res
     }
 }
+
+/// The service worker script's path (SvelteKit's `src/service-worker.ts`, built to the root so its
+/// scope is the whole app).
+pub const SERVICE_WORKER: &str = "/service-worker.js";
+
+/// The service worker's CSP: no script but itself, fetches to this origin only.
+const SERVICE_WORKER_CSP: &str =
+    "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self'";
 
 fn content_type(name: &str) -> &'static str {
     match name.rsplit('.').next().unwrap_or("") {
@@ -179,8 +197,9 @@ fn content_type(name: &str) -> &'static str {
 
 /// The page's CSP: scripts from the app's own folders only (`/_app/immutable/`, `/theme.js`, never
 /// another page's script such as `/enrol.js`) and its inline start-up scripts by hash; Trusted
-/// Types required, with Svelte's own policy (its compiled templates) and the reading pane's (the
-/// sandboxed email frame's document, T31) the only ones. Style attributes
+/// Types required, with Svelte's own policy (its compiled templates), the reading pane's (the
+/// sandboxed email frame's document, T31) and the one that registers the service worker (its one
+/// script address, T32) the only ones. Style attributes
 /// are allowed (Svelte's templates and SvelteKit's screen-reader announcer use them); `<style>`
 /// elements are not. A style attribute runs no script, and with images, fonts and connections
 /// limited to this origin it cannot send anything elsewhere.
@@ -199,7 +218,7 @@ fn csp_for(html: &str, origin: &str) -> String {
         "default-src 'none'; script-src {origin}/_app/immutable/ {origin}/theme.js {}; \
          style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; \
          font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; \
-         require-trusted-types-for 'script'; trusted-types svelte-trusted-html croft-mail-srcdoc; \
+         require-trusted-types-for 'script'; trusted-types svelte-trusted-html croft-mail-srcdoc croft-sw; \
          frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         hashes.join(" ")
     )
@@ -330,8 +349,36 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("_app/immutable/app.abc.js"), "export {}").unwrap();
         std::fs::write(dir.join("favicon.svg"), "<svg/>").unwrap();
+        std::fs::write(dir.join("service-worker.js"), "self.x = 1").unwrap();
         std::fs::write(dir.join(".secret"), "no").unwrap();
         WebApp::load(dir, ORIGIN).unwrap()
+    }
+
+    #[test]
+    fn the_service_worker_has_its_own_csp_and_other_files_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let web = app(&dir.path().join("build"));
+        let get = |p: &str| web.serve(&Method::GET, &p.parse::<Uri>().unwrap());
+        let sw = get("/service-worker.js");
+        assert_eq!(sw.status(), StatusCode::OK);
+        assert!(sw.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript"));
+        // Never cached by the browser's HTTP cache: an update is seen at once.
+        assert_eq!(sw.headers()[header::CACHE_CONTROL], "no-store");
+        let csp = sw.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(csp.starts_with("default-src 'none';"), "{csp}");
+        assert!(csp.contains("connect-src 'self'"), "{csp}");
+        assert!(!csp.contains('*') && !csp.contains("unsafe"), "{csp}");
+        for other in ["/favicon.svg", "/_app/immutable/app.abc.js"] {
+            assert!(get(other)
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .is_none());
+        }
     }
 
     #[test]
@@ -368,7 +415,7 @@ mod tests {
         assert!(csp.contains(
             "script-src https://companion.test/_app/immutable/ https://companion.test/theme.js "
         ));
-        assert!(csp.contains("trusted-types svelte-trusted-html croft-mail-srcdoc;"));
+        assert!(csp.contains("trusted-types svelte-trusted-html croft-mail-srcdoc croft-sw;"));
         assert!(csp.contains(&hash("\nmore()\n")), "{csp}");
         assert!(csp.contains("default-src 'none'") && csp.contains("frame-ancestors 'none'"));
         // Scripts and style elements: never inline; only style attributes are allowed.

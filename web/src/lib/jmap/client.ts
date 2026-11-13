@@ -14,7 +14,31 @@ import { ApiError, type Api } from '../api.ts';
 export const MAIL = 'urn:ietf:params:jmap:mail';
 /** The Companion's compose extension (T31b): drafts, replies and the Outbox, by the core's rules. */
 export const COMPOSE = 'urn:croft:params:jmap:compose';
-const USING = ['urn:ietf:params:jmap:core', MAIL, COMPOSE];
+const SEARCH = 'urn:croft:params:jmap:search';
+const USING = ['urn:ietf:params:jmap:core', MAIL, COMPOSE, SEARCH];
+
+/** A ranged match: `[start, end)` in UTF-16 code units (as JavaScript strings count). */
+export type Range = [number, number];
+
+/** What matched in one search result. */
+export interface SearchHit {
+  subjectRanges: Range[];
+  snippet: string | null;
+  snippetRanges: Range[];
+}
+
+/** A search's answer (`CroftSearch/query`) with the emails as list rows, best first. */
+export interface SearchResults {
+  emails: EmailSummary[];
+  hits: Record<string, SearchHit>;
+  /** Some stored emails have no downloaded body, so their text was not searched. */
+  bodiesPartial: boolean;
+  serverSearched: boolean;
+  unsupported: boolean;
+  offline: boolean;
+  signInNeeded: boolean;
+  failed: boolean;
+}
 
 /** One mail account (a JMAP account). */
 export interface Account {
@@ -169,6 +193,38 @@ export class Jmap {
   }
 
   /** A page of a mailbox, newest first: the emails and the mailbox's total. */
+  /**
+   * Searches the account's stored mail (and, with `server`, its mail server) in the core's query
+   * language. The rows come back in the search's order.
+   */
+  async search(accountId: string, query: string, server = false): Promise<SearchResults> {
+    const r = await this.request([
+      ['CroftSearch/query', { accountId, query, server }, 'q'],
+      [
+        'Email/get',
+        {
+          accountId,
+          '#ids': { resultOf: 'q', name: 'CroftSearch/query', path: '/ids' },
+          properties: SUMMARY_PROPERTIES
+        },
+        'g'
+      ]
+    ]);
+    const q = r[0]![1];
+    const byId = new Map((r[1]![1]['list'] as EmailSummary[]).map((e) => [e.id, e]));
+    const emails = (q['ids'] as string[]).map((id) => byId.get(id)).filter((e): e is EmailSummary => !!e);
+    return {
+      emails,
+      hits: q['hits'] as Record<string, SearchHit>,
+      bodiesPartial: q['bodiesPartial'] === true,
+      serverSearched: q['serverSearched'] === true,
+      unsupported: q['unsupported'] === true,
+      offline: q['offline'] === true,
+      signInNeeded: q['signInNeeded'] === true,
+      failed: q['failed'] === true
+    };
+  }
+
   async page(
     accountId: string,
     mailboxId: string,
@@ -331,5 +387,8 @@ export function explainMail(e: unknown): string {
   if (e instanceof MethodError && e.type === 'invalidAddress') return 'Fix the address.';
   if (e instanceof MethodError && e.type === 'tooLate') return "Too late: it's already being sent.";
   if (e instanceof MethodError && e.type === 'invalidArguments' && e.description === 'sendAt') return 'Choose a time within a year.';
+  if (e instanceof MethodError && e.type === 'invalidArguments' && e.description === 'query')
+    return 'Check the search: dates are written like 2026-11-14.';
+  if (e instanceof MethodError && e.type === 'rateLimit') return 'Too many searches on the server just now. Wait a minute.';
   return 'Something went wrong. Try again.';
 }

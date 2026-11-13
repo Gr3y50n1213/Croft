@@ -30,6 +30,8 @@
   const mail = new MailState(jmap);
   const compose = new ComposeState(jmap, () => mail.account, (m, u) => mail.notify(m, u));
   let error = $state('');
+  let searchText = $state('');
+  let searchBox: HTMLInputElement | undefined = $state();
   /** W01 shows Scheduled (the Companion's Outbox, T33a) instead of a folder. */
   let scheduled = $state(false);
   /** Opened without a connection to the Companion: not signed out, just offline. */
@@ -202,8 +204,12 @@
         if (id) void compose.reply(c === 'reply' ? 'reply' : c === 'reply-all' ? 'replyAll' : 'forward', id);
         return;
       }
+      case 'search':
+        scheduled = false;
+        searchBox?.focus();
+        searchBox?.select();
+        return;
       default:
-        // Search comes with T33.
         return;
     }
   }
@@ -247,10 +253,37 @@
   <div class="w01" data-screen="W01">
     <header class="bar">
       <span class="brand"><Icon name="inbox" /> Croft</span>
-      <div class="search" title="Search comes with the Companion's search (T33)">
+      <form
+        class="search"
+        role="search"
+        onsubmit={(e) => {
+          e.preventDefault();
+          scheduled = false;
+          error = '';
+          void mail.runSearch(searchText).catch((err) => (error = explainMail(err)));
+        }}
+      >
         <Icon name="search" />
-        <span>Search mail</span>
-      </div>
+        <input
+          bind:this={searchBox}
+          bind:value={searchText}
+          type="search"
+          aria-label="Search mail"
+          placeholder="Search mail"
+          title="Words, or from:, to:, subject:, has:attachment, is:unread, before:2026-01-31 (/)"
+          autocomplete="off"
+          maxlength="512"
+          onkeydown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              searchText = '';
+              error = '';
+              searchBox?.blur();
+              void mail.endSearch();
+            }
+          }}
+        />
+      </form>
       <span class="who" data-testid="user">{me.name}</span>
       <a class="settings" href="/settings" aria-label="Settings" title="Settings"><Icon name="settings" /></a>
       <button class="button text" type="button" onclick={signOut}>Sign out</button>
@@ -262,7 +295,7 @@
       mailboxes={mail.mailboxes}
       current={mail.mailbox}
       onaccount={(id) => void mail.openAccount(id)}
-      onmailbox={(id) => ((scheduled = false), void mail.openMailbox(id))}
+      onmailbox={(id) => ((scheduled = false), (searchText = ''), void mail.openMailbox(id))}
       oncompose={() => compose.open()}
       {scheduled}
       onscheduled={() => ((scheduled = true), mail.close())}
@@ -284,10 +317,45 @@
           <IconButton icon="delete" label="Delete" shortcut="#" onclick={() => act('delete')} />
           <IconButton icon="read" label="Mark read" shortcut="Shift+i" onclick={() => act('mark-read')} />
         {/if}
-        <span class="range">
-          {#if mail.total > 0}{Math.min(mail.emails.length, mail.total)} of {mail.total}{/if}
-        </span>
+        {#if mail.search}
+          <span class="results" role="status">
+            {mail.emails.length === 1 ? '1 result' : `${mail.emails.length} results`} for “{mail.search.query}”
+          </span>
+          <button
+            type="button"
+            class="button text"
+            onclick={() => {
+              searchText = '';
+              void mail.endSearch();
+            }}>Back to {mail.current?.name ?? 'the folder'}</button
+          >
+        {:else}
+          <span class="range">
+            {#if mail.total > 0}{Math.min(mail.emails.length, mail.total)} of {mail.total}{/if}
+          </span>
+        {/if}
       </div>
+      {#if mail.search}
+        {@const s = mail.search}
+        {#if !s.serverSearched && (s.bodiesPartial || mail.emails.length === 0)}
+          <p class="search-note">
+            {s.bodiesPartial ? 'Searched the headers and the mail downloaded so far.' : 'Nothing in the mail stored here.'}
+            <button type="button" class="button text" onclick={() => void mail.runSearch(s.query, true).catch((err) => (error = explainMail(err)))}
+              >Search the server too</button
+            >
+          </p>
+        {:else if s.serverSearched && (s.offline || s.failed || s.unsupported || s.signInNeeded)}
+          <p class="search-note" role="status">
+            {s.signInNeeded
+              ? 'The mail server needs you to sign in again (in the Croft app on your phone).'
+              : s.offline
+                ? "Your Companion can't reach the mail server right now."
+                : s.unsupported
+                  ? "The mail server can't run this search."
+                  : "The mail server didn't answer. Try again."}
+          </p>
+        {/if}
+      {/if}
       {#if error}<p class="error" role="alert">{error}</p>{/if}
       {#if noAccounts}
         <p class="muted">No mail accounts yet. Add one in the Croft app on your phone, or ask your admin.</p>
@@ -296,6 +364,7 @@
         {#each mail.emails as email, i (email.id)}
           <MessageRow
             {email}
+            hit={mail.search?.hits[email.id] ?? null}
             focused={i === mail.cursor}
             selected={mail.selected.has(email.id)}
             opened={mail.open?.id === email.id}
@@ -305,7 +374,7 @@
             onact={(a) => act(a, [email.id])}
           />
         {:else}
-          {#if !mail.loading && !noAccounts}<li class="empty muted">Nothing here.</li>{/if}
+          {#if !mail.loading && !noAccounts}<li class="empty muted">{mail.search ? 'No results.' : 'Nothing here.'}</li>{/if}
         {/each}
       </ul>
     </section>
@@ -420,6 +489,35 @@
     border-radius: calc(22px * var(--round));
     background: var(--croft-color-surface-container-high);
     color: var(--croft-color-on-surface-variant);
+  }
+
+  .search input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    color: var(--croft-color-on-surface);
+    font: inherit;
+  }
+
+  .search input:focus {
+    outline: none;
+  }
+
+  .search:focus-within {
+    outline: 3px solid var(--croft-color-primary);
+    outline-offset: 2px;
+  }
+
+  .results {
+    font-weight: 600;
+  }
+
+  .search-note {
+    margin: 0;
+    padding: 4px 16px 8px;
+    color: var(--croft-color-on-surface-variant);
+    font-size: 14px;
   }
 
   .who {

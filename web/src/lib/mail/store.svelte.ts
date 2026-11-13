@@ -8,7 +8,15 @@
  * Undo within the window cancels them. A refusal puts the row back with a snackbar.
  */
 
-import { Jmap, explainMail, type Account, type EmailBody, type EmailSummary, type Mailbox } from '../jmap/client.ts';
+import {
+  Jmap,
+  explainMail,
+  type Account,
+  type EmailBody,
+  type EmailSummary,
+  type Mailbox,
+  type SearchResults
+} from '../jmap/client.ts';
 import { applied, destroys, plan, type Change, type MailAction } from './actions.ts';
 
 /** Emails per page. */
@@ -39,6 +47,10 @@ export class MailState {
   opening = $state(false);
   loading = $state(false);
   snack: Snack | null = $state(null);
+  /** W01 shows a search's results instead of the folder (T33b); null when it shows the folder. */
+  search: (Omit<SearchResults, 'emails'> & { query: string }) | null = $state(null);
+  /** The latest search: a slower earlier one never replaces it. */
+  #searches = 0;
   #snackTimer: ReturnType<typeof setTimeout> | undefined;
   #snackId = 0;
   /** The latest open request: a slower earlier one never replaces it. */
@@ -79,8 +91,44 @@ export class MailState {
     if (m) await this.openMailbox(m.id);
   }
 
+  /**
+   * Searches the open account (the stored mail; with `server`, its mail server too) and shows the
+   * results in the list. Actions on them work as in a folder.
+   */
+  async runSearch(query: string, server = false): Promise<void> {
+    const account = this.account;
+    const q = query.trim();
+    if (!account || !q) return;
+    const n = ++this.#searches;
+    this.#opens++;
+    this.open = null;
+    this.selected = new Set();
+    this.loading = true;
+    try {
+      const r = await this.#jmap.search(account, q, server);
+      if (n !== this.#searches || this.account !== account) return;
+      const { emails, ...rest } = r;
+      this.search = { ...rest, query: q };
+      this.emails = emails;
+      this.total = emails.length;
+      this.cursor = 0;
+    } finally {
+      if (n === this.#searches) this.loading = false;
+    }
+  }
+
+  /** Leaves the search: the folder again. */
+  async endSearch(): Promise<void> {
+    if (!this.search) return;
+    this.#searches++;
+    this.search = null;
+    if (this.mailbox) await this.openMailbox(this.mailbox);
+  }
+
   async openMailbox(id: string): Promise<void> {
     if (!this.account) return;
+    this.#searches++;
+    this.search = null;
     // An email still opening belongs to the folder being left: it must not open in this one.
     this.#opens++;
     this.mailbox = id;
@@ -100,7 +148,7 @@ export class MailState {
 
   /** The next page, appended. */
   async more(): Promise<void> {
-    if (!this.account || !this.mailbox || this.loading || this.emails.length >= this.total) return;
+    if (!this.account || !this.mailbox || this.loading || this.search || this.emails.length >= this.total) return;
     const id = this.mailbox;
     this.loading = true;
     try {
@@ -116,7 +164,8 @@ export class MailState {
 
   /** Reloads the folders and the first pages shown (on focus, on push, every minute). */
   async refresh(): Promise<void> {
-    if (!this.account || !this.mailbox || this.loading) return;
+    // Search results stay as they are until the person searches again.
+    if (!this.account || !this.mailbox || this.loading || this.search) return;
     const id = this.mailbox;
     const [boxes, page] = await Promise.all([
       this.#jmap.mailboxes(this.account),

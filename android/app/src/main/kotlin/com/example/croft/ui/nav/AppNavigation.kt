@@ -134,6 +134,15 @@ enum class Route(val parent: Route?) {
 
     /** S46 Notifications (T20). */
     NOTIFICATIONS(SETTINGS),
+
+    /** S40 Contacts (T38b), from the bottom bar. Back returns to the Inbox. */
+    CONTACTS(HOME),
+
+    /** S41 Contact (the contact is [CroftNavHost]'s `contactAccount` and `contactId`). */
+    CONTACT(CONTACTS),
+
+    /** S42 Edit contact: a new one from S40, or S41's contact. It handles its own Back (it asks before discarding changes). */
+    EDIT_CONTACT(CONTACT),
     ;
 
     /** How deep the screen is; going to a larger depth is "forward". */
@@ -198,7 +207,7 @@ fun CroftNavHost(
     var notice by remember { mutableStateOf<InboxNotice?>(null) }
     val openCompose: (ComposeStart) -> Unit = { start ->
         // Compose returns to where it was opened: the Outbox or the conversation (a reply), else the Inbox.
-        composeReturn = if (route == Route.OUTBOX || route == Route.CONVERSATION) route else Route.HOME
+        composeReturn = if (route == Route.OUTBOX || route == Route.CONVERSATION || route == Route.CONTACT) route else Route.HOME
         retained.begin(start)
         route = Route.COMPOSE
     }
@@ -227,6 +236,24 @@ fun CroftNavHost(
     }
     // After a process restart the search controller is new: start from the Inbox.
     if (route == Route.SEARCH && searchController == null) route = Route.HOME
+    // S40 to S42 (T38b): one list controller per session; the contact shown and the one being edited survive a rotation.
+    val contactsController = remember(session) {
+        session.contacts?.let { backend ->
+            com.example.croft.mail.contacts.ContactsController(
+                backend,
+                { session.repository.listAccounts().map { com.example.croft.mail.contacts.ContactsAccount(it.id, it.label.ifBlank { it.email }, it.isDemo) } },
+                scope,
+            )
+        }
+    }
+    var contactAccount by rememberSaveable { mutableStateOf(0L) }
+    var contactId by rememberSaveable { mutableStateOf(0L) }
+    // S42: editing contact `contactId` of `contactAccount`, or a new one; and where Close goes back to.
+    var editingNew by rememberSaveable { mutableStateOf(true) }
+    if ((route == Route.CONTACTS || route == Route.CONTACT || route == Route.EDIT_CONTACT) && contactsController == null) route = Route.HOME
+    // After a process restart the list controller is new: it reads the list (and syncs) again.
+    LaunchedEffect(contactsController) { if (route == Route.CONTACTS || route == Route.CONTACT || route == Route.EDIT_CONTACT) contactsController?.start() }
+    val openContacts: (() -> Unit)? = contactsController?.let { c -> { c.start(); route = Route.CONTACTS } }
     // A debug-only route can never be reached from a release build, even from saved state.
     if (route == Route.GALLERY && !DebugGallery.available) route = Route.SETTINGS
     LaunchedEffect(composeRequest, route) {
@@ -280,7 +307,7 @@ fun CroftNavHost(
     }
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
     // Compose and the Outbox handle their own Back (compose saves first).
-    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION && route != Route.SEARCH && route != Route.NOTIFY_INTRO) { route = route.parent ?: Route.HOME }
+    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION && route != Route.SEARCH && route != Route.NOTIFY_INTRO && route != Route.CONTACT && route != Route.EDIT_CONTACT) { route = route.parent ?: Route.HOME }
 
     // Removing an account: the account in the core first (its task stops, nothing new is sent), then its saved secret (`AccountOps.remove`),
     // then the app's own entries for it (folder choices, order, name, colour: the prefs are written and waited for), then a fresh session.
@@ -382,7 +409,47 @@ fun CroftNavHost(
                 onOpenSearch = if (searchController != null) ({ route = Route.SEARCH }) else null,
                 conversationNotice = conversationNotice,
                 onConversationNoticeShown = { conversationNotice = null },
+                onOpenContacts = openContacts,
             )
+            Route.CONTACTS -> if (contactsController != null) {
+                val contactsState by contactsController.state.collectAsState()
+                com.example.croft.ui.contacts.ContactsScreen(
+                    controller = contactsController,
+                    onOpen = { row -> contactAccount = row.account; contactId = row.id; route = Route.CONTACT },
+                    // A new contact needs an address book to go to.
+                    onAdd = if (contactsState.books.isNotEmpty()) ({ editingNew = true; route = Route.EDIT_CONTACT }) else null,
+                    onMail = { route = Route.HOME },
+                )
+            }
+            Route.CONTACT -> session.contacts?.let { backend ->
+                com.example.croft.ui.contacts.ContactScreen(
+                    backend = backend,
+                    account = contactAccount,
+                    id = contactId,
+                    search = session.search,
+                    onBack = { route = Route.CONTACTS },
+                    onEdit = { editingNew = false; route = Route.EDIT_CONTACT },
+                    onMail = { account, address -> openCompose(ComposeStart.Fill(com.example.croft.mail.compose.ComposeFill(to = listOf(address)), account)) },
+                    onOpenMessage = { id -> conversationId = id; conversationReturn = Route.CONTACT; route = Route.CONVERSATION },
+                    onDeleted = { account -> contactsController?.reloadNow(); contactsController?.syncInBackground(account); route = Route.CONTACTS },
+                )
+            }
+            Route.EDIT_CONTACT -> session.contacts?.let { backend ->
+                val listState = contactsController?.state?.collectAsState()?.value
+                com.example.croft.ui.contacts.EditContactScreen(
+                    backend = backend,
+                    account = if (editingNew) null else contactAccount,
+                    id = if (editingNew) null else contactId,
+                    accounts = listState?.accounts.orEmpty(),
+                    books = listState?.books.orEmpty(),
+                    onSaved = { account, id ->
+                        contactsController?.reloadNow()
+                        contactsController?.syncInBackground(account)
+                        contactAccount = account; contactId = id; route = Route.CONTACT
+                    },
+                    onClose = { route = if (editingNew) Route.CONTACTS else Route.CONTACT },
+                )
+            }
             Route.SEARCH -> if (searchController != null) {
                 var searchAccounts by remember { mutableStateOf<List<com.example.croft.mail.AccountInfo>>(emptyList()) }
                 LaunchedEffect(session) { searchAccounts = runCatching { session.repository.listAccounts() }.getOrDefault(emptyList()) }

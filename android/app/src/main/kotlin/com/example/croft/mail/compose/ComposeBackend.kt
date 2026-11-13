@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import uniffi.croft_ffi.ComposeException
 import uniffi.croft_ffi.ComposeLimits
 import uniffi.croft_ffi.Core
+import uniffi.croft_ffi.CoreException
 import uniffi.croft_ffi.DraftAttachment
 import uniffi.croft_ffi.DraftCheck
 import uniffi.croft_ffi.DraftContent
@@ -133,7 +134,17 @@ class CoreComposeBackend(
 
     override suspend fun discardOutboxItem(account: AccountId, outboxId: Long) = onIo { core.discardOutboxItem(account, outboxId.toULong()) }
 
-    override suspend fun suggestRecipients(account: AccountId, prefix: String, limit: Int) = onIo { core.suggestRecipients(account, prefix, limit.coerceIn(1, MAX_SUGGESTIONS).toUInt()) }
+    /** T38b: the account's contacts first (`autocomplete`), then the addresses mail was sent to (`suggestRecipients`), each address once. */
+    override suspend fun suggestRecipients(account: AccountId, prefix: String, limit: Int) = onIo {
+        val n = limit.coerceIn(1, MAX_SUGGESTIONS)
+        val contacts = try {
+            core.autocomplete(account, prefix, n.toUInt()).filter { it.isContact }.map { FfiAddress(it.name, it.address) }
+        } catch (e: CoreException) {
+            emptyList()
+        }
+        val recent = core.suggestRecipients(account, prefix, n.toUInt())
+        (contacts + recent).distinctBy { it.address.lowercase() }.take(n)
+    }
 
     override suspend fun replyDraft(account: AccountId, messageId: Long) = onIo { core.replyDraft(account, messageId) }
 

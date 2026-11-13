@@ -119,5 +119,7 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 - **Contacts on another host (T38a).** CardDAV is only looked for on the account's mail host. A setting for a CardDAV address
   elsewhere (Nextcloud beside a separate mail server) is needed, with care: the mail password would go there too.
 - **Contacts for Google and Microsoft accounts, JMAP Contacts (RFC 9610), groups and photos (T38a).** Not synced yet.
+- **Favourite contacts and photos on S41 and S42 (T38b).** The wireframe's star and "Add photo" wait for the core to store them.
+  S41's Invite waits for the calendar (T39).
 - **CardDAV against Radicale (T38a).** Only Stalwart's CardDAV is in the CI integration job; Radicale (in `test-servers/`) needs a
   config and an address book created before it can be tested.

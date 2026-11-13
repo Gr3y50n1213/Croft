@@ -67,7 +67,8 @@ import uniffi.croft_ffi.FfiAddress
  *   keyboard's Next key and when the field loses focus. The chip is made by the core's parser ([ComposeController.commitRecipients]);
  *   an address the core does not accept is an error chip with an icon and the words "Invalid address", never colour alone.
  * - A tap on a chip opens its menu (Move to Cc, Move to Bcc, Remove).
- * - Suggestions come from the addresses of mail sent from the account ([ComposeController.suggest]). No contacts permission.
+ * - Suggestions come from the account's contacts, then the addresses of mail sent from it ([ComposeController.suggest]). No contacts permission:
+ *   the contacts are Croft's own (T38b), never the phone's.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable

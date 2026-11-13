@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -28,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.unit.dp
@@ -97,7 +99,34 @@ private val sampleRow = MessageRowState()
 /** The whole catalogue: every control of docs/ux/controls.md in every state it has. */
 object GalleryCatalog {
     val sections: List<GallerySection> by lazy {
-        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), swipes(), listMarkers(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress())
+        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), swipes(), listMarkers(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress(), alphabetIndex())
+    }
+
+    // ---- A to Z index (S40, T38b) ----
+    private fun alphabetIndex(): GallerySection {
+        val present = setOf("A", "B", "H", "M", "N", "P", "#")
+        fun e(name: String, label: String, bubble: String?) = GalleryEntry(id("index", name), label, emptyList()) {
+            var picked by remember { mutableStateOf("Drag over the letters") }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.foundation.layout.Box(Modifier.fillMaxWidth().height(432.dp)) {
+                    com.example.croft.ui.contacts.AlphabetIndex(
+                        letters = com.example.croft.mail.contacts.ContactSections.INDEX,
+                        present = present,
+                        onLetter = { picked = "Jumped to $it" },
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                        forceBubble = bubble,
+                    )
+                }
+                Caption(picked)
+            }
+        }
+        return GallerySection(
+            "index", "A to Z index",
+            listOf(
+                e("idle", "Idle (letters without a section are faded)", null),
+                e("dragging", "Dragging (the letter bubble beside the finger, a Tick at each new letter)", "M"),
+            ),
+        )
     }
 
     fun entry(id: String): GalleryEntry? = sections.firstNotNullOfOrNull { s -> s.entries.firstOrNull { it.id == id } }

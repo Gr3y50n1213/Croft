@@ -137,7 +137,9 @@ fun AlphabetIndex(
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(bubble, style = MaterialTheme.typography.headlineSmall, maxLines = 1, fontSize = with(density) { (BUBBLE_SIZE * BUBBLE_FILL).toSp() })
+                    // Sized to the bubble whatever the font scale, line height included, so the letter always fits.
+                    val size = with(density) { (BUBBLE_SIZE * BUBBLE_FILL).toSp() }
+                    Text(bubble, style = MaterialTheme.typography.headlineSmall, maxLines = 1, fontSize = size, lineHeight = size)
                 }
             }
         }

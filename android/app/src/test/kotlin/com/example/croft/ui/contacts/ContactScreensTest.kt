@@ -95,7 +95,8 @@ class ContactScreensTest {
         rule.onNodeWithTag(ContactTags.email(0)).assert(hasText("mira@example.org", substring = true))
         rule.onNodeWithText("Work").assertExists()
         rule.onNodeWithText("Mobile").assertExists()
-        rule.onNodeWithTag(ContactTags.KEY).assertExists()
+        // The chip is part of the address row (one element for screen readers).
+        rule.onNodeWithTag(ContactTags.KEY, useUnmergedTree = true).assertExists()
         rule.waitUntil(5_000) { rule.onAllNodes(hasTestTag(ContactTags.recent(7))).fetchSemanticsNodes().isNotEmpty() }
         assertEquals(listOf("from:\"mira@example.org\"", "to:\"mira@example.org\""), search.queries)
         rule.onNodeWithTag(ContactTags.recent(7)).performScrollTo().performClick()

@@ -68,6 +68,9 @@ pub async fn info(State(app): State<App>) -> ApiResult {
 pub struct StartQuery {
     app_challenge: String,
     app_redirect: String,
+    /// `1`: the provider must ask the person to sign in (T34e: a fresh sign-in before deleting).
+    #[serde(default)]
+    fresh: Option<String>,
 }
 
 /// `GET /api/sign-in/oidc/start?app_challenge=..&app_redirect=..`: sends the browser to the
@@ -93,6 +96,7 @@ pub async fn sign_in_start(
             Purpose::SignIn,
             &q.app_challenge,
             &q.app_redirect,
+            q.fresh.as_deref() == Some("1"),
             app.auth.now(),
         )
         .await
@@ -130,6 +134,7 @@ pub async fn app_sso_start(
             Purpose::SignIn,
             &req.challenge,
             &req.redirect,
+            false,
             app.auth.now(),
         )
         .await
@@ -330,6 +335,7 @@ pub async fn link_start(
             },
             &req.app_challenge,
             &req.app_redirect,
+            false,
             app.auth.now(),
         )
         .await

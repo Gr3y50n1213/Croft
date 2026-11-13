@@ -29,6 +29,8 @@
     <string name="companion_disconnect_title">Unregister this device?</string>
     <string name="companion_disconnect_body">This phone signs out of your Companion and stops getting instant notifications from it. Your mail on this phone is not touched.</string>
     <string name="companion_disconnect_confirm">Unregister</string>
+    <string name="companion_delete">Delete my Companion data</string>
+    <string name="companion_delete_hint">Deletes your account on your Companion: its copy of your mail, your mail accounts and their passwords, your passkeys and devices. Opens your Companion in the browser, where you sign in again to confirm. Your mail on this phone is not touched.</string>
     <string name="companion_push_title">Instant notifications</string>
     <string name="companion_push_on">On. Your Companion tells this phone when mail comes.</string>
     <string name="companion_push_waiting">Turning on…</string>

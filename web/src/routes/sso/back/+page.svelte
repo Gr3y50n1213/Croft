@@ -8,6 +8,7 @@
   import { onMount } from 'svelte';
   import { api, explain } from '#lib/sign-in.ts';
   import { takeVerifier } from '#lib/pkce.ts';
+  import { takeReturn } from '#lib/after-sign-in.ts';
 
   let error = $state('');
 
@@ -24,7 +25,7 @@
     try {
       const answer = await api.raw('POST', '/api/sign-in/oidc/exchange', { code, verifier, web: true });
       api.adopt(answer);
-      await goto('/', { replaceState: true });
+      await goto(takeReturn(sessionStorage), { replaceState: true });
     } catch (e) {
       error = explain(e);
     }

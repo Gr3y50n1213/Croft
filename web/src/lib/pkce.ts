@@ -9,35 +9,55 @@
  * closes) and removed as soon as it is read.
  */
 
-import { toB64url } from './passkey.ts';
+import { toB64url } from "./passkey.ts";
 
-const KEY = 'croft.sso.verifier';
+const KEY = "croft.sso.verifier";
 
 /** A new verifier: 32 random bytes, base64url (43 characters). */
 export function newVerifier(
-  random: (b: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer> = (b) => crypto.getRandomValues(b)
+  random: (b: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer> = (b) =>
+    crypto.getRandomValues(b),
 ): string {
   return toB64url(random(new Uint8Array(32)));
 }
 
 /** The S256 challenge of a verifier. */
 export async function challengeOf(verifier: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(verifier),
+  );
   return toB64url(digest);
 }
 
-/** The address that starts single sign-on, coming back to `redirect` (this app's own page). */
-export function startUrl(challenge: string, redirect: string): string {
-  const q = new URLSearchParams({ app_challenge: challenge, app_redirect: redirect });
+/**
+ * The address that starts single sign-on, coming back to `redirect` (this app's own page). `fresh`: the provider must ask the person
+ * to sign in (T34e: "Sign in again" before deleting the account), not reuse its own session.
+ */
+export function startUrl(
+  challenge: string,
+  redirect: string,
+  fresh = false,
+): string {
+  const q = new URLSearchParams({
+    app_challenge: challenge,
+    app_redirect: redirect,
+  });
+  if (fresh) q.set("fresh", "1");
   return `/api/sign-in/oidc/start?${q.toString()}`;
 }
 
-export function keepVerifier(store: Pick<Storage, 'setItem'>, verifier: string): void {
+export function keepVerifier(
+  store: Pick<Storage, "setItem">,
+  verifier: string,
+): void {
   store.setItem(KEY, verifier);
 }
 
 /** The kept verifier, removed as it is read (a code is redeemed once). */
-export function takeVerifier(store: Pick<Storage, 'getItem' | 'removeItem'>): string | null {
+export function takeVerifier(
+  store: Pick<Storage, "getItem" | "removeItem">,
+): string | null {
   const v = store.getItem(KEY);
   store.removeItem(KEY);
   return v;

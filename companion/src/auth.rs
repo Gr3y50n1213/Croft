@@ -88,6 +88,23 @@ fn normalise_recovery_code(typed: &str) -> Zeroizing<String> {
     )
 }
 
+/// What [`Store::delete_self`] came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteSelf {
+    /// The user and everything theirs is gone.
+    Deleted,
+    /// The session's sign-in is older than [`DELETE_FRESH_MS`]: sign in again first.
+    NotFresh,
+    /// `confirm` is not the user's name.
+    WrongName,
+    /// The only enabled admin cannot delete themselves.
+    LastAdmin,
+}
+
+/// How recent the sign-in of the session that deletes an account must be (T34e): a stolen or
+/// forgotten session cannot delete without the person signing in again.
+pub const DELETE_FRESH_MS: i64 = 10 * 60 * 1000;
+
 /// Who is calling, from a valid access token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller {
@@ -257,6 +274,29 @@ fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
 
 /// Ends every session of `user_id` and drops its access tokens (refresh rows stay, so a stolen
 /// refresh token that comes back is still recognised and refused).
+/// See [`Store::session_is_fresh`].
+fn fresh(conn: &Connection, user_id: i64, session_id: i64, now: i64) -> rusqlite::Result<bool> {
+    let signed_in: Option<i64> = conn
+        .query_row(
+            "SELECT created_ms FROM session
+             WHERE id = ?1 AND user_id = ?2 AND revoked_ms IS NULL",
+            params![session_id, user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(signed_in.is_some_and(|t| t <= now && now - t <= DELETE_FRESH_MS))
+}
+
+/// Deletes the user (T34e), with their own audit entries: what is left is one entry saying that an
+/// account was deleted, and when (`how`: by the person, or by the operator). Entries in which they
+/// acted on others keep the action and lose them (the cascade).
+fn forget_user(tx: &Connection, user_id: i64, now: i64, how: &'static str) -> rusqlite::Result<()> {
+    tx.execute("DELETE FROM audit_log WHERE user_id = ?1", params![user_id])?;
+    tx.execute("DELETE FROM user WHERE id = ?1", params![user_id])?;
+    audit(tx, now, None, None, "user.delete", how)?;
+    Ok(())
+}
+
 fn revoke_all(conn: &Connection, user_id: i64, now: i64) -> rusqlite::Result<usize> {
     let n = conn.execute(
         "UPDATE session SET revoked_ms = ?2 WHERE user_id = ?1 AND revoked_ms IS NULL",
@@ -1026,6 +1066,115 @@ impl Store {
             }
         };
         Ok(rows)
+    }
+
+    /// "Delete my Companion data" (T34e, READINESS row 7): deletes the user and everything that is
+    /// theirs (sessions, passkeys, TOTP, identities, mail credentials, push subscriptions and their
+    /// data key, by the schema's cascades; their audit entries lose the user). The mail database
+    /// on disk goes with [`crate::mail::MailCores::remove_user`]. Only from a session signed in at
+    /// most [`DELETE_FRESH_MS`] ago, with the user's name typed as `confirm`, and never the last
+    /// admin. Audited without naming the user.
+    pub fn delete_self(
+        &mut self,
+        user_id: i64,
+        session_id: i64,
+        confirm: &str,
+        now: i64,
+    ) -> Result<DeleteSelf, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let user: Option<(String, String)> = tx
+            .query_row(
+                "SELECT name, role FROM user WHERE id = ?1",
+                params![user_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((name, role)) = user else {
+            return Err(StoreError::NoSuchUser);
+        };
+        if confirm != name {
+            return Ok(DeleteSelf::WrongName);
+        }
+        if !fresh(&tx, user_id, session_id, now)? {
+            return Ok(DeleteSelf::NotFresh);
+        }
+        if role == "admin" {
+            let others: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM user WHERE role = 'admin' AND disabled = 0 AND id != ?1",
+                params![user_id],
+                |r| r.get(0),
+            )?;
+            if others == 0 {
+                return Ok(DeleteSelf::LastAdmin);
+            }
+        }
+        forget_user(&tx, user_id, now, "ok")?;
+        tx.commit()?;
+        self.scrub();
+        Ok(DeleteSelf::Deleted)
+    }
+
+    /// Whether the session signed in at most [`DELETE_FRESH_MS`] ago (T34e): deleting the account
+    /// and adding a passkey need it, so a forgotten or stolen session can do neither. A recovery
+    /// sign-in (TOTP and a recovery code) is a fresh sign-in too.
+    pub fn session_is_fresh(
+        &self,
+        user_id: i64,
+        session_id: i64,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        Ok(fresh(&self.conn, user_id, session_id, now)?)
+    }
+
+    /// After a deletion: the database keeps no copy of what was deleted (`secure_delete` zeroes
+    /// freed pages; the write-ahead log is folded in and emptied). Best effort: a busy reader only
+    /// postpones the log's truncation to the next checkpoint.
+    fn scrub(&self) {
+        let _ = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    }
+
+    /// Deletes a user from the command line (T34e: `user delete`, for someone who can no longer
+    /// sign in and asks the person running the Companion). The same cascade as
+    /// [`Store::delete_self`]; never the last admin. Audited without naming the user.
+    pub fn delete_user(&mut self, user_id: i64, now: i64) -> Result<DeleteSelf, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let role: Option<String> = tx
+            .query_row(
+                "SELECT role FROM user WHERE id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(role) = role else {
+            return Err(StoreError::NoSuchUser);
+        };
+        if role == "admin" {
+            let others: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM user WHERE role = 'admin' AND disabled = 0 AND id != ?1",
+                params![user_id],
+                |r| r.get(0),
+            )?;
+            if others == 0 {
+                return Ok(DeleteSelf::LastAdmin);
+            }
+        }
+        forget_user(&tx, user_id, now, "operator")?;
+        tx.commit()?;
+        self.scrub();
+        Ok(DeleteSelf::Deleted)
+    }
+
+    /// The ids of every user (for the sweep of mail folders left by a deletion).
+    pub fn user_ids(&self) -> Result<Vec<i64>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT id FROM user")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
     }
 
     /// Disables or enables a user (an admin action, by `actor`). Disabling ends every session at

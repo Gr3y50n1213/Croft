@@ -5,6 +5,55 @@ unverified, the next step.
 
 ---
 
+## T34e: "Delete my Companion data" (13 November 2026)
+
+**Status:** on `task/t34e`, its own pull request. It closes phase 2.
+
+**What was built.**
+- **The Companion:**
+  - `POST /api/me/delete` deletes the user with everything theirs: the schema's cascades, the data key, their mail folder under
+    the mail slot.
+  - It needs a full session signed in within ten minutes, the typed user name, and never the only admin.
+  - Audited only as "an account was deleted".
+  - A start sweep removes folders of users who are gone.
+  - `user delete --name` on the command line, while stopped.
+- **The web app:**
+  - W04 Security has "Delete my Companion data".
+  - "Sign in again" comes back to it, with `prompt=login` for single sign-on.
+  - `/delete` is the address to give; `/deleted` confirms.
+- **The phone:** S58's "Delete my Companion data" opens `<Companion>/delete`.
+- **The store:** `docs/store/DELETING-YOUR-DATA.draft.md`.
+
+**Review** (one independent agent, opus, high effort): no high finding.
+- **3 medium, fixed:**
+  - an old or recovery session could add a passkey and then delete (adding a passkey now needs a fresh sign-in too);
+  - deleting stalled 2 s while a push watcher held the core (the slot is let go first);
+  - deleted data stayed in the store file (`secure_delete`, the log truncated).
+- **Lows, fixed:**
+  - silent SSO re-sign-in;
+  - a silent folder failure;
+  - the browser's cookie and push subscription left behind;
+  - audit entries linkable by timing (the user's own entries go);
+  - sweep names;
+  - CLI messages.
+
+**Checks.**
+- Companion: 185 tests, including:
+  - deletion (name, freshness, last admin, recovery, everything gone, another user untouched, the audit entry);
+  - an old session refused a passkey;
+  - no stall with a holder;
+  - nothing left in the database file;
+  - the sweep;
+  - a fresh SSO start;
+  - `user delete`.
+- Web: check, 99 unit tests, and the end-to-end deletion run locally.
+- Android: a unit test for no browser in S58 (CI).
+
+**Next:** phase 2 is done. Gate 3 (the public beta) waits on the owner's items in OPEN-ITEMS: a phone test, the Firebase project
+and gateway, hosting the privacy policy and the deletion page, and signing keys.
+
+---
+
 ## T34d: Push on the phone (13 November 2026)
 
 **Status:** on `task/t34d`, its own pull request. An independent review is below; its findings were fixed with tests, except two

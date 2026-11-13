@@ -61,6 +61,7 @@ object CompanionTags {
     const val ADDRESS = "companion-address"
     const val CONNECT = "companion-connect"
     const val DISCONNECT = "companion-disconnect"
+    const val DELETE = "companion-delete"
     const val PUSH_STATUS = "companion-push-status"
     const val PUSH_ON = "companion-push-on"
 }
@@ -199,6 +200,19 @@ fun CompanionScreen(connection: CompanionConnection, onBack: () -> Unit, modifie
                         status = pushStatus,
                         onTurnOn = { scope.launch { PushRuntime.start(context) } },
                     )
+                    // T34e (READINESS row 7): deleting happens on the Companion's own page, after a fresh sign-in there. The app
+                    // learns of it at its next call (signed out) and forgets the connection.
+                    Text(stringResource(R.string.companion_delete_hint), style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse("${s.url}/delete"))
+                            } catch (e: ActivityNotFoundException) {
+                                connection.noBrowser()
+                            }
+                        },
+                        modifier = Modifier.testTag(CompanionTags.DELETE),
+                    ) { Text(stringResource(R.string.companion_delete)) }
                     OutlinedButton(onClick = { confirming = true }, modifier = Modifier.testTag(CompanionTags.DISCONNECT)) {
                         Text(stringResource(R.string.companion_disconnect))
                     }

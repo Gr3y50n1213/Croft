@@ -449,7 +449,7 @@ class ConversationController(
         unsubscribing = true
         scope.launch {
             val result = try {
-                repo.unsubscribe(openedId, deleteOlder)
+                repo.unsubscribe(openedId, info, deleteOlder)
             } catch (e: ReadFailure) {
                 null
             } finally {
@@ -461,12 +461,16 @@ class ConversationController(
                 result.openUrl != null -> if (!browser(result.openUrl)) snackbar.show(readingTexts.noApp)
                 result.done -> {
                     loadUnsubscribe()
-                    val text = texts.unsubscribed(info.sender, result.deletedOps.size)
+                    val text = if (result.deleteFailed) texts.unsubscribedNotDeleted(info.sender) else texts.unsubscribed(info.sender, result.deletedOps.size)
                     if (result.deletedOps.isEmpty()) snackbar.show(text) else {
                         snackbar.show(text, texts.undo, stayMs = session.undoWindowMs) { scope.launch { session.rowActions.undo(result.deletedOps) } }
                     }
                 }
-                else -> snackbar.show(texts.unsubscribeFailed(result.problem))
+                else -> {
+                    // The message changed since S31: show the new facts.
+                    if (result.problem == com.example.croft.mail.reading.UnsubscribeProblem.CHANGED) loadUnsubscribe()
+                    snackbar.show(texts.unsubscribeFailed(result.problem))
+                }
             }
             if (result?.openUrl != null && result.deletedOps.isNotEmpty()) {
                 snackbar.show(texts.movedOlder(result.deletedOps.size), texts.undo, stayMs = session.undoWindowMs) {

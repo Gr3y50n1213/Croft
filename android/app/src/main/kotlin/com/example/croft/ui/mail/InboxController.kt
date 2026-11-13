@@ -112,10 +112,14 @@ class InboxTexts(private val res: Resources) {
 
     fun movedOlder(n: Int): String = res.getQuantityString(R.plurals.unsubscribe_moved_older, n, n)
 
+    fun unsubscribedNotDeleted(sender: String): String = res.getString(R.string.unsubscribe_done_not_deleted, sender)
+
     fun unsubscribeFailed(problem: com.example.croft.mail.reading.UnsubscribeProblem?): String = res.getString(
         when (problem) {
             com.example.croft.mail.reading.UnsubscribeProblem.UNREACHABLE -> R.string.unsubscribe_failed_unreachable
             com.example.croft.mail.reading.UnsubscribeProblem.CANNOT_SEND -> R.string.unsubscribe_failed_cannot_send
+            com.example.croft.mail.reading.UnsubscribeProblem.CHANGED -> R.string.unsubscribe_failed_changed
+            com.example.croft.mail.reading.UnsubscribeProblem.NO_TRASH_FOLDER -> R.string.unsubscribe_failed_no_trash
             com.example.croft.mail.reading.UnsubscribeProblem.REFUSED, null -> R.string.unsubscribe_failed_refused
         },
     )

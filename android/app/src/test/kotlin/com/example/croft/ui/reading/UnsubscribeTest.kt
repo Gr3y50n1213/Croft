@@ -41,6 +41,9 @@ class UnsubscribeTest {
         sender = "Croft Dev List",
         olderCount = older,
         already = already,
+        senderAddress = "list@croft.example",
+        subject = if (way == UnsubscribeWay.EMAIL) "unsubscribe" else null,
+        body = if (way == UnsubscribeWay.EMAIL) "" else null,
     )
 
     private fun fixture(info: UnsubscribeInfoData?): ReadingFixture = ReadingFixture().also { f ->
@@ -72,6 +75,7 @@ class UnsubscribeTest {
 
         rule.onNodeWithTag(UnsubscribeTags.ACTION).performClick()
         rule.waitForTag(UnsubscribeTags.DIALOG)
+        assertTrue("the delete names the address, not only the name", textExists("Also delete the 14 older messages from list@croft.example"))
         rule.onNodeWithTag(UnsubscribeTags.DELETE_OLDER).performClick()
         rule.onNodeWithTag(UnsubscribeTags.CONFIRM).performClick()
         rule.waitUntil(10_000) { unsubscribeCalls(f).isNotEmpty() }
@@ -91,6 +95,7 @@ class UnsubscribeTest {
         rule.onNodeWithTag(UnsubscribeTags.ACTION).performClick()
         rule.waitForTag(UnsubscribeTags.DIALOG)
         assertTrue(textExists("leave@list.example"))
+        assertTrue("the email is shown before it is sent", textExists("Subject: unsubscribe"))
         assertTrue("no delete offered without older mail", !exists(UnsubscribeTags.DELETE_OLDER))
         rule.onNodeWithTag(UnsubscribeTags.CONFIRM).performClick()
         rule.waitUntil(10_000) { textExists("Couldn't send the unsubscribe email") }

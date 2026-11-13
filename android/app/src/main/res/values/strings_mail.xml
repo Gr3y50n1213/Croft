@@ -119,10 +119,15 @@
     <string name="unsubscribe_email">Croft will send an email to %1$s from this account. You may get a couple more emails first.</string>
     <string name="unsubscribe_website">This opens %1$s in your browser, where you finish unsubscribing.</string>
     <plurals name="unsubscribe_delete_older">
-        <item quantity="one">Also delete the %d older message from this sender</item>
-        <item quantity="other">Also delete the %d older messages from this sender</item>
+        <item quantity="one">Also delete the %1$d older message from %2$s</item>
+        <item quantity="other">Also delete the %1$d older messages from %2$s</item>
     </plurals>
     <string name="unsubscribe_cancel">Cancel</string>
+    <string name="unsubscribe_email_subject">Subject: %1$s</string>
+    <string name="unsubscribe_email_subject_body">Subject: %1$s\nMessage: %2$s</string>
+    <string name="unsubscribe_done_not_deleted">Unsubscribed from %1$s. The older messages could not be moved to Trash.</string>
+    <string name="unsubscribe_failed_changed">This message changed. Check the details and try again.</string>
+    <string name="unsubscribe_failed_no_trash">Nothing was sent: this account has no Trash folder for the older messages.</string>
     <string name="unsubscribe_done">Unsubscribed from %1$s</string>
     <plurals name="unsubscribe_done_deleted">
         <item quantity="one">Unsubscribed from %1$s. %2$d older message moved to Trash.</item>

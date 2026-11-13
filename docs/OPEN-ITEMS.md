@@ -111,3 +111,8 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   meaning, switch to them (reading both for a while).
 - **Follow-up reminders (T36b).** A follow-up is a mark only: no "remind me at" time and no "if nobody replies" check yet.
 - **Pin and Follow up on the web and as swipe actions (T43).**
+- **Unsubscribe and forged senders (T37).** The core does not verify DKIM. S31 shows everything that will happen and never deletes
+  the account's own or sent mail, but a message forging a contact's address could still offer to delete that contact's older mail
+  (shown with the address). Reading the user's own server's `Authentication-Results` (DKIM or DMARC pass) and requiring the From
+  domain to match would close this; it needs the header stored at fetch.
+- **Unsubscribe email identity (T37).** The email goes from the account's default identity, not the alias the list mail was sent to.

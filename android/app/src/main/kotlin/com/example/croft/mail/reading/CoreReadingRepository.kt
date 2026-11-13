@@ -19,6 +19,7 @@ import uniffi.croft_ffi.ConversationMessage as CoreMessage
 import uniffi.croft_ffi.Core
 import uniffi.croft_ffi.CoreException
 import uniffi.croft_ffi.UnsubscribeFailure as CoreUnsubscribeFailure
+import uniffi.croft_ffi.UnsubscribeInfo as CoreUnsubscribeInfo
 import uniffi.croft_ffi.UnsubscribeWay as CoreUnsubscribeWay
 import uniffi.croft_ffi.MailAddress as CoreAddress
 import uniffi.croft_ffi.MessageBody as CoreBody
@@ -59,13 +60,25 @@ class CoreReadingRepository(
 
     override suspend fun unsubscribeInfo(messageId: MessageId): UnsubscribeInfoData? = coreGuarded {
         withContext(io) { core.unsubscribeInfo(messageId) }?.let {
-            UnsubscribeInfoData(it.way.toApp(), it.host, it.address, it.sender, it.olderCount.toInt(), it.already)
+            UnsubscribeInfoData(
+                it.way.toApp(), it.host, it.address, it.sender, it.olderCount.toInt(), it.already,
+                senderAddress = it.senderAddress, subject = it.subject, body = it.body,
+            )
         }
     }
 
-    override suspend fun unsubscribe(messageId: MessageId, deleteOlder: Boolean): UnsubscribeResultData = coreGuarded {
-        // The core's own async call: the request runs on the core's runtime.
-        val out = core.unsubscribe(messageId, deleteOlder)
+    override suspend fun unsubscribe(messageId: MessageId, shown: UnsubscribeInfoData, deleteOlder: Boolean): UnsubscribeResultData = coreGuarded {
+        val back = CoreUnsubscribeInfo(
+            way = when (shown.way) {
+                UnsubscribeWay.ONE_CLICK -> CoreUnsubscribeWay.ONE_CLICK
+                UnsubscribeWay.EMAIL -> CoreUnsubscribeWay.EMAIL
+                UnsubscribeWay.WEBSITE -> CoreUnsubscribeWay.WEBSITE
+            },
+            host = shown.host, address = shown.address, sender = shown.sender, senderAddress = shown.senderAddress,
+            subject = shown.subject, body = shown.body, olderCount = shown.olderCount.toUInt(), already = shown.already,
+        )
+        // The core runs it on its own runtime; nothing of it runs on the main thread.
+        val out = withContext(io) { core.unsubscribe(messageId, back, deleteOlder) }
         UnsubscribeResultData(
             done = out.done,
             openUrl = out.openUrl,
@@ -74,9 +87,12 @@ class CoreReadingRepository(
                     CoreUnsubscribeFailure.UNREACHABLE -> UnsubscribeProblem.UNREACHABLE
                     CoreUnsubscribeFailure.REFUSED -> UnsubscribeProblem.REFUSED
                     CoreUnsubscribeFailure.CANNOT_SEND -> UnsubscribeProblem.CANNOT_SEND
+                    CoreUnsubscribeFailure.CHANGED -> UnsubscribeProblem.CHANGED
+                    CoreUnsubscribeFailure.NO_TRASH_FOLDER -> UnsubscribeProblem.NO_TRASH_FOLDER
                 }
             },
             deletedOps = out.deletedOps.map { it.toLong() },
+            deleteFailed = out.deleteFailed,
         )
     }
 

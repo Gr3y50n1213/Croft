@@ -45,8 +45,9 @@ pub fn headers(conn: &Connection, account: i64, id: i64) -> Result<Option<ListHe
 }
 
 /// The other messages of `account` from `sender` (any case) dated no later than `until_ms`,
-/// newest first, leaving out message `except`, Trash and Junk, and rows hidden by a waiting move or
-/// delete: S31's "Also delete the N older messages". At most `limit`.
+/// newest first, leaving out message `except`, Trash, Junk, Sent and Drafts, and rows hidden by a
+/// waiting move or delete: S31's "Also delete the N older messages". At most `limit`. (The From
+/// address is not authenticated: never the person's own sent mail, whatever a message claims.)
 pub fn older_from(
     conn: &Connection,
     account: i64,
@@ -60,13 +61,29 @@ pub fn older_from(
             WHERE account_id = ?1 AND from_addr = ?2 COLLATE NOCASE AND date_ts <= ?3 AND id <> ?4
               AND local_hidden = 0
               AND folder_id NOT IN (SELECT id FROM folder
-                                     WHERE account_id = ?1 AND special_use IN ('trash', 'junk'))
+                                     WHERE account_id = ?1
+                                       AND special_use IN ('trash', 'junk', 'sent', 'drafts'))
             ORDER BY date_ts DESC, id DESC LIMIT ?5"#,
     )?;
     let rows = stmt.query_map(params![account, sender, until_ms, except, limit], |r| {
         r.get(0)
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+}
+
+/// Whether `address` (any case) is the account's own: its address or one of its identities. A
+/// message that claims to come from it is never trusted to name mail to delete (T37 review).
+pub fn is_own_address(conn: &Connection, account: i64, address: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            r#"SELECT 1 WHERE EXISTS (SELECT 1 FROM account WHERE id = ?1 AND email = ?2 COLLATE NOCASE)
+                         OR EXISTS (SELECT 1 FROM identity
+                                     WHERE account_id = ?1 AND address = ?2 COLLATE NOCASE)"#,
+            params![account, address.trim()],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 /// Remembers that the person unsubscribed from `sender` in `account`.

@@ -104,3 +104,14 @@ async fn only_https_to_public_addresses_whatever_the_policy() {
         Err(FetchError::BadUrl)
     );
 }
+
+/// T37 review: a 2xx is done even when the page after it is huge or cut off (the body is never
+/// read), so a success is never reported as a failure that invites a second tap.
+#[tokio::test]
+async fn a_2xx_is_done_whatever_follows_it() {
+    let (url, _) = sender(b"HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n<html>").await;
+    assert_eq!(post_unsubscribe_to_loopback_for_tests(&url).await, Ok(200));
+    let (url, _) =
+        sender(b"HTTP/1.1 202 Accepted\r\nTransfer-Encoding: chunked\r\n\r\nzz-not-a-chunk").await;
+    assert_eq!(post_unsubscribe_to_loopback_for_tests(&url).await, Ok(202));
+}

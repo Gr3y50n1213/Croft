@@ -44,7 +44,10 @@ interface ReadingRepository {
     /** T37: how [messageId] can be unsubscribed from, or null when it cannot. Contacts no one. */
     suspend fun unsubscribeInfo(messageId: MessageId): UnsubscribeInfoData? = null
 
-    /** T37: unsubscribes from the sender of [messageId] (only after S31's confirmation); with [deleteOlder], their older mail goes to Trash. */
-    suspend fun unsubscribe(messageId: MessageId, deleteOlder: Boolean): UnsubscribeResultData =
+    /**
+     * T37: unsubscribes from the sender of [messageId] as [shown] (what S31 showed) says, only after S31's confirmation; nothing happens
+     * when the message no longer gives the same ([UnsubscribeProblem.CHANGED]). With [deleteOlder], their older mail goes to Trash.
+     */
+    suspend fun unsubscribe(messageId: MessageId, shown: UnsubscribeInfoData, deleteOlder: Boolean): UnsubscribeResultData =
         UnsubscribeResultData(done = false, openUrl = null, problem = UnsubscribeProblem.REFUSED, deletedOps = emptyList())
 }

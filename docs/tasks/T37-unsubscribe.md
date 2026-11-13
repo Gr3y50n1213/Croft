@@ -16,7 +16,7 @@ older mail from that sender.
   `https:` URI and the first `mailto:` URI and ignores everything else (`http:`, other schemes, text outside the brackets). A URI
   longer than 2048 bytes, with control characters, spaces or credentials (`user@host`) in an `https` authority, or a `mailto:`
   whose address does not parse as one plain address, is ignored. `mailto:` keeps only `subject` and `body` from its query
-  (percent-decoded, bounded, control characters other than line breaks in the body removed); any other field (`cc`, `bcc`, `to`,
+  (percent-decoded, subject at most 200 and body at most 500 characters, control characters other than line breaks in the body removed); any other field (`cc`, `bcc`, `to`,
   headers) is dropped.
 - **Choosing the way.**
   1. One-click: an `https:` URI and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (stored as `list_one_click`).
@@ -31,8 +31,9 @@ older mail from that sender.
 - **Email.** A new message from the account to that address with the URI's subject (else "unsubscribe") and body, sent through the
   Outbox like any other (Undo while it waits).
 - **No silent contact.** Nothing is sent without the person confirming in S31; the dialog names the sender, says how (the host for
-  one-click and website, the address for email), and, with "Also delete the N older messages from this sender", trashes them with
-  Undo.
+  one-click and website; the address, subject and body for email), and the confirmed call hands back what S31 showed (nothing is
+  done if the message changed). "Also delete the N older messages from <address>" trashes them with Undo, never the account's
+  own or sent mail.
 - **After.** The sender's address is remembered per account (`unsubscribed` table, migration 0011, scoped by account), so the banner
   shows "Unsubscribed" instead of the action for that sender's later mail. Forgotten when the account is removed.
 - **DKIM.** RFC 8058 asks that the two headers be covered by a valid DKIM signature. Croft does not verify DKIM yet; the

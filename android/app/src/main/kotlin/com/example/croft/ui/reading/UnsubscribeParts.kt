@@ -40,6 +40,7 @@ object UnsubscribeTags {
     const val DELETE_OLDER = "S31-delete-older"
     const val CONFIRM = "S31-confirm"
     const val CANCEL = "S31-cancel"
+    const val EMAIL_TEXT = "S31-email"
 }
 
 /** T37: S21's banner on a mailing-list message: Unsubscribe, or that the person already did. */
@@ -78,6 +79,17 @@ fun UnsubscribeDialog(info: UnsubscribeInfoData, busy: Boolean, onConfirm: (Bool
                     UnsubscribeWay.WEBSITE -> stringResource(R.string.unsubscribe_website, info.host.orEmpty())
                 }
                 Text(how)
+                // The email exactly as it would go out: it is sent from the person's own account.
+                if (info.way == UnsubscribeWay.EMAIL) {
+                    val subject = info.subject.orEmpty()
+                    val body = info.body.orEmpty()
+                    Text(
+                        if (body.isBlank()) stringResource(R.string.unsubscribe_email_subject, subject)
+                        else stringResource(R.string.unsubscribe_email_subject_body, subject, body),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.testTag(UnsubscribeTags.EMAIL_TEXT),
+                    )
+                }
                 if (info.olderCount > 0) {
                     Row(
                         Modifier.fillMaxWidth()
@@ -86,7 +98,11 @@ fun UnsubscribeDialog(info: UnsubscribeInfoData, busy: Boolean, onConfirm: (Bool
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Checkbox(checked = deleteOlder, onCheckedChange = null)
-                        Text(pluralStringResource(R.plurals.unsubscribe_delete_older, info.olderCount, info.olderCount), Modifier.padding(start = 8.dp))
+                        // The address it goes by, not only the name: a From can be forged.
+                        Text(
+                            pluralStringResource(R.plurals.unsubscribe_delete_older, info.olderCount, info.olderCount, info.senderAddress.orEmpty()),
+                            Modifier.padding(start = 8.dp),
+                        )
                     }
                 }
             }

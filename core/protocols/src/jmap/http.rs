@@ -101,6 +101,9 @@ pub(crate) struct HttpRequest<'a> {
     pub extra_time: Duration,
     /// Also read the body of a 4xx answer (an OAuth token endpoint puts its error code there).
     pub error_body: bool,
+    /// Stop after the status line and headers: the body is never read (T37: a one-click
+    /// unsubscribe acts when the server answers; a large or cut-off page is not a failure).
+    pub status_only: bool,
     /// More headers (T28: Web Push's `TTL`, `Urgency`, `Content-Encoding`). Names and values are
     /// the caller's own constants and encodings; a value with a line break is refused.
     pub extra_headers: &'a [(&'a str, &'a str)],
@@ -231,7 +234,9 @@ impl Http {
         let addrs = if self.internet_only {
             addrs
                 .into_iter()
-                .filter(|a| !crate::netpolicy::is_internal(a.ip()))
+                .filter(|a| {
+                    !crate::netpolicy::is_internal(a.ip()) && crate::netpolicy::allowed(a.ip())
+                })
                 .collect()
         } else if self.admin_configured {
             addrs
@@ -269,7 +274,15 @@ impl Http {
         stream.write_all(req.body).await.map_err(io_err)?;
         stream.flush().await.map_err(io_err)?;
         written.store(true, Ordering::Relaxed);
-        read_response(&mut stream, req.max_response, self.timeout, req.error_body).await
+        let max = if req.status_only { 0 } else { req.max_response };
+        read_response(
+            &mut stream,
+            max,
+            self.timeout,
+            req.error_body && !req.status_only,
+            req.status_only,
+        )
+        .await
     }
 }
 
@@ -382,6 +395,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     max_body: usize,
     idle: Duration,
     error_body: bool,
+    status_only: bool,
 ) -> Result<HttpResponse, BackendError> {
     let mut buf = Vec::with_capacity(4096);
     let (head_len, status, location, content_length, chunked) = loop {
@@ -421,7 +435,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
         return Err(unreadable());
     }
     let wanted = (200..300).contains(&status) || (error_body && (400..500).contains(&status));
-    if !wanted || status == 204 {
+    if status_only || !wanted || status == 204 {
         return Ok(HttpResponse {
             status,
             location,
@@ -544,7 +558,7 @@ mod tests {
 
     async fn parse(bytes: &[u8], max: usize) -> Result<HttpResponse, BackendError> {
         let mut r = bytes;
-        read_response(&mut r, max, IDLE, false).await
+        read_response(&mut r, max, IDLE, false, false).await
     }
 
     #[tokio::test]
@@ -689,6 +703,7 @@ mod tests {
             max_response: 10,
             extra_time: Duration::ZERO,
             error_body: false,
+            status_only: false,
             extra_headers: &[("TTL", "3600"), ("Urgency", "normal")],
         };
         let head = request_head(&req);
@@ -713,6 +728,7 @@ mod tests {
             max_response: 10,
             extra_time: Duration::ZERO,
             error_body: false,
+            status_only: false,
             extra_headers: &[],
         };
         let head = request_head(&req);
@@ -737,6 +753,7 @@ mod tests {
             max_response: 10,
             extra_time: Duration::ZERO,
             error_body: false,
+            status_only: false,
             extra_headers: &[],
         };
         let err = http.send(&req).await.unwrap_err();

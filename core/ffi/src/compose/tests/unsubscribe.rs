@@ -85,9 +85,16 @@ fn the_email_way_goes_through_the_outbox_remembers_the_sender_and_deletes_older_
     assert_eq!(info.host, None);
     assert_eq!(info.sender, "News");
     assert_eq!(info.older_count, 2);
+    assert_eq!(info.sender_address.as_deref(), Some("news@list.example"));
+    assert_eq!(
+        info.subject.as_deref(),
+        Some("stop"),
+        "S31 shows what is sent"
+    );
+    assert_eq!(info.body.as_deref(), Some(""));
     assert!(!info.already);
 
-    let out = block(m.core().unsubscribe(newest, true)).unwrap();
+    let out = block(m.core().clone().unsubscribe(newest, info, true)).unwrap();
     assert!(out.done && out.failure.is_none() && out.open_url.is_none());
     assert!(out.outbox_id.is_some());
     assert_eq!(out.deleted_ops.len(), 2);
@@ -154,18 +161,19 @@ fn the_website_way_is_handed_to_the_app_and_a_private_one_click_address_is_refus
     let info = m.core().unsubscribe_info(page).unwrap().unwrap();
     assert_eq!(info.way, UnsubscribeWay::Website);
     assert_eq!(info.host.as_deref(), Some("list.example"));
-    let out = block(m.core().unsubscribe(page, false)).unwrap();
+    let out = block(m.core().clone().unsubscribe(page, info, true)).unwrap();
     assert_eq!(
         out.open_url.as_deref(),
         Some("https://list.example/manage?u=1")
     );
     assert!(!out.done);
+    assert!(out.deleted_ops.is_empty(), "a website deletes nothing");
     assert!(!m.core().unsubscribe_info(page).unwrap().unwrap().already);
 
     let info = m.core().unsubscribe_info(lan).unwrap().unwrap();
     assert_eq!(info.way, UnsubscribeWay::OneClick);
     assert_eq!(info.host.as_deref(), Some("192.168.1.1"));
-    let out = block(m.core().unsubscribe(lan, true)).unwrap();
+    let out = block(m.core().clone().unsubscribe(lan, info, true)).unwrap();
     assert_eq!(out.failure, Some(UnsubscribeFailure::Refused));
     assert!(
         out.deleted_ops.is_empty(),
@@ -173,4 +181,100 @@ fn the_website_way_is_handed_to_the_app_and_a_private_one_click_address_is_refus
     );
     assert!(!m.core().unsubscribe_info(lan).unwrap().unwrap().already);
     assert_eq!(m.accepted(), 0);
+}
+
+/// T37 review: a From that claims to be the account itself names no mail to delete, Sent mail is
+/// never in the delete, and a request whose message changed since S31 does nothing.
+#[test]
+fn own_and_sent_mail_are_never_deleted_and_a_changed_message_sends_nothing() {
+    let m = Mail::new();
+    let header = "<mailto:leave@list.example>";
+    m.imap.add_message(
+        "INBOX",
+        &list_mail(
+            "me",
+            "Alice@Example.org",
+            "Wed, 04 Mar 2026 09:00:00 +0000",
+            header,
+            false,
+        ),
+    );
+    m.imap.add_message(
+        "INBOX",
+        &list_mail(
+            "me-old",
+            "alice@example.org",
+            "Mon, 02 Mar 2026 09:00:00 +0000",
+            header,
+            false,
+        ),
+    );
+    let rows = inbox_rows(&m, 2);
+    let spoofed = rows.iter().find(|r| r.subject == "News me").unwrap().id;
+    let info = m.core().unsubscribe_info(spoofed).unwrap().unwrap();
+    assert_eq!(
+        info.older_count, 0,
+        "the account's own address names nothing to delete"
+    );
+    assert_eq!(info.sender_address, None);
+
+    // What S31 showed no longer matches: nothing is sent.
+    let mut stale = info.clone();
+    stale.address = Some("other@list.example".into());
+    let out = block(m.core().clone().unsubscribe(spoofed, stale, true)).unwrap();
+    assert_eq!(out.failure, Some(UnsubscribeFailure::Changed));
+    let mut more = info.clone();
+    more.older_count = 7;
+    let out = block(m.core().clone().unsubscribe(spoofed, more, true)).unwrap();
+    assert_eq!(out.failure, Some(UnsubscribeFailure::Changed));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(m.accepted(), 0);
+    assert!(m.core().list_outbox(m.account).unwrap().is_empty());
+}
+
+/// T37 review: with no Trash folder, "Also delete" is refused before the sender is contacted.
+#[test]
+fn a_missing_trash_is_found_before_anything_is_sent() {
+    let m = Mail::new();
+    let header = "<mailto:leave@list.example>";
+    m.imap.add_message(
+        "INBOX",
+        &list_mail(
+            "a",
+            "news@list.example",
+            "Wed, 04 Mar 2026 09:00:00 +0000",
+            header,
+            false,
+        ),
+    );
+    m.imap.add_message(
+        "INBOX",
+        &list_mail(
+            "b",
+            "news@list.example",
+            "Mon, 02 Mar 2026 09:00:00 +0000",
+            header,
+            false,
+        ),
+    );
+    let rows = inbox_rows(&m, 2);
+    // The test server dates messages by arrival: "b" came last.
+    let newest = rows.iter().find(|r| r.subject == "News b").unwrap().id;
+    let info = m.core().unsubscribe_info(newest).unwrap().unwrap();
+    assert_eq!(info.older_count, 1);
+    {
+        let d = croft_storage::Db::open(&m.db.path, None).unwrap();
+        d.connection()
+            .execute(
+                "UPDATE folder SET special_use = 'other' WHERE special_use = 'trash'",
+                [],
+            )
+            .unwrap();
+    }
+    let out = block(m.core().clone().unsubscribe(newest, info, true)).unwrap();
+    assert_eq!(out.failure, Some(UnsubscribeFailure::NoTrashFolder));
+    assert!(
+        m.core().list_outbox(m.account).unwrap().is_empty(),
+        "nothing sent"
+    );
 }

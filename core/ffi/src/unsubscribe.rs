@@ -13,7 +13,7 @@ use croft_protocols::oauth::fetch::{self, FetchError};
 use croft_storage::unsubscribe as store;
 
 use crate::compose::{DraftContent, FfiAddress};
-use crate::core::{now_ms, Core};
+use crate::core::{now_ms, Core, Inner};
 use crate::error::CoreError;
 
 /// The most older messages S31 offers to delete at once.
@@ -41,8 +41,15 @@ pub struct UnsubscribeInfo {
     pub address: Option<String>,
     /// The sender's name, else address, for "Unsubscribe from ...".
     pub sender: String,
-    /// The older messages from that sender in the account, outside Trash and Spam (S31's "Also
-    /// delete the N older messages").
+    /// The sender's address, which "Also delete the older messages" goes by (S31 shows it: the From
+    /// address is not authenticated).
+    pub sender_address: Option<String>,
+    /// The email's subject and body (email), shown in S31 before anything is sent.
+    pub subject: Option<String>,
+    /// See `subject`.
+    pub body: Option<String>,
+    /// The older messages from that sender in the account, outside Trash, Spam, Sent and Drafts
+    /// (S31's "Also delete the N older messages"). 0 when the From is the account's own address.
     pub older_count: u32,
     /// The person already unsubscribed from this sender in this account: the banner says so.
     pub already: bool,
@@ -67,6 +74,11 @@ pub enum UnsubscribeFailure {
     Refused,
     /// The email could not be put in the Outbox (no SMTP server, an address the account refuses).
     CannotSend,
+    /// The message changed since S31 was shown (a sync replaced it): nothing was done; show S31
+    /// again with the new facts.
+    Changed,
+    /// "Also delete" was asked, but the account has no Trash folder: nothing was done.
+    NoTrashFolder,
 }
 
 /// What [`Core::unsubscribe`] did.
@@ -82,6 +94,8 @@ pub struct UnsubscribeOutcome {
     pub deleted_ops: Vec<u64>,
     /// The Outbox id of the email, for Undo (the email way).
     pub outbox_id: Option<u64>,
+    /// Unsubscribing was done but moving the older mail to Trash failed (nothing else is undone).
+    pub delete_failed: bool,
 }
 
 impl std::fmt::Debug for UnsubscribeOutcome {
@@ -123,6 +137,11 @@ impl Core {
                 return Ok(None);
             };
             let sender_address = h.from_addr.filter(|a| !a.trim().is_empty());
+            // Never the account's own mail, whatever a message claims to come from.
+            let sender_address = match sender_address {
+                Some(a) if store::is_own_address(conn, m.account_id, &a)? => None,
+                other => other,
+            };
             let older = match &sender_address {
                 Some(a) => store::older_from(conn, m.account_id, a, h.date_ms, m.id, MAX_OLDER)?,
                 None => Vec::new(),
@@ -143,14 +162,9 @@ impl Core {
     }
 }
 
-#[uniffi::export]
 impl Core {
-    /// What S21's banner and S31 show for message `message_id`, or `None` when it has no usable
-    /// `List-Unsubscribe`. Contacts no one.
-    pub fn unsubscribe_info(&self, message_id: i64) -> Result<Option<UnsubscribeInfo>, CoreError> {
-        let Some(f) = self.unsubscribe_facts(message_id)? else {
-            return Ok(None);
-        };
+    /// What S31 shows for these facts; also what [`Core::unsubscribe`] compares against.
+    fn info_of(&self, f: &Facts) -> Result<UnsubscribeInfo, CoreError> {
         let already = match &f.sender_address {
             Some(a) => self
                 .inner
@@ -158,56 +172,124 @@ impl Core {
                 .read(|db| store::is_unsubscribed(db.connection(), f.account, a))?,
             None => false,
         };
-        let (way, host, address) = match &f.way {
-            Way::OneClick(u) => (UnsubscribeWay::OneClick, rules::host_of(u), None),
-            Way::Website(u) => (UnsubscribeWay::Website, rules::host_of(u), None),
-            Way::Email(m) => (UnsubscribeWay::Email, None, Some(m.to.clone())),
+        let (way, host, address, subject, body) = match &f.way {
+            Way::OneClick(u) => (
+                UnsubscribeWay::OneClick,
+                rules::host_of(u),
+                None,
+                None,
+                None,
+            ),
+            Way::Website(u) => (UnsubscribeWay::Website, rules::host_of(u), None, None, None),
+            Way::Email(m) => (
+                UnsubscribeWay::Email,
+                None,
+                Some(m.to.clone()),
+                Some(m.subject.clone()),
+                Some(m.body.clone()),
+            ),
         };
-        Ok(Some(UnsubscribeInfo {
+        Ok(UnsubscribeInfo {
             way,
-            host: host.map(str::to_owned),
+            host,
             address,
-            sender: f.sender,
+            sender: f.sender.clone(),
+            sender_address: f.sender_address.clone(),
+            subject,
+            body,
             older_count: u32::try_from(f.older.len()).unwrap_or(u32::MAX),
             already,
-        }))
+        })
+    }
+}
+
+/// An outcome that did nothing.
+fn nothing(failure: UnsubscribeFailure) -> UnsubscribeOutcome {
+    UnsubscribeOutcome {
+        done: false,
+        open_url: None,
+        failure: Some(failure),
+        deleted_ops: Vec::new(),
+        outbox_id: None,
+        delete_failed: false,
+    }
+}
+
+#[uniffi::export]
+impl Core {
+    /// What S21's banner and S31 show for message `message_id`, or `None` when it has no usable
+    /// `List-Unsubscribe`. Contacts no one.
+    pub fn unsubscribe_info(&self, message_id: i64) -> Result<Option<UnsubscribeInfo>, CoreError> {
+        match self.unsubscribe_facts(message_id)? {
+            Some(f) => Ok(Some(self.info_of(&f)?)),
+            None => Ok(None),
+        }
     }
 
-    /// Unsubscribes from the sender of `message_id` the way [`Core::unsubscribe_info`] said, after
-    /// the person confirmed in S31; with `delete_older`, the older messages from that sender go to
-    /// Trash (with Undo). One attempt: a failure is reported, never retried in the background.
+    /// Unsubscribes from the sender of `message_id` exactly as `shown` (the [`UnsubscribeInfo`]
+    /// S31 showed) says, after the person confirmed; when the message no longer gives the same
+    /// facts, nothing is done ([`UnsubscribeFailure::Changed`]). With `delete_older`, once
+    /// unsubscribing is done, the older messages from that sender go to Trash (with Undo); a website
+    /// is only handed back to the app, and deletes nothing. One attempt: a failure is reported,
+    /// never retried. Runs on the core's runtime, never on the caller's thread.
     pub async fn unsubscribe(
-        &self,
+        self: std::sync::Arc<Self>,
         message_id: i64,
+        shown: UnsubscribeInfo,
         delete_older: bool,
     ) -> Result<UnsubscribeOutcome, CoreError> {
-        let f = self
-            .unsubscribe_facts(message_id)?
-            .ok_or(CoreError::NoSuchMessage)?;
+        let core = self.clone();
+        self.spawn(
+            async move { core.unsubscribe_now(message_id, shown, delete_older).await },
+            false,
+        )
+        .await?
+    }
+}
+
+impl Core {
+    async fn unsubscribe_now(
+        &self,
+        message_id: i64,
+        shown: UnsubscribeInfo,
+        delete_older: bool,
+    ) -> Result<UnsubscribeOutcome, CoreError> {
+        let Some(f) = self.unsubscribe_facts(message_id)? else {
+            return Ok(nothing(UnsubscribeFailure::Changed));
+        };
+        let mut now_shown = self.info_of(&f)?;
+        // Being unsubscribed already is not a change of what is sent.
+        now_shown.already = shown.already;
+        if now_shown != shown {
+            return Ok(nothing(UnsubscribeFailure::Changed));
+        }
+        let delete = delete_older && !f.older.is_empty() && !matches!(f.way, Way::Website(_));
+        // Checked before the sender is contacted, so a missing Trash never follows a sent request.
+        if delete
+            && self
+                .inner
+                .handle
+                .read(|db| Inner::special_folder(db, f.account, "trash", CoreError::NoTrashFolder))
+                .is_err()
+        {
+            return Ok(nothing(UnsubscribeFailure::NoTrashFolder));
+        }
         let mut out = UnsubscribeOutcome {
             done: false,
             open_url: None,
             failure: None,
             deleted_ops: Vec::new(),
             outbox_id: None,
+            delete_failed: false,
         };
         match &f.way {
-            Way::OneClick(url) => {
-                let url = url.clone();
-                let answer = self
-                    .spawn(async move { fetch::post_unsubscribe(&url).await }, false)
-                    .await?;
-                match answer {
-                    Ok(status) if (200..300).contains(&status) => out.done = true,
-                    Ok(_)
-                    | Err(FetchError::Redirect | FetchError::Refused | FetchError::BadUrl) => {
-                        out.failure = Some(UnsubscribeFailure::Refused)
-                    }
-                    Err(FetchError::Unreachable) => {
-                        out.failure = Some(UnsubscribeFailure::Unreachable)
-                    }
+            Way::OneClick(url) => match fetch::post_unsubscribe(url).await {
+                Ok(status) if (200..300).contains(&status) => out.done = true,
+                Ok(_) | Err(FetchError::Redirect | FetchError::Refused | FetchError::BadUrl) => {
+                    out.failure = Some(UnsubscribeFailure::Refused)
                 }
-            }
+                Err(FetchError::Unreachable) => out.failure = Some(UnsubscribeFailure::Unreachable),
+            },
             Way::Email(m) => {
                 let content = DraftContent {
                     identity: None,
@@ -222,28 +304,39 @@ impl Core {
                     in_reply_to: None,
                     references: Vec::new(),
                 };
-                let sent = self
-                    .save_draft(f.account, None, content)
-                    .and_then(|d| self.send(f.account, d.id));
-                match sent {
-                    Ok(s) => {
-                        out.done = true;
-                        out.outbox_id = Some(s.outbox_id);
-                    }
+                match self.save_draft(f.account, None, content) {
+                    Ok(d) => match self.send(f.account, d.id) {
+                        Ok(s) => {
+                            out.done = true;
+                            out.outbox_id = Some(s.outbox_id);
+                        }
+                        Err(_) => {
+                            // Nothing left behind in Drafts.
+                            let _ = self.discard_draft(f.account, d.id);
+                            out.failure = Some(UnsubscribeFailure::CannotSend);
+                        }
+                    },
                     Err(_) => out.failure = Some(UnsubscribeFailure::CannotSend),
                 }
             }
             Way::Website(url) => out.open_url = Some(url.clone()),
         }
-        if out.done {
-            if let Some(a) = &f.sender_address {
-                self.inner
-                    .handle
-                    .read(|db| store::remember(db.connection(), f.account, a, now_ms()))?;
-            }
+        if !out.done {
+            return Ok(out);
         }
-        if delete_older && out.failure.is_none() && !f.older.is_empty() {
-            out.deleted_ops = self.trash(f.older)?;
+        // After the sender was contacted nothing may turn into an error: the app must learn it is
+        // done (and get the Outbox id for Undo), or it would offer the same request again.
+        if let Some(a) = &f.sender_address {
+            let _ = self
+                .inner
+                .handle
+                .read(|db| store::remember(db.connection(), f.account, a, now_ms()));
+        }
+        if delete {
+            match self.trash(f.older.clone()) {
+                Ok(ops) => out.deleted_ops = ops,
+                Err(_) => out.delete_failed = true,
+            }
         }
         Ok(out)
     }

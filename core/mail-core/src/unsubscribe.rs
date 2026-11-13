@@ -13,7 +13,7 @@ pub const MAX_URI: usize = 2048;
 /// The longest subject kept from a `mailto:` URI, in characters.
 pub const MAX_SUBJECT: usize = 200;
 /// The longest body kept from a `mailto:` URI, in characters.
-pub const MAX_BODY: usize = 2000;
+pub const MAX_BODY: usize = 500;
 /// The subject of the unsubscribe email when the URI names none.
 pub const DEFAULT_SUBJECT: &str = "unsubscribe";
 
@@ -83,15 +83,10 @@ pub fn choose(offers: &Offers, one_click: bool) -> Option<Way> {
     }
 }
 
-/// The host of an `https:` URI that [`parse`] kept, for the confirmation ("example.com").
-pub fn host_of(uri: &str) -> Option<&str> {
-    let rest = strip_prefix_ignore_case(uri, "https://")?;
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    let host = match authority.rfind(':') {
-        Some(i) if !authority.ends_with(']') => &authority[..i],
-        _ => authority,
-    };
-    (!host.is_empty()).then_some(host)
+/// The host of an `https:` URI that [`parse`] kept, for the confirmation ("example.com"): read by
+/// the same parser the request uses, so what is shown is what is connected to.
+pub fn host_of(uri: &str) -> Option<String> {
+    croft_protocols::oauth::fetch::https_host(uri)
 }
 
 fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
@@ -111,8 +106,9 @@ fn https_uri(uri: &str) -> Option<String> {
     if authority.contains(['@', '\\']) {
         return None;
     }
-    host_of(uri)?;
-    Some(format!("https://{rest}"))
+    let normal = format!("https://{rest}");
+    host_of(&normal)?;
+    Some(normal)
 }
 
 /// A `mailto:` URI with one plain address; only `subject` and `body` are kept from its query.
@@ -261,10 +257,18 @@ mod tests {
             Some("https://Mixed.Example:8443/u")
         );
         assert_eq!(
-            host_of("https://Mixed.Example:8443/u"),
-            Some("Mixed.Example")
+            host_of("https://Mixed.Example:8443/u").as_deref(),
+            Some("mixed.example")
         );
-        assert_eq!(host_of("https://[2001:db8::1]/u"), Some("[2001:db8::1]"));
+        assert_eq!(
+            host_of("https://[2001:db8::1]/u").as_deref(),
+            Some("2001:db8::1")
+        );
+        assert_eq!(
+            parse("<https://[2606:4700::1111]x.bank.example/u>").https,
+            None,
+            "one parser decides what is shown and what is reached"
+        );
     }
 
     #[test]

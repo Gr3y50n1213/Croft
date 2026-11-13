@@ -103,6 +103,10 @@ data class MessageRowData(
     val backFromSnooze: Boolean = false,
     /** T36: in the Snoozed folder, when it comes back (Unix ms); null elsewhere. */
     val snoozedUntilMs: Long? = null,
+    /** T36b: pinned (`$Pinned`): in an Inbox it is shown in the Pinned section. */
+    val pinned: Boolean = false,
+    /** T36b: marked to follow up (`$FollowUp`). */
+    val followUp: Boolean = false,
 ) {
     /** What the list shows as the name: the sender's name, else the address. */
     val displayName: String get() = senderName?.takeIf { it.isNotBlank() } ?: senderAddress.orEmpty()
@@ -139,7 +143,7 @@ data class AccountInfo(
 
 /** What a folder is for, from its special use (`inbox`, `sent`, ...). */
 enum class FolderRole(val specialUse: String) {
-    INBOX("inbox"), STARRED("starred"), SNOOZED("snoozed"), SENT("sent"), DRAFTS("drafts"), OUTBOX("outbox"),
+    INBOX("inbox"), STARRED("starred"), SNOOZED("snoozed"), FOLLOW_UP("followup"), SENT("sent"), DRAFTS("drafts"), OUTBOX("outbox"),
     ARCHIVE("archive"), SPAM("junk"), TRASH("trash"), OTHER("");
 
     companion object {
@@ -178,6 +182,12 @@ object VirtualFolders {
 
     /** Whether [id] is a Snoozed mailbox. */
     fun isSnoozed(id: FolderId): Boolean = id < 0 && (-id) % 10 == 2L
+
+    /** T36b: the id of [account]'s Follow up mailbox. */
+    fun followUp(account: AccountId): FolderId = -(account * 10 + 3)
+
+    /** Whether [id] is a Follow up mailbox. */
+    fun isFollowUp(id: FolderId): Boolean = id < 0 && (-id) % 10 == 3L
 
     /** Whether [id] is a virtual mailbox. */
     fun isVirtual(id: FolderId): Boolean = id < 0

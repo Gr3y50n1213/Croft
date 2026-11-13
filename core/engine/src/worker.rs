@@ -348,6 +348,15 @@ impl Worker {
                 .set_flag(folder, &[*uid], FlagChange::Flagged(*value))
                 .await
                 .map(|()| None),
+            OpKind::SetKeyword {
+                folder,
+                uid,
+                keyword,
+                value,
+            } => backend
+                .set_flag(folder, &[*uid], FlagChange::Keyword(*keyword, *value))
+                .await
+                .map(|()| None),
             OpKind::MoveTo { folder, uid, dest } => backend
                 .move_to(folder, &[*uid], dest)
                 .await

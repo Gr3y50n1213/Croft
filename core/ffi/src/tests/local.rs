@@ -42,9 +42,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_16() {
-    assert_eq!(FFI_API_VERSION, 16);
-    assert_eq!(ffi_api_version(), 16);
+fn the_version_is_17() {
+    assert_eq!(FFI_API_VERSION, 17);
+    assert_eq!(ffi_api_version(), 17);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -1511,4 +1511,80 @@ fn snooze_lists_wakes_unread_and_refuses_bad_times() {
     assert!(!woken.seen, "back unread");
     assert!(rig.core.list_snoozed(None).unwrap().is_empty());
     assert_eq!(rig.core.next_snooze_wake().unwrap(), None);
+}
+
+/// T36b: pinning takes a message out of its Inbox's list into the Pinned section, and Undo puts
+/// it back; follow-up has its own mailbox; the rows carry both marks; other accounts see nothing.
+#[test]
+fn pin_and_follow_up_list_mark_and_undo() {
+    let rig = list_rig(4);
+    let inbox = MessageScope::Folder {
+        account: rig.a1,
+        folder_id: rig.inbox1,
+    };
+    let ids: Vec<i64> = rig
+        .core
+        .list_messages(inbox, None, 50)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    assert!(rig.core.list_pinned(None).unwrap().is_empty());
+
+    let ops = rig.core.set_pinned(vec![ids[0], ids[1]], true).unwrap();
+    assert_eq!(ops.len(), 2);
+    assert!(
+        rig.core.set_pinned(vec![ids[0]], true).unwrap().is_empty(),
+        "already pinned: nothing to queue"
+    );
+    let pinned = rig.core.list_pinned(Some(rig.a1)).unwrap();
+    assert_eq!(
+        pinned.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![ids[0], ids[1]],
+        "newest first"
+    );
+    assert!(pinned.iter().all(|r| r.pinned && !r.follow_up));
+    let listed = |scope| -> Vec<i64> {
+        rig.core
+            .list_messages(scope, None, 50)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .collect()
+    };
+    assert_eq!(listed(inbox), vec![ids[2], ids[3]], "not shown twice");
+    assert_eq!(listed(MessageScope::UnifiedInbox), vec![ids[2], ids[3]]);
+    assert!(rig.core.list_pinned(Some(rig.a2)).unwrap().is_empty());
+
+    // Undo the first pin: back in the list at its place.
+    assert!(rig.core.undo(ops[0]).unwrap());
+    assert_eq!(listed(inbox), vec![ids[0], ids[2], ids[3]]);
+    assert_eq!(rig.core.list_pinned(None).unwrap().len(), 1);
+
+    // Follow up: its own mailbox, paged; the row says so.
+    rig.core.set_follow_up(vec![ids[2], ids[3]], true).unwrap();
+    let page = rig.core.list_follow_up(Some(rig.a1), None, 1).unwrap();
+    assert_eq!(page.rows.len(), 1);
+    assert!(page.rows[0].follow_up);
+    let rest = rig.core.list_follow_up(None, page.next, 10).unwrap().rows;
+    assert_eq!(rest.len(), 1);
+    assert_ne!(rest[0].id, page.rows[0].id);
+    assert!(rig
+        .core
+        .list_follow_up(Some(rig.a2), None, 10)
+        .unwrap()
+        .rows
+        .is_empty());
+    rig.core.set_follow_up(vec![ids[2]], false).unwrap();
+    assert_eq!(
+        rig.core.list_follow_up(None, None, 10).unwrap().rows.len(),
+        1,
+        "Done clears it"
+    );
+    assert_eq!(
+        rig.core.set_pinned(vec![424_242], true),
+        Err(CoreError::NoSuchMessage)
+    );
 }

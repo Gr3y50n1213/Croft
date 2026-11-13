@@ -27,6 +27,7 @@ use std::borrow::{Borrow, BorrowMut};
 use croft_mail_core::{
     AwaitingUid, Batch, LocalEffect, Op, OpKind, OpState, OpStore, StoredQueue, UnreadableOp,
 };
+use croft_protocols::{FlagChange, Keyword};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 
@@ -98,6 +99,7 @@ fn kind_name(kind: &OpKind) -> &'static str {
     match kind {
         OpKind::SetSeen { .. } => "set_seen",
         OpKind::SetFlagged { .. } => "set_flagged",
+        OpKind::SetKeyword { .. } => "set_keyword",
         OpKind::MoveTo { .. } => "move",
         OpKind::DeleteForever { .. } => "delete_forever",
     }
@@ -107,6 +109,14 @@ fn payload_of(kind: &OpKind) -> String {
     let value = match kind {
         OpKind::SetSeen { folder, uid, value } | OpKind::SetFlagged { folder, uid, value } => {
             json!({"v": PAYLOAD_VERSION, "folder": folder, "uid": uid, "value": value})
+        }
+        OpKind::SetKeyword {
+            folder,
+            uid,
+            keyword,
+            value,
+        } => {
+            json!({"v": PAYLOAD_VERSION, "folder": folder, "uid": uid, "keyword": keyword_tag(*keyword), "value": value})
         }
         OpKind::MoveTo { folder, uid, dest } => {
             json!({"v": PAYLOAD_VERSION, "folder": folder, "uid": uid, "dest": dest})
@@ -162,6 +172,16 @@ fn kind_from(kind: &str, payload: &str) -> std::result::Result<OpKind, &'static 
             uid,
             value: flag()?,
         }),
+        "set_keyword" => Ok(OpKind::SetKeyword {
+            folder,
+            uid,
+            keyword: match text("keyword").as_deref() {
+                Some("pinned") => Keyword::Pinned,
+                Some("follow_up") => Keyword::FollowUp,
+                _ => return Err(REASON_DAMAGED),
+            },
+            value: flag()?,
+        }),
         "move" => Ok(OpKind::MoveTo {
             folder,
             uid,
@@ -169,6 +189,15 @@ fn kind_from(kind: &str, payload: &str) -> std::result::Result<OpKind, &'static 
         }),
         "delete_forever" => Ok(OpKind::DeleteForever { folder, uid }),
         _ => Err(REASON_DAMAGED),
+    }
+}
+
+/// How a keyword is named in a stored payload (T36b); not the keyword itself, so the payload
+/// never depends on the spelling sent to servers.
+fn keyword_tag(k: Keyword) -> &'static str {
+    match k {
+        Keyword::Pinned => "pinned",
+        Keyword::FollowUp => "follow_up",
     }
 }
 
@@ -473,6 +502,27 @@ fn apply_effect(tx: &Transaction<'_>, effect: &LocalEffect) -> Result<()> {
             uid,
             value,
         } => update_row(tx, "is_flagged = ?4", *account, folder, *uid, *value),
+        LocalEffect::SetKeyword {
+            account,
+            folder,
+            uid,
+            keyword,
+            value,
+        } => {
+            let id: Option<i64> = tx
+                .query_row(
+                    &format!(
+                        "SELECT id FROM message WHERE account_id = ?1 AND uid = ?3 AND folder_id = {FOLDER_OF_1_2}"
+                    ),
+                    params![account, folder, uid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = id {
+                messages::update_flags(tx, *account, id, FlagChange::Keyword(*keyword, *value))?;
+            }
+            Ok(())
+        }
         LocalEffect::Hide {
             account,
             folder,

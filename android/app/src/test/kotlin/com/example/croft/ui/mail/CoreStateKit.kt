@@ -101,6 +101,15 @@ class ScriptedCore(
 
     override fun nextSnoozeWake(): Long? = null
 
+    // T36b: no pins or follow-ups in the scripted core; the screens' are tested over the fake repository.
+    override fun setPinned(ids: List<Long>, value: Boolean): List<ULong> = emptyList()
+
+    override fun setFollowUp(ids: List<Long>, value: Boolean): List<ULong> = emptyList()
+
+    override fun listPinned(account: Long?): List<CoreRow> = emptyList()
+
+    override fun listFollowUp(account: Long?, before: CoreCursor?, limit: UInt): MessagePage = MessagePage(emptyList(), null)
+
     override suspend fun nextChange(after: ULong): ChangeBatch {
         val now = seq.first { it.toULong() > after }
         return synchronized(this) {

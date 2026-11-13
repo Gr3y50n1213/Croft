@@ -31,6 +31,18 @@ enum class SelectionAction {
     /** Remove the star from everything selected. */
     UNSTAR,
 
+    /** T36b: pin everything selected (in an Inbox it goes to the Pinned section). In the overflow menu. */
+    PIN,
+
+    /** T36b: unpin everything selected. */
+    UNPIN,
+
+    /** T36b: mark everything selected to follow up. In the overflow menu. */
+    FOLLOW_UP,
+
+    /** T36b: clear the follow-up mark of everything selected ("Done"). */
+    FOLLOW_UP_DONE,
+
     /** Move back to the Inbox: "Move to inbox" from Archive, "Not spam" from Spam, "Restore" from Trash. */
     RESTORE,
 
@@ -73,6 +85,13 @@ object SelectionRules {
         primary += if (selected.any { !it.seen }) SelectionAction.MARK_READ else SelectionAction.MARK_UNREAD
         val overflow = ArrayList<SelectionAction>()
         overflow += if (selected.all { it.flagged } && selected.isNotEmpty()) SelectionAction.UNSTAR else SelectionAction.STAR
+        // T36b: Pin and Follow up follow the selection like Star; Pin where Snooze is offered, Follow up also in Sent.
+        if (selected.isNotEmpty() && snoozeOffered(role)) {
+            overflow += if (selected.all { it.pinned }) SelectionAction.UNPIN else SelectionAction.PIN
+        }
+        if (selected.isNotEmpty() && followUpOffered(role)) {
+            overflow += if (selected.all { it.followUp }) SelectionAction.FOLLOW_UP_DONE else SelectionAction.FOLLOW_UP
+        }
         // Mark as spam is the swipe action that the bar did not have: it goes in the overflow menu, where the swipe's rules put it.
         if (spamAvailable && SwipeRules.available(com.example.croft.swipe.SwipeAction.SPAM, role, hasArchive = true, hasSpam = true)) overflow += SelectionAction.SPAM
         // T36: Snooze, where mail can be put away (not from Snoozed itself, Sent, Drafts, the Outbox, Trash or Spam).
@@ -83,6 +102,11 @@ object SelectionRules {
 
     /** T36: Snooze means nothing for mail that is sent, a draft, in the Outbox, deleted, spam or already snoozed. */
     fun snoozeOffered(role: FolderRole?): Boolean = role !in SNOOZE_NOT_IN
+
+    /** T36b: Follow up means something for sent mail too, but not for drafts, the Outbox, deleted mail or spam. */
+    fun followUpOffered(role: FolderRole?): Boolean = role !in FOLLOW_UP_NOT_IN
+
+    private val FOLLOW_UP_NOT_IN = setOf(FolderRole.DRAFTS, FolderRole.OUTBOX, FolderRole.TRASH, FolderRole.SPAM)
 
     private val SNOOZE_NOT_IN = setOf(FolderRole.SNOOZED, FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX, FolderRole.TRASH, FolderRole.SPAM)
 

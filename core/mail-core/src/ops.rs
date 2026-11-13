@@ -19,7 +19,7 @@
 //!
 //! Times are Unix milliseconds passed in by the caller, so tests never sleep.
 
-use croft_protocols::{BackendError, Uid};
+use croft_protocols::{BackendError, Keyword, Uid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Identifier of a queued operation.
@@ -58,6 +58,17 @@ pub enum OpKind {
         /// New state: true means starred.
         value: bool,
     },
+    /// Pin or unpin, mark or clear follow-up: one of Croft's keywords (T36b).
+    SetKeyword {
+        /// Folder the message is in on the server.
+        folder: String,
+        /// UID in that folder.
+        uid: Uid,
+        /// Which keyword.
+        keyword: Keyword,
+        /// New state: true means set.
+        value: bool,
+    },
     /// Move to another folder (archive, trash, spam, Move to).
     MoveTo {
         /// Folder the message is in on the server.
@@ -82,6 +93,7 @@ impl OpKind {
         match self {
             Self::SetSeen { folder, uid, .. }
             | Self::SetFlagged { folder, uid, .. }
+            | Self::SetKeyword { folder, uid, .. }
             | Self::MoveTo { folder, uid, .. }
             | Self::DeleteForever { folder, uid } => (folder, *uid),
         }
@@ -91,7 +103,9 @@ impl OpKind {
     /// delay; moves and deletes use the person's Undo window.
     pub fn delay_ms(&self, undo_window_ms: i64) -> i64 {
         match self {
-            Self::SetSeen { .. } | Self::SetFlagged { .. } => FLAG_COALESCE_MS,
+            Self::SetSeen { .. } | Self::SetFlagged { .. } | Self::SetKeyword { .. } => {
+                FLAG_COALESCE_MS
+            }
             Self::MoveTo { .. } | Self::DeleteForever { .. } => undo_window_ms.max(0),
         }
     }
@@ -101,6 +115,7 @@ impl OpKind {
         match self {
             Self::SetSeen { folder, uid, .. }
             | Self::SetFlagged { folder, uid, .. }
+            | Self::SetKeyword { folder, uid, .. }
             | Self::MoveTo { folder, uid, .. }
             | Self::DeleteForever { folder, uid } => {
                 new_folder.clone_into(folder);
@@ -110,10 +125,20 @@ impl OpKind {
     }
 
     /// Operations of the same slot on the same message can cancel each other out.
-    fn slot(&self) -> Option<(u8, bool)> {
+    pub(crate) fn slot(&self) -> Option<(u8, bool)> {
         match self {
             Self::SetSeen { value, .. } => Some((0, *value)),
             Self::SetFlagged { value, .. } => Some((1, *value)),
+            Self::SetKeyword {
+                keyword: Keyword::Pinned,
+                value,
+                ..
+            } => Some((2, *value)),
+            Self::SetKeyword {
+                keyword: Keyword::FollowUp,
+                value,
+                ..
+            } => Some((3, *value)),
             Self::MoveTo { .. } | Self::DeleteForever { .. } => None,
         }
     }

@@ -53,6 +53,7 @@ mod error;
 mod jmap_account;
 mod list;
 mod oauth;
+mod pin;
 mod reading;
 mod search;
 mod settings;
@@ -135,11 +136,14 @@ uniffi::setup_scaffolding!();
 /// Version 16 (T36): snooze on this device: `snooze`, `unsnooze`, `list_snoozed`,
 /// `wake_due_snoozes`, `next_snooze_wake`, the record `SnoozedMessage`, `MessageRow.back_from_snooze`
 /// and the error `BadSnoozeTime`.
+///
+/// Version 17 (T36b): pin and follow-up: `set_pinned`, `set_follow_up`, `list_pinned`,
+/// `list_follow_up`, and `pinned` and `follow_up` on `MessageRow` and `ConversationMessage`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 16;
+pub const FFI_API_VERSION: u32 = 17;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

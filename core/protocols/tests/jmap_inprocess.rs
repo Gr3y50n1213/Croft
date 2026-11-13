@@ -606,6 +606,30 @@ async fn flag_changes_are_keyword_patches_and_repeat_safely() {
     assert!(snap.messages[&1].keywords.contains("work"));
 }
 
+/// T36b: pin and follow-up go out as lower-case keywords and come back as Croft's keywords.
+#[tokio::test]
+async fn pin_and_follow_up_are_keyword_patches() {
+    let server = JmapServer::start().await;
+    let a = server.add_message("inbox", &raw("a@x", "A"), &[]);
+    let b = backend(&server);
+    b.snapshot("Inbox").await.unwrap();
+    b.set_flag("Inbox", &[1], FlagChange::Keyword(Keyword::Pinned, true))
+        .await
+        .unwrap();
+    b.set_flag("Inbox", &[1], FlagChange::Keyword(Keyword::FollowUp, true))
+        .await
+        .unwrap();
+    let mut kw = server.keywords_of(&a);
+    kw.sort();
+    assert_eq!(kw, vec!["$followup", "$pinned"]);
+    b.set_flag("Inbox", &[1], FlagChange::Keyword(Keyword::Pinned, false))
+        .await
+        .unwrap();
+    assert_eq!(server.keywords_of(&a), vec!["$followup"]);
+    let snap = b.snapshot("Inbox").await.unwrap();
+    assert!(snap.messages[&1].has(Keyword::FollowUp) && !snap.messages[&1].has(Keyword::Pinned));
+}
+
 #[tokio::test]
 async fn find_by_message_id_uses_the_header_filter_or_scans_when_the_server_cannot() {
     let server = JmapServer::start().await;

@@ -13,7 +13,7 @@ use croft_mail_core::{
     AccountId, CancelError, Enqueued, NewMessage, Op, OpId, OpKind, OutboxEntry, OutboxError,
     OutboxId, QueueError, RemovedMessage, UnreadableOp,
 };
-use croft_protocols::{MailSubmitter, Uid};
+use croft_protocols::{Keyword, MailSubmitter, Uid};
 use croft_storage::messages::Message;
 use croft_storage::{folders, messages, Db, StorageError};
 use tokio::sync::broadcast;
@@ -212,6 +212,27 @@ impl EngineHandle {
             }))
         })
         .map(|_| ())
+    }
+
+    /// Sets or clears one of Croft's keywords, pin or follow-up (T36b). Same timing as
+    /// [`EngineHandle::set_flagged`]. Returns the operation for Undo, or `None` when the message
+    /// already had that state.
+    pub fn set_keyword(
+        &self,
+        account: AccountId,
+        message: i64,
+        keyword: Keyword,
+        value: bool,
+    ) -> Result<Option<OpId>, ActionError> {
+        self.act(account, message, |_, row, folder, uid| {
+            let has = row.keywords.iter().any(|w| Keyword::of(w) == Some(keyword));
+            Ok((has != value).then(|| OpKind::SetKeyword {
+                folder: folder.to_owned(),
+                uid,
+                keyword,
+                value,
+            }))
+        })
     }
 
     /// Moves a message to the folder at `dest_folder_path` (archive, trash, spam and Move to all

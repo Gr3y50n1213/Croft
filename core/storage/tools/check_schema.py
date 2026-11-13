@@ -300,4 +300,21 @@ check("migration 0007 keeps old bodies and attachments with default counts",
       and old.execute("SELECT content_id, shown_inline, executable FROM attachment").fetchone() == (None, 0, 0)
       and old.execute("SELECT remote_allowed FROM message").fetchone()[0] == 0)
 
+# Migration 0010 (T36b): pin and follow-up are read from the keywords already stored, in any case.
+old = sqlite3.connect(":memory:")
+for path in mig[:9]:
+    old.executescript(open(path).read())
+old.executescript("""INSERT INTO account (id,label,email,protocol,config_json,created_at) VALUES (1,'S','s@example.org','imap','{}',0);
+INSERT INTO folder (id,account_id,path) VALUES (1,1,'INBOX');
+INSERT INTO message (id,account_id,folder_id,uid,thread_key,date_ts,keywords_json) VALUES (1,1,1,1,'t1',1,'["$PINNED","$Work"]');
+INSERT INTO message (id,account_id,folder_id,uid,thread_key,date_ts,keywords_json) VALUES (2,1,1,2,'t2',2,'["$followup"]');
+INSERT INTO message (id,account_id,folder_id,uid,thread_key,date_ts,keywords_json) VALUES (3,1,1,3,'t3',3,'["x$pinned"]');""")
+old.executescript(open(mig[9]).read())
+check("migration 0010 fills is_pinned and follows_up from the stored keywords",
+      [tuple(r) for r in old.execute("SELECT id, is_pinned, follows_up FROM message ORDER BY id")]
+      == [(1, 1, 0), (2, 0, 1), (3, 0, 0)])
+plan = " ".join(r[3] for r in db.execute(
+    "EXPLAIN QUERY PLAN SELECT id FROM message WHERE account_id=1 AND is_pinned=1 ORDER BY date_ts DESC"))
+check("the Pinned section uses message_account_pinned", "message_account_pinned" in plan)
+
 sys.exit(1 if check.failed else 0)

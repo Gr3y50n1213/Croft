@@ -160,6 +160,28 @@ object CroftIcons {
         }
     }
 
+    /** A push pin: Pin (T36b). */
+    val Pin: ImageVector by lazy {
+        materialIcon(name = "Croft.Pin") {
+            materialPath {
+                moveTo(16f, 9f); verticalLineTo(4f); horizontalLineTo(17f); verticalLineTo(2f); horizontalLineTo(7f); verticalLineTo(4f)
+                horizontalLineTo(8f); verticalLineTo(9f); curveTo(8f, 10.66f, 6.66f, 12f, 5f, 12f); verticalLineTo(14f)
+                horizontalLineTo(10.97f); verticalLineTo(21f); lineTo(11.97f, 22f); lineTo(12.97f, 21f); verticalLineTo(14f)
+                horizontalLineTo(19f); verticalLineTo(12f); curveTo(17.34f, 12f, 16f, 10.66f, 16f, 9f); close()
+            }
+        }
+    }
+
+    /** A flag: Follow up (T36b). */
+    val Flag: ImageVector by lazy {
+        materialIcon(name = "Croft.Flag") {
+            materialPath {
+                moveTo(14.4f, 6f); lineTo(14f, 4f); horizontalLineTo(5f); verticalLineTo(21f); horizontalLineTo(7f); verticalLineTo(14f)
+                horizontalLineTo(12.6f); lineTo(13f, 16f); horizontalLineTo(20f); verticalLineTo(6f); close()
+            }
+        }
+    }
+
     /** A dash: None. */
     val Dash: ImageVector by lazy {
         materialIcon(name = "Croft.Dash") {

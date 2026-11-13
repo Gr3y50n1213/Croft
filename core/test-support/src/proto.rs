@@ -735,9 +735,15 @@ fn select(st: &State, sess: &mut Sess, tag: &str, writable: bool, toks: &[Tok]) 
         "* OK [UIDNEXT {}] Predicted next UID\r\n",
         f.uid_next
     ));
-    out.push_str(
-        "* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)] Limited\r\n",
-    );
+    if f.keeps_new_keywords {
+        out.push_str(
+            "* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)] Limited\r\n",
+        );
+    } else {
+        out.push_str(
+            "* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)] Limited\r\n",
+        );
+    }
     if sess.condstore {
         out.push_str(&format!(
             "* OK [HIGHESTMODSEQ {}] Highest\r\n",

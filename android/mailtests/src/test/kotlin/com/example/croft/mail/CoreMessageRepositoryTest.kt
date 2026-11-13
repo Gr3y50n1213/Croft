@@ -75,7 +75,11 @@ class CoreMessageRepositoryTest {
         val starred = folders.single { it.role == FolderRole.STARRED }
         assertTrue(starred.isVirtual)
         assertEquals(VirtualFolders.starred(r.account), starred.id)
-        assertTrue("real folders are not virtual", folders.filter { it.role != FolderRole.STARRED }.none { it.isVirtual })
+        // T36 added the Snoozed folder, the second virtual one.
+        val snoozed = folders.single { it.role == FolderRole.SNOOZED }
+        assertTrue(snoozed.isVirtual)
+        assertEquals(VirtualFolders.snoozed(r.account), snoozed.id)
+        assertTrue("real folders are not virtual", folders.filter { it.role != FolderRole.STARRED && it.role != FolderRole.SNOOZED }.none { it.isVirtual })
         val scope = MessageScope.Folder(r.account, starred.id)
         assertEquals(emptyList<MessageRowData>(), r.run { r.repo.listMessages(scope, null, 50) }.rows)
 

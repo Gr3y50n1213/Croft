@@ -38,6 +38,8 @@ pub enum CoreError {
     NoSuchOperation,
     /// Too late to undo: the operation has started or its window has closed.
     TooLate,
+    /// A snooze time in the past, or more than a year ahead (T36).
+    BadSnoozeTime,
     /// The server settings cannot be used (no host, plaintext to a real host, a settings record
     /// written by a newer version).
     BadSettings,
@@ -119,6 +121,7 @@ impl std::fmt::Display for CoreError {
             Self::NoTrashFolder => f.write_str("the account has no trash folder"),
             Self::NoSuchOperation => f.write_str("no such operation"),
             Self::TooLate => f.write_str("too late to undo"),
+            Self::BadSnoozeTime => f.write_str("the snooze time is in the past or too far ahead"),
             Self::BadSettings => f.write_str("the server settings cannot be used"),
             Self::UnsupportedServer => f.write_str("the server type is not supported yet"),
             Self::BadFingerprint => f.write_str("the certificate fingerprint is not valid"),

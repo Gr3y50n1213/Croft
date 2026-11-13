@@ -49,6 +49,18 @@ interface MessageRepository {
     /** T35: moves a message to [category]; with [always], the sender's mail goes there from now on ("Always do this"). */
     suspend fun setCategory(id: MessageId, category: MailCategory, always: Boolean) {}
 
+    /** T36: snoozes messages on this device until [untilMs] (S29). */
+    suspend fun snooze(ids: List<MessageId>, untilMs: Long) {}
+
+    /** T36: brings snoozed messages back at once (Undo, Unsnooze). */
+    suspend fun unsnooze(ids: List<MessageId>) {}
+
+    /** T36: wakes the messages whose time has come; their ids (for "Back in your inbox"). */
+    suspend fun wakeDueSnoozes(): List<MessageId> = emptyList()
+
+    /** T36: the soonest wake time of anything snoozed, for the wake-up job. */
+    suspend fun nextSnoozeWake(): Long? = null
+
     /** Returns as soon as anything changed after [after] (at once if [after] is old). Pass the batch's `seq` next time. */
     suspend fun nextChange(after: Long): ChangeBatch
 

@@ -9,8 +9,8 @@ package com.example.croft.swipe
  *
  * [removesRow]: the row leaves the list, so the commit sequence slides it out and collapses its slot (Archive, Delete, Spam,
  * Move to, Snooze). The others (read, star) spring the card back and change the row in place. [parks]: the action needs
- * more from the person (a sheet), so the card is held while it is open. [selectable]: whether S48 offers it; Snooze is
- * phase 3, so the machine supports it but the picker leaves it out until its sheet exists. Move to has its sheet since T16 (S30).
+ * more from the person (a sheet), so the card is held while it is open. [selectable]: whether S48 offers it. Every action has
+ * its sheet now: Move to since T16 (S30), Snooze since T36 (S29).
  */
 enum class SwipeAction(val id: String, val removesRow: Boolean, val parks: Boolean, val selectable: Boolean = true) {
     /** The direction does nothing; the row does not move at all. */
@@ -26,7 +26,7 @@ enum class SwipeAction(val id: String, val removesRow: Boolean, val parks: Boole
     ARCHIVE("archive", removesRow = true, parks = false),
 
     /** Opens the snooze sheet (S29). Not offered until Snooze exists. */
-    SNOOZE("snooze", removesRow = true, parks = true, selectable = false),
+    SNOOZE("snooze", removesRow = true, parks = true),
 
     /** Opens the folder picker (S30, built in T16). */
     MOVE_TO("move", removesRow = true, parks = true),
@@ -108,10 +108,7 @@ data class SwipeSettings(
     }
 }
 
-/**
- * The presets of S47. "Inbox zero" (right Archive, left Snooze) is not here: Snooze is phase 3 and the picker leaves it
- * out until it exists, so the preset would set something that cannot work.
- */
+/** The presets of S47. "Inbox zero" (right Archive, left Snooze) came with Snooze (T36). */
 enum class SwipePreset(val id: String, val startToEnd: SwipeAction, val endToStart: SwipeAction) {
     /** Right Mark read, left Delete. The default. */
     TRIAGE("triage", SwipeAction.TOGGLE_READ, SwipeAction.DELETE),
@@ -121,4 +118,7 @@ enum class SwipePreset(val id: String, val startToEnd: SwipeAction, val endToSta
 
     /** Right Mark read, left Archive. */
     TIDY("tidy", SwipeAction.TOGGLE_READ, SwipeAction.ARCHIVE),
+
+    /** Right Archive, left Snooze (T36). */
+    INBOX_ZERO("inboxzero", SwipeAction.ARCHIVE, SwipeAction.SNOOZE),
 }

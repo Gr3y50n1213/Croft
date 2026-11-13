@@ -87,6 +87,9 @@ data class PendingConfirm(val action: SelectionAction, val count: Int)
  */
 data class MoveRequest(val rows: List<MessageRowData>, val account: AccountId, val fromSwipe: Boolean)
 
+/** T36: the open Snooze sheet (S29): for these rows, from a swipe (the card is parked behind it) or not. */
+data class SnoozeRequest(val rows: List<MessageRowData>, val fromSwipe: Boolean)
+
 /**
  * The first use of an action for an account that has no folder for it (docs/ux/message-list.md, "Folder rules"): the sheet asks
  * which folder to use as [role] (Archive or Trash), once; the answer is remembered ([com.example.croft.mail.FolderMapping]) and [retry]
@@ -119,6 +122,8 @@ class InboxTexts(private val res: Resources) {
     val sending: String get() = res.getString(R.string.compose_snack_sending)
     val tooLateToUndo: String get() = res.getString(R.string.compose_snack_too_late)
     val undoFailed: String get() = res.getString(R.string.compose_snack_undo_failed)
+    fun snoozedUntil(when_: String): String = res.getString(R.string.mail_snoozed_until, when_)
+    val unsnoozed: String get() = res.getString(R.string.mail_unsnoozed)
     fun category(c: MailCategory): String = res.getString(
         when (c) {
             MailCategory.PRIMARY -> R.string.mail_category_primary
@@ -758,6 +763,7 @@ class InboxController(
         val count = selectedCount
         if (count == 0) return
         if (action == SelectionAction.MOVE_TO) { openMoveSheet(rows.filter { it.id in selected }, fromSwipe = false); return }
+        if (action == SelectionAction.SNOOZE) { snoozeRequest = SnoozeRequest(rows.filter { it.id in selected }, fromSwipe = false); return }
         if (SelectionRules.needsConfirmation(action, count)) {
             pendingConfirm = PendingConfirm(action, count)
             return
@@ -812,8 +818,8 @@ class InboxController(
                     repository.deleteForever(ids)
                     snackbar.show(texts.deletedForever(ids.size))
                 }
-                SelectionAction.MOVE_TO -> Unit
-                SelectionAction.RESTORE -> {
+                SelectionAction.MOVE_TO, SelectionAction.SNOOZE -> Unit
+                SelectionAction.RESTORE -> if (scopeRole == FolderRole.SNOOZED) unsnoozeRows(ids) else {
                     val byAccount = rows.filter { it.id in ids }.groupBy { it.account }
                     removeWithUndo(ids, texts.moved(ids.size)) {
                         byAccount.flatMap { (account, rs) ->
@@ -942,13 +948,85 @@ class InboxController(
     var parkResolution by mutableStateOf<Pair<MessageId, Boolean>?>(null)
         private set
 
-    /** An armed swipe parked its card. Only Delete forever has a dialog yet; Snooze and Move to wait for their sheets, and are not offered. */
+    /** An armed swipe parked its card: Delete forever asks, Move to and Snooze open their sheets (S30, S29). */
     fun swipeParked(row: MessageRowData, action: SwipeAction) {
         when {
             SwipeRules.deletesForever(action, scopeRole) -> { parkedFromSwipe = true; parkedRow = row }
             action == SwipeAction.MOVE_TO -> openMoveSheet(listOf(row), fromSwipe = true)
+            action == SwipeAction.SNOOZE -> snoozeRequest = SnoozeRequest(listOf(row), fromSwipe = true)
             else -> parkResolution = row.id to false
         }
+    }
+
+    // ---- Snooze (S29, T36) ----
+
+    /** The open Snooze sheet, or null. */
+    var snoozeRequest by mutableStateOf<SnoozeRequest?>(null)
+        private set
+
+    private val chosenSnoozes = HashMap<MessageId, Long>()
+
+    /** A wake time was chosen in S29: the mail is snoozed, with Undo. A parked card now leaves. */
+    fun pickSnooze(untilMs: Long) {
+        val request = snoozeRequest ?: return
+        snoozeRequest = null
+        val single = request.rows.singleOrNull()
+        if (request.fromSwipe && single != null) {
+            chosenSnoozes[single.id] = untilMs
+            parkResolution = single.id to true
+        } else {
+            scope.launch { snoozeRows(request.rows.map { it.id }, untilMs) }
+            clearSelection()
+        }
+    }
+
+    /** S29 was dismissed: nothing is snoozed and a parked card springs back. */
+    fun dismissSnooze() {
+        val request = snoozeRequest ?: return
+        snoozeRequest = null
+        if (request.fromSwipe) request.rows.singleOrNull()?.let { parkResolution = it.id to false }
+    }
+
+    private suspend fun snoozeRows(ids: List<MessageId>, untilMs: Long, onFailed: () -> Unit = {}) {
+        try {
+            clearFailed(ids)
+            prepareFocus(ids)
+            removedByMe += ids
+            repository.snooze(ids, untilMs)
+            session.onSnoozesChanged()
+            haptics.perform(HapticEvent.Success)
+            val label = SnoozePresets.label(untilMs, session.clock(), session.zone, java.util.Locale.getDefault())
+            snackbar.show(texts.snoozedUntil(label), texts.undo) {
+                scope.launch {
+                    try { repository.unsnooze(ids) } catch (e: MailException) { /* gone meanwhile */ }
+                    removedByMe -= ids.toSet()
+                    session.onSnoozesChanged()
+                    reloadHead()
+                }
+            }
+        } catch (e: MailException) {
+            removedByMe -= ids.toSet()
+            focusTarget = null
+            onFailed()
+            haptics.perform(HapticEvent.Rejected)
+            snackbar.show(errorText(e.error))
+        }
+    }
+
+    /** Unsnooze (the Snoozed folder's Restore): back at once. */
+    private suspend fun unsnoozeRows(ids: List<MessageId>) {
+        prepareFocus(ids)
+        removedByMe += ids
+        try {
+            repository.unsnooze(ids)
+        } catch (e: MailException) {
+            removedByMe -= ids.toSet()
+            focusTarget = null
+            snackbar.show(errorText(e.error))
+            return
+        }
+        session.onSnoozesChanged()
+        snackbar.show(texts.unsnoozed)
     }
 
     // ---- Move to (S30) ----
@@ -1055,6 +1133,10 @@ class InboxController(
                         val target = chosenMoves.remove(row.id)?.let { id -> folders.firstOrNull { it.id == id } } ?: throw MailException(MailError.NOT_FOUND)
                         moveRows(listOf(row), target, onFailed)
                     }
+                    action == SwipeAction.SNOOZE -> {
+                        val until = chosenSnoozes.remove(row.id) ?: throw MailException(MailError.NOT_FOUND)
+                        snoozeRows(listOf(row.id), until, onFailed)
+                    }
                     SwipeRules.deletesForever(action, scopeRole) -> {
                         prepareFocus(listOf(row.id))
                         removedByMe += row.id
@@ -1083,6 +1165,7 @@ class InboxController(
         if (action == SwipeAction.NONE) return
         if (!canDo(row, action)) { haptics.perform(HapticEvent.Rejected); swipeNotAvailable(); return }
         if (action == SwipeAction.MOVE_TO) { openMoveSheet(listOf(row), fromSwipe = false); return }
+        if (action == SwipeAction.SNOOZE) { snoozeRequest = SnoozeRequest(listOf(row), fromSwipe = false); return }
         if (action.removesRow) {
             if (SwipeRules.deletesForever(action, scopeRole)) { parkedFromSwipe = false; parkedRow = row; return }
             removeAction(row, action)
@@ -1143,7 +1226,17 @@ class InboxController(
      * The conversation (S20) closed after an action: shows [text] with Undo for the Undo window, and Undo cancels [ops]. [ops] null or
      * empty: no Undo button (delete forever cannot be undone).
      */
-    fun showConversationNotice(text: String, ops: List<OpId>?) {
+    fun showConversationNotice(text: String, ops: List<OpId>?, unsnooze: List<MessageId> = emptyList()) {
+        if (unsnooze.isNotEmpty()) {
+            snackbar.show(text, texts.undo) {
+                scope.launch {
+                    try { repository.unsnooze(unsnooze) } catch (e: MailException) { /* gone meanwhile */ }
+                    session.onSnoozesChanged()
+                    reloadHead()
+                }
+            }
+            return
+        }
         if (ops.isNullOrEmpty()) { snackbar.show(text); return }
         snackbar.show(text, texts.undo, stayMs = session.undoWindowMs) { scope.launch { session.rowActions.undo(ops) } }
     }

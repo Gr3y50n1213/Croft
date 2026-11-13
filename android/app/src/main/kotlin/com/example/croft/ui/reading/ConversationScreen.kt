@@ -247,14 +247,15 @@ private fun ActionBar(controller: ConversationController, onBack: () -> Unit) {
             CroftIconButton(CroftIcons.EnvelopeOpen, stringResource(R.string.reading_action_mark_unread), controller::markUnread, Modifier.testTag(ReadingTags.MARK_UNREAD))
             Box {
                 CroftIconButton(ReadingIcons.More, stringResource(R.string.reading_action_more), { menuOpen = true }, Modifier.testTag(ReadingTags.MORE))
-                // Mark as unread, Move to, Report spam. Show original (the core has no call for it), unsubscribe, Snooze and Mute thread (later
-                // phases) are not offered at all: no disabled placeholders.
+                // Mark as unread, Move to, Snooze (T36), Report spam. Show original (the core has no call for it), unsubscribe and Mute thread
+                // (later tasks) are not offered at all: no disabled placeholders.
                 CroftMenu(
                     expanded = menuOpen,
                     onDismiss = { menuOpen = false },
-                    items = listOf(
+                    items = listOfNotNull(
                         MenuItemSpec(stringResource(R.string.reading_action_mark_unread), controller::markUnread),
                         MenuItemSpec(stringResource(R.string.reading_menu_move), controller::openMove),
+                        if (controller.snoozeOffered) MenuItemSpec(stringResource(R.string.swipe_action_snooze), controller::openSnooze) else null,
                         MenuItemSpec(stringResource(if (inSpam) R.string.reading_menu_not_spam else R.string.reading_menu_spam), controller::reportSpam, destructive = !inSpam),
                     ),
                 )
@@ -469,6 +470,15 @@ private fun Sheets(controller: ConversationController) {
             excluding = controller.moveRequest?.excluding.orEmpty(),
             onPick = controller::pickMove,
             onDismiss = controller::dismissMove,
+        )
+    }
+    // S29 Snooze (T36).
+    if (controller.snoozeOpen) {
+        com.example.croft.ui.mail.SnoozeSheet(
+            nowMs = controller.nowMs(),
+            zone = controller.zone,
+            onPick = controller::pickSnooze,
+            onDismiss = controller::dismissSnooze,
         )
     }
     // The first Archive or Delete of an account with no such folder: which folder is yours? (remembered, asked once)

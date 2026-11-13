@@ -53,6 +53,8 @@ class MailSession(
     val reading: ReadingRepository? = null,
     /** S27 and S28 (T19): search on the device and on the servers. Null where search is not available (the fake inbox). */
     val search: com.example.croft.mail.search.SearchBackend? = null,
+    /** T36: called after a snooze or an unsnooze, so the app plans its wake-up job again. Nothing in tests. */
+    val onSnoozesChanged: () -> Unit = {},
 ) {
     private val cache = HashMap<String, CachedList>()
 

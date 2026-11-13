@@ -56,6 +56,7 @@ mod oauth;
 mod reading;
 mod search;
 mod settings;
+mod snooze;
 mod submit;
 #[cfg(feature = "test-server")]
 mod test_server;
@@ -90,6 +91,7 @@ pub use reading::{
     ReadError, RemoteImagesSetting,
 };
 pub use search::{LocalResults, SearchFailure, SearchHit, ServerResults, TextRange};
+pub use snooze::SnoozedMessage;
 #[cfg(feature = "test-server")]
 pub use test_server::{TestImapServer, TestJmapServer, TestTokenEndpoint};
 pub use types::*;
@@ -129,11 +131,15 @@ uniffi::setup_scaffolding!();
 ///
 /// Version 15 (T35): inbox categories: `list_messages_in`, `inbox_category_counts`,
 /// `set_message_category`, the enum `InboxCategory` and the record `CategoryCount`.
+///
+/// Version 16 (T36): snooze on this device: `snooze`, `unsnooze`, `list_snoozed`,
+/// `wake_due_snoozes`, `next_snooze_wake`, the record `SnoozedMessage`, `MessageRow.back_from_snooze`
+/// and the error `BadSnoozeTime`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 15;
+pub const FFI_API_VERSION: u32 = 16;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

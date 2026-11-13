@@ -19,6 +19,9 @@ import com.example.croft.mail.compose.ComposeStart
 import com.example.croft.mail.reading.MailAddressData
 import com.example.croft.mail.reading.ReadProblem
 import com.example.croft.ui.mail.MoveTags
+import com.example.croft.ui.mail.NOW
+import com.example.croft.ui.mail.SnoozePresets
+import com.example.croft.ui.mail.SnoozeTags
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -125,19 +128,40 @@ class ConversationScreenTest {
     }
 
     @Test
-    fun theOverflowMenuHasMarkAsUnreadMoveToAndReportSpam_andNothingThatDoesNotExistYet() {
+    fun theOverflowMenuHasMarkAsUnreadMoveToSnoozeAndReportSpam_andNothingThatDoesNotExistYet() {
         val f = ReadingFixture()
         f.show(rule)
         rule.waitForTag(BodyTags.body(NEWEST))
         rule.onNodeWithTag(ReadingTags.MORE).performClick()
         rule.waitForIdle()
-        for (item in listOf("Mark as unread", "Move to", "Report spam")) assertTrue("$item is offered", rule.onAllNodes(hasText(item)).fetchSemanticsNodes().isNotEmpty())
-        for (item in listOf("Show original", "Snooze", "Mute thread", "Unsubscribe", "Print", "Block sender")) {
+        // T36 added Snooze (it was "not offered" until then).
+        for (item in listOf("Mark as unread", "Move to", "Snooze", "Report spam")) assertTrue("$item is offered", rule.onAllNodes(hasText(item)).fetchSemanticsNodes().isNotEmpty())
+        for (item in listOf("Show original", "Mute thread", "Unsubscribe", "Print", "Block sender")) {
             assertTrue("$item is not offered", rule.onAllNodes(hasText(item)).fetchSemanticsNodes().isEmpty())
         }
         rule.onNodeWithText("Report spam").performClick()
         rule.waitUntil(10_000) { f.closed.isNotEmpty() }
         assertTrue(f.actions.calls.contains("markSpam $NEWEST"))
+    }
+
+    @Test
+    fun snooze_opensS29_andThePresetSnoozesTheConversation_withAnUndoThatUnsnoozes() {
+        val f = ReadingFixture()
+        f.show(rule)
+        rule.waitForTag(BodyTags.body(NEWEST))
+        rule.onNodeWithTag(ReadingTags.MORE).performClick()
+        rule.onNodeWithText("Snooze").performClick()
+        rule.waitForTag(SnoozeTags.SHEET)
+        rule.onNodeWithTag(SnoozeTags.preset(SnoozePresets.Kind.TOMORROW)).performClick()
+        rule.waitUntil(10_000) { f.closed.isNotEmpty() }
+        val notice = f.closed.single()!!
+        assertTrue("the opened message is snoozed", NEWEST in notice.unsnooze)
+        assertTrue("the notice says until when", notice.text.startsWith("Snoozed on this phone until"))
+        assertNull("a snooze queues nothing", notice.ops)
+        val tomorrow = SnoozePresets.presets(NOW, java.time.ZoneId.of("UTC")).first { it.kind == SnoozePresets.Kind.TOMORROW }.atMs
+        assertEquals(tomorrow, runBlocking { f.repo.nextSnoozeWake() })
+        runBlocking { f.repo.unsnooze(notice.unsnooze) }
+        assertNull(runBlocking { f.repo.nextSnoozeWake() })
     }
 
     @Test

@@ -11,7 +11,28 @@
   color: var(--croft-color-on-surface);
   background: var(--croft-color-surface);
   --radius: var(--croft-swipe-card-radius-dp-standard);
+  --round: var(--croft-shape-roundness-scale-standard);
+  --row-min: var(--croft-density-default-row-dp);
   --gap: 16px;
+}
+
+/* W04's Appearance (src/lib/settings/appearance.ts): density, roundness and motion as attributes on <html>. */
+:root[data-croft-density='comfortable'] {
+  --row-min: var(--croft-density-comfortable-row-dp);
+}
+
+:root[data-croft-density='compact'] {
+  --row-min: var(--croft-density-compact-row-dp);
+}
+
+:root[data-croft-roundness='tight'] {
+  --radius: var(--croft-swipe-card-radius-dp-tight);
+  --round: var(--croft-shape-roundness-scale-tight);
+}
+
+:root[data-croft-roundness='round'] {
+  --radius: var(--croft-swipe-card-radius-dp-round);
+  --round: var(--croft-shape-roundness-scale-round);
 }
 
 * {
@@ -82,7 +103,7 @@ input {
   min-height: var(--croft-touch-min-target-dp);
   padding: 0 16px;
   border: 1px solid var(--croft-color-outline);
-  border-radius: 8px;
+  border-radius: calc(8px * var(--round));
   background: var(--croft-color-surface-container-lowest);
 }
 
@@ -90,9 +111,23 @@ input {
   color: var(--croft-color-error);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  * {
-    transition-duration: 0s !important;
-    animation-duration: 0s !important;
-  }
+/* Reduced keeps fades and colour changes but nothing that moves; Off keeps nothing. "Follow system"
+ * becomes one of the two in theme.js and the settings store. */
+:root[data-croft-motion='reduced'] * {
+  transition-property: background-color, color, opacity, box-shadow !important;
+  animation-duration: 0s !important;
+}
+
+:root[data-croft-motion='off'] * {
+  transition-duration: 0s !important;
+  animation-duration: 0s !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

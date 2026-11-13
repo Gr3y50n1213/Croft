@@ -5,6 +5,36 @@ unverified, the next step.
 
 ---
 
+## T32a: Web settings, W04 (13 November 2026)
+
+**Status:** on `task/t32`, its own pull request. No independent review: nothing new on the server, and the page only calls the
+T24 routes (passkeys, sessions), whose rules the Companion enforces; the service worker and push (T32b) get one.
+
+**What was built.**
+- **W04** (`/settings`, `/settings/<category>`): the category list and a detail pane, the list then the detail on narrow windows; a
+  Settings button in W01's bar.
+- **Appearance**: mode, pure black, the eight palettes, contrast, density, roundness, list style and animation, with a live preview,
+  applied at once as `data-croft-*` attributes on `<html>` and kept in this browser; `static/theme.js` paints the chosen look before
+  the app starts, so a reload never flashes the default. Every corner now scales with roundness; rows and preview lines follow the
+  density; list style switches between cards and a flat list. Haptics: "Off on the web".
+- **Swipe and hover actions**: the presets, each direction's action and the sensitivity; W01's hover buttons and trackpad swipes
+  follow them.
+- **Security**: passkeys (add one on this device, remove one after confirming, never the last) and signed-in devices (this browser
+  marked, sign one out, sign out everywhere else). **Accounts** (read only) and **About** (version, licences, privacy, source; the
+  two links are the phone app's placeholders).
+
+**Checks.** 80 web unit tests, among them the stored look (defaults, bad values falling back field by field, only changes stored),
+how mode and animation follow the system, and `theme.js` run against `attributesOf` for every value of every field (and with
+storage that throws). 23 Playwright tests, five new: every W04 category passes axe-core; the look changes at once, passes axe in
+pure black high contrast, survives a reload with the app's scripts blocked, and reaches another tab; the swipe setting changes
+W01's hover buttons; a passkey added and removed, the last one never; another browser signed out. `svelte-check` clean.
+
+**Unverified.** Real browsers other than Chromium; the look is not synced across devices yet (OPEN-ITEMS).
+
+**Next.** T32b: the installable app (manifest, service worker, offline shell), push in the browser, the accessibility sweep.
+
+---
+
 ## T31b: The conversation and compose, W02 (13 November 2026)
 
 **Status:** on `task/t31b`, its own pull request; an independent review of the Companion side (below), every finding fixed.

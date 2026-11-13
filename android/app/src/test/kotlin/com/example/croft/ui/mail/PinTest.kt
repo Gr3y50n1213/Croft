@@ -4,6 +4,9 @@
 
 package com.example.croft.ui.mail
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -51,8 +54,8 @@ class PinTest {
 
         rule.onNodeWithTag(PinnedTags.unpin(ids[0])).performClick()
         rule.waitUntil(10_000) { !exists(PinnedTags.row(ids[0])) }
-        rule.waitForRow(ids[0])
-        assertTrue(ids[0] in f.inboxIds())
+        // Back in the list at its date's place (the list keeps its own scroll position).
+        rule.waitUntil(10_000) { ids[0] in f.inboxIds() }
         rule.waitUntil(10_000) { textExists("1 unpinned") }
         rule.onNodeWithText("Undo").performClick()
         rule.waitUntil(10_000) { exists(PinnedTags.row(ids[0])) }
@@ -87,7 +90,9 @@ class PinTest {
         rule.waitForRow(id)
         rule.rowCard(id).performTouchInput { longClick() }
         rule.onNodeWithContentDescription("More actions").performClick()
-        rule.onNodeWithText("Follow up").performClick()
+        // The menu's item, not the drawer's Follow up folder (also in the tree, off screen).
+        val inDrawer = SemanticsMatcher("a drawer item") { it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("drawer-folder-") == true }
+        rule.onNode(hasText("Follow up") and !inDrawer).performClick()
         rule.waitUntil(10_000) { textExists("1 marked to follow up") }
         assertEquals(listOf(id), f.repo.snapshot(followUp).map { it.id })
         assertTrue("it stays in the Inbox", id in f.inboxIds())

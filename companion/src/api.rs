@@ -27,7 +27,7 @@ use webauthn_rs::prelude::{
 };
 use zeroize::Zeroizing;
 
-use crate::auth::{self, Caller, RefreshError, SignInError, Tokens};
+use crate::auth::{self, Caller, DeleteSelf, RefreshError, SignInError, Tokens};
 use crate::ceremony::{Ceremonies, Owner, Pending};
 use crate::crypto::{self, Key};
 use crate::http::App;
@@ -336,6 +336,8 @@ pub enum ApiError {
     Server,
     /// An outside service (the OIDC provider) could not be reached; try later.
     Unavailable,
+    /// The session's sign-in is too old for this (T34e): sign in again.
+    FreshSignIn,
 }
 
 impl From<StoreError> for ApiError {
@@ -377,6 +379,7 @@ impl IntoResponse for ApiError {
             Self::Conflict => (StatusCode::CONFLICT, "conflict"),
             Self::Server => (StatusCode::INTERNAL_SERVER_ERROR, "server"),
             Self::Unavailable => (StatusCode::BAD_GATEWAY, "unavailable"),
+            Self::FreshSignIn => (StatusCode::FORBIDDEN, "fresh_sign_in"),
         };
         let mut res = (status, Json(json!({ "error": code }))).into_response();
         if status == StatusCode::UNAUTHORIZED {
@@ -622,6 +625,7 @@ pub fn routes() -> Vec<Route> {
         ),
         route(Method::GET, "/api/me", S, get(me)),
         route(Method::POST, "/api/sign-out", S, post(sign_out)),
+        route(Method::POST, "/api/me/delete", F, post(delete_me)),
         route(Method::POST, "/api/passkeys/start", S, post(passkey_start)),
         route(
             Method::POST,
@@ -1279,6 +1283,60 @@ async fn me(State(app): State<App>, Signed(c): Signed) -> ApiResult {
         "oidc_linked": linked,
     }))
     .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteMe {
+    /// The user's name, typed by the person.
+    confirm: String,
+}
+
+/// "Delete my Companion data" (T34e): the user, everything theirs, and their mail on disk. Needs a
+/// full session signed in at most ten minutes ago (`403 fresh_sign_in` otherwise) and the user's
+/// name as `confirm` (`400`); the last admin gets `409`.
+async fn delete_me(
+    State(app): State<App>,
+    Full(c): Full,
+    req: Result<Json<DeleteMe>, JsonRejection>,
+) -> ApiResult {
+    let confirm = body(req)?.confirm;
+    if confirm.len() > 256 {
+        return Err(ApiError::BadRequest);
+    }
+    let now = app.auth.now();
+    let store = app.store.clone();
+    let mail = app.mail.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let delete = || -> Result<(bool, DeleteSelf), StoreError> {
+            let o = store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .delete_self(c.user_id, c.session_id, &confirm, now)?;
+            Ok((o == DeleteSelf::Deleted, o))
+        };
+        match &mail {
+            Some(m) => {
+                let mut seen = DeleteSelf::NotFresh;
+                m.remove_user(c.user_id, || {
+                    delete().map(|(done, o)| {
+                        seen = o;
+                        done
+                    })
+                })?;
+                Ok::<_, StoreError>(seen)
+            }
+            None => delete().map(|(_, o)| o),
+        }
+    })
+    .await
+    .map_err(|_| ApiError::Server)??;
+    match outcome {
+        DeleteSelf::Deleted => Ok(ok()),
+        DeleteSelf::NotFresh => Err(ApiError::FreshSignIn),
+        DeleteSelf::WrongName => Err(ApiError::BadRequest),
+        DeleteSelf::LastAdmin => Err(ApiError::Conflict),
+    }
 }
 
 async fn sign_out(State(app): State<App>, Signed(c): Signed) -> ApiResult {

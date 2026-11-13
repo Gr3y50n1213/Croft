@@ -57,6 +57,7 @@ commands:
   user enrol --name NAME           print a new enrolment link: it replaces the user's passkeys,
                                    authenticator key and recovery codes, and signs out their devices
   user list
+  user delete --name NAME          delete the user and everything theirs (stop the Companion first)
   rotate-master-key [--finish] re-wrap every user's key under a new master key (--finish completes one that was cut short)
   serve                        run the server
   healthcheck                  ask the running server's /healthz (for the container's health check)";
@@ -75,6 +76,11 @@ pub enum Command {
     },
     /// `user enrol`: a new enrolment link for an existing user.
     UserEnrol {
+        /// Login name.
+        name: String,
+    },
+    /// `user delete`: the user and everything theirs (T34e).
+    UserDelete {
         /// Login name.
         name: String,
     },
@@ -113,6 +119,9 @@ pub fn parse(args: &[String]) -> Result<(Option<PathBuf>, Command), CliError> {
         ["rotate-master-key"] => Command::RotateMasterKey { finish: false },
         ["rotate-master-key", "--finish"] => Command::RotateMasterKey { finish: true },
         ["user", "list"] => Command::UserList,
+        ["user", "delete", "--name", name] if !name.trim().is_empty() => Command::UserDelete {
+            name: (*name).to_owned(),
+        },
         ["user", "enrol", "--name", name] if !name.trim().is_empty() => Command::UserEnrol {
             name: (*name).to_owned(),
         },
@@ -245,6 +254,27 @@ pub fn run(config: &Config, command: &Command) -> Result<String, CliError> {
                 user.name,
                 crate::api::enrolment_link(&config.public_url, &token).as_str()
             ))
+        }
+        Command::UserDelete { name } => {
+            // Exclusive: the Companion must be stopped, so no running process keeps the user's
+            // mail open (a running one would also find their sessions gone at once).
+            let _lock = lock(config, true)?;
+            let (mut store, _) = open(config)?;
+            let user = store.user_by_name(name)?.ok_or(StoreError::NoSuchUser)?;
+            match store.delete_user(user.id, crate::store::now_ms())? {
+                crate::auth::DeleteSelf::Deleted => {
+                    let cores = crate::mail::MailCores::new(config.data_dir.clone());
+                    let _ = cores.sweep(&store.user_ids()?);
+                    Ok(format!(
+                        "Deleted user {} and everything theirs: sessions, passkeys, mail accounts and \
+                         their mail on this Companion.",
+                        user.name
+                    ))
+                }
+                _ => Err(CliError::Usage(
+                    "That is the only admin: make another user an admin first.".to_owned(),
+                )),
+            }
         }
         Command::UserList => {
             let (store, _) = open(config)?;
@@ -550,6 +580,47 @@ mod tests {
         );
         drop(server);
         run(&c, &Command::RotateMasterKey { finish: false }).unwrap();
+    }
+
+    #[test]
+    fn user_delete_removes_the_user_and_their_mail_but_never_the_last_admin_or_while_serving() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(dir.path());
+        run(&c, &Command::Init).unwrap();
+        for (name, admin) in [("ann", true), ("bob", false)] {
+            run(
+                &c,
+                &Command::UserAdd {
+                    name: name.into(),
+                    admin,
+                },
+            )
+            .unwrap();
+        }
+        let bob_mail = c.data_dir.join("users").join("2");
+        std::fs::create_dir_all(&bob_mail).unwrap();
+        std::fs::write(bob_mail.join("mail.db"), b"made-up").unwrap();
+        let delete = |name: &str| Command::UserDelete { name: name.into() };
+        // Not while the server runs.
+        let server = serve_lock(&c).unwrap();
+        assert!(
+            matches!(run(&c, &delete("bob")), Err(CliError::Usage(m)) if m.contains("stop the server"))
+        );
+        drop(server);
+        assert!(run(&c, &delete("bob"))
+            .unwrap()
+            .contains("Deleted user bob"));
+        assert!(!bob_mail.exists());
+        assert_eq!(run(&c, &Command::UserList).unwrap(), "1\tann\tadmin\n");
+        // The only admin stays; an unknown name is an error.
+        assert!(
+            matches!(run(&c, &delete("ann")), Err(CliError::Usage(m)) if m.contains("only admin"))
+        );
+        assert!(run(&c, &delete("nobody")).is_err());
+        assert_eq!(
+            parse(&args("user delete --name bob")).unwrap().1,
+            Command::UserDelete { name: "bob".into() }
+        );
     }
 
     #[test]

@@ -88,6 +88,23 @@ fn normalise_recovery_code(typed: &str) -> Zeroizing<String> {
     )
 }
 
+/// What [`Store::delete_self`] came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteSelf {
+    /// The user and everything theirs is gone.
+    Deleted,
+    /// The session's sign-in is older than [`DELETE_FRESH_MS`]: sign in again first.
+    NotFresh,
+    /// `confirm` is not the user's name.
+    WrongName,
+    /// The only enabled admin cannot delete themselves.
+    LastAdmin,
+}
+
+/// How recent the sign-in of the session that deletes an account must be (T34e): a stolen or
+/// forgotten session cannot delete without the person signing in again.
+pub const DELETE_FRESH_MS: i64 = 10 * 60 * 1000;
+
 /// Who is calling, from a valid access token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caller {
@@ -1026,6 +1043,104 @@ impl Store {
             }
         };
         Ok(rows)
+    }
+
+    /// "Delete my Companion data" (T34e, READINESS row 7): deletes the user and everything that is
+    /// theirs (sessions, passkeys, TOTP, identities, mail credentials, push subscriptions and their
+    /// data key, by the schema's cascades; their audit entries lose the user). The mail database
+    /// on disk goes with [`crate::mail::MailCores::remove_user`]. Only from a session signed in at
+    /// most [`DELETE_FRESH_MS`] ago, with the user's name typed as `confirm`, and never the last
+    /// admin. Audited without naming the user.
+    pub fn delete_self(
+        &mut self,
+        user_id: i64,
+        session_id: i64,
+        confirm: &str,
+        now: i64,
+    ) -> Result<DeleteSelf, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let user: Option<(String, String)> = tx
+            .query_row(
+                "SELECT name, role FROM user WHERE id = ?1",
+                params![user_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((name, role)) = user else {
+            return Err(StoreError::NoSuchUser);
+        };
+        if confirm != name {
+            return Ok(DeleteSelf::WrongName);
+        }
+        let signed_in: Option<i64> = tx
+            .query_row(
+                "SELECT created_ms FROM session
+                 WHERE id = ?1 AND user_id = ?2 AND revoked_ms IS NULL",
+                params![session_id, user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if signed_in.is_none_or(|t| now.saturating_sub(t) > DELETE_FRESH_MS || t > now) {
+            return Ok(DeleteSelf::NotFresh);
+        }
+        if role == "admin" {
+            let others: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM user WHERE role = 'admin' AND disabled = 0 AND id != ?1",
+                params![user_id],
+                |r| r.get(0),
+            )?;
+            if others == 0 {
+                return Ok(DeleteSelf::LastAdmin);
+            }
+        }
+        // Written before the user goes: the cascade then clears the user and actor, so the entry
+        // says only that an account was deleted, and when.
+        audit(&tx, now, Some(user_id), Some(user_id), "user.delete", "ok")?;
+        tx.execute("DELETE FROM user WHERE id = ?1", params![user_id])?;
+        tx.commit()?;
+        Ok(DeleteSelf::Deleted)
+    }
+
+    /// Deletes a user from the command line (T34e: `user delete`, for someone who can no longer
+    /// sign in and asks the person running the Companion). The same cascade as
+    /// [`Store::delete_self`]; never the last admin. Audited without naming the user.
+    pub fn delete_user(&mut self, user_id: i64, now: i64) -> Result<DeleteSelf, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let role: Option<String> = tx
+            .query_row(
+                "SELECT role FROM user WHERE id = ?1",
+                params![user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(role) = role else {
+            return Err(StoreError::NoSuchUser);
+        };
+        if role == "admin" {
+            let others: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM user WHERE role = 'admin' AND disabled = 0 AND id != ?1",
+                params![user_id],
+                |r| r.get(0),
+            )?;
+            if others == 0 {
+                return Ok(DeleteSelf::LastAdmin);
+            }
+        }
+        audit(&tx, now, Some(user_id), None, "user.delete", "operator")?;
+        tx.execute("DELETE FROM user WHERE id = ?1", params![user_id])?;
+        tx.commit()?;
+        Ok(DeleteSelf::Deleted)
+    }
+
+    /// The ids of every user (for the sweep of mail folders left by a deletion).
+    pub fn user_ids(&self) -> Result<Vec<i64>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT id FROM user")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
     }
 
     /// Disables or enables a user (an admin action, by `actor`). Disabling ends every session at

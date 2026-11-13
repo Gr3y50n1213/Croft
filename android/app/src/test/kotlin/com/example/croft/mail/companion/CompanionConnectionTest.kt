@@ -256,4 +256,16 @@ class CompanionConnectionTest {
         assertTrue(backend.pushes.isEmpty())
         assertEquals(1, backend.links)
     }
+
+    @Test
+    fun withNoBrowserS58SaysSoAndStaysConnected() = runBlocking<Unit> {
+        secrets.value = "made-up-secret".toByteArray()
+        connection.load()
+        connection.noBrowser()
+        assertEquals(
+            CompanionState.Connected("https://companion.example.org", "ann", problem = CompanionProblem.NO_BROWSER),
+            connection.state.value,
+        )
+        assertArrayEquals("made-up-secret".toByteArray(), secrets.value)
+    }
 }

@@ -228,6 +228,57 @@ impl MailCores {
             .map(|(c, _)| c.clone())
     }
 
+    /// Deletes a user's mail (T34e): under the user's slot lock (so nothing opens the core
+    /// meanwhile), runs `delete` (the store's deletion), and when it deleted the user, stops their
+    /// core and removes their folder with the database. Blocking: call it off the async threads.
+    pub fn remove_user<E>(
+        &self,
+        user_id: i64,
+        delete: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        let slot = self.slot(user_id);
+        let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if !delete()? {
+            return Ok(false);
+        }
+        let core = held.take();
+        self.release(core.into_iter().map(|(c, _)| c).collect());
+        let _ = self.remove_folder(user_id);
+        drop(held);
+        self.slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&user_id);
+        Ok(true)
+    }
+
+    fn remove_folder(&self, user_id: i64) -> std::io::Result<()> {
+        let dir = self.data_dir.join("users").join(user_id.to_string());
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// Removes the mail folders of users who no longer exist (a deletion whose folder could not be
+    /// removed, or one cut short): at start, before any core opens. User ids are never reused
+    /// (AUTOINCREMENT), so a folder never reaches another user. The number removed.
+    pub fn sweep(&self, users: &[i64]) -> usize {
+        let Ok(entries) = std::fs::read_dir(self.data_dir.join("users")) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for e in entries.flatten() {
+            let Some(id) = e.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else {
+                continue;
+            };
+            if !users.contains(&id) && self.remove_folder(id).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Stops the user's core (a disabled user). Blocking: call it off the async threads.
     pub fn close(&self, user_id: i64) {
         let slot = self.slot(user_id);

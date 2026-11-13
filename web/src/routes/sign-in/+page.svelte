@@ -10,6 +10,7 @@
   import { explain } from '#lib/api.ts';
   import { assertionJson, requestOptions } from '#lib/passkey.ts';
   import { challengeOf, keepVerifier, newVerifier, startUrl } from '#lib/pkce.ts';
+  import { takeReturn } from '#lib/after-sign-in.ts';
 
   let busy = $state(false);
   let error = $state('');
@@ -57,7 +58,7 @@
         web: true
       });
       api.adopt(answer);
-      await goto('/', { replaceState: true });
+      await goto(takeReturn(sessionStorage), { replaceState: true });
     } catch (e) {
       error = explain(e);
     } finally {

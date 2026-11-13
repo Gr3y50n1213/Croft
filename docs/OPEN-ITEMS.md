@@ -71,6 +71,9 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   again (a message for this is a later task). S58 has Disconnect but not yet "Delete my Companion data" and "Unregister this
   device" (READINESS row 7): with push, in T34d. The FFI hands the secret across in buffers the core cannot wipe (Kotlin wipes
   its copies).
+- **The deletion page (T34e):** `docs/store/DELETING-YOUR-DATA.draft.md` is the page the store listings give for deleting data
+  (Google Play asks for a "Delete account URL"). Host it beside the privacy policy and put its address in the policy. Each
+  Companion's own deletion page is `<its address>/delete`.
 - **Push on phones (T34d):** untested on a phone. Try UnifiedPush (fdroid or github build with ntfy) and, once the publisher has a
   Firebase project and a gateway (below), the Play build. Until it is tried the periodic check stays as the person set it; with
   push working it could run less often. Accepted for now:

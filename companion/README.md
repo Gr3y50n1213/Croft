@@ -182,6 +182,7 @@ service its maker runs (Google's for Chrome, Mozilla's for Firefox, Apple's for 
 croft-companion init
 croft-companion user add --name NAME [--admin]
 croft-companion user enrol --name NAME
+croft-companion user delete --name NAME          # T34e: the user and everything theirs (stop the Companion first)
 croft-companion user list
 croft-companion rotate-master-key [--finish]
 croft-companion serve
@@ -202,6 +203,7 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `POST /api/web/refresh`, `POST /api/web/sign-out` (header `X-Croft-Web: 1`, the cookie) | the web app |
 | `GET /api/me`, `POST /api/sign-out`, `POST /api/passkeys/start`, `/api/passkeys/finish` | signed in (also a recovery sign-in) |
 | `GET /api/passkeys`, `DELETE /api/passkeys/{id}`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `GET /api/audit` | signed in |
+| `POST /api/me/delete` (`{"confirm": "<your user name>"}`): "Delete my Companion data" (T34e). Deletes the user, everything theirs and their mail on disk; `403 fresh_sign_in` unless this session signed in within ten minutes, `400` for the wrong name, `409` for the only admin | signed in (not a recovery sign-in) |
 | `GET /api/admin/users`, `POST /api/admin/users/{id}/disable`, `/enable`, `GET /api/admin/audit` | admins |
 | `GET /api/oidc`, `GET /api/sign-in/oidc/start?app_challenge&app_redirect`, `GET /oidc/callback`, `POST /api/sign-in/oidc/exchange` (`{"code", "verifier"}`) | anyone |
 | The Croft app on a phone (T34a): `/api/sign-in/passkey/finish` with `"app": {"challenge", "redirect"}` answers `{"redirect"}`; `POST /api/sign-in/app/sso` (`{"challenge", "redirect"}`, header `X-Croft-Web: 1`, from `/app/sign-in`) answers the provider URL; `POST /api/sign-in/app/exchange` (`{"code", "verifier", "device"?}`) gives the app's tokens | the `/app/sign-in` page, then the app |

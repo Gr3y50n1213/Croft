@@ -1,7 +1,7 @@
 {
  "version": 1,
  "inputs": {
-  "cargoLockSha256": "29b60a172744a2afcc25b034b725fc4f81a3dc1838510a4ac7c3a821a8a0c78e",
+  "cargoLockSha256": "b5174695d6e0abf616fe0f39d2e73b675872c4791e5c328489845753fb932c75",
   "libsCatalogSha256": "892f33a4f9ae7aa2ebd07f412043f4b14d22f527b6cde4506c42018c269b809c"
  },
  "entries": [
@@ -1173,6 +1173,30 @@
    "name": "itoa",
    "version": "1.0.19",
    "licence": "MIT OR Apache-2.0",
+   "origin": "Rust"
+  },
+  {
+   "name": "jiff",
+   "version": "0.2.43",
+   "licence": "Unlicense OR MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "jiff-core",
+   "version": "0.1.5",
+   "licence": "Unlicense OR MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "jiff-static",
+   "version": "0.2.43",
+   "licence": "Unlicense OR MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "jiff-tzdb",
+   "version": "0.1.9",
+   "licence": "Unlicense OR MIT",
    "origin": "Rust"
   },
   {

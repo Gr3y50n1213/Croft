@@ -13,6 +13,7 @@
 
 pub mod category;
 pub mod compose;
+pub mod ical;
 pub mod notify;
 pub mod ops;
 pub mod outbox;

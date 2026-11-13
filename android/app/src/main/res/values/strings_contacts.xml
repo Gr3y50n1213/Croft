@@ -38,7 +38,7 @@
     <string name="contact_key">Key attached</string>
     <string name="contact_recent">Recent conversations</string>
     <string name="contact_recent_none">No conversations with this contact on this device</string>
-    <string name="contact_conflict">Changed on the server too: this copy was kept as a new contact.</string>
+    <string name="contact_conflict">Changed on the server too: your change was not sent and the server\'s version was kept.</string>
     <string name="contact_pending">Not on the server yet: it is sent at the next sync.</string>
     <string name="contact_gone">This contact is no longer here.</string>
     <string name="contact_address">Address</string>

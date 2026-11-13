@@ -337,6 +337,171 @@ async fn one_click(url: &str, reach: Reach) -> Result<u16, FetchError> {
     .map(|answer| answer.status)
 }
 
+/// The largest calendar file a link may give (T39c).
+pub const MAX_CALENDAR_FILE: usize = 5 * 1024 * 1024;
+/// The longest calendar link accepted.
+pub const MAX_CALENDAR_LINK: usize = 2048;
+/// How many redirects a calendar link may take (each to a public `https` address).
+const MAX_LINK_REDIRECTS: usize = 2;
+/// One whole fetch of a calendar link (a big file may take a while).
+const LINK_DEADLINE: Duration = Duration::from_secs(60);
+
+/// What fetching a calendar link gave.
+pub enum LinkAnswer {
+    /// The file, with the version the server gave (to ask "changed since?" next time).
+    Changed {
+        /// The file's bytes.
+        body: Vec<u8>,
+        /// `ETag`, when given.
+        etag: Option<String>,
+        /// `Last-Modified`, when given.
+        last_modified: Option<String>,
+    },
+    /// Not changed since the version asked about (304).
+    NotModified,
+}
+
+impl std::fmt::Debug for LinkAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Changed { body, .. } => f
+                .debug_struct("Changed")
+                .field("len", &body.len())
+                .finish_non_exhaustive(),
+            Self::NotModified => f.write_str("NotModified"),
+        }
+    }
+}
+
+/// A calendar link as Croft fetches it (T39c): `webcal://` and `webcals://` become `https://`;
+/// only an absolute `https` address with no user name or password, at most
+/// [`MAX_CALENDAR_LINK`] bytes, is accepted. `None` for anything else. The result is the address
+/// as parsed (host lower-cased, fragment dropped): what is fetched is what is stored.
+pub fn calendar_link(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.len() > MAX_CALENDAR_LINK {
+        return None;
+    }
+    let lower = t.get(..10).map(str::to_ascii_lowercase).unwrap_or_default();
+    let rest = if lower.starts_with("webcals://") {
+        t.get(10..)?
+    } else if lower.starts_with("webcal://") {
+        t.get(9..)?
+    } else if lower.starts_with("https://") {
+        t.get(8..)?
+    } else {
+        return None;
+    };
+    let url = Url::parse(&format!("https://{rest}")).filter(|u| u.secure && u.is_allowed())?;
+    let port = if url.port == 443 {
+        String::new()
+    } else {
+        format!(":{}", url.port)
+    };
+    let host = if url.host.contains(':') {
+        format!("[{}]", url.host)
+    } else {
+        url.host.clone()
+    };
+    Some(format!("https://{host}{port}{}", url.path_and_query))
+}
+
+/// Fetches a calendar link (T39c): one `GET` per hop, no cookies, no `Authorization`, public
+/// addresses only (a pasted link never reaches the device's or the Companion's private network),
+/// at most two redirects (each to a public `https` address), at most [`MAX_CALENDAR_FILE`]
+/// bytes, bounded waits. With `etag` or `last_modified` it asks whether the file changed. Nothing
+/// of the address or the file is logged.
+pub async fn get_calendar_link(
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<LinkAnswer, FetchError> {
+    let url = calendar_link(url).ok_or(FetchError::BadUrl)?;
+    calendar_link_with(&url, etag, last_modified, Reach::Internet).await
+}
+
+/// [`get_calendar_link`] to plain http on this machine: for tests only (a fake calendar server).
+pub async fn get_calendar_link_from_loopback_for_tests(
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<LinkAnswer, FetchError> {
+    calendar_link_with(url, etag, last_modified, Reach::Loopback).await
+}
+
+async fn calendar_link_with(
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    reach: Reach,
+) -> Result<LinkAnswer, FetchError> {
+    let mut current = Url::parse(url).ok_or(FetchError::BadUrl)?;
+    let usable =
+        |v: &str| !v.is_empty() && v.len() <= 256 && v.bytes().all(|b| (0x20..=0x7e).contains(&b));
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(e) = etag.filter(|e| usable(e)) {
+        headers.push(("If-None-Match", e));
+    }
+    if let Some(m) = last_modified.filter(|m| usable(m)) {
+        headers.push(("If-Modified-Since", m));
+    }
+    for _ in 0..=MAX_LINK_REDIRECTS {
+        let http = Http::new(Trust::Roots, TIMEOUT, LINK_DEADLINE);
+        let http = match reach {
+            Reach::Internet => {
+                if !current.secure || !current.is_allowed() {
+                    return Err(FetchError::BadUrl);
+                }
+                http.internet_only()
+            }
+            Reach::Loopback => {
+                if current.secure || !is_loopback_name(&current.host) {
+                    return Err(FetchError::BadUrl);
+                }
+                http.admin_configured()
+            }
+            Reach::Admin | Reach::Chosen => return Err(FetchError::BadUrl),
+        };
+        let req = HttpRequest {
+            method: "GET",
+            url: &current,
+            authorization: None,
+            content_type: None,
+            body: &[],
+            max_response: MAX_CALENDAR_FILE,
+            extra_time: Duration::ZERO,
+            error_body: false,
+            status_only: false,
+            extra_headers: &headers,
+        };
+        let answer = http.send(&req).await.map_err(|e| match e.error {
+            BackendError::Transient(_) => FetchError::Unreachable,
+            _ => FetchError::Refused,
+        })?;
+        match answer.status {
+            200..=299 => {
+                return Ok(LinkAnswer::Changed {
+                    body: answer.body,
+                    etag: answer.etag,
+                    last_modified: answer.last_modified,
+                })
+            }
+            304 => return Ok(LinkAnswer::NotModified),
+            300..=399 => {
+                // Followed only to an address that parses again under the same rules (checked at the top of the loop).
+                current = answer
+                    .location
+                    .as_deref()
+                    .and_then(|l| current.resolve(l))
+                    .ok_or(FetchError::Redirect)?;
+            }
+            408 | 429 | 500..=599 => return Err(FetchError::Unreachable),
+            _ => return Err(FetchError::Refused),
+        }
+    }
+    Err(FetchError::Redirect)
+}
+
 /// Encodes a form body (`application/x-www-form-urlencoded`), wiped when dropped.
 pub fn form(pairs: &[(&str, &str)]) -> Zeroizing<String> {
     // One buffer, sized for the worst case first, so no partial copy of a secret value is left

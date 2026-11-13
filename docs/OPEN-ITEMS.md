@@ -58,6 +58,10 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   through the Companion yet (W04 says colours, density and shape should sync across devices). Settings sync is a later task. The
   web About pane uses the same placeholder privacy and source addresses as the phone app (`web/src/lib/settings/links.ts`, see
   "Placeholders from T17c").
+- **Push in browsers (T32b):** untested with the real push services (Google's for Chrome, Mozilla's for Firefox, Apple's for
+  Safari) and with real notifications (headless Chromium refuses them); try on real browsers and an installed app on a phone.
+  A refresh answer lost on a flapping connection still ends the session on the next try (no grace window for a just-rotated
+  refresh token yet; a change to the T24 reuse rule that needs its own review).
 - **The push gateway needs the owner (T29), before the Play build has push:** a Firebase project for the app (its real application
   id), a service account key for it with permission to send through FCM, and a host for the gateway with a public https address
   (`gateway/README.md`). Real delivery through FCM is untested until then. T34 should register phones with their Companion's VAPID

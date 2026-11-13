@@ -11,7 +11,10 @@ export default defineConfig({
     sveltekit({
       // A static single-page app: the Companion serves `build/` and gives every app path index.html.
       adapter: adapter({ pages: 'build', assets: 'build', fallback: 'index.html', strict: true }),
-      compilerOptions: { runes: true }
+      compilerOptions: { runes: true },
+      // Registered by the app itself (#lib/pwa/register.ts), through a Trusted Types policy: the
+      // page's CSP refuses a plain string for a worker's address.
+      serviceWorker: { register: false }
     })
   ],
   server: {

@@ -9,7 +9,8 @@ Screens: W01 to W04 in `docs/UX.md`. Done so far: sign-in (passkey, single sign-
 W01, the inbox (T31a): folders, the list with hover actions and trackpad swipes, the reading pane, actions with Undo, Gmail-like
 keyboard shortcuts (`?` lists them); W02 (T31b): the conversation and compose windows; W04, settings (T32a): appearance (applied
 before the first paint by `static/theme.js`, kept in this browser), swipe and hover actions, passkeys and signed-in devices, mail
-accounts, about.
+accounts, about; the installable app (T32b): a manifest, a service worker that keeps the app's own files so it opens offline,
+and push in the browser (W04's Notifications).
 
 ## Develop
 

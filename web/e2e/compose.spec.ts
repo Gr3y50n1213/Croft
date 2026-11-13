@@ -6,6 +6,7 @@
 // rules, Send into the Outbox and Undo. The account's SMTP port is closed, so a send waits in the
 // Outbox (delivery itself is the core's, tested there). Made-up credentials.
 
+import AxeBuilder from '@axe-core/playwright';
 import { test, expect, type Page } from '@playwright/test';
 import { Companion, TestMail, addAccount, closedPort, virtualAuthenticator, watchForErrors } from './companion.ts';
 
@@ -79,6 +80,9 @@ test('compose from scratch: no recipient is refused in plain words; up to three 
   // Restore the first one: its subject is still there.
   await page.getByRole('group', { name: 'Draft: Plans' }).getByRole('button', { name: 'Plans' }).click();
   await expect(page.getByRole('dialog', { name: 'Plans' }).getByLabel('Subject')).toHaveValue('Plans');
+  // W02 with a compose window open and two docked: no accessibility violation (axe-core).
+  const axe = await new AxeBuilder({ page }).analyze();
+  expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(' | ')}`)).toEqual([]);
 });
 
 test('the conversation shows, and r, a and f open replies from the keyboard', async ({ page }) => {

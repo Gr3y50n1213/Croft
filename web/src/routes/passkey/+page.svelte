@@ -7,7 +7,7 @@
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
   import { api, explain } from '#lib/sign-in.ts';
-  import { attestationJson, creationOptions } from '#lib/passkey.ts';
+  import { makePasskey } from '#lib/passkey.ts';
 
   let busy = $state(false);
   let error = $state('');
@@ -21,16 +21,8 @@
     error = '';
     busy = true;
     try {
-      const start = await api.call<{ ceremony: string; options: { publicKey: Record<string, unknown> } }>(
-        'POST',
-        '/api/passkeys/start'
-      );
-      const cred = (await navigator.credentials.create({
-        publicKey: creationOptions(start.options.publicKey)
-      })) as PublicKeyCredential | null;
-      if (!cred) throw new DOMException('cancelled', 'NotAllowedError');
-      await api.call('POST', '/api/passkeys/finish', { ceremony: start.ceremony, credential: attestationJson(cred) });
-            done = true;
+      await makePasskey(api);
+      done = true;
       // A recovery sign-in only lets you add a passkey: sign in again with it. The sign-out is
       // tried again if it fails (offline), so the recovery session never lingers.
       for (let i = 0; i < 3; i++) {

@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import type { Page } from '@playwright/test';
+import type { CDPSession, Page } from '@playwright/test';
 
 const BIN = process.env['CROFT_COMPANION_BIN'] ?? resolve('../companion/target/debug/croft-companion');
 
@@ -94,9 +94,27 @@ export async function virtualAuthenticator(page: Page): Promise<() => Promise<vo
       automaticPresenceSimulation: true
     }
   });
+  authenticators.set(page, { cdp, authenticatorId });
   return async () => {
+    authenticators.delete(page);
     await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });
   };
+}
+
+const authenticators = new WeakMap<Page, { cdp: CDPSession; authenticatorId: string }>();
+
+/**
+ * Copies the passkeys on one page's virtual authenticator to another's (both made with
+ * `virtualAuthenticator`): the same person on a second device, for tests of several sessions.
+ */
+export async function copyPasskeys(from: Page, to: Page): Promise<void> {
+  const a = authenticators.get(from);
+  const b = authenticators.get(to);
+  if (!a || !b) throw new Error('both pages need a virtual authenticator');
+  const { credentials } = await a.cdp.send('WebAuthn.getCredentials', { authenticatorId: a.authenticatorId });
+  for (const credential of credentials) {
+    await b.cdp.send('WebAuthn.addCredential', { authenticatorId: b.authenticatorId, credential });
+  }
 }
 
 /** The TOTP code (RFC 6238, SHA-1, 6 digits, 30 s) for a base32 secret. */

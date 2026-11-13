@@ -7,8 +7,13 @@
   // The generated tokens, read in place (design/generated is never copied).
   import '../../../design/generated/css/croft-tokens.css';
   import '../app.css';
+  import { onMount } from 'svelte';
+  import { settings } from '#lib/settings/store.svelte.ts';
 
   let { children } = $props();
+
+  // W04's look, applied by static/theme.js before the first paint, is followed from here on.
+  onMount(() => settings.start());
 </script>
 
 {@render children()}

@@ -81,3 +81,21 @@ export function attestationJson(cred: PublicKeyCredential): Json {
     extensions: cred.getClientExtensionResults()
   };
 }
+
+/** What `makePasskey` needs from the API client. */
+export interface PasskeyCaller {
+  call<T = unknown>(method: string, path: string, body?: unknown): Promise<T>;
+}
+
+/**
+ * Makes a passkey on this device for the signed-in person (`/api/passkeys/start`, the browser's
+ * prompt, `/api/passkeys/finish`). Throws `NotAllowedError` when the person cancels.
+ */
+export async function makePasskey(api: PasskeyCaller): Promise<void> {
+  const start = await api.call<{ ceremony: string; options: { publicKey: Json } }>('POST', '/api/passkeys/start');
+  const cred = (await navigator.credentials.create({
+    publicKey: creationOptions(start.options.publicKey)
+  })) as PublicKeyCredential | null;
+  if (!cred) throw new DOMException('cancelled', 'NotAllowedError');
+  await api.call('POST', '/api/passkeys/finish', { ceremony: start.ceremony, credential: attestationJson(cred) });
+}

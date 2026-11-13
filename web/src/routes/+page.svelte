@@ -206,6 +206,7 @@
         <span>Search mail</span>
       </div>
       <span class="who" data-testid="user">{me.name}</span>
+      <a class="settings" href="/settings" aria-label="Settings" title="Settings"><Icon name="settings" /></a>
       <button class="button text" type="button" onclick={signOut}>Sign out</button>
     </header>
 
@@ -372,6 +373,19 @@
 
   .content {
     display: contents;
+  }
+
+  .settings {
+    display: grid;
+    place-items: center;
+    width: var(--croft-touch-min-target-dp);
+    height: var(--croft-touch-min-target-dp);
+    border-radius: 50%;
+    color: inherit;
+  }
+
+  .settings:hover {
+    background: var(--croft-color-surface-container-high);
   }
 
   .sr-only {

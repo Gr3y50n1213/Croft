@@ -136,20 +136,28 @@ jobs:
           workspaces: core
       - run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
       - uses: gradle/actions/setup-gradle@v4
+      # T34c: the full unit tests run on the play flavour; fdroid and github (one shared source folder) compile, and run the
+      # tests that differ by store.
       - name: Build the debug APK and run the JVM unit tests
         working-directory: android
-        run: ./gradlew :app:assembleDebug :app:testDebugUnitTest
+        run: ./gradlew :app:assemblePlayDebug :app:testPlayDebugUnitTest
+      - name: Build the fdroid and github debug APKs and run their store tests
+        working-directory: android
+        run: >-
+          ./gradlew :app:assembleFdroidDebug :app:assembleGithubDebug
+          :app:testFdroidDebugUnitTest --tests 'com.example.croft.push.*'
+          :app:testGithubDebugUnitTest --tests 'com.example.croft.push.*'
       - name: Check 16 KB page alignment of the native libraries
         working-directory: android
         run: |
           tools/check-16kb-alignment.sh app/build/generated/rust/jniLibs
-          rm -rf app/build/apk-libs && unzip -q app/build/outputs/apk/debug/app-debug.apk 'lib/*' -d app/build/apk-libs
+          rm -rf app/build/apk-libs && unzip -q app/build/outputs/apk/play/debug/app-play-debug.apk 'lib/*' -d app/build/apk-libs
           tools/check-16kb-alignment.sh app/build/apk-libs
-          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/debug/app-debug.apk
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 app/build/outputs/apk/play/debug/app-play-debug.apk
       - uses: actions/upload-artifact@v4
         with:
           name: croft-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/play/debug/*.apk
 
   # The unsigned release build (R8 and resource shrinking on) and its gates: the keep rules for UniFFI and JNA (Gradle,
   # during the build), the manifest allowlist, no dependency-info block, not debuggable, 16 KB alignment of the APK and
@@ -182,21 +190,31 @@ jobs:
           workspaces: core
       - run: cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
       - uses: gradle/actions/setup-gradle@v4
-      - name: Test the manifest check
+      - name: Test the manifest and dependency checks
         working-directory: android
         run: python3 -m unittest discover -s tools
-      - name: Build the unsigned release APK and AAB
+      # T34c: no Google Play services or Firebase library in the builds for F-Droid and GitHub.
+      - name: Check that fdroid and github have no Google services library
         working-directory: android
-        run: ./gradlew :app:assembleRelease :app:bundleRelease
+        run: |
+          for store in fdroid github; do
+            ./gradlew -q :app:dependencies --configuration "${store}ReleaseRuntimeClasspath" > "$RUNNER_TEMP/$store-deps.txt"
+          done
+          python3 tools/check-flavour-dependencies.py "$RUNNER_TEMP/fdroid-deps.txt" "$RUNNER_TEMP/github-deps.txt"
+      - name: Build the unsigned release APKs (each store) and the Play AAB
+        working-directory: android
+        run: ./gradlew :app:assemblePlayRelease :app:bundlePlayRelease :app:assembleFdroidRelease :app:assembleGithubRelease
       - name: Check the release outputs (unsigned, manifest allowlist, 16 KB alignment)
         working-directory: android
         run: |
           curl -fsSL -o "$RUNNER_TEMP/bundletool.jar" "https://github.com/google/bundletool/releases/download/$BUNDLETOOL_VERSION/bundletool-all-$BUNDLETOOL_VERSION.jar"
           echo "$BUNDLETOOL_SHA256  $RUNNER_TEMP/bundletool.jar" | sha256sum -c -
-          tools/check-release-outputs.sh "$RUNNER_TEMP/bundletool.jar"
-      - name: Build the preview APK (release code, debug key, .preview suffix)
+          for store in play fdroid github; do
+            CROFT_FLAVOR=$store tools/check-release-outputs.sh "$RUNNER_TEMP/bundletool.jar"
+          done
+      - name: Build the preview APK (Play build, release code, debug key, .preview suffix)
         working-directory: android
-        run: ./gradlew :app:assemblePreview
+        run: ./gradlew :app:assemblePlayPreview
       - name: Check the preview output (debug key, not debuggable, manifest allowlist, 16 KB alignment, no test server or test hooks)
         working-directory: android
         env:
@@ -205,7 +223,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: croft-preview-apk
-          path: android/app/build/outputs/apk/preview/app-preview.apk
+          path: android/app/build/outputs/apk/play/preview/app-play-preview.apk
           if-no-files-found: error
           retention-days: 30
 

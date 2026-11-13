@@ -5,6 +5,36 @@ unverified, the next step.
 
 ---
 
+## T34c: Store flavours `play`, `fdroid` and `github` (13 November 2026)
+
+**Status:** on `task/t34c`, its own pull request.
+
+**What was built.**
+- **Three flavours** in the dimension `store`, with one application id. `fdroid` and `github` share `app/src/unifiedpush/`.
+  The seam for T34d's push: `PushKind`, each flavour's `StorePush` and `BuildConfig.STORE`, with a test run in every flavour.
+- **The Google services check:** `tools/check-flavour-dependencies.py` fails on Play services, Firebase, Play Core and billing,
+  ML Kit or the consent SDK in the runtime classpath of `fdroid` or `github`. It also fails on an empty or unresolved report. It has
+  six unit tests.
+- **Per-store release checks:** the R8 keep-rule and mapping checks run for each store's release and preview builds.
+  `check-release-outputs.sh` takes `CROFT_FLAVOR`; only `play` has an AAB. The macrobenchmark measures the Play build.
+- **CI and docs:** CI and the docs use the new task names. The preview APK is now `app-play-preview.apk`.
+
+**Checks.**
+- Locally: the tools' unit tests (34).
+- In CI, read from the log:
+  - `playDebug` built with the full unit tests;
+  - `fdroidDebug` and `githubDebug` built with their store tests;
+  - the dependency check passed on the real `fdroid` and `github` reports;
+  - the mapping checks ran for `playRelease`, `fdroidRelease`, `githubRelease` and `playPreview`;
+  - each store's release and the preview passed the output checks (the Play AAB with its 16 KB config).
+
+**Review:** none (build configuration only; see DECISIONS).
+
+**Next:** T34d, push on the phone: UnifiedPush in `fdroid` and `github`, FCM through the gateway in `play`, push in place of
+periodic checks, and S58's "Delete my Companion data" and "Unregister this device".
+
+---
+
 ## T34b: The Companion client in the core, S06 and S58 on Android (13 November 2026)
 
 **Status:** on `task/t34b`, its own pull request. An independent review is below; its findings were fixed with tests, except three

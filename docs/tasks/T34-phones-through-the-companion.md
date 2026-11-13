@@ -64,5 +64,24 @@ tokens: 15-minute access, rotating refresh, a device the person can sign out).
   plain `http` to this machine only in debug builds; the Companion client follows the process's address policy; a key loss moves
   the Companion secret aside with the accounts'; an erase and a secret that cannot be kept sign the device out first.
 
-## Spec (T34c and T34d)
-Written in this file when each starts.
+## Spec (T34c)
+- **Three flavours** in one dimension, `store`: `play` (Google Play), `fdroid` (F-Droid builds it from source and signs it) and
+  `github` (GitHub releases, the owner's own key). One application id for all three: a phone has one of them, and the signing
+  key keeps them apart. Every build type (debug, release, preview, benchmark) exists for each.
+- **What differs:** only push (T34d: FCM through the gateway in `play`, UnifiedPush in the others). `fdroid` and `github` share
+  one source folder (`src/unifiedpush/`) so the two cannot drift. T34c adds the seam: `PushKind`, each flavour's `StorePush`,
+  `BuildConfig.STORE`, and a unit test run in every flavour.
+- **The check:** `tools/check-flavour-dependencies.py` reads the resolved runtime classpath of `fdroidRelease` and `githubRelease`
+  (`:app:dependencies`) and fails on Google Play services, Firebase, Play Core and billing, ML Kit, the consent SDK and their shared
+  transport. Open-source Google libraries (AndroidX, Material Components, Compose) are allowed: F-Droid accepts them. A report
+  that is empty or failed to resolve fails too. The script has its own unit tests.
+- **The release checks per store:** the R8 keep-rule and mapping checks run for each store's release and preview builds;
+  `tools/check-release-outputs.sh` takes `CROFT_FLAVOR` (only `play` has an AAB).
+- **CI:** the debug job builds and tests `playDebug`, builds `fdroidDebug` and `githubDebug` and runs their store tests; the
+  release job runs the dependency check, builds each store's unsigned release (and Play's AAB), checks each, and builds the
+  preview from `play` (artifact `croft-preview-apk`, file `app-play-preview.apk`).
+- Done when: the three flavours build in CI, the dependency check passes on `fdroid` and `github` and its tests show each
+  forbidden group fails, each store's release passes the output checks, and the docs name the new tasks.
+
+## Spec (T34d)
+Written in this file when it starts.

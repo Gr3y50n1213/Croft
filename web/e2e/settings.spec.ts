@@ -99,6 +99,9 @@ test('the look changes at once, survives a reload without the app, and passes ax
   await page.reload();
   for (const [k, v] of Object.entries(expected)) await expect(page.locator('html')).toHaveAttribute(k, v);
   await page.unroute('**/_app/**');
+  // The blocked start-up script is the one error expected.
+  expect(errors).toEqual([expect.stringContaining('Failed to fetch dynamically imported module')]);
+  errors.length = 0;
 
   // Light again: pure black no longer applies, and the choice is kept in another tab too.
   await page.reload();
@@ -126,6 +129,7 @@ test('the swipe setting changes the hover buttons in W01', async ({ page }) => {
   await page.goto(`${companion.url}/settings/accounts`);
   await expect(page.getByTestId('account')).toHaveCount(1);
   await page.getByRole('link', { name: 'Back to mail' }).click();
+  await expect(page.locator('[data-screen="W01"]')).toBeVisible();
   await expect(async () => {
     await page.reload();
     await expect(page.locator('.rows li.row').first()).toBeVisible({ timeout: 2000 });

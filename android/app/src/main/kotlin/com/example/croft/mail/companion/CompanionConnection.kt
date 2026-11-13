@@ -181,11 +181,16 @@ class CompanionConnection(
         }
     }
 
-    /** The sign-in page could not be opened: there is no browser on this device. */
+    /** A Companion page could not be opened: there is no browser on this device. */
     fun noBrowser() {
-        if (_state.value is CompanionState.Waiting) {
-            pendingFlow = null
-            _state.value = CompanionState.NotConnected(CompanionProblem.NO_BROWSER)
+        when (val s = _state.value) {
+            is CompanionState.Waiting -> {
+                pendingFlow = null
+                _state.value = CompanionState.NotConnected(CompanionProblem.NO_BROWSER)
+            }
+            // S58's links (T34e: "Delete my Companion data") open the Companion in the browser too.
+            is CompanionState.Connected -> _state.value = s.copy(problem = CompanionProblem.NO_BROWSER)
+            else -> {}
         }
     }
 

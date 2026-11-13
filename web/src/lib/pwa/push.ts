@@ -11,17 +11,17 @@
  * endpoint or its keys.
  */
 
-import { ApiError } from '../api.ts';
-import { registerWorker } from './register.ts';
-import { keyBytes, parseStored, sha256Hex, type Stored } from './push-data.ts';
+import { ApiError } from "../api.ts";
+import { registerWorker } from "./register.ts";
+import { keyBytes, parseStored, sha256Hex, type Stored } from "./push-data.ts";
 
-export const PUSH_KEY = 'croft.push';
+export const PUSH_KEY = "croft.push";
 
 export interface PushCaller {
   call<T = unknown>(method: string, path: string, body?: unknown): Promise<T>;
 }
 
-export type PushState = 'unsupported' | 'blocked' | 'off' | 'on';
+export type PushState = "unsupported" | "blocked" | "off" | "on";
 
 function read(): Stored | null {
   try {
@@ -42,60 +42,81 @@ function write(s: Stored | null): void {
 
 function supported(): boolean {
   return (
-    typeof window !== 'undefined' &&
-    'serviceWorker' in navigator &&
-    'PushManager' in window &&
-    'Notification' in window
+    typeof window !== "undefined" &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    "Notification" in window
   );
 }
 
 /** Whether push is on in this browser for `user` (as far as this browser knows). */
 export function pushState(user: number): PushState {
-  if (!supported()) return 'unsupported';
-  if (Notification.permission === 'denied') return 'blocked';
-  return read()?.user === user && Notification.permission === 'granted' ? 'on' : 'off';
+  if (!supported()) return "unsupported";
+  if (Notification.permission === "denied") return "blocked";
+  return read()?.user === user && Notification.permission === "granted"
+    ? "on"
+    : "off";
 }
 
 async function subscription(api: PushCaller): Promise<PushSubscription> {
   const reg = await registerWorker();
-  if (!reg) throw new ApiError('unsupported', 0);
+  if (!reg) throw new ApiError("unsupported", 0);
   await navigator.serviceWorker.ready;
   const existing = await reg.pushManager.getSubscription();
   if (existing) return existing;
-  const { key } = await api.call<{ key: string }>('GET', '/api/push/vapid');
-  return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+  const { key } = await api.call<{ key: string }>("GET", "/api/push/vapid");
+  return reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: keyBytes(key),
+  });
 }
 
 /** Drops the browser's subscription: its endpoint is dead, so nothing still held for it is reached. */
 async function dropSubscription(): Promise<void> {
   if (!supported()) return;
-  const reg = await navigator.serviceWorker.getRegistration('/');
-  await (await reg?.pushManager.getSubscription())?.unsubscribe().catch(() => false);
+  const reg = await navigator.serviceWorker.getRegistration("/");
+  await (await reg?.pushManager.getSubscription())
+    ?.unsubscribe()
+    .catch(() => false);
 }
 
 /** Gives the subscription to the Companion; the id it answers, stored for `user`. */
-async function give(api: PushCaller, user: number, sub: PushSubscription): Promise<void> {
+async function give(
+  api: PushCaller,
+  user: number,
+  sub: PushSubscription,
+): Promise<void> {
   const json = sub.toJSON();
-  const { id } = await api.call<{ id: number }>('POST', '/api/push/subscriptions', {
-    endpoint: json.endpoint,
-    keys: { p256dh: json.keys?.['p256dh'], auth: json.keys?.['auth'] }
-  });
+  const { id } = await api.call<{ id: number }>(
+    "POST",
+    "/api/push/subscriptions",
+    {
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys?.["p256dh"], auth: json.keys?.["auth"] },
+    },
+  );
   write({ user, id, endpointHash: await sha256Hex(sub.endpoint) });
 }
 
 async function forget(api: PushCaller, id: number | undefined): Promise<void> {
   if (id === undefined) return;
-  await api.call('DELETE', `/api/push/subscriptions/${id}`).catch((e: unknown) => {
-    // Already gone (signed out, or removed elsewhere) is what was wanted.
-    if (!(e instanceof ApiError && e.status === 404)) throw e;
-  });
+  await api
+    .call("DELETE", `/api/push/subscriptions/${id}`)
+    .catch((e: unknown) => {
+      // Already gone (signed out, or removed elsewhere) is what was wanted.
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+    });
 }
 
 /** Turns push on for `user`: asks the browser's permission, subscribes and tells the Companion. */
-export async function enablePush(api: PushCaller, user: number): Promise<PushState> {
-  if (!supported()) return 'unsupported';
+export async function enablePush(
+  api: PushCaller,
+  user: number,
+): Promise<PushState> {
+  if (!supported()) return "unsupported";
   const permission = await Notification.requestPermission();
-  if (permission !== 'granted') return permission === 'denied' ? 'blocked' : 'off';
+  if (permission !== "granted")
+    return permission === "denied" ? "blocked" : "off";
   const old = read();
   if (old && old.user !== user) {
     // Another person's subscription in this browser: never reused.
@@ -103,12 +124,16 @@ export async function enablePush(api: PushCaller, user: number): Promise<PushSta
     await dropSubscription();
   }
   await give(api, user, await subscription(api));
-  if (old?.user === user && old.id !== read()?.id) await forget(api, old.id).catch(() => {});
-  return 'on';
+  if (old?.user === user && old.id !== read()?.id)
+    await forget(api, old.id).catch(() => {});
+  return "on";
 }
 
 /** Turns push off: the Companion forgets the subscription and the browser drops it. */
-export async function disablePush(api: PushCaller, user: number): Promise<PushState> {
+export async function disablePush(
+  api: PushCaller,
+  user: number,
+): Promise<PushState> {
   const stored = read();
   if (stored?.user === user) await forget(api, stored.id);
   write(null);
@@ -128,6 +153,12 @@ export async function pausePushForSignOut(): Promise<void> {
   await dropSubscription();
 }
 
+/** After "Delete my Companion data" (T34e): the browser drops its subscription and forgets push was wanted. */
+export async function forgetPushAfterDeletion(): Promise<void> {
+  write(null);
+  await dropSubscription();
+}
+
 /**
  * On every start, and when the worker says the browser replaced the subscription: when `user`
  * turned push on here, makes sure the Companion holds this browser's current subscription for
@@ -142,18 +173,19 @@ export async function keepPush(api: PushCaller, user: number): Promise<void> {
     await dropSubscription();
     return;
   }
-  if (Notification.permission !== 'granted') {
+  if (Notification.permission !== "granted") {
     // The person took the permission back in the browser: push is off.
     await forget(api, stored.id).catch(() => {});
     write(null);
     return;
   }
   const sub = await subscription(api);
-  const { subscriptions } = await api.call<{ subscriptions: { id: number; current_device: boolean }[] }>(
-    'GET',
-    '/api/push/subscriptions'
+  const { subscriptions } = await api.call<{
+    subscriptions: { id: number; current_device: boolean }[];
+  }>("GET", "/api/push/subscriptions");
+  const held = subscriptions.some(
+    (s) => s.id === stored.id && s.current_device,
   );
-  const held = subscriptions.some((s) => s.id === stored.id && s.current_device);
   if (held && stored.endpointHash === (await sha256Hex(sub.endpoint))) return;
   await give(api, user, sub);
   if (held) await forget(api, stored.id).catch(() => {});

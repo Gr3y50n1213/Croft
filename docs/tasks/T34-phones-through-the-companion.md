@@ -84,6 +84,33 @@ tokens: 15-minute access, rotating refresh, a device the person can sign out).
 - Done when: the three flavours build in CI, the dependency check passes on `fdroid` and `github` and its tests show each
   forbidden group fails, each store's release passes the output checks, and the docs name the new tasks.
 
+## Spec (T34e)
+- **The Companion:**
+  - `POST /api/me/delete` with `{"confirm": "<user name>"}` deletes the user. The schema's cascades remove their sessions,
+    passkeys, TOTP, identities, mail credentials, push subscriptions and data key; their audit entries lose the user.
+  - It is done under the user's mail slot lock, which also stops their core and removes `users/<id>/` with the mail database.
+  - Only from a full session (not recovery) signed in at most ten minutes ago (`403 fresh_sign_in`), with the user's name
+    (`400`); never the only enabled admin (`409`).
+  - Audited as `user.delete` without naming the user.
+  - At start, folders of users who no longer exist are removed (ids are never reused).
+  - The command line has `user delete --name NAME`, for someone who can no longer sign in: only while the Companion is
+    stopped, and never the only admin.
+- **The web app:**
+  - W04 Security has "Delete my Companion data": type the name, then confirm.
+  - On `fresh_sign_in`, "Sign in again" signs the browser out and back in, then returns to Security (a remembered return,
+    for this tab only, from a fixed list).
+  - `/delete` is the address to give: it leads to Security, through a sign-in when needed.
+  - `/deleted` says what went.
+- **The phone:** S58 has "Delete my Companion data", which opens `<Companion>/delete` in a Custom Tab. The app finds the
+  session gone at its next call and forgets the connection.
+- **The store:** `docs/store/DELETING-YOUR-DATA.draft.md`, the public page the store listings link to (OPEN-ITEMS).
+- Done when:
+  - API tests cover the name, freshness, the last admin, a recovery session, everything gone (sessions, refresh, the user,
+    the mail folder, never reopened), another user untouched, the audit entry without the user, and the sweep;
+  - a CLI test covers `user delete`;
+  - unit tests cover the return list; an end-to-end test deletes through the web app; a unit test covers no browser in S58;
+  - an independent review is done.
+
 ## Spec (T34d)
 - **The registrar** (`push/CompanionPush.kt`, every store):
   - An endpoint and this device's Web Push keys become a subscription at the person's Companion (`CompanionLink.add_push`).

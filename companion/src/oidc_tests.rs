@@ -1322,3 +1322,23 @@ async fn a_phone_signs_in_through_the_provider_only_from_the_companions_page() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["access_token"].is_string());
 }
+
+#[tokio::test]
+async fn a_fresh_web_sign_in_makes_the_provider_ask_and_a_plain_one_does_not() {
+    let h = h_with(false).await;
+    let app = app_side();
+    let plain = h.start(&app).await;
+    assert!(!plain.contains("prompt=login"), "{plain}");
+    let path = format!(
+        "/api/sign-in/oidc/start?app_challenge={}&app_redirect={}&fresh=1",
+        app.challenge,
+        crate::oidc::with_query("", &[("x", APP_REDIRECT)]).trim_start_matches("?x=")
+    );
+    let (s, loc, v) = h.raw(Method::GET, &path, None, None).await;
+    assert_eq!(s, StatusCode::SEE_OTHER, "{v}");
+    let url = loc.unwrap();
+    assert!(
+        url.contains("prompt=login") && url.contains("max_age=0"),
+        "{url}"
+    );
+}

@@ -59,9 +59,15 @@ fn run(args: &[String]) -> Result<String, CliError> {
     let runtime = tokio::runtime::Runtime::new().map_err(|e| CliError::Serve(e.to_string()))?;
     runtime
         .block_on(async {
-            let mut app = http::App::new(store, auth).with_mail(
-                croft_companion::mail::MailCores::new(config.data_dir.clone()),
-            );
+            let cores = croft_companion::mail::MailCores::new(config.data_dir.clone());
+            // T34e: mail folders of users deleted while their folder could not be removed.
+            if let Ok(ids) = store.user_ids() {
+                let removed = cores.sweep(&ids);
+                if removed > 0 {
+                    eprintln!("removed the mail of {removed} deleted user(s)");
+                }
+            }
+            let mut app = http::App::new(store, auth).with_mail(cores);
             // T30: the web app, read once from its folder.
             if let Some(dir) = &config.web_dir {
                 let web = croft_companion::webapp::WebApp::load(dir, &config.public_url)

@@ -2440,3 +2440,267 @@ async fn the_cores_companion_client_signs_in_lists_devices_renews_and_signs_out(
         CompanionError::SignedOut
     );
 }
+
+// ---- T34e: "Delete my Companion data" ----
+
+#[tokio::test]
+async fn deleting_my_data_needs_my_name_and_a_fresh_sign_in_then_removes_everything() {
+    let h = h();
+    let _admin = h.person("root", Role::Admin).await;
+    let mut ann = h.person("ann", Role::User).await;
+    let mut bob = h.person("bob", Role::User).await;
+    let bob_t = h.sign_in(&mut bob).await;
+    let old = h.sign_in(&mut ann).await;
+    // Ann's mail database exists on disk.
+    let cores = h.app.mail.clone().unwrap();
+    cores.core(&h.app.store, &h.master, ann.id).unwrap();
+    let folder = cores.database(ann.id).parent().unwrap().to_path_buf();
+    assert!(folder.is_dir());
+
+    // The wrong name, or none.
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&old.access),
+            Some(json!({"confirm": "bob"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // A sign-in older than ten minutes (a forgotten or stolen session) is not enough.
+    h.advance(11 * 60 * 1000);
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&old.access),
+            Some(json!({"confirm": "ann"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["error"], "fresh_sign_in");
+    assert!(folder.is_dir(), "nothing was deleted");
+
+    // A fresh sign-in can.
+    let fresh = h.sign_in(&mut ann).await;
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&fresh.access),
+            Some(json!({"confirm": "ann"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Every session is gone, the user too, and the mail on disk.
+    for t in [&old, &fresh] {
+        assert_eq!(
+            h.status(Method::GET, "/api/me", Some(&t.access)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let (s, _) = h
+            .call(
+                Method::POST,
+                "/api/token/refresh",
+                None,
+                Some(json!({"refresh_token": t.refresh})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+    assert!(h.store().user_by_name("ann").unwrap().is_none());
+    assert!(!folder.exists());
+    assert!(
+        cores.core(&h.app.store, &h.master, ann.id).is_err(),
+        "never opened again"
+    );
+    assert!(!folder.exists());
+    // Bob is untouched.
+    assert_eq!(
+        h.status(Method::GET, "/api/me", Some(&bob_t.access)).await,
+        StatusCode::OK
+    );
+    // The audit log says an account was deleted, without saying whose.
+    let entries = h.store().audit_entries(None, 100).unwrap();
+    let deleted: Vec<_> = entries
+        .iter()
+        .filter(|e| e.action == "user.delete")
+        .collect();
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].user_id, None);
+    assert!(entries.iter().all(|e| e.user_id != Some(ann.id)));
+}
+
+#[tokio::test]
+async fn the_last_admin_cannot_delete_themselves_and_a_recovery_session_cannot_delete() {
+    let h = h();
+    let mut root = h.person("root", Role::Admin).await;
+    let t = h.sign_in(&mut root).await;
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&t.access),
+            Some(json!({"confirm": "root"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // With a second admin, the first may go.
+    let _second = h.person("second", Role::Admin).await;
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&t.access),
+            Some(json!({"confirm": "root"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // A recovery session (TOTP and a recovery code) may only add a passkey.
+    let ann = h.person("ann", Role::User).await;
+    let (_, v) = h
+        .recover(&ann, &h.totp_now(&ann), &ann.recovery_codes[0])
+        .await;
+    let r = signed(&v);
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&r.access),
+            Some(json!({"confirm": "ann"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(h.store().user_by_name("ann").unwrap().is_some());
+}
+
+#[tokio::test]
+async fn the_start_sweep_removes_only_the_mail_of_users_who_are_gone() {
+    let h = h();
+    let ann = h.person("ann", Role::User).await;
+    let cores = h.app.mail.clone().unwrap();
+    cores.core(&h.app.store, &h.master, ann.id).unwrap();
+    let kept = cores.database(ann.id).parent().unwrap().to_path_buf();
+    let gone = cores.database(9_999).parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&gone).unwrap();
+    std::fs::write(gone.join("mail.db"), b"left by a deletion cut short").unwrap();
+    let ids = h.store().user_ids().unwrap();
+    assert_eq!(cores.sweep(&ids), 1);
+    assert!(!gone.exists());
+    assert!(kept.is_dir());
+}
+
+#[tokio::test]
+async fn an_old_session_cannot_add_a_passkey_to_get_round_the_fresh_sign_in() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let t = h.sign_in(&mut ann).await;
+    h.advance(11 * 60 * 1000);
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/passkeys/start",
+            Some(&t.access),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["error"], "fresh_sign_in");
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&t.access),
+            Some(json!({"confirm": "ann"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Signed in again, both work.
+    let fresh = h.sign_in(&mut ann).await;
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/passkeys/start",
+            Some(&fresh.access),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn deleting_does_not_wait_on_a_holder_that_needs_the_users_slot() {
+    let h = h();
+    let ann = h.person("ann", Role::User).await;
+    let cores = h.app.mail.clone().unwrap();
+    let held = cores.core(&h.app.store, &h.master, ann.id).unwrap();
+    // Like a push watcher: it looks at the slot while it still holds the core, then lets go.
+    let watcher = {
+        let cores = cores.clone();
+        let id = ann.id;
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let again = cores.open_core(id);
+            drop(again);
+            drop(held);
+        })
+    };
+    let store = h.app.store.clone();
+    let started = std::time::Instant::now();
+    let deleted = cores
+        .remove_user(ann.id, || {
+            store
+                .lock()
+                .unwrap()
+                .delete_user(ann.id, T0)
+                .map(|o| o == crate::auth::DeleteSelf::Deleted)
+        })
+        .unwrap();
+    watcher.join().unwrap();
+    assert!(deleted);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!(!cores.database(ann.id).parent().unwrap().exists());
+}
+
+#[test]
+fn nothing_of_a_deleted_user_is_left_in_the_database_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("companion.db");
+    let master = Key::generate().unwrap();
+    let id;
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.check_master_key(&master).unwrap();
+        s.add_user(&master, "admin", Role::Admin).unwrap();
+        id = s
+            .add_user(&master, "zelda-made-up-name", Role::User)
+            .unwrap()
+            .id;
+        s.audit(Some(id), "made.up", "zelda-made-up-detail").ok();
+        assert_eq!(
+            s.delete_user(id, T0).unwrap(),
+            crate::auth::DeleteSelf::Deleted
+        );
+        let entries = s.audit_entries(None, 100).unwrap();
+        assert!(entries
+            .iter()
+            .all(|e| e.user_id.is_none() || e.user_id != Some(id)));
+        assert_eq!(
+            entries.iter().filter(|e| e.action == "user.delete").count(),
+            1
+        );
+    }
+    for f in std::fs::read_dir(dir.path()).unwrap().flatten() {
+        let bytes = std::fs::read(f.path()).unwrap();
+        assert!(
+            !bytes.windows(18).any(|w| w == b"zelda-made-up-name"),
+            "{} still holds the deleted name",
+            f.path().display()
+        );
+    }
+}

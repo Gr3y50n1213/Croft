@@ -374,6 +374,56 @@ async fn set_flag_sets_and_clears_and_is_safe_to_repeat() {
     assert!(!server.messages("INBOX")[0].flags.contains("\\Seen"));
 }
 
+/// T36b: pin and follow-up are keywords the server keeps; clearing one leaves the other.
+#[tokio::test]
+async fn croft_keywords_are_set_and_cleared() {
+    let server = TestServer::start_default().await;
+    let uid = server.add_message("INBOX", &msg("a@x"));
+    let b = backend(&server);
+    b.set_flag("INBOX", &[uid], FlagChange::Keyword(Keyword::Pinned, true))
+        .await
+        .unwrap();
+    b.set_flag(
+        "INBOX",
+        &[uid],
+        FlagChange::Keyword(Keyword::FollowUp, true),
+    )
+    .await
+    .unwrap();
+    let flags = &server.messages("INBOX")[0].flags;
+    assert!(flags.contains("$Pinned") && flags.contains("$FollowUp"));
+    b.set_flag("INBOX", &[uid], FlagChange::Keyword(Keyword::Pinned, false))
+        .await
+        .unwrap();
+    let flags = &server.messages("INBOX")[0].flags;
+    assert!(!flags.contains("$Pinned") && flags.contains("$FollowUp"));
+    let snap = b.snapshot("INBOX").await.unwrap();
+    assert!(
+        snap.messages[&uid].has(Keyword::FollowUp) && !snap.messages[&uid].has(Keyword::Pinned)
+    );
+}
+
+/// T36b: a folder whose PERMANENTFLAGS has no `\*` would drop the keyword at the next sync, so
+/// setting one is refused before anything is sent; clearing one is still allowed.
+#[tokio::test]
+async fn a_keyword_the_folder_cannot_keep_is_refused_without_a_store() {
+    let server = TestServer::start_default().await;
+    let uid = server.add_message("INBOX", &msg("a@x"));
+    server.set_keeps_new_keywords("INBOX", false);
+    let b = backend(&server);
+    server.clear_commands();
+    let err = b
+        .set_flag("INBOX", &[uid], FlagChange::Keyword(Keyword::Pinned, true))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, BackendError::Permanent(_)), "{err:?}");
+    assert!(server.commands().iter().all(|c| !c.contains("STORE")));
+    assert!(!server.messages("INBOX")[0].flags.contains("$Pinned"));
+    b.set_flag("INBOX", &[uid], FlagChange::Keyword(Keyword::Pinned, false))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn set_flag_on_a_read_only_folder_is_a_permanent_refusal() {
     let server = TestServer::start_default().await;

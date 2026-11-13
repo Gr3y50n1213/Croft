@@ -256,6 +256,16 @@ private fun ActionBar(controller: ConversationController, onBack: () -> Unit) {
                         MenuItemSpec(stringResource(R.string.reading_action_mark_unread), controller::markUnread),
                         MenuItemSpec(stringResource(R.string.reading_menu_move), controller::openMove),
                         if (controller.snoozeOffered) MenuItemSpec(stringResource(R.string.swipe_action_snooze), controller::openSnooze) else null,
+                        // T36b: Pin and Follow up, worded by the opened message's state.
+                        if (controller.pinOffered) {
+                            MenuItemSpec(stringResource(if (controller.openedPinned) R.string.mail_action_unpin else R.string.mail_action_pin), controller::togglePin)
+                        } else null,
+                        if (controller.followUpOffered) {
+                            MenuItemSpec(
+                                stringResource(if (controller.openedFollowUp) R.string.mail_action_follow_up_done else R.string.mail_action_follow_up),
+                                controller::toggleFollowUp,
+                            )
+                        } else null,
                         MenuItemSpec(stringResource(if (inSpam) R.string.reading_menu_not_spam else R.string.reading_menu_spam), controller::reportSpam, destructive = !inSpam),
                     ),
                 )

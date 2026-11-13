@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use croft_engine::BodyError;
-use croft_protocols::BackendError;
+use croft_protocols::{BackendError, Keyword};
 use croft_reader::{files, normalise_address, remote_allowed, RemoteImages};
 use croft_storage::reading::{self, ConversationRow};
 use croft_storage::{accounts, StorageError};
@@ -122,6 +122,12 @@ pub struct ConversationMessage {
     pub body_state: BodyState,
     /// The person tapped "Show images" on this message.
     pub remote_allowed: bool,
+    /// T36b: pinned (`$Pinned`), for S21's Pin or Unpin.
+    #[uniffi(default = false)]
+    pub pinned: bool,
+    /// T36b: marked to follow up (`$FollowUp`), for S21's Follow up or Done.
+    #[uniffi(default = false)]
+    pub follow_up: bool,
 }
 
 impl std::fmt::Debug for ConversationMessage {
@@ -354,6 +360,8 @@ fn addresses(json: &str) -> Vec<MailAddress> {
 }
 
 fn conversation_message(r: ConversationRow) -> ConversationMessage {
+    let has = |k: Keyword| r.message.keywords.iter().any(|w| Keyword::of(w) == Some(k));
+    let (pinned, follow_up) = (has(Keyword::Pinned), has(Keyword::FollowUp));
     let m = r.message;
     ConversationMessage {
         id: m.id,
@@ -379,6 +387,8 @@ fn conversation_message(r: ConversationRow) -> ConversationMessage {
             BodyState::NotLoaded
         },
         remote_allowed: r.remote_allowed,
+        pinned,
+        follow_up,
     }
 }
 

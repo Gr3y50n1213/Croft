@@ -32,7 +32,10 @@ const COLUMNS: &str =
      (SELECT COUNT(*) FROM message t
        WHERE t.account_id = message.account_id AND t.folder_id = message.folder_id
          AND t.thread_key = message.thread_key AND t.local_hidden = 0), \
-     snooze_back_at";
+     snooze_back_at, is_pinned, follows_up";
+
+/// The most pinned rows the Inbox's Pinned section shows (T36b).
+pub(crate) const MAX_PINNED: u32 = 20;
 
 /// How long a woken message shows its Snoozed chip (T36).
 const BACK_FROM_SNOOZE_MS: i64 = 24 * 60 * 60 * 1000;
@@ -82,6 +85,8 @@ fn row(r: &Row<'_>) -> rusqlite::Result<MessageRow> {
         back_from_snooze: r
             .get::<_, Option<i64>>(14)?
             .is_some_and(|t| crate::core::now_ms().saturating_sub(t) < BACK_FROM_SNOOZE_MS),
+        pinned: r.get(15)?,
+        follow_up: r.get(16)?,
     })
 }
 
@@ -104,8 +109,16 @@ pub(crate) fn rows_for(
     Ok(out)
 }
 
-/// Up to `limit` rows of one folder after the cursor, newest first; with `category`, only its
-/// rows (T35).
+/// Which rows of a folder a list shows.
+#[derive(Debug, Clone, Copy)]
+struct Shown<'a> {
+    /// Only this category's rows (T35).
+    category: Option<&'a str>,
+    /// Leave pinned rows out: they are the Inbox's Pinned section (T36b).
+    skip_pinned: bool,
+}
+
+/// Up to `limit` rows of one folder after the cursor, newest first, as `shown` says.
 fn folder_rows(
     conn: &Connection,
     account: i64,
@@ -113,8 +126,12 @@ fn folder_rows(
     now_ms: i64,
     before: Option<RowCursor>,
     limit: u32,
-    category: Option<&str>,
+    shown: Shown<'_>,
 ) -> Result<Vec<MessageRow>, CoreError> {
+    let Shown {
+        category,
+        skip_pinned,
+    } = shown;
     let rows = match before {
         None => {
             let sql = format!(
@@ -122,10 +139,14 @@ fn folder_rows(
                   WHERE account_id = ?1 AND folder_id = ?2 AND local_hidden = 0
                     AND (snoozed_until IS NULL OR snoozed_until <= ?3)
                     AND (?5 IS NULL OR category = ?5)
+                    AND (?6 = 0 OR is_pinned = 0)
                   ORDER BY date_ts DESC, id DESC LIMIT ?4"
             );
             let mut stmt = conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![account, folder_id, now_ms, limit, category], row)?;
+            let rows = stmt.query_map(
+                params![account, folder_id, now_ms, limit, category, skip_pinned],
+                row,
+            )?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         }
         Some(c) => {
@@ -135,11 +156,21 @@ fn folder_rows(
                     AND (snoozed_until IS NULL OR snoozed_until <= ?3)
                     AND (date_ts < ?4 OR (date_ts = ?4 AND id < ?5))
                     AND (?7 IS NULL OR category = ?7)
+                    AND (?8 = 0 OR is_pinned = 0)
                   ORDER BY date_ts DESC, id DESC LIMIT ?6"
             );
             let mut stmt = conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(
-                params![account, folder_id, now_ms, c.date_ms, c.id, limit, category],
+                params![
+                    account,
+                    folder_id,
+                    now_ms,
+                    c.date_ms,
+                    c.id,
+                    limit,
+                    category,
+                    skip_pinned
+                ],
                 row,
             )?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -148,20 +179,41 @@ fn folder_rows(
     Ok(rows)
 }
 
-/// Up to `limit` flagged rows of one account after the cursor, newest first. Trash and Junk are
-/// left out, like rows hidden by a waiting move or delete and snoozed rows.
-fn starred_rows(
+/// A per-account mark that has a mailbox of its own: Starred (`is_flagged`) and Follow up
+/// (`follows_up`, T36b). A closed set, so only these column names are ever put into SQL.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Mark {
+    /// Starred.
+    Flagged,
+    /// Follow up.
+    FollowUp,
+}
+
+impl Mark {
+    fn column(self) -> &'static str {
+        match self {
+            Mark::Flagged => "is_flagged",
+            Mark::FollowUp => "follows_up",
+        }
+    }
+}
+
+/// Up to `limit` rows of one account with `mark` after the cursor, newest first. Trash and Junk
+/// are left out, like rows hidden by a waiting move or delete and snoozed rows.
+pub(crate) fn marked_rows(
     conn: &Connection,
     account: i64,
+    mark: Mark,
     now_ms: i64,
     before: Option<RowCursor>,
     limit: u32,
 ) -> Result<Vec<MessageRow>, CoreError> {
     // `i64::MAX` as the cursor date and id means "from the start", so one statement serves both.
     let (date, id) = before.map_or((i64::MAX, i64::MAX), |c| (c.date_ms, c.id));
+    let column = mark.column();
     let sql = format!(
         "SELECT {COLUMNS} FROM message
-          WHERE account_id = ?1 AND is_flagged = 1 AND local_hidden = 0
+          WHERE account_id = ?1 AND {column} = 1 AND local_hidden = 0
             AND (snoozed_until IS NULL OR snoozed_until <= ?2)
             AND (date_ts < ?3 OR (date_ts = ?3 AND id < ?4))
             AND folder_id NOT IN (SELECT id FROM folder
@@ -194,15 +246,27 @@ pub(crate) fn page(
     let want = limit + 1;
     let mut rows = match scope {
         MessageScope::Folder { account, folder_id } => {
-            folder_rows(conn, account, folder_id, now_ms, before, want, category)?
+            // T36b: pinned mail is the Inbox's Pinned section, not part of its list.
+            let inbox = folders::list(conn, account)?
+                .iter()
+                .any(|f| f.id == folder_id && f.special_use == "inbox");
+            let shown = Shown {
+                category,
+                skip_pinned: inbox,
+            };
+            folder_rows(conn, account, folder_id, now_ms, before, want, shown)?
         }
         MessageScope::UnifiedInbox => {
             let mut all = Vec::new();
             for &account in accounts {
                 for f in folders::list(conn, account)? {
                     if f.special_use == "inbox" {
+                        let shown = Shown {
+                            category,
+                            skip_pinned: true,
+                        };
                         all.extend(folder_rows(
-                            conn, account, f.id, now_ms, before, want, category,
+                            conn, account, f.id, now_ms, before, want, shown,
                         )?);
                     }
                 }
@@ -220,7 +284,7 @@ pub(crate) fn page(
                 None => accounts.to_vec(),
             };
             for a in wanted {
-                all.extend(starred_rows(conn, a, now_ms, before, want)?);
+                all.extend(marked_rows(conn, a, Mark::Flagged, now_ms, before, want)?);
             }
             all.sort_by_key(|r| std::cmp::Reverse((r.date_ms, r.id)));
             all.truncate(want as usize);
@@ -254,7 +318,27 @@ pub(crate) fn snoozed_rows(
     );
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map(params![account, now_ms, MAX_PAGE], |r| {
-        Ok((row(r)?, r.get::<_, i64>(15)?))
+        Ok((row(r)?, r.get::<_, i64>(17)?))
     })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// T36b: the pinned messages in the Inbox of one account (rows not hidden or snoozed), newest
+/// first, at most [`MAX_PINNED`].
+pub(crate) fn pinned_rows(
+    conn: &Connection,
+    account: i64,
+    now_ms: i64,
+) -> Result<Vec<MessageRow>, CoreError> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM message
+          WHERE account_id = ?1 AND is_pinned = 1 AND local_hidden = 0
+            AND (snoozed_until IS NULL OR snoozed_until <= ?2)
+            AND folder_id IN (SELECT id FROM folder
+                               WHERE account_id = ?1 AND special_use = 'inbox')
+          ORDER BY date_ts DESC, id DESC LIMIT ?3"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map(params![account, now_ms, MAX_PINNED], row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }

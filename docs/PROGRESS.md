@@ -5,9 +5,45 @@ unverified, the next step.
 
 ---
 
+## T36b: Pin and follow-up (13 November 2026)
+
+**Status:** on `task/t36b`, its own pull request, after T36.
+
+**What was built.**
+- **Keywords, two and fixed.** `$Pinned` and `$FollowUp` (`Keyword` in the protocols crate); nothing from the app or a message is
+  ever sent as a keyword. IMAP sends them as written and reads them in any case; JMAP patches them lower-case.
+- **A folder that cannot keep them.** IMAP reads `PERMANENTFLAGS` at SELECT; without `\*` or the keyword, setting one is refused
+  before any STORE (the change is undone and the app says "Couldn't make the change"), so a pin never vanishes at the next sync.
+- **The queue.** A `SetKeyword` operation like a star: shown at once, sent after 1.5 s, Undo while it waits, put back on a refusal,
+  stored and read back after a restart (an unknown keyword in a stored row is refused, not guessed).
+- **Storage (migration 0010).** `is_pinned` and `follows_up` mirror the keywords, filled from what was stored; a sync does not undo
+  a change still waiting in the queue.
+- **The core (FFI v17).** `set_pinned`, `set_follow_up`, `list_pinned` (the Inbox's Pinned section, left out of its list),
+  `list_follow_up`, and the marks on `MessageRow` and `ConversationMessage`.
+- **Android:**
+  - S10's Pinned section above an Inbox (three rows, "Show all"), each row with its own Unpin.
+  - Pin or Unpin and Follow up or Done following up in the selection toolbar's overflow menu and S21's, with Undo.
+  - The Follow up folder in the drawer.
+
+**Checks.**
+- Core: fmt, both clippy runs, the whole test suite and `check_schema.py`, including:
+  - the keyword spellings, `PERMANENTFLAGS`, and the refusal before any STORE (in-process IMAP), the JMAP patches;
+  - a real-server check in the integration suite (kept, or refused with nothing changed);
+  - storage: the columns kept in step, per account, a sync during a queued change, migration 0010 on stored keywords;
+  - the queue: restart, Undo, refusal, the stored payload;
+  - the FFI lists, marks and Undo.
+- Android: the Pinned section with Unpin and Undo, the toolbar's Pin with Undo, Follow up and its folder, S21's Pin and Unpin (CI).
+- Older tests that pinned the overflow menu's exact items and the virtual folders were updated on purpose.
+
+**Review:** none (DECISIONS).
+
+**Next:** T37, one-tap unsubscribe (with an independent review).
+
+---
+
 ## T36: Snooze (13 November 2026)
 
-**Status:** on `task/t36`, its own pull request. Pin and follow-up moved to T36b (`docs/tasks/PHASE-3.md`).
+**Status:** merged. Pin and follow-up moved to T36b (`docs/tasks/PHASE-3.md`).
 
 **What was built.**
 - **The core (FFI v16, migration 0009).**

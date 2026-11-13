@@ -36,7 +36,8 @@ class FakeMessageRepository(
     private var undoWindowMs = DEFAULT_UNDO_WINDOW_MS
     private var offline = false
 
-    private class Op(val moves: List<Pair<MessageId, FolderId>>, val expiresAt: Long)
+    /** A move ([moves]: each message and the folder it came from), or a keyword change that [revert] takes back (T36b). */
+    private class Op(val moves: List<Pair<MessageId, FolderId>>, val expiresAt: Long, val revert: (() -> Set<FolderRef>)? = null)
     private val ops = HashMap<OpId, Op>()
 
     private class Change(val seq: Long, val folders: Set<FolderRef>, val accounts: Set<AccountId>)
@@ -160,6 +161,44 @@ class FakeMessageRepository(
 
     override suspend fun nextSnoozeWake(): Long? = synchronized(lock) { snoozedUntil.values.minOrNull() }
 
+    // ---- T36b: pin and follow-up, kept on the rows ----
+
+    override suspend fun setPinned(ids: List<MessageId>, value: Boolean): List<OpId> = synchronized(lock) {
+        setMark(ids, value, { it.pinned }) { r, v -> r.copy(pinned = v) }
+    }
+
+    override suspend fun setFollowUp(ids: List<MessageId>, value: Boolean): List<OpId> = synchronized(lock) {
+        setMark(ids, value, { it.followUp }) { r, v -> r.copy(followUp = v) }
+    }
+
+    override suspend fun listPinned(account: AccountId?): List<MessageRowData> = synchronized(lock) {
+        val inboxes = folderList.filter { it.role == FolderRole.INBOX && (account == null || it.account == account) }.map { it.id }.toSet()
+        all.filter { it.pinned && it.folder in inboxes && it.id !in snoozedUntil }.take(MAX_PINNED)
+    }
+
+    /** One operation per message that changes (as in the core), each undone on its own. */
+    private fun setMark(
+        ids: List<MessageId>,
+        value: Boolean,
+        get: (MessageRowData) -> Boolean,
+        set: (MessageRowData, Boolean) -> MessageRowData,
+    ): List<OpId> {
+        val set0 = ids.toSet()
+        if (all.none { it.id in set0 }) throw MailException(MailError.NOT_FOUND)
+        val out = ArrayList<OpId>()
+        for (r in all.filter { it.id in set0 && get(it) != value }) {
+            update(listOf(r.id)) { set(it, value) }
+            val op = nextOp++
+            ops[op] = Op(emptyList(), clock() + undoWindowMs) {
+                update(listOf(r.id)) { set(it, !value) }
+                setOf(FolderRef(r.account, r.folder))
+            }
+            out += op
+        }
+        changed(all.filter { it.id in set0 }.map { FolderRef(it.account, it.folder) }.toSet(), emptySet())
+        return out
+    }
+
     // ---- T35: categories, kept in memory (a guess from the sender until the person moves a message) ----
 
     private val categoryOf = HashMap<MessageId, MailCategory>()
@@ -241,6 +280,7 @@ class FakeMessageRepository(
     override suspend fun undo(opId: OpId): Boolean = synchronized(lock) {
         val op = ops.remove(opId) ?: return false
         if (clock() > op.expiresAt) return false
+        op.revert?.let { changed(it(), emptySet()); return true }
         val back = op.moves.toMap()
         val touched = HashSet<FolderRef>()
         all.replaceAll { r ->
@@ -279,13 +319,18 @@ class FakeMessageRepository(
     private fun scopeRows(scope: MessageScope): List<MessageRowData> = when (scope) {
         MessageScope.UnifiedInbox -> {
             val inboxes = folderList.filter { it.role == FolderRole.INBOX }.map { it.id }.toSet()
-            all.filter { it.folder in inboxes && it.id !in snoozedUntil }
+            // T36b: pinned mail is the Pinned section, not part of an Inbox's list.
+            all.filter { it.folder in inboxes && it.id !in snoozedUntil && !it.pinned }
         }
         is MessageScope.Folder -> {
             val role = folderList.firstOrNull { it.id == scope.folderId }?.role
             when (role) {
                 // Virtual folders: starred mail of the account (not in Trash or Spam), and nothing snoozed.
                 FolderRole.STARRED -> all.filter { it.account == scope.account && it.flagged && !inFolderOf(it, FolderRole.TRASH) && !inFolderOf(it, FolderRole.SPAM) }
+                FolderRole.FOLLOW_UP -> all.filter {
+                    it.account == scope.account && it.followUp && it.id !in snoozedUntil && !inFolderOf(it, FolderRole.TRASH) && !inFolderOf(it, FolderRole.SPAM)
+                }
+                FolderRole.INBOX -> all.filter { it.folder == scope.folderId && it.id !in snoozedUntil && !it.pinned }
                 FolderRole.SNOOZED -> all.filter { it.account == scope.account && it.id in snoozedUntil }
                     .map { it.copy(snoozedUntilMs = snoozedUntil[it.id]) }
                     .sortedWith(compareBy<MessageRowData> { it.snoozedUntilMs }.thenBy { it.id })
@@ -354,6 +399,7 @@ class FakeMessageRepository(
     private companion object {
         const val DEFAULT_UNDO_WINDOW_MS = 5_000L
         const val LOG_SIZE = 512
+        const val MAX_PINNED = 20
         val ORDER: Comparator<MessageRowData> = compareByDescending<MessageRowData> { it.dateMs }.thenByDescending { it.id }
     }
 }

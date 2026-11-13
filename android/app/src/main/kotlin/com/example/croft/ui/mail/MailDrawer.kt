@@ -46,7 +46,7 @@ import com.example.croft.ui.components.longPressMenu
 
 /** The mailboxes in the order of the drawer; custom folders and labels follow under their own heading. */
 private val DrawerOrder = listOf(
-    FolderRole.INBOX, FolderRole.STARRED, FolderRole.SNOOZED, FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX,
+    FolderRole.INBOX, FolderRole.STARRED, FolderRole.SNOOZED, FolderRole.FOLLOW_UP, FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX,
     FolderRole.ARCHIVE, FolderRole.SPAM, FolderRole.TRASH,
 )
 
@@ -55,6 +55,7 @@ fun FolderRole.icon(): ImageVector = when (this) {
     FolderRole.INBOX -> CroftIcons.Inbox
     FolderRole.STARRED -> Icons.Filled.Star
     FolderRole.SNOOZED -> CroftIcons.Schedule
+    FolderRole.FOLLOW_UP -> CroftIcons.Flag
     FolderRole.SENT -> Icons.AutoMirrored.Filled.Send
     FolderRole.DRAFTS -> CroftIcons.Drafts
     FolderRole.OUTBOX -> CroftIcons.Outbox
@@ -70,6 +71,7 @@ fun FolderInfo.displayName(): String = when (role) {
     FolderRole.INBOX -> stringResource(R.string.mail_folder_inbox)
     FolderRole.STARRED -> stringResource(R.string.mail_folder_starred)
     FolderRole.SNOOZED -> stringResource(R.string.mail_folder_snoozed)
+    FolderRole.FOLLOW_UP -> stringResource(R.string.mail_folder_follow_up)
     FolderRole.SENT -> stringResource(R.string.mail_folder_sent)
     FolderRole.DRAFTS -> stringResource(R.string.mail_folder_drafts)
     FolderRole.OUTBOX -> stringResource(R.string.mail_folder_outbox)

@@ -407,6 +407,19 @@ private fun InboxBody(
                 modifier = Modifier.padding(bottom = 8.dp),
             )
         }
+        // T36b: the Pinned section of an Inbox (with the All chip).
+        if (!selecting && controller.pinnedRows.isNotEmpty()) {
+            PinnedSection(
+                rows = controller.pinnedRows,
+                expanded = controller.pinnedExpanded,
+                collapsed = InboxController.PINNED_COLLAPSED,
+                onToggle = controller::togglePinnedExpanded,
+                onOpen = onOpenMessage,
+                onUnpin = controller::unpin,
+                // At most about a third of the room it shares with the list, so the list (and its snackbar) always keeps space.
+                modifier = Modifier.weight(PINNED_WEIGHT, fill = false).padding(horizontal = 12.dp),
+            )
+        }
         if (localDrafts.isNotEmpty() && !selecting) LocalDraftsSection(localDrafts, onOpen = { d -> onOpenDraft?.invoke(d.accountId, d.id) }, Modifier.padding(horizontal = 12.dp))
 
         // The list area: pull to refresh, the list or its skeleton or empty state, the pill, the FAB and the snackbar.
@@ -650,3 +663,5 @@ private fun LazyItemScope.RowItem(
     }
 }
 
+/** T36b: the Pinned section's share of the room beside the list (weight 1): at most 0.6 / 1.6 of it. */
+private const val PINNED_WEIGHT = 0.6f

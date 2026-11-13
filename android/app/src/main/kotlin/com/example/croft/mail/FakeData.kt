@@ -22,6 +22,8 @@ object FakeData {
     const val TRASH = 9L
     const val RECEIPTS = 10L
     const val WORK = 11L
+    /** T36b: the Follow up mailbox (a query, like Starred). */
+    const val FOLLOW_UP = 12L
 
     /** The id of folder [position] of [account]. */
     fun folderId(account: AccountId, position: Long): FolderId = account * 100 + position
@@ -38,6 +40,7 @@ object FakeData {
         INBOX to ("inbox" to "Inbox"),
         STARRED to ("starred" to "Starred"),
         SNOOZED to ("snoozed" to "Snoozed"),
+        FOLLOW_UP to ("followup" to "Follow up"),
         SENT to ("sent" to "Sent"),
         DRAFTS to ("drafts" to "Drafts"),
         OUTBOX to ("outbox" to "Outbox"),

@@ -106,3 +106,8 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   a later task. The web app keeps Snooze hidden until then (the rule in `docs/ux/controls.md`).
 - **A woken message stays at its date's place (T36).** The list is ordered by the message's date, so a message back from snooze is
   unread with a Snoozed chip and a notification, but not at the top. Putting it at the top needs a separate sort key in the list query.
+- **Pin and follow-up keyword names (T36b).** `$Pinned` and `$FollowUp` were chosen without checking the IANA "IMAP and JMAP
+  Keywords" registry (not reachable from this container). If the registry, or a recent RFC on keywords, names others for the same
+  meaning, switch to them (reading both for a while).
+- **Follow-up reminders (T36b).** A follow-up is a mark only: no "remind me at" time and no "if nobody replies" check yet.
+- **Pin and Follow up on the web and as swipe actions (T43).**

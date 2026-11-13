@@ -23,7 +23,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use croft_protocols::{BackendError, RemoteHeader, Uid};
+use croft_protocols::{BackendError, Keyword, RemoteHeader, Uid};
 
 use crate::ops::{
     AccountId, AwaitingUid, CancelError, Enqueued, Location, Op, OpId, OpKind, OpQueue, OpState,
@@ -62,6 +62,19 @@ pub enum LocalEffect {
         /// UID in the folder.
         uid: Uid,
         /// New value: true means starred.
+        value: bool,
+    },
+    /// Set or clear one of Croft's keywords on the message row (T36b).
+    SetKeyword {
+        /// Owning account.
+        account: AccountId,
+        /// Folder path.
+        folder: String,
+        /// UID in the folder.
+        uid: Uid,
+        /// Which keyword.
+        keyword: Keyword,
+        /// New value: true means set.
         value: bool,
     },
     /// Hide the row from lists (a move or delete is waiting). The row is kept.
@@ -861,6 +874,13 @@ fn created_effects(account: AccountId, kind: &OpKind, at: (&str, Uid)) -> Vec<Lo
             uid,
             value: *value,
         },
+        OpKind::SetKeyword { keyword, value, .. } => LocalEffect::SetKeyword {
+            account,
+            folder: folder.clone(),
+            uid,
+            keyword: *keyword,
+            value: *value,
+        },
         OpKind::MoveTo { .. } | OpKind::DeleteForever { .. } => LocalEffect::Hide {
             account,
             folder: folder.clone(),
@@ -916,7 +936,9 @@ fn finished_effects(old: &Op, new: &Op, after: &OpQueue, finish: Finish) -> Vec<
 fn restore_effect(old: &Op, after: &OpQueue) -> Option<LocalEffect> {
     let (folder, uid) = old.kind.target();
     let (folder, account) = (folder.to_owned(), old.account);
-    let still_waiting = |want_seen: bool| {
+    // The value of the latest waiting operation on the same flag or keyword (the same slot).
+    let slot = old.kind.slot().map(|(s, _)| s);
+    let still_waiting = || {
         after
             .iter()
             .filter(|o| {
@@ -925,24 +947,28 @@ fn restore_effect(old: &Op, after: &OpQueue) -> Option<LocalEffect> {
                     && !o.state.is_finished()
                     && o.kind.target() == (folder.as_str(), uid)
             })
-            .filter_map(|o| match (&o.kind, want_seen) {
-                (OpKind::SetSeen { value, .. }, true)
-                | (OpKind::SetFlagged { value, .. }, false) => Some(*value),
-                _ => None,
-            })
+            .filter_map(|o| o.kind.slot().filter(|(s, _)| Some(*s) == slot))
+            .map(|(_, value)| value)
             .last()
     };
     Some(match &old.kind {
         OpKind::SetSeen { value, .. } => LocalEffect::SetSeen {
             account,
             uid,
-            value: still_waiting(true).unwrap_or(!*value),
+            value: still_waiting().unwrap_or(!*value),
             folder,
         },
         OpKind::SetFlagged { value, .. } => LocalEffect::SetFlagged {
             account,
             uid,
-            value: still_waiting(false).unwrap_or(!*value),
+            value: still_waiting().unwrap_or(!*value),
+            folder,
+        },
+        OpKind::SetKeyword { keyword, value, .. } => LocalEffect::SetKeyword {
+            account,
+            uid,
+            keyword: *keyword,
+            value: still_waiting().unwrap_or(!*value),
             folder,
         },
         OpKind::MoveTo { .. } | OpKind::DeleteForever { .. } => {

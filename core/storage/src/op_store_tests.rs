@@ -14,7 +14,9 @@ use croft_mail_core::{
     AwaitingUid, Batch, Enqueued, FolderReset, LocalEffect, Op, OpKind, OpState, OpStore,
     PersistentQueue, QueueError, Rejection,
 };
-use croft_protocols::{BackendError, Flags, FolderStatus, RemoteFolder, RemoteHeader, SpecialUse};
+use croft_protocols::{
+    BackendError, Flags, FolderStatus, Keyword, RemoteFolder, RemoteHeader, SpecialUse,
+};
 use serde_json::json;
 
 use crate::accounts::{self, NewAccount, Protocol};
@@ -1309,4 +1311,99 @@ fn a_folder_reset_that_cannot_be_written_changes_nothing() {
     );
     assert!(row(&q, fx.a1, "INBOX", 3).is_some(), "rows kept");
     assert_eq!(row(&q, fx.a1, "INBOX", 2).unwrap().pending_ops, 1);
+}
+
+fn pin(uid: u32, value: bool) -> OpKind {
+    OpKind::SetKeyword {
+        folder: "INBOX".into(),
+        uid,
+        keyword: Keyword::Pinned,
+        value,
+    }
+}
+
+/// T36b: a pin is stored and read back after a restart, shows at once, is undone by Undo and by a
+/// refusal, and a follow-up on the same message is a separate change.
+#[test]
+fn a_pin_survives_a_restart_shows_at_once_and_undo_or_a_refusal_takes_it_back() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let pinned = add(&mut q, f.a1, pin(1, true), 0);
+    let follow = add(
+        &mut q,
+        f.a1,
+        OpKind::SetKeyword {
+            folder: "INBOX".into(),
+            uid: 1,
+            keyword: Keyword::FollowUp,
+            value: true,
+        },
+        0,
+    );
+    let flags = |q: &Queue| {
+        let m = row(q, f.a1, "INBOX", 1).unwrap();
+        (
+            m.keywords.contains(&"$Pinned".to_owned()),
+            m.keywords.contains(&"$FollowUp".to_owned()),
+            m.pending_ops,
+        )
+    };
+    assert_eq!(flags(&q), (true, true, 2), "both show at once");
+    let before = all_ops(&q);
+    drop(q);
+    let mut q = open(&f.path);
+    assert_eq!(all_ops(&q), before, "read back the same after a restart");
+
+    q.cancel(pinned, 1_000).unwrap();
+    assert_eq!(flags(&q), (false, true, 1), "Undo takes back the pin only");
+
+    q.take_due(WINDOW, 10).unwrap();
+    let err = BackendError::Permanent("the server cannot keep this keyword".into());
+    assert_eq!(
+        q.reject(follow, &err, WINDOW).unwrap(),
+        Some(Rejection::Failed)
+    );
+    assert_eq!(flags(&q), (false, false, 0), "a refusal takes it back");
+}
+
+#[test]
+fn a_keyword_payload_names_the_keyword_and_an_unknown_one_is_refused() {
+    let f = fixture();
+    let mut q = open(&f.path);
+    let id = add(&mut q, f.a1, pin(1, true), 0);
+    let (kind, payload): (String, String) = db(&q)
+        .connection()
+        .query_row(
+            "SELECT kind, payload_json FROM op_queue WHERE id = ?1",
+            [id as i64],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "set_keyword");
+    let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(
+        v,
+        json!({"v": 1, "folder": "INBOX", "uid": 1, "keyword": "pinned", "value": true})
+    );
+    // A keyword this version does not know is refused, never guessed.
+    db(&q)
+        .connection()
+        .execute(
+            "UPDATE op_queue SET payload_json = ?2 WHERE id = ?1",
+            rusqlite::params![
+                id as i64,
+                json!({"v": 1, "folder": "INBOX", "uid": 1, "keyword": "$Other", "value": true})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+    drop(q);
+    let q = open(&f.path);
+    assert!(all_ops(&q).is_empty());
+    assert_eq!(
+        q.unreadable().iter().map(|u| u.id).collect::<Vec<_>>(),
+        vec![id]
+    );
+    let m = row(&q, f.a1, "INBOX", 1).unwrap();
+    assert_eq!(m.pending_ops, 0);
 }

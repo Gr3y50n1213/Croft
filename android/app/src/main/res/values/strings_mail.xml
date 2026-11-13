@@ -87,6 +87,10 @@
     <string name="mail_action_mark_unread">Mark as unread</string>
     <string name="mail_action_star">Star</string>
     <string name="mail_action_unstar">Remove star</string>
+    <string name="mail_action_pin">Pin</string>
+    <string name="mail_action_unpin">Unpin</string>
+    <string name="mail_action_follow_up">Follow up</string>
+    <string name="mail_action_follow_up_done">Done following up</string>
     <string name="mail_action_restore">Restore</string>
     <string name="mail_action_not_spam">Not spam</string>
     <string name="mail_action_move_to_inbox">Move to inbox</string>
@@ -105,6 +109,22 @@
     <plurals name="mail_snack_deleted_forever">
         <item quantity="one">%d conversation deleted for good</item>
         <item quantity="other">%d conversations deleted for good</item>
+    </plurals>
+    <plurals name="mail_snack_pinned">
+        <item quantity="one">%d pinned</item>
+        <item quantity="other">%d pinned</item>
+    </plurals>
+    <plurals name="mail_snack_unpinned">
+        <item quantity="one">%d unpinned</item>
+        <item quantity="other">%d unpinned</item>
+    </plurals>
+    <plurals name="mail_snack_follow_up">
+        <item quantity="one">%d marked to follow up</item>
+        <item quantity="other">%d marked to follow up</item>
+    </plurals>
+    <plurals name="mail_snack_follow_up_done">
+        <item quantity="one">%d follow-up done</item>
+        <item quantity="other">%d follow-ups done</item>
     </plurals>
     <plurals name="mail_snack_moved">
         <item quantity="one">%d conversation moved</item>
@@ -169,6 +189,12 @@
     <string name="mail_folder_inbox">Inbox</string>
     <string name="mail_folder_starred">Starred</string>
     <string name="mail_folder_snoozed">Snoozed</string>
+    <string name="mail_folder_follow_up">Follow up</string>
+    <string name="pinned_title">Pinned</string>
+    <string name="pinned_show_all">Show all</string>
+    <string name="pinned_show_less">Show less</string>
+    <!-- One pinned message, as a screen reader says it: sender, then subject. -->
+    <string name="pinned_row">Pinned: %1$s, %2$s</string>
     <string name="mail_folder_sent">Sent</string>
     <string name="mail_folder_drafts">Drafts</string>
     <string name="mail_folder_outbox">Outbox</string>

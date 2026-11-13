@@ -76,6 +76,10 @@ data class ConversationMessageData(
     val bodyStored: Boolean,
     /** The person tapped "Show images" on this message. */
     val remoteAllowed: Boolean,
+    /** T36b: pinned (`$Pinned`). */
+    val pinned: Boolean = false,
+    /** T36b: marked to follow up (`$FollowUp`). */
+    val followUp: Boolean = false,
 ) {
     /** What the header shows as the sender. */
     val displayName: String get() = senderName?.takeIf { it.isNotBlank() } ?: senderAddress.orEmpty()

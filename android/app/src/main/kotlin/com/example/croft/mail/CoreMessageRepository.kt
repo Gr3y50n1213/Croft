@@ -71,7 +71,7 @@ class CoreMessageRepository(
     /** What an operation was, for Retry and for marking failed rows. */
     private class Call(val kind: Kind, val ids: List<MessageId>, val folder: FolderId?)
 
-    private enum class Kind { ARCHIVE, TRASH, MOVE, DELETE_FOREVER }
+    private enum class Kind { ARCHIVE, TRASH, MOVE, DELETE_FOREVER, PIN, UNPIN, FOLLOW_UP, FOLLOW_UP_DONE }
 
     private val calls = object : LinkedHashMap<OpId, Call>(64, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<OpId, Call>): Boolean = size > MAX_REMEMBERED_OPS
@@ -84,11 +84,13 @@ class CoreMessageRepository(
     override suspend fun listFolders(account: AccountId): List<FolderInfo> = onIo {
         core.listFolders(account).map { it.toApp(account) } +
             FolderInfo(VirtualFolders.starred(account), account, "Starred", FolderRole.STARRED.specialUse, 0, 0) +
-            FolderInfo(VirtualFolders.snoozed(account), account, "Snoozed", FolderRole.SNOOZED.specialUse, 0, 0)
+            FolderInfo(VirtualFolders.snoozed(account), account, "Snoozed", FolderRole.SNOOZED.specialUse, 0, 0) +
+            FolderInfo(VirtualFolders.followUp(account), account, "Follow up", FolderRole.FOLLOW_UP.specialUse, 0, 0)
     }
 
     override suspend fun listMessages(scope: MessageScope, before: RowCursor?, limit: Int): MessagePage = onIo {
         if (scope is MessageScope.Folder && VirtualFolders.isSnoozed(scope.folderId)) return@onIo snoozedPage(scope.account, before)
+        if (scope is MessageScope.Folder && VirtualFolders.isFollowUp(scope.folderId)) return@onIo followUpPage(scope.account, before, limit)
         val page = core.listMessages(scope.toCore(), before?.let { CoreRowCursor(it.dateMs, it.id) }, limit.coerceIn(0, MAX_PAGE).toUInt())
         synchronized(accountOf) { page.rows.forEach { accountOf[it.id] = it.account } }
         MessagePage(page.rows.map { it.toApp(isSample(it.account)) }, page.next?.let { RowCursor(it.dateMs, it.id) })
@@ -96,6 +98,7 @@ class CoreMessageRepository(
 
     override suspend fun listMessagesIn(scope: MessageScope, category: MailCategory?, before: RowCursor?, limit: Int): MessagePage = onIo {
         if (scope is MessageScope.Folder && VirtualFolders.isSnoozed(scope.folderId)) return@onIo snoozedPage(scope.account, before)
+        if (scope is MessageScope.Folder && VirtualFolders.isFollowUp(scope.folderId)) return@onIo followUpPage(scope.account, before, limit)
         val page = core.listMessagesIn(
             scope.toCore(),
             category?.toCore(),
@@ -129,6 +132,29 @@ class CoreMessageRepository(
     override suspend fun wakeDueSnoozes(): List<MessageId> = onIo { core.wakeDueSnoozes() }
 
     override suspend fun nextSnoozeWake(): Long? = onIo { core.nextSnoozeWake() }
+
+    /** T36b: the Follow up mailbox, paged like any list. */
+    private fun followUpPage(account: AccountId, before: RowCursor?, limit: Int): MessagePage {
+        val page = core.listFollowUp(account, before?.let { CoreRowCursor(it.dateMs, it.id) }, limit.coerceIn(0, MAX_PAGE).toUInt())
+        synchronized(accountOf) { page.rows.forEach { accountOf[it.id] = it.account } }
+        return MessagePage(page.rows.map { it.toApp(isSample(it.account)) }, page.next?.let { RowCursor(it.dateMs, it.id) })
+    }
+
+    override suspend fun setPinned(ids: List<MessageId>, value: Boolean): List<OpId> = onIo {
+        core.setPinned(ids, value).map { it.toLong() }.also { remember(it, Call(if (value) Kind.PIN else Kind.UNPIN, ids, null)) }
+    }
+
+    override suspend fun setFollowUp(ids: List<MessageId>, value: Boolean): List<OpId> = onIo {
+        core.setFollowUp(ids, value).map { it.toLong() }
+            .also { remember(it, Call(if (value) Kind.FOLLOW_UP else Kind.FOLLOW_UP_DONE, ids, null)) }
+    }
+
+    override suspend fun listPinned(account: AccountId?): List<MessageRowData> = onIo {
+        val rows = core.listPinned(account)
+        synchronized(accountOf) { rows.forEach { accountOf[it.id] = it.account } }
+        rows.map { it.toApp(isSample(it.account)) }
+    }
+
 
     override suspend fun nextChange(after: Long): ChangeBatch {
         val batch = try {
@@ -180,6 +206,8 @@ class CoreMessageRepository(
                     Kind.TRASH -> moveByRole(listOf(id), FolderRole.TRASH, Kind.TRASH)
                     Kind.MOVE -> doMoveTo(listOf(id), call.folder ?: throw MailException(MailError.NOT_FOUND))
                     Kind.DELETE_FOREVER -> doDeleteForever(listOf(id))
+                    Kind.PIN, Kind.UNPIN -> core.setPinned(listOf(id), call.kind == Kind.PIN).map { it.toLong() }
+                    Kind.FOLLOW_UP, Kind.FOLLOW_UP_DONE -> core.setFollowUp(listOf(id), call.kind == Kind.FOLLOW_UP).map { it.toLong() }
                 }
             } catch (e: MailException) {
                 if (e.error != MailError.NOT_FOUND) throw e
@@ -288,7 +316,7 @@ class CoreMessageRepository(
         subject = subject, snippet = snippet, dateMs = dateMs, seen = seen, flagged = flagged,
         hasAttachments = hasAttachments, pending = pending, threadCount = threadCount.toInt().coerceAtLeast(1),
         recipients = recipients.joinToString(", ").ifBlank { null }, localOnly = localOnly,
-        backFromSnooze = backFromSnooze,
+        backFromSnooze = backFromSnooze, pinned = pinned, followUp = followUp,
     )
 
     private fun CoreChangeBatch.toApp() = ChangeBatch(

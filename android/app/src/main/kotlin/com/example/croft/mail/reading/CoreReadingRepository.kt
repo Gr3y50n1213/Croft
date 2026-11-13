@@ -82,6 +82,7 @@ class CoreReadingRepository(
         senderName = senderName, senderAddress = senderAddress, to = to.map { it.toApp() }, cc = cc.map { it.toApp() },
         dateMs = dateMs, subject = subject, snippet = snippet, seen = seen, flagged = flagged, answered = answered,
         hasAttachments = hasAttachments, pending = pending, bodyStored = bodyState == CoreBodyState.LOADED, remoteAllowed = remoteAllowed,
+        pinned = pinned, followUp = followUp,
     )
 
     private fun CoreAddress.toApp() = MailAddressData(name, address)

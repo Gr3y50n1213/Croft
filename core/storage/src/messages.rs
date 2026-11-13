@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use croft_mail_core::category::{classify, Category, SenderRule};
-use croft_protocols::{FlagChange, Flags, RemoteHeader, Uid};
+use croft_protocols::{FlagChange, Flags, Keyword, RemoteHeader, Uid};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::error::{Result, StorageError};
@@ -233,9 +233,9 @@ pub fn upsert(
             r#"INSERT INTO message (account_id, folder_id, uid, message_id_hdr, thread_key, subject,
                                     from_name, from_addr, date_ts, size, is_seen, is_flagged,
                                     is_answered, is_draft, keywords_json, category, list_id,
-                                    list_unsubscribe, list_one_click)
+                                    list_unsubscribe, list_one_click, is_pinned, follows_up)
                SELECT ?1, f.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                      ?18, ?19
+                      ?18, ?19, ?20, ?21
                  FROM folder f
                 WHERE f.account_id = ?1 AND f.id = ?2
                ON CONFLICT (folder_id, uid) DO UPDATE SET
@@ -252,7 +252,13 @@ pub fn upsert(
                                      ELSE excluded.is_flagged END,
                    is_answered   = excluded.is_answered,
                    is_draft      = excluded.is_draft,
-                   keywords_json = excluded.keywords_json,
+                   -- T36b: like the flags, a queued keyword change is not undone by a sync.
+                   keywords_json = CASE WHEN message.pending_ops > 0 THEN message.keywords_json
+                                        ELSE excluded.keywords_json END,
+                   is_pinned  = CASE WHEN message.pending_ops > 0 THEN message.is_pinned
+                                     ELSE excluded.is_pinned END,
+                   follows_up = CASE WHEN message.pending_ops > 0 THEN message.follows_up
+                                     ELSE excluded.follows_up END,
                    list_id          = excluded.list_id,
                    list_unsubscribe = excluded.list_unsubscribe,
                    list_one_click   = excluded.list_one_click
@@ -277,7 +283,9 @@ pub fn upsert(
                 category.as_str(),
                 header.list.list_id,
                 header.list.unsubscribe,
-                header.list.one_click
+                header.list.one_click,
+                header.flags.has(Keyword::Pinned),
+                header.flags.has(Keyword::FollowUp)
             ],
             |r| r.get(0),
         )
@@ -303,6 +311,33 @@ pub fn update_flags(
             "UPDATE message SET is_flagged = ?3 WHERE account_id = ?1 AND id = ?2",
             params![account_id, message_id, v],
         )?,
+        FlagChange::Keyword(k, v) => {
+            let Some(stored) = conn
+                .query_row(
+                    "SELECT keywords_json FROM message WHERE account_id = ?1 AND id = ?2",
+                    params![account_id, message_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+            else {
+                return Ok(false);
+            };
+            let mut flags = Flags {
+                keywords: serde_json::from_str(&stored)?,
+                ..Flags::default()
+            };
+            flags.apply(change);
+            let keywords = serde_json::to_string(&flags.keywords)?;
+            let column = match k {
+                Keyword::Pinned => {
+                    "UPDATE message SET keywords_json = ?3, is_pinned = ?4 WHERE account_id = ?1 AND id = ?2"
+                }
+                Keyword::FollowUp => {
+                    "UPDATE message SET keywords_json = ?3, follows_up = ?4 WHERE account_id = ?1 AND id = ?2"
+                }
+            };
+            conn.execute(column, params![account_id, message_id, keywords, v])?
+        }
     };
     Ok(n > 0)
 }

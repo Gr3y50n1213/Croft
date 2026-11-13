@@ -54,6 +54,8 @@ pub(crate) struct HttpResponse {
     pub auth_schemes: Vec<String>,
     /// The `ETag` header, visible ASCII and at most 256 bytes (T39a: the version a DAV write made).
     pub etag: Option<String>,
+    /// The `Last-Modified` header, visible ASCII and at most 64 bytes (T39c: a calendar link's version).
+    pub last_modified: Option<String>,
     /// The body of a 2xx answer.
     pub body: Vec<u8>,
 }
@@ -405,7 +407,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     status_only: bool,
 ) -> Result<HttpResponse, BackendError> {
     let mut buf = Vec::with_capacity(4096);
-    let (head_len, status, location, content_length, chunked, auth_schemes, etag) = loop {
+    let (head_len, status, location, content_length, chunked, auth_schemes, etag, last_modified) = loop {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut response = httparse::Response::new(&mut headers);
         match response.parse(&buf) {
@@ -416,7 +418,19 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
                 let mut chunked = false;
                 let mut auth_schemes = Vec::new();
                 let mut etag = None;
+                let mut last_modified = None;
                 for h in response.headers.iter() {
+                    if h.name.eq_ignore_ascii_case("last-modified") {
+                        last_modified = std::str::from_utf8(h.value)
+                            .ok()
+                            .map(str::trim)
+                            .filter(|v| {
+                                !v.is_empty()
+                                    && v.len() <= 64
+                                    && v.bytes().all(|b| (0x20..=0x7e).contains(&b))
+                            })
+                            .map(str::to_owned);
+                    }
                     if h.name.eq_ignore_ascii_case("etag") {
                         etag = std::str::from_utf8(h.value)
                             .ok()
@@ -457,6 +471,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
                     chunked,
                     auth_schemes,
                     etag,
+                    last_modified,
                 );
             }
             Ok(httparse::Status::Partial) => {
@@ -477,6 +492,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
             location,
             auth_schemes,
             etag,
+            last_modified,
             body: Vec::new(),
         });
     }
@@ -522,6 +538,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
         location,
         auth_schemes,
         etag,
+        last_modified,
         body,
     })
 }

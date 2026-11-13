@@ -145,10 +145,32 @@ pub struct Calendar {
 
 /// Reads one calendar object.
 pub fn parse(text: &str) -> Result<Calendar, IcalError> {
-    if text.len() > MAX_OBJECT {
+    parse_within(text, MAX_OBJECT, MAX_LINES, MAX_COMPONENTS)
+}
+
+/// The largest calendar file read from a link (T39c).
+pub const MAX_FEED: usize = 5 * 1024 * 1024;
+/// The most lines in a calendar file from a link.
+pub const MAX_FEED_LINES: usize = 200_000;
+/// The most components in a calendar file from a link.
+pub const MAX_FEED_COMPONENTS: usize = 20_000;
+
+/// Reads a whole calendar file from a link, with its own larger bounds; [`split_by_uid`] then makes
+/// one object per event, each within the usual bounds.
+pub fn parse_feed(text: &str) -> Result<Calendar, IcalError> {
+    parse_within(text, MAX_FEED, MAX_FEED_LINES, MAX_FEED_COMPONENTS)
+}
+
+fn parse_within(
+    text: &str,
+    max_bytes: usize,
+    max_lines: usize,
+    max_components: usize,
+) -> Result<Calendar, IcalError> {
+    if text.len() > max_bytes {
         return Err(IcalError::TooLarge);
     }
-    let lines = unfold(text)?;
+    let lines = unfold(text, max_lines)?;
     let mut stack: Vec<Component> = Vec::new();
     let mut root: Option<Component> = None;
     let mut count = 0usize;
@@ -173,7 +195,7 @@ pub fn parse(text: &str) -> Result<Calendar, IcalError> {
                     return Err(IcalError::NotACalendar);
                 }
                 count += 1;
-                if count > MAX_COMPONENTS || stack.len() >= MAX_DEPTH {
+                if count > max_components || stack.len() >= MAX_DEPTH {
                     return Err(IcalError::TooLarge);
                 }
                 stack.push(Component::new(&kind));
@@ -201,7 +223,7 @@ pub fn parse(text: &str) -> Result<Calendar, IcalError> {
 
 /// Unfolds lines: a line starting with a space or tab continues the one before. LF and CRLF both
 /// end a line.
-fn unfold(text: &str) -> Result<Vec<String>, IcalError> {
+fn unfold(text: &str, max_lines: usize) -> Result<Vec<String>, IcalError> {
     let mut out: Vec<String> = Vec::new();
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -210,7 +232,7 @@ fn unfold(text: &str) -> Result<Vec<String>, IcalError> {
                 last.push_str(rest);
             }
         } else {
-            if out.len() >= MAX_LINES {
+            if out.len() >= max_lines {
                 return Err(IcalError::TooLarge);
             }
             out.push(line.to_owned());
@@ -407,6 +429,96 @@ impl Calendar {
     pub fn has_events(&self) -> bool {
         self.root.children.iter().any(|c| c.kind == "VEVENT")
     }
+}
+
+/// The top-level lines a split object keeps from the file (T39c review: nothing else is copied).
+const SPLIT_ROOT_LINES: [&str; 4] = ["VERSION", "PRODID", "CALSCALE", "METHOD"];
+/// The largest `VTIMEZONE` copied into split objects, in bytes of text.
+const MAX_SPLIT_ZONE: usize = 16 * 1024;
+/// The most text all split objects of one file may add up to.
+pub const MAX_SPLIT_TOTAL: usize = 2 * MAX_FEED;
+
+/// Splits a calendar file (from a link) into one object per event `UID`, in the order of first
+/// appearance. Each object keeps only the file's `VERSION`, `PRODID`, `CALSCALE` and `METHOD` lines
+/// (each at most 200 characters) and the `VTIMEZONE`s its events name (each at most 16 KiB); the
+/// objects together stay within [`MAX_SPLIT_TOTAL`] bytes, counted before anything is copied, so a
+/// file cannot be made to grow (T39c review). Events without a `UID` are left out. At most
+/// [`MAX_COMPONENTS`] objects.
+pub fn split_by_uid(cal: &Calendar) -> Vec<(String, Calendar)> {
+    let root_lines: Vec<Line> = cal
+        .root
+        .lines
+        .iter()
+        .filter(|l| SPLIT_ROOT_LINES.contains(&l.name.as_str()) && l.raw.len() <= 200)
+        .cloned()
+        .collect();
+    let root_size: usize = root_lines.iter().map(|l| l.raw.len() + 2).sum::<usize>() + 40;
+    let mut zones: std::collections::HashMap<String, (&Component, usize)> =
+        std::collections::HashMap::new();
+    for (tzid, c) in cal.time_zones() {
+        let size = component_size(c);
+        if size <= MAX_SPLIT_ZONE {
+            zones.entry(tzid).or_insert((c, size));
+        }
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<&Component>> =
+        std::collections::HashMap::new();
+    for c in cal.root.children.iter().filter(|c| c.kind == "VEVENT") {
+        let Some(uid) = c
+            .line("UID")
+            .map(|l| l.value.trim().to_owned())
+            .filter(|u| !u.is_empty() && u.len() <= 500)
+        else {
+            continue;
+        };
+        if !groups.contains_key(&uid) {
+            if order.len() >= MAX_COMPONENTS {
+                break;
+            }
+            order.push(uid.clone());
+        }
+        groups.entry(uid).or_default().push(c);
+    }
+    let mut total = 0usize;
+    let mut out = Vec::new();
+    for uid in order {
+        let Some(events) = groups.remove(&uid) else {
+            continue;
+        };
+        let used: std::collections::HashSet<&str> = events
+            .iter()
+            .flat_map(|e| e.lines.iter())
+            .filter_map(|l| l.param("TZID"))
+            .collect();
+        let mut wanted: Vec<&String> = zones.keys().filter(|t| used.contains(t.as_str())).collect();
+        wanted.sort();
+        let size = root_size
+            + wanted.iter().map(|t| zones[*t].1).sum::<usize>()
+            + events.iter().map(|e| component_size(e)).sum::<usize>();
+        // Counted before anything is copied: past the budget, the rest of the file is left out.
+        if total.saturating_add(size) > MAX_SPLIT_TOTAL {
+            break;
+        }
+        total += size;
+        let mut children: Vec<Component> = wanted.iter().map(|t| zones[*t].0.clone()).collect();
+        children.extend(events.into_iter().cloned());
+        let root = Component {
+            kind: "VCALENDAR".into(),
+            lines: root_lines.clone(),
+            children,
+        };
+        out.push((uid, Calendar { root }));
+    }
+    out
+}
+
+/// The bytes of text a component takes when written (roughly: its lines and its children's).
+fn component_size(c: &Component) -> usize {
+    c.kind.len() * 2
+        + 16
+        + c.lines.iter().map(|l| l.raw.len() + 4).sum::<usize>()
+        + c.children.iter().map(component_size).sum::<usize>()
 }
 
 /// A date or time as an iCalendar property gives it.

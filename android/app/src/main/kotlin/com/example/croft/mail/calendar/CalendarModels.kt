@@ -7,7 +7,17 @@ package com.example.croft.mail.calendar
 // Titles, places, notes and people never reach a log: every class here prints ids and counts only (CLAUDE.md, security rules).
 
 /** A calendar of an account. [color] is `#RRGGBB` when the server gives one. */
-data class CalendarRef(val id: Long, val account: Long, val name: String, val color: String?, val shown: Boolean) {
+data class CalendarRef(
+    val id: Long,
+    val account: Long,
+    val name: String,
+    val color: String?,
+    val shown: Boolean,
+    /** Its events cannot be changed here (a calendar from a link, T39c). */
+    val readOnly: Boolean = false,
+    /** It comes from a link the person added, and can be removed. */
+    val linked: Boolean = false,
+) {
     override fun toString(): String = "CalendarRef($account/$id, shown=$shown)"
 }
 
@@ -61,6 +71,8 @@ data class EventData(
     val status: String?,
     val conflict: Boolean,
     val pending: Boolean,
+    /** It cannot be changed here (a calendar from a link, T39c): no Edit or Delete. */
+    val readOnly: Boolean = false,
 ) {
     /** It repeats (Edit and Delete ask "This event / All events"). */
     val repeats: Boolean get() = keyMs != null
@@ -100,6 +112,9 @@ data class Reminder(val eventId: Long, val account: Long, val keyMs: Long, val a
 /** The occurrences in a window; [truncated] when some were left out. */
 data class EventsInWindow(val occurrences: List<Occurrence>, val truncated: Boolean)
 
+/** Why a calendar link could not be added (T39c). */
+enum class LinkProblem { BAD_ADDRESS, NOT_A_CALENDAR, UNREACHABLE, REFUSED, ALREADY_ADDED, TOO_MANY }
+
 /** How a calendar sync of one account went. */
 enum class CalendarSync { DONE, NOT_OFFERED, UNREACHABLE, SIGN_IN_NEEDED }
 
@@ -113,4 +128,15 @@ interface CalendarBackend {
     suspend fun save(account: Long, id: Long?, calendar: Long, draft: EventDraft, scope: EventScopeChoice, zone: String): Long
     suspend fun delete(account: Long, id: Long, scope: EventScopeChoice, zone: String): Boolean
     suspend fun reminders(fromMs: Long, toMs: Long, zone: String): List<Reminder>
+
+    /** T39c: adds a read-only calendar to [account] from a link: its id, or why not. */
+    suspend fun subscribe(account: Long, url: String, name: String): Result<Long>
+
+    /** T39c: removes a calendar that came from a link. */
+    suspend fun unsubscribe(account: Long, id: Long): Boolean
+}
+
+/** A link that could not be added, and why. */
+class LinkFailed(val problem: LinkProblem) : Exception() {
+    override val message: String get() = "calendar link: $problem"
 }

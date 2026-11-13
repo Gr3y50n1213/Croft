@@ -126,6 +126,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "calendar",
         sql: include_str!("../migrations/0013_calendar.sql"),
     },
+    Migration {
+        version: 14,
+        name: "calendar_links",
+        sql: include_str!("../migrations/0014_calendar_links.sql"),
+    },
 ];
 
 /// The version a fully migrated database reports in `PRAGMA user_version`.

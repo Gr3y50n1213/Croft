@@ -122,6 +122,8 @@ fun EventEditorScreen(
     modifier: Modifier = Modifier,
     zone: ZoneId = ZoneId.systemDefault(),
     clock: () -> Long = System::currentTimeMillis,
+    /** S35: the time of the slot tapped, for a new event (else the next quarter hour). */
+    newTime: LocalTime? = null,
 ) {
     val isNew = id == null || account == null
     var original by remember(account, id, scope) { mutableStateOf<EventData?>(null) }
@@ -138,12 +140,13 @@ fun EventEditorScreen(
         LaunchedEffect(Unit) { onClose() }
         return
     }
-    val firstCalendar = accounts.firstNotNullOfOrNull { a -> calendars[a.id]?.firstOrNull { it.shown }?.let { a.id to it.id } }
-        ?: accounts.firstNotNullOfOrNull { a -> calendars[a.id]?.firstOrNull()?.let { a.id to it.id } }
+    // A new event goes to a calendar that can take it (never one from a link).
+    val firstCalendar = accounts.firstNotNullOfOrNull { a -> calendars[a.id]?.firstOrNull { it.shown && !it.readOnly }?.let { a.id to it.id } }
+        ?: accounts.firstNotNullOfOrNull { a -> calendars[a.id]?.firstOrNull { !it.readOnly }?.let { a.id to it.id } }
     val editor = remember(original) { EventEditor(zone, original, clock(), firstCalendar) }
     val start = remember(editor, newDate) {
         val s = editor.initial
-        if (original == null && newDate != null) editor.withStart(s, newDate.atTime(s.start.toLocalTime())) else s
+        if (original == null && newDate != null) editor.withStart(s, newDate.atTime(newTime ?: s.start.toLocalTime())) else s
     }
     var fields by rememberSaveable(original?.id, stateSaver = EditorStateSaver) { mutableStateOf(start) }
     var saving by remember { mutableStateOf(false) }
@@ -250,7 +253,7 @@ fun EventEditorScreen(
                                 expanded = calendarOpen,
                                 onDismiss = { calendarOpen = false },
                                 items = accounts.flatMap { a ->
-                                    calendars[a.id].orEmpty().map { c ->
+                                    calendars[a.id].orEmpty().filter { !it.readOnly }.map { c ->
                                         MenuItemSpec(calendarLabel(accounts, calendars, a.id, c.id), { fields = fields.copy(account = a.id, calendar = c.id); calendarOpen = false })
                                     }
                                 },

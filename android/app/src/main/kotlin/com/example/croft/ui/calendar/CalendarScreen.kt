@@ -39,6 +39,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +79,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.time.format.TextStyle
+import kotlinx.coroutines.launch
+
+private const val WIDE_DP = 600
 
 /**
  * S34 Agenda and S36 Month: the header (the month, the view switch, Calendars), the sync problems, the agenda or the month grid with
@@ -93,11 +97,32 @@ fun CalendarScreen(
     onContacts: (() -> Unit)?,
     modifier: Modifier = Modifier,
     zone: ZoneId = ZoneId.systemDefault(),
+    /** S35: a tap on an empty slot (a new event at that time). */
+    onNewAt: ((java.time.LocalDateTime) -> Unit)? = null,
+    /** S35: the "Move" action of a block for screen readers (the editor's times). */
+    onMoveRequest: (Occurrence) -> Unit = onOpen,
 ) {
     val state by controller.state.collectAsState()
     val haptics = LocalHaptics.current
     val locale = LocalConfiguration.current.locales[0]
     val today = controller.today()
+    val coroutines = androidx.compose.runtime.rememberCoroutineScope()
+    // S35: a drag of a repeating event waits for "This event / All events".
+    var pendingMove by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Pair<Occurrence, Long>?>(null) }
+    pendingMove?.let { (o, ms) ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingMove = null },
+            title = { Text(stringResource(R.string.event_scope_title)) },
+            text = {
+                Column {
+                    androidx.compose.material3.TextButton({ pendingMove = null; coroutines.launch { controller.move(o, ms, com.example.croft.mail.calendar.EventScopeChoice.One(o.keyMs)) } }, Modifier.testTag(CalendarTags.MOVE_ONE)) { Text(stringResource(R.string.event_scope_one)) }
+                    androidx.compose.material3.TextButton({ pendingMove = null; coroutines.launch { controller.move(o, ms, com.example.croft.mail.calendar.EventScopeChoice.All) } }, Modifier.testTag(CalendarTags.MOVE_ALL)) { Text(stringResource(R.string.event_scope_all)) }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { androidx.compose.material3.TextButton({ pendingMove = null }) { Text(stringResource(R.string.control_cancel)) } },
+        )
+    }
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).testTag(CalendarTags.SCREEN)) {
         Column(Modifier.windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -107,6 +132,7 @@ fun CalendarScreen(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CroftFilterChip(stringResource(R.string.calendar_view_agenda), state.view == CalendarView.AGENDA, { controller.setView(CalendarView.AGENDA) }, Modifier.testTag(CalendarTags.VIEW_AGENDA))
+                CroftFilterChip(stringResource(R.string.calendar_view_week), state.view == CalendarView.WEEK, { controller.setView(CalendarView.WEEK) }, Modifier.testTag(CalendarTags.VIEW_WEEK))
                 CroftFilterChip(stringResource(R.string.calendar_view_month), state.view == CalendarView.MONTH, { controller.setView(CalendarView.MONTH) }, Modifier.testTag(CalendarTags.VIEW_MONTH))
             }
             val problems = state.problems.mapNotNull { (id, p) ->
@@ -140,6 +166,18 @@ fun CalendarScreen(
                     Text(stringResource(R.string.calendar_not_offered_message), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 state.view == CalendarView.AGENDA -> Agenda(controller, state.agenda, state.agendaFrom, state.agendaTo, today, zone, onOpen)
+                state.view == CalendarView.WEEK -> {
+                    val wide = LocalConfiguration.current.screenWidthDp >= WIDE_DP
+                    androidx.compose.runtime.LaunchedEffect(wide) { controller.setWeekDays(if (wide) 7 else 3) }
+                    WeekGrid(
+                        occurrences = state.weekOccurrences, start = state.weekStart, days = state.weekDays, today = today, nowMs = controller.nowMs(), zone = zone,
+                        onOpen = onOpen,
+                        onNewAt = { t -> onNewAt?.invoke(t) },
+                        onMove = { o, ms -> if (o.repeats) pendingMove = o to ms else coroutines.launch { controller.move(o, ms, com.example.croft.mail.calendar.EventScopeChoice.All) } },
+                        onMoveRequest = onMoveRequest,
+                        onShift = controller::moveWeek,
+                    )
+                }
                 else -> Month(controller, today, zone, onOpen)
             }
             PullIndicator(pullState, state.refreshing, Modifier.align(Alignment.TopCenter))

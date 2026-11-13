@@ -24,7 +24,7 @@ class CoreCalendarBackend(private val core: Core, private val io: CoroutineDispa
     }
 
     override suspend fun calendars(account: Long): List<CalendarRef> = withContext(io) {
-        core.calendars(account).map { CalendarRef(it.id, it.account, it.name, it.color, it.shown) }
+        core.calendars(account).map { CalendarRef(it.id, it.account, it.name, it.color, it.shown, it.readOnly, it.linked) }
     }
 
     override suspend fun setShown(account: Long, id: Long, shown: Boolean): Boolean = withContext(io) { core.setCalendarShown(account, id, shown) }
@@ -48,7 +48,7 @@ class CoreCalendarBackend(private val core: Core, private val io: CoroutineDispa
                 id = d.id, account = d.account, calendar = d.calendar, keyMs = d.keyMs, title = d.title, location = d.location,
                 notes = d.notes, startMs = d.startMs, endMs = d.endMs, allDay = d.allDay, zone = d.zone, zoneUnknown = d.zoneUnknown,
                 repeat = d.repeat.toApp(), reminders = d.reminders, organizer = d.organizer?.toApp(), attendees = d.attendees.map { it.toApp() },
-                status = d.status, conflict = d.conflict, pending = d.pending,
+                status = d.status, conflict = d.conflict, pending = d.pending, readOnly = d.readOnly,
             )
         }
     }
@@ -65,7 +65,24 @@ class CoreCalendarBackend(private val core: Core, private val io: CoroutineDispa
         core.nextReminders(fromMs, toMs, zone).map { Reminder(it.eventId, it.account, it.keyMs, it.atMs, it.startMs, it.title) }
     }
 
+    override suspend fun subscribe(account: Long, url: String, name: String): Result<Long> {
+        val out = core.subscribeCalendar(account, url, name)
+        val id = out.calendar
+        return if (id != null) Result.success(id) else Result.failure(LinkFailed(out.failure?.toApp() ?: LinkProblem.REFUSED))
+    }
+
+    override suspend fun unsubscribe(account: Long, id: Long): Boolean = withContext(io) { core.unsubscribeCalendar(account, id) }
+
     companion object {
+        private fun uniffi.croft_ffi.LinkFailure.toApp(): LinkProblem = when (this) {
+            uniffi.croft_ffi.LinkFailure.BAD_ADDRESS -> LinkProblem.BAD_ADDRESS
+            uniffi.croft_ffi.LinkFailure.NOT_A_CALENDAR -> LinkProblem.NOT_A_CALENDAR
+            uniffi.croft_ffi.LinkFailure.UNREACHABLE -> LinkProblem.UNREACHABLE
+            uniffi.croft_ffi.LinkFailure.REFUSED -> LinkProblem.REFUSED
+            uniffi.croft_ffi.LinkFailure.ALREADY_ADDED -> LinkProblem.ALREADY_ADDED
+            uniffi.croft_ffi.LinkFailure.TOO_MANY -> LinkProblem.TOO_MANY
+        }
+
         internal fun RepeatPreset.toApp(): RepeatChoice = when (this) {
             RepeatPreset.NONE -> RepeatChoice.NONE
             RepeatPreset.DAILY -> RepeatChoice.DAILY

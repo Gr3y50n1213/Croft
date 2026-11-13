@@ -66,6 +66,22 @@ class FakeCalendarBackend : CalendarBackend {
     }
     override suspend fun reminders(fromMs: Long, toMs: Long, zone: String): List<Reminder> = reminderList.filter { it.atMs in fromMs until toMs }.sortedBy { it.atMs }
 
+    /** What the next link added gives: an id, or why not. */
+    var linkResult: Result<Long> = Result.success(900L)
+    val subscribed = ArrayList<Triple<Long, String, String>>()
+    val unsubscribed = ArrayList<Long>()
+
+    override suspend fun subscribe(account: Long, url: String, name: String): Result<Long> {
+        subscribed += Triple(account, url, name)
+        linkResult.onSuccess { id -> cals.getOrPut(account) { mutableListOf() }.add(CalendarRef(id, account, name.ifBlank { "Link" }, null, true, readOnly = true, linked = true)) }
+        return linkResult
+    }
+
+    override suspend fun unsubscribe(account: Long, id: Long): Boolean {
+        unsubscribed += id
+        return cals[account]?.removeIf { it.id == id && it.linked } == true
+    }
+
     companion object {
         fun data(account: Long, id: Long, title: String, startMs: Long, endMs: Long, repeat: RepeatChoice = RepeatChoice.NONE, key: Long? = null, calendar: Long = 10) = EventData(
             id = id, account = account, calendar = calendar, keyMs = key, title = title, location = "", notes = "", startMs = startMs, endMs = endMs,

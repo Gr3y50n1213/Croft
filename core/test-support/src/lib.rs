@@ -27,6 +27,7 @@
 // This crate is test code: panics on a broken test setup are the right behaviour.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+pub mod carddav;
 mod jmap;
 pub mod oauth;
 mod proto;

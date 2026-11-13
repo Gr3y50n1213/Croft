@@ -47,6 +47,7 @@ mod category;
 mod changes;
 mod companion;
 mod compose;
+mod contacts;
 mod core;
 mod credentials;
 mod error;
@@ -81,6 +82,10 @@ pub use compose::{
     ATTACHMENT_WARN_BYTES, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, MAX_BODY_BYTES,
     MAX_DRAFT_ATTACHMENT_BYTES, MAX_RECIPIENTS, MAX_SCHEDULE_AHEAD_MS, MAX_SUBJECT_CHARS,
     MAX_SUGGESTIONS,
+};
+pub use contacts::{
+    AddressBookInfo, AddressSuggestion, ContactAddress, ContactDetail, ContactFields,
+    ContactSummary, ContactValue, ContactsSyncOutcome, ContactsSyncResult,
 };
 pub use credentials::{CredentialProvider, FfiCredential, ProviderError};
 pub use error::{
@@ -144,11 +149,14 @@ uniffi::setup_scaffolding!();
 ///
 /// Version 18 (T37): one-tap unsubscribe: `unsubscribe_info`, `unsubscribe`, the records
 /// `UnsubscribeInfo` and `UnsubscribeOutcome`, the enums `UnsubscribeWay` and `UnsubscribeFailure`.
+///
+/// Version 19 (T38a): contacts: `sync_contacts`, `address_books`, `list_contacts`, `get_contact`,
+/// `save_contact`, `delete_contact`, `autocomplete`, `is_contact`, and their records.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 18;
+pub const FFI_API_VERSION: u32 = 19;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

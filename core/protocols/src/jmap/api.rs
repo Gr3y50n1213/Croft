@@ -138,7 +138,7 @@ fn call_id(index: usize) -> String {
 /// directly with `encode_slice` (not `encode`, which returns a fresh unwiped `String`, and not into
 /// a buffer that may need to grow). Nothing here reallocates with the secret inside, so no old
 /// copy is freed without being wiped.
-fn basic_header(user: &str, password: &str) -> Result<Zeroizing<String>, BackendError> {
+pub(crate) fn basic_header(user: &str, password: &str) -> Result<Zeroizing<String>, BackendError> {
     let unusable = || BackendError::Permanent("the password cannot be used".into());
     let mut pair = Zeroizing::new(String::with_capacity(user.len() + 1 + password.len()));
     pair.push_str(user);

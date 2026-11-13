@@ -49,6 +49,9 @@ pub(crate) struct HttpResponse {
     pub status: u16,
     /// The `Location` header, for redirects.
     pub location: Option<String>,
+    /// The `WWW-Authenticate` headers' schemes, lower case (T38a: CardDAV sends a credential only
+    /// after the server asks for one).
+    pub auth_schemes: Vec<String>,
     /// The body of a 2xx answer.
     pub body: Vec<u8>,
 }
@@ -317,7 +320,9 @@ fn request_head(req: &HttpRequest<'_>) -> Zeroizing<String> {
         head.push_str(value);
         head.push_str("\r\n");
     }
-    if req.method == "POST" {
+    // Every request that carries a body says how long it is (T38a: WebDAV's `PROPFIND`, `REPORT`
+    // and `PUT` too, not only `POST`).
+    if req.method == "POST" || req.method == "PUT" || !req.body.is_empty() {
         // Written piecewise: `format!` would build the line in a separate, unwiped string.
         head.push_str("Content-Length: ");
         head.push_str(&req.body.len().to_string());
@@ -398,7 +403,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     status_only: bool,
 ) -> Result<HttpResponse, BackendError> {
     let mut buf = Vec::with_capacity(4096);
-    let (head_len, status, location, content_length, chunked) = loop {
+    let (head_len, status, location, content_length, chunked, auth_schemes) = loop {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut response = httparse::Response::new(&mut headers);
         match response.parse(&buf) {
@@ -407,7 +412,16 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
                 let mut location = None;
                 let mut content_length = None;
                 let mut chunked = false;
+                let mut auth_schemes = Vec::new();
                 for h in response.headers.iter() {
+                    if h.name.eq_ignore_ascii_case("www-authenticate") {
+                        if let Some(scheme) = std::str::from_utf8(h.value)
+                            .ok()
+                            .and_then(|v| v.split_whitespace().next())
+                        {
+                            auth_schemes.push(scheme.to_ascii_lowercase());
+                        }
+                    }
                     if h.name.eq_ignore_ascii_case("location") {
                         location = std::str::from_utf8(h.value)
                             .ok()
@@ -421,7 +435,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
                             .is_ok_and(|v| v.to_ascii_lowercase().contains("chunked"));
                     }
                 }
-                break (n, status, location, content_length, chunked);
+                break (n, status, location, content_length, chunked, auth_schemes);
             }
             Ok(httparse::Status::Partial) => {
                 if buf.len() >= MAX_HEAD || fill(reader, &mut buf, idle).await? == 0 {
@@ -439,6 +453,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
         return Ok(HttpResponse {
             status,
             location,
+            auth_schemes,
             body: Vec::new(),
         });
     }
@@ -482,6 +497,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     Ok(HttpResponse {
         status,
         location,
+        auth_schemes,
         body,
     })
 }

@@ -9,6 +9,7 @@
 //! `setting` table are not.
 
 pub mod accounts;
+pub mod contacts;
 mod db;
 pub mod drafts;
 mod error;
@@ -113,6 +114,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "unsubscribe",
         sql: include_str!("../migrations/0011_unsubscribe.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "contacts",
+        sql: include_str!("../migrations/0012_contacts.sql"),
     },
 ];
 

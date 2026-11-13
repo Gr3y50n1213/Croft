@@ -210,6 +210,29 @@ pub async fn post_json(
     .await
 }
 
+/// `method url` (GET, POST or DELETE) with a JSON body when given and, when given, a bearer token,
+/// to the person's own Croft Companion (T34b: an address they chose, so the process's policy for
+/// mail servers does not apply), reading at most `max_answer` bytes of the answer. The token and
+/// body are never logged.
+pub async fn companion(
+    method: &'static str,
+    url: &str,
+    bearer: Option<&str>,
+    json: Option<&[u8]>,
+    max_answer: usize,
+) -> Result<Answer, FetchError> {
+    let authorization = bearer.map(|t| Zeroizing::new(format!("Bearer {t}")));
+    send(
+        method,
+        url,
+        authorization.as_deref().map(String::as_str),
+        json.map(|_| "application/json"),
+        json.unwrap_or(&[]),
+        max_answer,
+    )
+    .await
+}
+
 /// Whether `url` can be delivered to as a push endpoint: an absolute `https` URL this client
 /// reads (the same parser that sends).
 pub fn is_push_url(url: &str) -> bool {

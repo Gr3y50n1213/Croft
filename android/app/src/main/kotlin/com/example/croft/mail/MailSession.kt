@@ -57,6 +57,10 @@ class MailSession(
     val onSnoozesChanged: () -> Unit = {},
     /** S40 to S42 (T38b): the core's contacts. Null where there is no core (tests of other screens): Contacts stays disabled in the bottom bar. */
     val contacts: com.example.croft.mail.contacts.ContactsBackend? = null,
+    /** S34 to S39 (T39b): the core's calendars. Null where there is no core: Calendar stays disabled in the bottom bar. */
+    val calendar: com.example.croft.mail.calendar.CalendarBackend? = null,
+    /** T39b: called after a calendar sync or change, so the app plans the reminder job again. Nothing in tests. */
+    val onCalendarChanged: () -> Unit = {},
 ) {
     private val cache = HashMap<String, CachedList>()
 

@@ -137,6 +137,8 @@ object MailRuntime {
         val planSnoozes = { try { com.example.croft.notify.SnoozeSchedule.plan(app, open.core.nextSnoozeWake()) } catch (e: Exception) { /* the next change */ } }
         try { open.core.wakeDueSnoozes() } catch (e: Exception) { /* the job tries again */ }
         planSnoozes()
+        // T39b: reminders that fell due while the app was closed are posted, and the job is planned.
+        com.example.croft.notify.CalendarReminderSchedule.planNow(app)
         return MailSession(
             repository = repository,
             anchors = FileAnchorStore(File(context.noBackupFilesDir, "croft-list-anchors-core.json")),
@@ -146,6 +148,8 @@ object MailRuntime {
             reading = CoreReadingRepository(open.core),
             search = com.example.croft.mail.search.CoreSearchBackend(open.core),
             contacts = com.example.croft.mail.contacts.CoreContactsBackend(open.core),
+            calendar = com.example.croft.mail.calendar.CoreCalendarBackend(open.core),
+            onCalendarChanged = { com.example.croft.notify.CalendarReminderSchedule.planNow(app) },
             onSnoozesChanged = { snoozePlanner.execute { planSnoozes() } },
         )
     }

@@ -106,6 +106,32 @@ class AndroidNotifier(context: Context) : Notifier {
         }
     }
 
+    /**
+     * T39b: an event reminder: the title and when it starts, on its own channel. A tap opens S37 for that occurrence. Its id comes from
+     * the event, the occurrence and the time, so the same reminder posted twice is one notification.
+     */
+    fun postReminder(r: com.example.croft.mail.calendar.Reminder): Boolean {
+        if (!canPost()) return false
+        ensureReminderChannel()
+        val time = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(r.startMs))
+        val n = NotificationCompat.Builder(context, REMINDER_CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_croft)
+            .setContentTitle(r.title.ifBlank { context.getString(R.string.calendar_untitled) })
+            .setContentText(context.getString(R.string.notify_reminder_text, time))
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setWhen(r.startMs)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(openIntent(Uri.parse("croft://event/${r.account}/${r.eventId}/${r.keyMs}")))
+            .setAutoCancel(true)
+            .build()
+        return try {
+            manager.notify(REMINDER_TAG, java.util.Objects.hash(r.account, r.eventId, r.keyMs, r.atMs), n)
+            true
+        } catch (e: SecurityException) {
+            false
+        }
+    }
+
     /** Removes one message's notification and updates (or removes) the account's summary. */
     fun cancelMessage(account: Long, messageId: Long) {
         manager.cancel(mailTag(account), notificationId(messageId))
@@ -205,6 +231,14 @@ class AndroidNotifier(context: Context) : Notifier {
         )
     }
 
+    private fun ensureReminderChannel() {
+        manager.createNotificationChannel(
+            NotificationChannelCompat.Builder(REMINDER_CHANNEL, NotificationManagerCompat.IMPORTANCE_HIGH)
+                .setName(context.getString(R.string.notify_channel_reminders))
+                .build(),
+        )
+    }
+
     private fun ensureStatusChannel() {
         manager.createNotificationChannel(
             NotificationChannelCompat.Builder(STATUS_CHANNEL, NotificationManagerCompat.IMPORTANCE_DEFAULT)
@@ -232,6 +266,8 @@ class AndroidNotifier(context: Context) : Notifier {
         const val MAIL_CHANNEL_PREFIX = "croft-mail-"
         const val STATUS_CHANNEL = "croft-status"
         const val SNOOZE_TAG = "croft-snooze-back"
+        const val REMINDER_CHANNEL = "croft-reminders"
+        const val REMINDER_TAG = "croft-reminder"
 
         /** The most notifications of one account shown one by one per check; the summary counts the rest. */
         const val MAX_SHOWN = 8

@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- S34 Agenda and S36 Month -->
+    <string name="calendar_title">Calendar</string>
+    <string name="calendar_view_agenda">Agenda</string>
+    <string name="calendar_view_month">Month</string>
+    <string name="calendar_calendars">Calendars</string>
+    <string name="calendar_new_event">New event</string>
+    <string name="calendar_loading">Loading events</string>
+    <string name="calendar_no_events">No events</string>
+    <string name="calendar_today">Today</string>
+    <string name="calendar_all_day">All day</string>
+    <string name="calendar_time_range">%1$s to %2$s</string>
+    <string name="calendar_untitled">(No title)</string>
+    <string name="calendar_overlaps">Overlaps another event</string>
+    <string name="calendar_zone_unknown">Time zone unknown: shown in UTC</string>
+    <string name="calendar_repeats_unsupported">Repeats in a way Croft can\'t show yet</string>
+    <string name="calendar_truncated">Some events are not shown: this calendar is very large.</string>
+    <string name="calendar_load_more">Show later days</string>
+    <string name="calendar_previous_month">Previous month</string>
+    <string name="calendar_next_month">Next month</string>
+    <plurals name="calendar_day_events">
+        <item quantity="one">%1$s, %2$d event</item>
+        <item quantity="other">%1$s, %2$d events</item>
+    </plurals>
+    <string name="calendar_not_offered_title">Your accounts don\'t offer calendars</string>
+    <string name="calendar_not_offered_message">Croft keeps events in your mail account\'s calendars on the server (CalDAV). None of your accounts has one.</string>
+    <string name="calendar_unreachable">Couldn\'t reach %1$s. Pull down to try again.</string>
+    <string name="calendar_sign_in">%1$s needs you to sign in again.</string>
+
+    <!-- S37 Event -->
+    <string name="event_back">Back</string>
+    <string name="event_edit">Edit</string>
+    <string name="event_delete">Delete</string>
+    <string name="event_organizer">%1$s (organiser)</string>
+    <string name="event_you">you</string>
+    <string name="event_reminder_none">No reminder</string>
+    <string name="event_reminder_at_start">At the start</string>
+    <string name="event_reminder_minutes">%1$d minutes before</string>
+    <string name="event_reminder_hour">1 hour before</string>
+    <string name="event_reminder_hours">%1$d hours before</string>
+    <string name="event_reminder_day">1 day before</string>
+    <string name="event_reminder_days">%1$d days before</string>
+    <string name="event_status_tentative">Tentative</string>
+    <string name="event_status_cancelled">Cancelled</string>
+    <string name="event_answer_accepted">going</string>
+    <string name="event_answer_declined">not going</string>
+    <string name="event_answer_tentative">maybe</string>
+    <string name="event_answer_pending">no answer yet</string>
+    <string name="event_person_answer">%1$s, %2$s</string>
+    <string name="event_conflict">Changed on the server too: your change was not sent and the server\'s version was kept.</string>
+    <string name="event_pending">Not on the server yet: it is sent at the next sync.</string>
+    <string name="event_gone">This event is no longer here.</string>
+    <string name="event_delete_title">Delete this event?</string>
+    <string name="event_delete_message">It is deleted from the calendar on your mail server too.</string>
+    <string name="event_scope_title">Repeating event</string>
+    <string name="event_scope_one">This event</string>
+    <string name="event_scope_all">All events</string>
+    <string name="event_delete_failed">Couldn\'t delete the event</string>
+
+    <!-- S38 Event editor -->
+    <string name="editor_title_new">New event</string>
+    <string name="editor_title_edit">Edit event</string>
+    <string name="editor_close">Close</string>
+    <string name="editor_save">Save</string>
+    <string name="editor_save_needs_title">Save needs a title</string>
+    <string name="editor_save_unchanged">Change something first</string>
+    <string name="editor_save_failed">Couldn\'t save the event</string>
+    <string name="editor_field_title">Title</string>
+    <string name="editor_all_day">All day</string>
+    <string name="editor_start">Starts</string>
+    <string name="editor_end">Ends</string>
+    <string name="editor_pick_date">Pick a date</string>
+    <string name="editor_pick_time">Pick a time</string>
+    <string name="editor_ok">OK</string>
+    <string name="editor_repeat">Repeat</string>
+    <string name="editor_repeat_none">Does not repeat</string>
+    <string name="editor_repeat_daily">Every day</string>
+    <string name="editor_repeat_weekly">Every week</string>
+    <string name="editor_repeat_monthly">Every month</string>
+    <string name="editor_repeat_yearly">Every year</string>
+    <string name="editor_repeat_custom">Custom (kept as it is)</string>
+    <string name="editor_reminders">Reminders</string>
+    <string name="editor_calendar">Calendar</string>
+    <string name="editor_calendar_label">%1$s (%2$s)</string>
+    <string name="editor_location">Location</string>
+    <string name="editor_notes">Notes</string>
+    <string name="editor_discard_title">Discard changes?</string>
+    <string name="editor_discard_message">Your changes to this event are not saved.</string>
+    <string name="editor_discard">Discard</string>
+
+    <!-- S39 Calendars -->
+    <string name="calendars_title">Calendars</string>
+    <string name="calendars_note">Unchecked calendars stay in sync but are hidden.</string>
+    <string name="calendars_show">Show %1$s</string>
+
+    <!-- Reminders -->
+    <string name="notify_channel_reminders">Event reminders</string>
+    <string name="notify_reminder_text">Starts at %1$s</string>
+</resources>

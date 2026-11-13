@@ -59,6 +59,7 @@ object CheckSchedule {
             wm.cancelUniqueWork(UNIQUE_NAME)
             wm.cancelUniqueWork(PUSH_NAME)
             wm.cancelUniqueWork(SnoozeSchedule.UNIQUE_NAME)
+            wm.cancelUniqueWork(CalendarReminderSchedule.UNIQUE_NAME)
         } catch (e: IllegalStateException) { /* not initialised */ }
     }
 

@@ -535,16 +535,18 @@ fun MailBottomBar(
     selected: MailDestination = MailDestination.MAIL,
     /** Opens Contacts (S40), or scrolls it to the top when it is the one shown. Null where the session has no contacts: the item is disabled. */
     onContacts: (() -> Unit)? = null,
+    /** Opens Calendar (S34). Null where the session has no calendars: the item is disabled. */
+    onCalendar: (() -> Unit)? = null,
 ) {
     NavigationBar(modifier.testTag(InboxTags.BOTTOM_BAR)) {
         NavigationBarItem(selected = selected == MailDestination.MAIL, onClick = onMail, enabled = enabled, icon = { Icon(Icons.Filled.Email, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_mail)) }, modifier = Modifier.testTag(InboxTags.NAV_MAIL))
-        NavigationBarItem(selected = false, onClick = {}, enabled = false, icon = { Icon(Icons.Filled.DateRange, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_calendar)) })
+        NavigationBarItem(selected = selected == MailDestination.CALENDAR, onClick = { onCalendar?.invoke() }, enabled = enabled && onCalendar != null, icon = { Icon(Icons.Filled.DateRange, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_calendar)) }, modifier = Modifier.testTag(InboxTags.NAV_CALENDAR))
         NavigationBarItem(selected = selected == MailDestination.CONTACTS, onClick = { onContacts?.invoke() }, enabled = enabled && onContacts != null, icon = { Icon(Icons.Filled.Person, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_contacts)) }, modifier = Modifier.testTag(InboxTags.NAV_CONTACTS))
     }
 }
 
 /** The top-level destination a [MailBottomBar] shows as selected. */
-enum class MailDestination { MAIL, CONTACTS }
+enum class MailDestination { MAIL, CALENDAR, CONTACTS }
 
 /**
  * The fast scroller: a thumb on the trailing edge that shows while the list scrolls and can be dragged; while it is dragged a

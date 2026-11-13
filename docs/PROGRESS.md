@@ -5,6 +5,49 @@ unverified, the next step.
 
 ---
 
+## T39b: The calendar screens (13 November 2026)
+
+**Status:** on `task/t39b`, its own pull request (CI runs the Android tests). S35 Week and "Subscribe to a calendar link" are
+T39c; RSVP is T40.
+
+**What was built.**
+- **Bottom bar.** Calendar is enabled: Mail, Calendar and Contacts switch between each other.
+- **S34 Agenda.**
+  - Days from today, 60 at a time, each with its weekday and date (today in a filled circle, "No events" when today is
+    empty).
+  - Event cards with the calendar's colour as a bar, the title, times and place.
+  - A warning icon on events that overlap another that day, and notes for an unknown time zone or a repeat Croft can't
+    show.
+  - New event, pull to refresh (a sync of every account; opening Calendar syncs too), and sync problems named per
+    account.
+- **S36 Month.** A grid of whole weeks (the locale's first day), with dots per day, today outlined and the selected day
+  filled; the selected day's events are listed below.
+- **S37 Event.**
+  - The header in the calendar's colour.
+  - The place, the organiser and attendees with their answers, the reminders, the calendar and the notes, plus notes for
+    a conflict or a waiting change.
+  - Edit and Delete: for a repeating event both ask "This event / All events", and Delete always asks first.
+- **S38 Event editor.**
+  - Title (Save needs one), All day, start and end date and time pickers (15-minute steps; moving the start keeps the
+    length).
+  - Repeat presets (a rule Croft did not write shows "Custom" and is kept), reminders as chips, the calendar for a new
+    event, place and notes.
+  - Close with changes asks first; the fields survive rotation.
+- **S39 Calendars.** Grouped by account, with each calendar's colour and a check that hides or shows its events.
+- **Reminders.** A unique WorkManager job posts the reminders that fell due since its last run, on the "Event reminders"
+  channel, and plans itself for the next one (6 hours at the latest).
+  - It is planned again at start, after a sync and after a change.
+  - A tap opens S37 through the non-exported notification alias.
+  - No exact alarm.
+
+**Checks.** Unit tests: `CalendarRulesTest` (the agenda, the overlaps, the month grid, the editor's rules, the reminder
+plan, nothing personal printed) and `CalendarScreensTest` (S34, S36, S37, S38, S39). Gallery: the day header and the event
+card. The Android tests run in CI only.
+
+**Next.** T39c: S35 Week and subscribing to a calendar link.
+
+---
+
 ## T39a: The calendar in the core (13 November 2026)
 
 **Status:** on `task/t39a`, its own pull request; the independent review is running. The screens are T39b.

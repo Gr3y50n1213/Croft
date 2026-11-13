@@ -94,6 +94,8 @@ fun ContactsScreen(
     onAdd: (() -> Unit)?,
     onMail: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Calendar (S34) from the bottom bar; null leaves it disabled. */
+    onCalendar: (() -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     val scope = rememberCoroutineScope()
@@ -191,7 +193,7 @@ fun ContactsScreen(
                 }
             }
         }
-        MailBottomBar(enabled = true, onMail = onMail, selected = MailDestination.CONTACTS, onContacts = { scope.launch { listState.scrollToItem(0) } })
+        MailBottomBar(enabled = true, onMail = onMail, selected = MailDestination.CONTACTS, onContacts = { scope.launch { listState.scrollToItem(0) } }, onCalendar = onCalendar)
     }
 }
 

@@ -63,6 +63,10 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   through the Companion yet (W04 says colours, density and shape should sync across devices). Settings sync is a later task. The
   web About pane uses the same placeholder privacy and source addresses as the phone app (`web/src/lib/settings/links.ts`, see
   "Placeholders from T17c").
+- **Phones and the Companion (T34b):** connecting was tested against a real Companion on this machine (the core's client) and with
+  unit tests (the app's state), not on a phone: try a Custom Tab sign-in with a passkey and with single sign-on, and the way back to
+  the app. A Companion behind a private certificate authority or a self-signed certificate cannot be connected yet (the phone trusts
+  the public roots only); an option to trust it, as for mail servers, is a later task.
 - **Push in browsers (T32b):** untested with the real push services (Google's for Chrome, Mozilla's for Firefox, Apple's for
   Safari) and with real notifications (headless Chromium refuses them); try on real browsers and an installed app on a phone.
   A refresh answer lost on a flapping connection still ends the session on the next try (no grace window for a just-rotated

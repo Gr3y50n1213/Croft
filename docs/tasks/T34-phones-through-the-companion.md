@@ -45,5 +45,19 @@ tokens: 15-minute access, rotating refresh, a device the person can sign out).
 - Done when: Companion tests (the redirect rule, codes once and in time, the verifier, a disabled user, limits), Playwright (the
   page signs in with a virtual passkey and lands on the app's redirect with a code that the test redeems), an independent review.
 
-## Spec (T34b to T34d)
+## Spec (T34b)
+- **The core's Companion client** (`core/protocols/src/companion.rs`, so the iPhone app gets it too): the address (`https://host[:port]`,
+  or `http` to this machine for tests), a probe (version, single sign-on), the browser sign-in with PKCE (the verifier stays in the
+  core), and the app's session: the access token renewed with the refresh token, each new secret handed to the app's saver; the
+  person's devices, signing one out, signing this one out; the push calls T34c needs. FFI v14 (`companion_*`, `CompanionLink`).
+- **Android**: S06 Connect a Companion (the address, Connect opens the Companion's page in a Custom Tab, the redirect activity brings
+  the code back), S58 (the Companion, who is signed in, the signed-in devices with Sign out, Disconnect this phone). The connection's
+  secret is the app's own entry in the keystore-backed store, apart from accounts' (the orphan sweep never sees it; erasing everything
+  removes it). A redirect with no sign-in waiting is ignored.
+- Done when: core tests (addresses, the page address, secrets read back, callbacks without a code), an end-to-end test against a real
+  Companion on this machine (probe, sign-in, devices, renewal with the new secret saved, an old secret ending the session, sign-out),
+  Android unit tests (the connection's states, ignored redirects, a replaced secret kept, signed out by the Companion), the manifest
+  check (the redirect activity allowed only for the app's own scheme), an independent review.
+
+## Spec (T34c and T34d)
 Written in this file when each starts.

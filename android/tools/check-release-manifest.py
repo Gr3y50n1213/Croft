@@ -14,6 +14,8 @@ service with a foreground service type.
 The allowlist defaults to manifest-allowlist.json next to this script.
 In the allowlist, ${applicationId} is the manifest's package (the application id, which the preview build gives a suffix) and
 ${namespace} is the code's namespace, where the app's own classes live (environment variable CROFT_NAMESPACE, default: the package).
+CROFT_STORE (play, fdroid or github) adds the allowlist's entries for that store build (its "stores" section, T34d); without it only the
+common entries are allowed.
 """
 import json
 import os
@@ -42,11 +44,19 @@ def check(manifest_path, allowlist_path):
         return ["manifest has no package attribute"]
     namespace = os.environ.get("CROFT_NAMESPACE") or app_id
     sub = lambda s: s.replace("${applicationId}", app_id).replace("${namespace}", namespace)
-    allowed_perms = {sub(k) for k in allow["uses-permission"]}
+    store = os.environ.get("CROFT_STORE", "")
+    extra = {}
+    for key, entries in allow.get("stores", {}).items():
+        if store and store in [k.strip() for k in key.split(",")]:
+            for section, items in entries.items():
+                extra.setdefault(section, {}).update(items)
+    perms = {**allow["uses-permission"], **extra.get("uses-permission", {})}
+    exported = {**allow["exported"], **extra.get("exported", {})}
+    allowed_perms = {sub(k) for k in perms}
     allowed_decl = {sub(k) for k in allow.get("permission", {})}
     allowed_exp = {
         sub(k): {**v, "browsable-schemes": [sub(x) for x in v.get("browsable-schemes", [])]} if isinstance(v, dict) else v
-        for k, v in allow["exported"].items()
+        for k, v in exported.items()
     }
     allowed_grant = {sub(k): v for k, v in allow.get("uri-grant-providers", {}).items()}
     errors = []

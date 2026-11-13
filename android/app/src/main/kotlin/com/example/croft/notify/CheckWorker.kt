@@ -8,6 +8,8 @@ import android.content.Context
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
@@ -52,7 +54,11 @@ class CheckWorker internal constructor(
 object CheckSchedule {
     /** Stops the periodic check ("Erase all Croft data", the last real account removed). */
     fun cancel(context: Context) {
-        try { WorkManager.getInstance(context.applicationContext).cancelUniqueWork(UNIQUE_NAME) } catch (e: IllegalStateException) { /* not initialised */ }
+        try {
+            val wm = WorkManager.getInstance(context.applicationContext)
+            wm.cancelUniqueWork(UNIQUE_NAME)
+            wm.cancelUniqueWork(PUSH_NAME)
+        } catch (e: IllegalStateException) { /* not initialised */ }
     }
 
     /** Schedules the check (KEEP) when there is an account that can notify, else stops it. */
@@ -66,6 +72,25 @@ object CheckSchedule {
 
     /** The unique work name. */
     const val UNIQUE_NAME = "croft-mail-check"
+
+    /** The unique name of the check a push asks for (T34d). */
+    const val PUSH_NAME = "croft-push-check"
+
+    /**
+     * A check now, because the Companion said mail changed (T34d): one-time work with a network, KEEP, so pings that come while one is
+     * waiting or running add nothing (the Companion pings again on the next change, and the periodic check stays as a safety net). Not
+     * expedited and no foreground service (docs/store/READINESS.md row 4).
+     */
+    fun now(context: Context) {
+        val request = OneTimeWorkRequestBuilder<CheckWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .build()
+        try {
+            WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(PUSH_NAME, ExistingWorkPolicy.KEEP, request)
+        } catch (e: IllegalStateException) {
+            // WorkManager not initialised: the periodic check still runs.
+        }
+    }
 
     /** The periodic request for [settings], or null when checks are manual only. */
     fun request(settings: NotifySettings): PeriodicWorkRequest? {

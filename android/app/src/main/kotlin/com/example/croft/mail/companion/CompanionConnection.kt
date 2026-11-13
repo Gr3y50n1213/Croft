@@ -58,6 +58,8 @@ class CompanionConnection(
     private val redirect: String,
     /** How this device is named in the person's list. */
     private val deviceName: String,
+    /** Called when the session is forgotten (unregistered, or ended by the Companion): push stops with it (T34d). */
+    private val onForgotten: () -> Unit = {},
 ) {
     private val _state = MutableStateFlow<CompanionState>(CompanionState.Loading)
     val state: StateFlow<CompanionState> = _state.asStateFlow()
@@ -92,6 +94,7 @@ class CompanionConnection(
     }
 
     private fun forget() {
+        onForgotten()
         link = null
         unsaved?.fill(0)
         unsaved = null
@@ -186,10 +189,10 @@ class CompanionConnection(
         }
     }
 
-    /** The browser came back to the app's redirect with [uri]. Ignored when no sign-in is waiting. */
-    suspend fun onRedirect(uri: String) = lock.withLock {
-        val flow = pendingFlow ?: return@withLock
-        if (!uri.startsWith("$redirect?")) return@withLock
+    /** The browser came back to the app's redirect with [uri]. Ignored when no sign-in is waiting. True when it finished one. */
+    suspend fun onRedirect(uri: String): Boolean = lock.withLock {
+        val flow = pendingFlow ?: return@withLock false
+        if (!uri.startsWith("$redirect?")) return@withLock false
         val joined = try {
             backend.finish(flow, uri, deviceName)
         } catch (e: CancellationException) {
@@ -198,16 +201,16 @@ class CompanionConnection(
             // A refused code leaves the core's flow waiting (it may have come from another app); anything else ended it.
             if (e.problem != CompanionProblem.SIGN_IN_FAILED) pendingFlow = null
             failed(e.problem)
-            return@withLock
+            return@withLock false
         } catch (e: Exception) {
             pendingFlow = null
             failed(CompanionProblem.STORAGE)
-            return@withLock
+            return@withLock false
         }
         pendingFlow = null
         val l = guarded { linkFrom(joined.secret) } ?: run {
             joined.secret.fill(0)
-            return@withLock
+            return@withLock false
         }
         try {
             secrets.put(joined.secret)
@@ -221,13 +224,40 @@ class CompanionConnection(
                 // Best effort; S58 on another device can sign it out.
             }
             _state.value = CompanionState.NotConnected(CompanionProblem.STORAGE)
-            return@withLock
+            return@withLock false
         } finally {
             joined.secret.fill(0)
         }
         link = l
         _state.value = CompanionState.Connected(joined.url, joined.userName)
+        true
     }
+
+    /** Runs [block] with the open link (loading it first in a cold process); null when not connected or when it failed (the state says why). */
+    private suspend fun <T> withLink(block: suspend (CompanionLinkApi) -> T): T? {
+        if (link == null) load()
+        return lock.withLock {
+            val l = link ?: return@withLock null
+            guarded { block(l) }
+        }
+    }
+
+    /** T34d: the connected Companion's address (loading the link in a cold process), or null. */
+    suspend fun companionUrl(): String? = withLink { it.url }
+
+    /** T34d: the Companion's push key (for UnifiedPush's VAPID and the gateway's binding), or null. */
+    suspend fun pushKey(): String? = withLink { it.pushKey() }
+
+    /** T34d: subscribes this device for pings; the Companion's id for the subscription, or null when it could not. */
+    suspend fun addPush(endpoint: String, p256dh: String, auth: String): Long? = withLink { it.addPush(endpoint, p256dh, auth) }
+
+    /** T34d: removes a subscription (best effort). */
+    suspend fun removePush(id: Long) {
+        withLink { it.removePush(id) }
+    }
+
+    /** Whether a Companion is connected (a secret is kept), without the network. */
+    fun isConnected(): Boolean = link != null || try { secrets.get()?.also { it.fill(0) } != null } catch (e: Exception) { false }
 
     /** S58: the signed-in devices. */
     suspend fun loadDevices() = lock.withLock {

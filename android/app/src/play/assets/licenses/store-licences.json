@@ -1,0 +1,221 @@
+{
+ "version": 1,
+ "entries": [
+  {
+   "name": "androidx.datastore:datastore-preferences",
+   "version": "1.3.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.datastore:datastore-preferences-core",
+   "version": "1.3.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.datastore:datastore-preferences-external-protobuf",
+   "version": "1.3.0",
+   "licence": "BSD-3-Clause",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.datastore:datastore-preferences-proto",
+   "version": "1.3.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.documentfile:documentfile",
+   "version": "1.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.legacy:legacy-support-core-utils",
+   "version": "1.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.localbroadcastmanager:localbroadcastmanager",
+   "version": "1.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "androidx.print:print",
+   "version": "1.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.datatransport:transport-api",
+   "version": "5.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.datatransport:transport-backend-cct",
+   "version": "5.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.datatransport:transport-runtime",
+   "version": "5.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.gms:play-services-base",
+   "version": "18.9.0",
+   "licence": "Android Software Development Kit License",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.gms:play-services-basement",
+   "version": "18.9.0",
+   "licence": "Android Software Development Kit License",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.gms:play-services-cloud-messaging",
+   "version": "17.4.0",
+   "licence": "Android Software Development Kit License",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.gms:play-services-stats",
+   "version": "17.0.2",
+   "licence": "Android Software Development Kit License",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.android.gms:play-services-tasks",
+   "version": "18.4.0",
+   "licence": "Android Software Development Kit License",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.errorprone:error_prone_annotations",
+   "version": "2.26.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-annotations",
+   "version": "18.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-common",
+   "version": "23.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-components",
+   "version": "20.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-datatransport",
+   "version": "21.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-encoders",
+   "version": "18.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-encoders-json",
+   "version": "19.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-encoders-proto",
+   "version": "17.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-iid-interop",
+   "version": "17.1.0",
+   "licence": "Android Software Development Kit License",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-installations",
+   "version": "20.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-installations-interop",
+   "version": "18.0.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-measurement-connector",
+   "version": "19.0.0",
+   "licence": "Android Software Development Kit License",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.firebase:firebase-messaging",
+   "version": "26.0.2",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "javax.inject:javax.inject",
+   "version": "1",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlin:kotlin-stdlib-jdk7",
+   "version": "2.1.21",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlin:kotlin-stdlib-jdk8",
+   "version": "2.1.21",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlinx:atomicfu",
+   "version": "0.28.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlinx:kotlinx-coroutines",
+   "version": "1.10.2",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlinx:kotlinx-coroutines-core",
+   "version": "1.10.2",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlinx:kotlinx-coroutines-play-services",
+   "version": "1.10.2",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  }
+ ]
+}

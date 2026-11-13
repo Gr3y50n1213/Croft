@@ -7,8 +7,11 @@
 What goes in (everything the shipped app contains that is not Croft's own code):
   * Rust crates: the normal-dependency closure of croft-ffi for Android, from `cargo metadata --locked --offline`
     (name, version, SPDX licence expression as the crate declares it).
-  * Kotlin and Java libraries: the app's release runtime classpath (`./gradlew --offline :app:dependencies
-    --configuration releaseRuntimeClasspath`), with each library's licence read from its POM in Gradle's cache.
+  * Kotlin and Java libraries: each store build's release runtime classpath (`./gradlew --offline :app:dependencies
+    --configuration <store>ReleaseRuntimeClasspath`), with each library's licence read from its POM in Gradle's cache. What every
+    store has goes in the main list; what only Play has (Firebase) goes in `app/src/play/assets/licenses/store-licences.json`, what
+    only F-Droid and GitHub have (UnifiedPush) in `app/src/unifiedpush/assets/licenses/store-licences.json` (T34d). The F-Droid and
+    GitHub classpaths must be the same.
   * What the crates carry without a Cargo entry (OpenSSL, SQLCipher, SQLite) and the two fonts.
 
 The result is checked in. `inputs` records the SHA-256 of core/Cargo.lock and android/gradle/libs.versions.toml; the test
@@ -30,6 +33,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "android/app/src/main/assets/licenses/open-source-licences.json"
+STORE_OUT = {
+    "play": ROOT / "android/app/src/play/assets/licenses/store-licences.json",
+    "fdroid": ROOT / "android/app/src/unifiedpush/assets/licenses/store-licences.json",
+}
 INPUT_FILES = {"cargoLockSha256": ROOT / "core/Cargo.lock", "libsCatalogSha256": ROOT / "android/gradle/libs.versions.toml"}
 
 # Licences of things that are compiled in without a crate of their own that says so, and the two bundled fonts.
@@ -93,11 +100,33 @@ def rust_entries() -> list:
 POM_WITHOUT_LICENCE = {"com.google.guava:listenablefuture": "Apache-2.0"}
 
 
-def pom_licence(group: str, artifact: str, version: str, cache: Path) -> str:
-    base = cache / group / artifact / version
-    for pom in sorted(base.glob("*/*.pom")):
+# The libraries' own repositories (settings.gradle.kts): Google's for AndroidX and Google's libraries, then Maven Central.
+POM_REPOSITORIES = ("https://dl.google.com/android/maven2", "https://repo.maven.apache.org/maven2")
+
+
+def fetched_pom(group: str, artifact: str, version: str) -> list:
+    """The POM from the library's repository, when CROFT_LICENCES_FETCH_POMS=1 (CI). Gradle reads a library's `.module` file when it
+    has one and then never downloads the POM, which is where the licence is."""
+    if os.environ.get("CROFT_LICENCES_FETCH_POMS") != "1":
+        return []
+    import urllib.request
+    path = f"{group.replace('.', '/')}/{artifact}/{version}/{artifact}-{version}.pom"
+    for repo in POM_REPOSITORIES:
         try:
-            root = ET.parse(pom).getroot()
+            with urllib.request.urlopen(f"{repo}/{path}", timeout=30) as r:
+                return [r.read()]
+        except Exception:
+            continue
+    return []
+
+
+def pom_licence(group: str, artifact: str, version: str, cache: Path, depth: int = 0) -> str:
+    """The licence a POM names; when it names none, its parent's (up to four levels: protobuf-java and others declare it there)."""
+    base = cache / group / artifact / version
+    poms = [p.read_bytes() for p in sorted(base.glob("*/*.pom"))] or fetched_pom(group, artifact, version)
+    for pom in poms:
+        try:
+            root = ET.fromstring(pom)
         except ET.ParseError:
             continue
         ns = {"m": root.tag.split("}")[0].strip("{")} if root.tag.startswith("{") else {}
@@ -105,6 +134,14 @@ def pom_licence(group: str, artifact: str, version: str, cache: Path) -> str:
             [e.text.strip() for e in root.findall(".//licenses/license/name") if e.text]
         if names:
             return " OR ".join(dict.fromkeys(spdx(n) for n in names))
+        parent = root.find("m:parent", ns) if ns else root.find("parent")
+        if parent is not None and depth < 4:
+            get = (lambda tag: (parent.findtext(f"m:{tag}", None, ns) if ns else parent.findtext(tag)) or "")
+            pg, pa, pv = get("groupId").strip(), get("artifactId").strip(), get("version").strip()
+            if pg and pa and pv:
+                found = pom_licence(pg, pa, pv, cache, depth + 1)
+                if found:
+                    return found
     return ""
 
 
@@ -155,16 +192,31 @@ def main(argv: list) -> int:
             print("open-source-licences.json is out of date: run python3 android/tools/gen_licences.py", file=sys.stderr)
             return 1
         return 0
-    report = subprocess.run(
-        ["./gradlew", "--offline", "-q", ":app:dependencies", "--configuration", "releaseRuntimeClasspath"],
-        cwd=ROOT / "android", check=True, capture_output=True, text=True,
-    ).stdout
-    entries = sorted(rust_entries() + kotlin_entries(report), key=lambda e: (e["origin"], e["name"].lower())) + EXTRAS
-    data = {"version": 1, "inputs": current_inputs(), "entries": entries}
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
-    print(f"wrote {len(entries)} entries to {OUT.relative_to(ROOT)}")
+    def classpath(store: str) -> list:
+        report = subprocess.run(
+            ["./gradlew", "--offline", "-q", ":app:dependencies", "--configuration", f"{store}ReleaseRuntimeClasspath"],
+            cwd=ROOT / "android", check=True, capture_output=True, text=True,
+        ).stdout
+        return kotlin_entries(report)
+
+    by_store = {store: classpath(store) for store in ("play", "fdroid", "github")}
+    key = lambda e: (e["name"], e["version"])
+    if sorted(map(key, by_store["fdroid"])) != sorted(map(key, by_store["github"])):
+        raise SystemExit("the fdroid and github classpaths differ: they share one licence list")
+    common = {key(e) for e in by_store["play"]} & {key(e) for e in by_store["fdroid"]}
+    # The version too: two versions of one crate (getrandom) must not come in whatever order Cargo lists them.
+    order = lambda e: (e["origin"], e["name"].lower(), e["version"])
+    entries = sorted(rust_entries() + [e for e in by_store["play"] if key(e) in common], key=order) + EXTRAS
+    write(OUT, {"version": 1, "inputs": current_inputs(), "entries": entries})
+    for store, path in STORE_OUT.items():
+        write(path, {"version": 1, "entries": sorted((e for e in by_store[store] if key(e) not in common), key=order)})
     return 0
+
+
+def write(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+    print(f"wrote {len(data['entries'])} entries to {path.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

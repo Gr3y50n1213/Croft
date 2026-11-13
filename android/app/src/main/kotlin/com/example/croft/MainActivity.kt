@@ -20,6 +20,8 @@ import com.example.croft.mail.MailRuntime
 import com.example.croft.mail.MailSession
 import com.example.croft.mail.MailSettingsStore
 import com.example.croft.mail.accounts.AccountPrefsStore
+import com.example.croft.mail.companion.CompanionRuntime
+import com.example.croft.push.PushRuntime
 import com.example.croft.theme.ThemeStore
 import com.example.croft.ui.compose.ComposeIntents
 import com.example.croft.notify.CheckSchedule
@@ -34,6 +36,8 @@ import com.example.croft.ui.nav.Route
 import com.example.croft.ui.nav.StartProblemScreen
 import com.example.croft.ui.accounts.appAccountOps
 import com.example.croft.ui.onboarding.appOnboardingEnvironment
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * The only activity. It applies the stored theme and hosts the simple navigation ([CroftApp]). No orientation or size
@@ -96,6 +100,13 @@ class MainActivity : ComponentActivity() {
                 // mailbox never does): otherwise it is stopped, so it never creates Croft files on its own.
                 val real = !ready.coreUnavailable && runCatching { ready.repository.listAccounts().any { !it.isDemo } }.getOrDefault(false)
                 CheckSchedule.forAccounts(applicationContext, notifyStore.current(), real)
+                // T34d: with a Companion connected, make sure push is registered (a new token or endpoint is subscribed again). Never
+                // asks the person anything from here: choosing a UnifiedPush distributor is S58's.
+                if (!ready.coreUnavailable) {
+                    launch(Dispatchers.IO) {
+                        if (CompanionRuntime.connection(applicationContext)?.isConnected() == true) PushRuntime.start(applicationContext)
+                    }
+                }
             }
             val ready = session
             val start = startAt

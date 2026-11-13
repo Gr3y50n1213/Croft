@@ -55,5 +55,45 @@
       "class": "androidx.core.content.FileProvider",
       "paths-resource": "shared_attachment_paths"
     }
+  },
+  "_stores_comment": "Entries that only one store build may have (T34d), keyed by store; a key may name several stores, comma-separated. tools/check-release-manifest.py adds the entries of the store named by CROFT_STORE (set by check-release-outputs.sh) to the common ones above.",
+  "stores": {
+    "play": {
+      "uses-permission": {
+        "com.google.android.c2dm.permission.RECEIVE": "T34d, play: Firebase Cloud Messaging. Lets Google Play services deliver the push gateway's pings (content-free) to the app. Normal permission."
+      },
+      "exported": {
+        "receiver:com.google.firebase.iid.FirebaseInstanceIdReceiver": {
+          "why": "T34d, play: Firebase Cloud Messaging's receiver. Only Google Play services holds com.google.android.c2dm.permission.SEND, so no other app can deliver to it.",
+          "permission": "com.google.android.c2dm.permission.SEND",
+          "actions": [
+            "com.google.android.c2dm.intent.RECEIVE"
+          ]
+        }
+      }
+    },
+    "fdroid,github": {
+      "uses-permission": {},
+      "exported": {
+        "receiver:org.unifiedpush.android.connector.internal.MessagingReceiverImpl": {
+          "why": "T34d, fdroid and github: UnifiedPush's connector library. The distributor app (ntfy, for example) delivers new endpoints and messages to this receiver by broadcast; the library acts only on broadcasts carrying the random token of this app's own registration (anything else is dropped), and Croft counts a message only when it decrypted with this device's Web Push keys. Messages only make the app check for mail. TEMP_UNAVAILABLE (connector 3.3) is the distributor saying it cannot deliver for now; it is handled like the others, by the same token check.",
+          "permission": null,
+          "actions": [
+            "org.unifiedpush.android.connector.MESSAGE",
+            "org.unifiedpush.android.connector.UNREGISTERED",
+            "org.unifiedpush.android.connector.NEW_ENDPOINT",
+            "org.unifiedpush.android.connector.REGISTRATION_FAILED",
+            "org.unifiedpush.android.connector.TEMP_UNAVAILABLE"
+          ]
+        },
+        "service:org.unifiedpush.android.connector.internal.RaiseToForegroundService": {
+          "why": "T34d, fdroid and github: UnifiedPush's connector library. A distributor binds it for a few seconds with foreground importance so the app may run its check (the UnifiedPush specification). The binder does nothing; no foreground service is started by Croft.",
+          "permission": null,
+          "actions": [
+            "org.unifiedpush.android.connector.RAISE_TO_FOREGROUND"
+          ]
+        }
+      }
+    }
   }
 }

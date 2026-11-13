@@ -36,6 +36,11 @@ interface CompanionLinkApi {
     suspend fun devices(): List<CompanionDeviceInfo>
     suspend fun signOutDevice(id: Long)
     suspend fun signOut()
+    /** The Companion's push (VAPID) public key, base64url (T34d). */
+    suspend fun pushKey(): String
+    /** Subscribes this device for pings at [endpoint] with its Web Push keys (base64url); the Companion's id for it. */
+    suspend fun addPush(endpoint: String, p256dh: String, auth: String): Long
+    suspend fun removePush(id: Long)
 }
 
 /** The core's Companion calls (T34b), as an interface so the state can be tested without a core. */
@@ -101,5 +106,8 @@ class CoreCompanionBackend(private val core: Core) : CompanionBackend {
         }
         override suspend fun signOutDevice(id: Long) = mapped { link.signOutDevice(id) }
         override suspend fun signOut() = mapped { link.signOut() }
+        override suspend fun pushKey(): String = mapped { link.pushKey() }
+        override suspend fun addPush(endpoint: String, p256dh: String, auth: String): Long = mapped { link.addPush(endpoint, p256dh, auth) }
+        override suspend fun removePush(id: Long) = mapped { link.removePush(id) }
     }
 }

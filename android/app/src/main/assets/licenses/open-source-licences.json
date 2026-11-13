@@ -2,7 +2,7 @@
  "version": 1,
  "inputs": {
   "cargoLockSha256": "29b60a172744a2afcc25b034b725fc4f81a3dc1838510a4ac7c3a821a8a0c78e",
-  "libsCatalogSha256": "6f7b8a482bef67f3e42dedc476ee949b99a3e2e3b3244e1ab1688451e334a95b"
+  "libsCatalogSha256": "892f33a4f9ae7aa2ebd07f412043f4b14d22f527b6cde4506c42018c269b809c"
  },
  "entries": [
   {
@@ -570,12 +570,6 @@
    "origin": "Android"
   },
   {
-   "name": "com.google.errorprone:error_prone_annotations",
-   "version": "2.15.0",
-   "licence": "Apache-2.0",
-   "origin": "Android"
-  },
-  {
    "name": "com.google.guava:listenablefuture",
    "version": "1.0",
    "licence": "Apache-2.0",
@@ -596,18 +590,6 @@
   {
    "name": "org.jetbrains.kotlin:kotlin-stdlib",
    "version": "2.4.21",
-   "licence": "Apache-2.0",
-   "origin": "Android"
-  },
-  {
-   "name": "org.jetbrains.kotlinx:kotlinx-coroutines",
-   "version": "1.9.0",
-   "licence": "Apache-2.0",
-   "origin": "Android"
-  },
-  {
-   "name": "org.jetbrains.kotlinx:kotlinx-coroutines-core",
-   "version": "1.9.0",
    "licence": "Apache-2.0",
    "origin": "Android"
   },
@@ -679,13 +661,13 @@
   },
   {
    "name": "async-channel",
-   "version": "2.5.0",
+   "version": "1.9.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "async-channel",
-   "version": "1.9.0",
+   "version": "2.5.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -1321,13 +1303,13 @@
   },
   {
    "name": "nom",
-   "version": "8.0.0",
+   "version": "7.1.3",
    "licence": "MIT",
    "origin": "Rust"
   },
   {
    "name": "nom",
-   "version": "7.1.3",
+   "version": "8.0.0",
    "licence": "MIT",
    "origin": "Rust"
   },
@@ -1735,13 +1717,13 @@
   },
   {
    "name": "syn",
-   "version": "3.0.10",
+   "version": "2.0.119",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "syn",
-   "version": "2.0.119",
+   "version": "3.0.10",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
@@ -1777,13 +1759,13 @@
   },
   {
    "name": "thiserror",
-   "version": "2.0.21",
+   "version": "1.0.69",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "thiserror",
-   "version": "1.0.69",
+   "version": "2.0.21",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

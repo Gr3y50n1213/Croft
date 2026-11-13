@@ -13,6 +13,19 @@ plugins {
 val croftApplicationId = providers.gradleProperty("croft.applicationId").get()
 // T34c: the store flavours (see productFlavors below).
 val stores = listOf("play", "fdroid", "github")
+// T34d: the Play build's push needs the publisher's Firebase project and push gateway. They come from outside the repository
+// (~/.gradle/gradle.properties, -P on the command line, or the CROFT_FCM_* / CROFT_PUSH_GATEWAY environment); none is a secret
+// (Firebase identifies the project with them), but they are the publisher's. Empty: the Play build has no push, only periodic checks.
+fun outside(property: String, env: String): String =
+    providers.gradleProperty(property).orElse(providers.environmentVariable(env)).getOrElse("").trim()
+val pushGateway = outside("croft.pushGateway", "CROFT_PUSH_GATEWAY")
+val firebaseValues = mapOf(
+    "google_app_id" to outside("croft.fcm.appId", "CROFT_FCM_APP_ID"),
+    "gcm_defaultSenderId" to outside("croft.fcm.senderId", "CROFT_FCM_SENDER_ID"),
+    "google_api_key" to outside("croft.fcm.apiKey", "CROFT_FCM_API_KEY"),
+    "project_id" to outside("croft.fcm.projectId", "CROFT_FCM_PROJECT_ID"),
+)
+val fcmConfigured = pushGateway.startsWith("https://") && firebaseValues.values.all { it.isNotEmpty() }
 
 // Rust side. Paths are relative to android/ (this project's parent).
 val coreDir = rootProject.layout.projectDirectory.dir("../core")
@@ -152,6 +165,11 @@ android {
             create(store) {
                 dimension = "store"
                 buildConfigField("String", "STORE", "\"$store\"")
+                val play = store == "play"
+                buildConfigField("boolean", "FCM_CONFIGURED", (play && fcmConfigured).toString())
+                buildConfigField("String", "PUSH_GATEWAY", "\"${if (play && fcmConfigured) pushGateway else ""}\"")
+                // Firebase starts from these resources (as the google-services plugin would write them), so only when all are given.
+                if (play && fcmConfigured) firebaseValues.forEach { (name, value) -> resValue("string", name, value) }
             }
         }
     }
@@ -220,7 +238,11 @@ android {
         }
         // The two builds without Google services share one folder.
         for (store in listOf("fdroid", "github")) {
-            getByName(store) { kotlin.directories.add("src/unifiedpush/kotlin") }
+            getByName(store) {
+                kotlin.directories.add("src/unifiedpush/kotlin")
+                manifest.srcFile("src/unifiedpush/AndroidManifest.xml")
+                assets.directories.add("src/unifiedpush/assets")
+            }
         }
     }
 }
@@ -338,6 +360,10 @@ dependencies {
     implementation(libs.androidx.datastore)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.browser)
+    // T34d: push, per store.
+    "playImplementation"(libs.firebase.messaging)
+    "fdroidImplementation"(libs.unifiedpush.connector)
+    "githubImplementation"(libs.unifiedpush.connector)
     implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.jna)
 

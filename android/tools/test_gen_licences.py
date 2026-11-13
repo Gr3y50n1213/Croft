@@ -50,5 +50,22 @@ class ReleaseBuildMatchTest(unittest.TestCase):
         self.assertTrue({"openssl-sys", "openssl-src", "sqlcipher-src"} <= names)
 
 
+
+class ParentPomTest(unittest.TestCase):
+    def test_a_licence_named_only_in_the_parent_pom_is_found(self):
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.TemporaryDirectory() as d:
+            c = P(d)
+            (c / "x.y/child/1.0/h").mkdir(parents=True)
+            (c / "x.y/parent/1.0/h").mkdir(parents=True)
+            ns = 'xmlns="http://maven.apache.org/POM/4.0.0"'
+            (c / "x.y/child/1.0/h/child-1.0.pom").write_text(
+                f"<project {ns}><parent><groupId>x.y</groupId><artifactId>parent</artifactId><version>1.0</version></parent></project>")
+            (c / "x.y/parent/1.0/h/parent-1.0.pom").write_text(
+                f"<project {ns}><licenses><license><name>BSD-3-Clause</name></license></licenses></project>")
+            self.assertEqual("BSD-3-Clause", gen_licences.pom_licence("x.y", "child", "1.0", c))
+            self.assertEqual("", gen_licences.pom_licence("x.y", "missing", "1.0", c))
+
 if __name__ == "__main__":
     unittest.main()

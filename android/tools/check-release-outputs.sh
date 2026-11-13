@@ -72,6 +72,8 @@ if "$bt/aapt2" dump xmltree --file AndroidManifest.xml "$apk" | grep -q 'debugga
 # Permissions and exported components, on the merged manifest AGP packaged into the APK.
 # The app's own classes live in the namespace (gradle.properties), which the preview build's id suffix does not change.
 export CROFT_NAMESPACE="$(sed -n 's/^croft\.applicationId=//p' gradle.properties)"
+# T34d: the store build's own entries (push) are allowed only in that store's manifest.
+export CROFT_STORE="$flavor"
 python3 tools/check-release-manifest.py "app/build/intermediates/packaged_manifests/$full/process$(cap "$full")ManifestForPackage/AndroidManifest.xml" || fail=1
 
 # 16 KB alignment: the libraries, then the whole APK.

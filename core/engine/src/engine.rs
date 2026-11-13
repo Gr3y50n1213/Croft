@@ -651,6 +651,15 @@ impl Engine {
         }
     }
 
+    /// After an account was deleted (its Outbox rows went with it): forgets its Outbox messages
+    /// held in memory, so none stays listed or due until the next restart. Not for an account
+    /// that is only stopped and started again ([`Engine::remove_account`]): its messages stay.
+    pub fn forget_deleted_account(&self, account: AccountId) {
+        if let Some(mut ob) = self.shared.outbox() {
+            ob.forget_account(account);
+        }
+    }
+
     /// Puts the operations of an account that was stopped back in the queue, unless a
     /// [`EngineHandle::run_once`] still holds the account's turn (it settles its own operation).
     fn recover_in_flight(&self, slot: &AccountSlot) {

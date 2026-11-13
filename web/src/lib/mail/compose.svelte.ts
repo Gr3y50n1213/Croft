@@ -8,6 +8,7 @@
  * it back into a window. Replies and forwards get their fields from the core (`CroftDraft/reply`).
  */
 
+import { describe, utcDate } from './schedule.ts';
 import { explainMail, type DraftFields, type Jmap, type ReplyKind } from '../jmap/client.ts';
 
 /** Windows open at once (docked along the bottom). */
@@ -139,29 +140,42 @@ export class ComposeState {
     this.windows = this.windows.filter((w) => w.key !== key);
   }
 
-  /** Saves and sends: into the Outbox for the undo window, with Undo in the snackbar. */
-  async send(key: number): Promise<void> {
+  /**
+   * Saves and sends: into the Outbox for the undo window, with Undo in the snackbar. With `at`, the
+   * message is scheduled (S25): it waits in the Companion's Outbox until then, and Undo (or Cancel
+   * in Scheduled) takes it back.
+   */
+  async send(key: number, at?: Date): Promise<void> {
     const w = this.#find(key);
     const account = this.#account();
     if (!w || !account || w.sending) return;
     w.sending = true;
     try {
       if (!(await this.save(key)) || !w.draftId) return;
-      const { outboxId } = await this.#jmap.send(account, w.draftId);
+      const { outboxId } = await this.#jmap.send(account, w.draftId, at ? utcDate(at) : undefined);
       this.#drop(key);
-      this.#notify('Sending…', async () => {
-        try {
-          const draftId = await this.#jmap.undoSend(account, outboxId);
-          const draft = await this.#jmap.loadDraft(account, draftId);
-          if (draft) this.open(draft, draftId);
-        } catch (e) {
-          this.#notify(explainMail(e), null);
-        }
-      });
+      this.#notify(at ? `Scheduled for ${describe(at, new Date())}` : 'Sending…', () => this.takeBack(account, outboxId));
+      this.onqueued?.();
     } catch (e) {
       w.status = explainMail(e);
     } finally {
       w.sending = false;
     }
   }
+
+  /** Takes a message back from the Outbox (Undo, or Cancel for a scheduled one) and reopens its draft. */
+  async takeBack(account: string, outboxId: string): Promise<void> {
+    try {
+      const draftId = await this.#jmap.undoSend(account, outboxId);
+      const draft = await this.#jmap.loadDraft(account, draftId);
+      if (draft) this.open(draft, draftId);
+    } catch (e) {
+      this.#notify(explainMail(e), null);
+    } finally {
+      this.onqueued?.();
+    }
+  }
+
+  /** Told when the Outbox changed (the Scheduled view refreshes). */
+  onqueued: (() => void) | null = null;
 }

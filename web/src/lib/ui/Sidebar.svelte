@@ -14,7 +14,9 @@
     current,
     onaccount,
     onmailbox,
-    oncompose
+    oncompose,
+    scheduled = false,
+    onscheduled
   }: {
     accounts: Account[];
     account: string | null;
@@ -23,6 +25,9 @@
     onaccount: (id: string) => void;
     onmailbox: (id: string) => void;
     oncompose: () => void;
+    /** The Scheduled view is open (T33a). */
+    scheduled?: boolean;
+    onscheduled: () => void;
   } = $props();
 
   const ICONS: Record<string, IconName> = {
@@ -55,8 +60,8 @@
         <button
           type="button"
           class="folder"
-          class:current={m.id === current}
-          aria-current={m.id === current ? 'page' : undefined}
+          class:current={m.id === current && !scheduled}
+          aria-current={m.id === current && !scheduled ? 'page' : undefined}
           onclick={() => onmailbox(m.id)}
         >
           <Icon name={m.role ? (ICONS[m.role] ?? 'folder') : 'folder'} />
@@ -67,6 +72,18 @@
         </button>
       </li>
     {/each}
+    <li>
+      <button
+        type="button"
+        class="folder"
+        class:current={scheduled}
+        aria-current={scheduled ? 'page' : undefined}
+        onclick={onscheduled}
+      >
+        <Icon name="clock" />
+        <span class="name">Scheduled</span>
+      </button>
+    </li>
   </ul>
   {#if accounts.length > 1}
     <p class="label" id="accounts-label">Accounts</p>

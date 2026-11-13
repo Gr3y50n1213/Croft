@@ -149,15 +149,28 @@ fn undo_inside_the_window_removes_the_row_and_take_due_never_returns_it() {
 }
 
 #[test]
-fn undo_at_or_after_the_end_of_the_window_is_too_late() {
+fn undo_once_sending_began_is_too_late_and_changes_nothing_on_disk() {
     let f = fixture();
     let mut o = open(&f.path);
     let id = o.queue(msg(f.a1), b"MIME".to_vec(), 0, WINDOW).unwrap();
+    assert_eq!(o.take_due(WINDOW, 10).unwrap().len(), 1);
     assert!(matches!(
         o.undo(f.a1, id, WINDOW),
         Err(OutboxError::Undo(UndoError::TooLate))
     ));
-    assert_eq!(db_state(&f.path, id).as_deref(), Some("queued"));
+    assert_eq!(db_state(&f.path, id).as_deref(), Some("sending"));
+}
+
+#[test]
+fn a_message_whose_time_passed_offline_is_taken_back_and_gone_from_disk() {
+    let f = fixture();
+    let mut o = open(&f.path);
+    let id = o.queue(msg(f.a1), b"MIME".to_vec(), 0, WINDOW).unwrap();
+    o.set_offline(f.a1, true);
+    assert!(o.take_due(10 * WINDOW, 10).unwrap().is_empty());
+    let back = o.undo(f.a1, id, 10 * WINDOW).unwrap();
+    assert_eq!(back.mime, b"MIME");
+    assert_eq!(db_state(&f.path, id), None);
 }
 
 #[test]

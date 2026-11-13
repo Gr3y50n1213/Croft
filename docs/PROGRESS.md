@@ -5,6 +5,97 @@ unverified, the next step.
 
 ---
 
+## T33b: Search through the Companion (13 November 2026)
+
+**Status:** on `task/t33b` with T33a, one pull request. An independent review covered both parts (below); every finding was fixed.
+
+**What was built.**
+- **The Companion**: `CroftSearch/query` (capability `urn:croft:params:jmap:search`).
+  - It searches the core's own index inside the user's encrypted database, not tantivy (DECISIONS), with the phone's query
+    language, and with `server: true` the mail server too.
+  - It answers email ids, best first, with the matched parts of each subject and a body snippet (UTF-16 ranges).
+  - Bounded: 512 characters, 1 to 100 hits, one search per request, 10 server searches a minute per user, 20 s for the server.
+- **The web app (W01)**:
+  - The search box in the bar (`/`, Escape back to the folder), with results in the list and the matches marked as text.
+  - "Search the server too" when bodies were not all searched, and plain words when the server could not search.
+  - Actions on the results work as in a folder.
+
+**Review** (one independent agent, opus, high effort, on T33a and T33b together). Isolation, FTS5 and IMAP quoting, `utc_date`
+and the web's rendering were found sound. Findings, all fixed:
+- **Medium:** scheduled messages escaped the budget and outlived a revoked session. Now at most 100 scheduled messages and 1000
+  scheduled recipients per account.
+- **Medium:** a cancelled server search could leave the IMAP connection out of step, so the next command read its replies.
+  - Now a connection with a command left unfinished is replaced (search and APPEND).
+  - The test was shown to fail without the fix.
+- **Medium:** local search had no cost bound while it held the user's engine. Now:
+  - a 1.5 s budget (a watchdog interrupts SQLite);
+  - highlights only for the hits kept;
+  - single characters matched whole, not as prefixes;
+  - one search per request.
+- **Lows:**
+  - The server timeout was equal to the request's; it is now 20 s.
+  - An overdue message nothing had sent could not be cancelled. Undo now works while a message was never handed out.
+  - A refresh could overwrite search results.
+  - Budgets were charged before their arguments were validated.
+  - Highlights could be offset by characters the core removes. The hit now carries its subject.
+  - A deleted account's Outbox stayed in memory until restart.
+
+Not re-reviewed.
+
+**Checks.**
+- Core: the whole suite; new tests for the IMAP connection, the search budget, whole single characters, a deleted account's Outbox,
+  and Undo while never handed out. Three tests that encoded "Undo ends with the window" were rewritten to the new rule and still
+  check that nothing is taken back once sending began.
+- Companion: 169 tests (new: search results and isolation, bounds and budgets, the scheduled caps).
+- Web: 96 unit tests (new: marking matches) and 29 Playwright tests (new: search with `/`, marks, opening a result, a query
+  by sender and phrase, the mail server, no results, a bad date, Escape). axe-core is clean on the results.
+
+**Unverified.** Search against real mail servers through the Companion (only the in-process IMAP server here).
+
+**Next.** T34: phones through the Companion, the flavours and push registration.
+
+---
+
+## T33a: Scheduled send (13 November 2026)
+
+**Status:** merged together with T33b (one pull request), after the review below.
+
+**What was built.**
+- **The core**: `Core::schedule_send(account, draft, send_at_ms)`. The message waits in the Outbox until its time, then goes like
+  any other message: the same retries, copy in Sent and draft clean-up.
+  - A time already past, or inside the Undo window, is an ordinary send.
+  - More than a year and a day ahead is refused (`ComposeError::BadSendTime`).
+  - Until it starts going out, `undo_send` takes it back and the draft reopens.
+  - It survives a restart (the Outbox is stored).
+  - FFI v13; the Android app's expected version moves with it.
+- **The Companion**:
+  - `CroftOutbox/send` takes an optional `sendAt` (a strict `UTCDate`), and `CroftOutbox/get` lists each message with its time.
+  - A scheduled message counts against the sending budget when it is scheduled.
+  - Every user's core runs while the Companion runs, so scheduled mail goes out with no device online.
+- **The web app**:
+  - "Schedule send" in a compose window: tomorrow morning, tomorrow afternoon, Monday morning, or a date and time (at least a
+    minute ahead, within a year).
+  - A snackbar says when, with Undo.
+  - "Scheduled" in W01's sidebar lists what waits, with Cancel, which reopens the draft.
+
+**Checks.**
+- Core: 3 new tests, covering:
+  - a scheduled message waits and is taken back long after any Undo window;
+  - it goes out once at its time, after a restart;
+  - too far ahead is refused and a past time is an ordinary send.
+- Companion: 2 new tests: `sendAt` through JMAP (bad and too-far times refused, listed with its time, another user cannot cancel
+  it, cancel gives the draft back), and the strict `UTCDate` reader.
+- Web: 5 new unit tests (presets, the picker, how a time reads). One new Playwright test: schedule (a time a year away refused in
+  plain words), the snackbar, Scheduled after a reload, Cancel back into compose. axe-core clean on the dialog and the view.
+  93 unit and 28 Playwright tests in all.
+
+**Unverified.** A scheduled message actually delivered through a real SMTP server from the Companion. The core's own tests deliver
+one to the in-process SMTP server.
+
+**Next.** T33b: search through the Companion.
+
+---
+
 ## T32b: The installable web app, push in the browser, accessibility (13 November 2026)
 
 **Status:** on `task/t32b`, its own pull request; an independent review (below), every finding fixed but one part accepted.

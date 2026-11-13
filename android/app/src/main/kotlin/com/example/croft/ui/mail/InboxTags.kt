@@ -30,6 +30,9 @@ object InboxTags {
     const val FAST_SCROLLER = "inbox-fast-scroller"
     const val CHIPS = "inbox-chips"
 
+    /** The chip of category [c] (T35). */
+    fun chip(c: com.example.croft.mail.MailCategory) = "inbox-chip-${c.key}"
+
     /** The tag of the row of message [id]. */
     fun row(id: Long) = "row-$id"
 

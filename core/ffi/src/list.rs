@@ -97,7 +97,8 @@ pub(crate) fn rows_for(
     Ok(out)
 }
 
-/// Up to `limit` rows of one folder after the cursor, newest first.
+/// Up to `limit` rows of one folder after the cursor, newest first; with `category`, only its
+/// rows (T35).
 fn folder_rows(
     conn: &Connection,
     account: i64,
@@ -105,6 +106,7 @@ fn folder_rows(
     now_ms: i64,
     before: Option<RowCursor>,
     limit: u32,
+    category: Option<&str>,
 ) -> Result<Vec<MessageRow>, CoreError> {
     let rows = match before {
         None => {
@@ -112,10 +114,11 @@ fn folder_rows(
                 "SELECT {COLUMNS} FROM message
                   WHERE account_id = ?1 AND folder_id = ?2 AND local_hidden = 0
                     AND (snoozed_until IS NULL OR snoozed_until <= ?3)
+                    AND (?5 IS NULL OR category = ?5)
                   ORDER BY date_ts DESC, id DESC LIMIT ?4"
             );
             let mut stmt = conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![account, folder_id, now_ms, limit], row)?;
+            let rows = stmt.query_map(params![account, folder_id, now_ms, limit, category], row)?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         }
         Some(c) => {
@@ -124,11 +127,12 @@ fn folder_rows(
                   WHERE account_id = ?1 AND folder_id = ?2 AND local_hidden = 0
                     AND (snoozed_until IS NULL OR snoozed_until <= ?3)
                     AND (date_ts < ?4 OR (date_ts = ?4 AND id < ?5))
+                    AND (?7 IS NULL OR category = ?7)
                   ORDER BY date_ts DESC, id DESC LIMIT ?6"
             );
             let mut stmt = conn.prepare_cached(&sql)?;
             let rows = stmt.query_map(
-                params![account, folder_id, now_ms, c.date_ms, c.id, limit],
+                params![account, folder_id, now_ms, c.date_ms, c.id, limit, category],
                 row,
             )?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
@@ -170,6 +174,7 @@ pub(crate) fn page(
     now_ms: i64,
     before: Option<RowCursor>,
     limit: u32,
+    category: Option<&str>,
 ) -> Result<MessagePage, CoreError> {
     let limit = limit.min(MAX_PAGE);
     if limit == 0 {
@@ -182,14 +187,16 @@ pub(crate) fn page(
     let want = limit + 1;
     let mut rows = match scope {
         MessageScope::Folder { account, folder_id } => {
-            folder_rows(conn, account, folder_id, now_ms, before, want)?
+            folder_rows(conn, account, folder_id, now_ms, before, want, category)?
         }
         MessageScope::UnifiedInbox => {
             let mut all = Vec::new();
             for &account in accounts {
                 for f in folders::list(conn, account)? {
                     if f.special_use == "inbox" {
-                        all.extend(folder_rows(conn, account, f.id, now_ms, before, want)?);
+                        all.extend(folder_rows(
+                            conn, account, f.id, now_ms, before, want, category,
+                        )?);
                     }
                 }
             }

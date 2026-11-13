@@ -82,6 +82,14 @@ class ScriptedCore(
         MessagePage(page, if (visible.size > page.size) CoreCursor(page.last().dateMs, page.last().id) else null)
     }
 
+    // T35: this scripted core has no categories: every message is Primary, and nothing is unread per category.
+    override fun listMessagesIn(scope: CoreScope, category: uniffi.croft_ffi.InboxCategory?, before: CoreCursor?, limit: UInt): MessagePage =
+        if (category == null || category == uniffi.croft_ffi.InboxCategory.PRIMARY) listMessages(scope, before, limit) else MessagePage(emptyList(), null)
+
+    override fun inboxCategoryCounts(account: Long?): List<uniffi.croft_ffi.CategoryCount> = emptyList()
+
+    override fun setMessageCategory(messageId: Long, category: uniffi.croft_ffi.InboxCategory, always: Boolean) {}
+
     override suspend fun nextChange(after: ULong): ChangeBatch {
         val now = seq.first { it.toULong() > after }
         return synchronized(this) {

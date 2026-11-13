@@ -820,7 +820,7 @@ impl Conn {
         for set in uid_sets(uids, UIDS_PER_COMMAND) {
             let cmd = format!(
                 "UID FETCH {set} (UID FLAGS RFC822.SIZE INTERNALDATE ENVELOPE \
-                 BODY.PEEK[HEADER.FIELDS (REFERENCES IN-REPLY-TO)])"
+                 BODY.PEEK[HEADER.FIELDS (REFERENCES IN-REPLY-TO LIST-ID LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST PRECEDENCE AUTO-SUBMITTED)])"
             );
             let reply = self.exec(&cmd, "read message headers").await?;
             for item in reply.items {
@@ -1471,6 +1471,7 @@ fn header_from(attrs: &[AttributeValue<'_>]) -> Option<RemoteHeader> {
     let mut from_name = None;
     let mut from_addr = None;
     let mut extra = Vec::new();
+    let mut list = crate::types::ListHeaders::default();
     let mut in_reply_to_env: Option<String> = None;
     for a in attrs {
         match a {
@@ -1512,7 +1513,10 @@ fn header_from(attrs: &[AttributeValue<'_>]) -> Option<RemoteHeader> {
                 section: Some(SectionPath::Full(MessageSection::Header)),
                 data: Some(data),
                 ..
-            } => extra = reference_ids(data),
+            } => {
+                extra = reference_ids(data);
+                list = crate::types::ListHeaders::from_block(&String::from_utf8_lossy(data));
+            }
             _ => {}
         }
     }
@@ -1530,6 +1534,7 @@ fn header_from(attrs: &[AttributeValue<'_>]) -> Option<RemoteHeader> {
         date_ms,
         size,
         flags,
+        list,
     })
 }
 

@@ -17,6 +17,24 @@ typealias MessageId = Long
 typealias OpId = Long
 
 /**
+ * An Inbox category (T35, S10's chips, S49). Decided by the core from the sender and the list headers, and by the person's "Always do
+ * this" rules. [key] is the stored name, used in the settings file.
+ */
+enum class MailCategory(val key: String) {
+    PRIMARY("primary"),
+    UPDATES("updates"),
+    PROMOTIONS("promotions"),
+    SOCIAL("social");
+
+    companion object {
+        /** The chips shown by default (docs/ux/customisation.md): Social is off until turned on in S49. */
+        val DEFAULT_SHOWN: Set<MailCategory> = setOf(PRIMARY, UPDATES, PROMOTIONS)
+
+        fun fromKey(key: String?): MailCategory? = entries.firstOrNull { it.key == key }
+    }
+}
+
+/**
  * Which messages a list shows. One folder of one account, or the Inbox of every account merged by date, as the core's
  * `MessageScope`. The core's third case, Starred (API version 5), is a [Folder] here whose id is a virtual one
  * ([VirtualFolders]): the drawer shows "Starred" like any mailbox.

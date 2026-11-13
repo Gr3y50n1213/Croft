@@ -131,6 +131,44 @@ class FakeMessageRepository(
         }
     }
 
+    // ---- T35: categories, kept in memory (a guess from the sender until the person moves a message) ----
+
+    private val categoryOf = HashMap<MessageId, MailCategory>()
+    private val senderRules = HashMap<String, MailCategory>()
+
+    private fun category(row: MessageRowData): MailCategory =
+        categoryOf[row.id] ?: senderRules[row.senderAddress.orEmpty().lowercase()] ?: guessCategory(row.senderAddress.orEmpty())
+
+    override suspend fun listMessagesIn(scope: MessageScope, category: MailCategory?, before: RowCursor?, limit: Int): MessagePage {
+        synchronized(lock) { requestLog += ListRequest(scope, before, limit) }
+        hold?.await()
+        return synchronized(lock) {
+            val rows = scopeRows(scope).asSequence()
+                .filter { category == null || category(it) == category }
+                .dropWhile { before != null && !(it.dateMs < before.dateMs || (it.dateMs == before.dateMs && it.id < before.id)) }
+                .take(limit + 1).toList()
+            val page = rows.take(limit)
+            MessagePage(page, if (rows.size > limit) page.last().cursor else null)
+        }
+    }
+
+    override suspend fun categoryCounts(account: AccountId?): Map<MailCategory, Long> = synchronized(lock) {
+        val inboxes = folderList.filter { it.role == FolderRole.INBOX && (account == null || it.account == account) }.map { it.id }.toSet()
+        val unread = all.filter { it.folder in inboxes && !it.seen }
+        MailCategory.entries.associateWith { c -> unread.count { category(it) == c }.toLong() }
+    }
+
+    override suspend fun setCategory(id: MessageId, category: MailCategory, always: Boolean) = synchronized(lock) {
+        val row = all.firstOrNull { it.id == id } ?: throw MailException(MailError.NOT_FOUND)
+        categoryOf[id] = category
+        if (always) {
+            val sender = row.senderAddress.orEmpty().lowercase()
+            senderRules[sender] = category
+            if (sender.isNotEmpty()) all.filter { it.senderAddress.orEmpty().lowercase() == sender }.forEach { categoryOf[it.id] = category }
+        }
+        changed(setOf(FolderRef(row.account, row.folder)), emptySet())
+    }
+
     override suspend fun nextChange(after: Long): ChangeBatch {
         val now = seq.first { it > after }
         return synchronized(lock) {
@@ -286,5 +324,16 @@ class FakeMessageRepository(
         const val DEFAULT_UNDO_WINDOW_MS = 5_000L
         const val LOG_SIZE = 512
         val ORDER: Comparator<MessageRowData> = compareByDescending<MessageRowData> { it.dateMs }.thenByDescending { it.id }
+    }
+}
+
+/** The sample mailbox's categories: a rough guess from the address (the real classifier is in the core, T35). */
+internal fun guessCategory(address: String): MailCategory {
+    val a = address.lowercase()
+    return when {
+        listOf("noreply", "no-reply", "notifications", "alerts").any { a.startsWith(it) } -> MailCategory.UPDATES
+        listOf("news", "deals", "offers", "promo").any { a.startsWith(it) } -> MailCategory.PROMOTIONS
+        listOf("facebookmail.com", "linkedin.com").any { a.endsWith(it) } -> MailCategory.SOCIAL
+        else -> MailCategory.PRIMARY
     }
 }

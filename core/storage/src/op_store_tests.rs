@@ -52,6 +52,7 @@ fn header(uid: u32) -> RemoteHeader {
         date_ms: 1_000 + i64::from(uid),
         size: 100,
         flags: Flags::default(),
+        list: Default::default(),
     }
 }
 

@@ -35,6 +35,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import com.example.croft.mail.MailCategory
+import androidx.compose.ui.test.performScrollToNode
 
 /**
  * S30 Move to and the folder rules, on the real repository over a scripted core. Account 1's folders are 101 Inbox, 102 Sent,
@@ -82,6 +84,18 @@ class MoveToTest {
         assertEquals("the destination is a recent one now", listOf(103L), f.mapping.recents(1))
         rule.onNodeWithText("Undo").performClick()
         rule.waitForRow(10, 20_000)
+    }
+
+    @Test
+    fun s30_inTheInboxAMessageMovesToACategory_andTheSnackbarOffersAlwaysDoThis() {
+        // T35: after the folders, a row of category chips.
+        val f = CoreFixture()
+        show(f)
+        openMoveToFromTheToolbar()
+        rule.onNodeWithTag(MoveTags.LIST).performScrollToNode(androidx.compose.ui.test.hasTestTag(MoveTags.category(MailCategory.PROMOTIONS)))
+        rule.onNodeWithTag(MoveTags.category(MailCategory.PROMOTIONS)).performClick()
+        waitForText("Moved to Promotions")
+        assertTrue(exists("Always do this"))
     }
 
     @Test

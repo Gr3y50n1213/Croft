@@ -20,8 +20,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 
 /**
@@ -36,6 +38,10 @@ data class MailSettings(
     val undoSeconds: Int = CroftTokens.Swipe.UndoWindowSeconds.default,
     val remoteImages: RemoteImages = RemoteImages.ASK,
     val markRead: MarkReadDelay = MarkReadDelay.AFTER_2_SECONDS,
+    /** T35, S49: the category chips above the Inbox, on or off. */
+    val categoriesOn: Boolean = true,
+    /** T35, S49: which category chips show (All always shows). */
+    val shownCategories: Set<MailCategory> = MailCategory.DEFAULT_SHOWN,
 ) {
     /** The undo window in milliseconds. */
     val undoWindowMs: Long get() = undoSeconds * 1000L
@@ -67,6 +73,8 @@ object MailSettingsJson {
                 "undoSeconds" to JsonPrimitive(s.undoSeconds),
                 "remoteImages" to JsonPrimitive(s.remoteImages.key),
                 "markRead" to JsonPrimitive(s.markRead.key),
+                "categories" to JsonPrimitive(s.categoriesOn),
+                "shownCategories" to JsonArray(MailCategory.entries.filter { it in s.shownCategories }.map { JsonPrimitive(it.key) }),
             ),
         ),
     ) + "\n"
@@ -82,6 +90,11 @@ object MailSettingsJson {
             undoSeconds = if (seconds != null && seconds in MailSettings.UndoChoices) seconds else defaults.undoSeconds,
             remoteImages = RemoteImages.fromKey((obj["remoteImages"] as? JsonPrimitive)?.takeIf { it.isString }?.content),
             markRead = MarkReadDelay.fromKey((obj["markRead"] as? JsonPrimitive)?.takeIf { it.isString }?.content),
+            categoriesOn = (obj["categories"] as? JsonPrimitive)?.booleanOrNull ?: defaults.categoriesOn,
+            shownCategories = (obj["shownCategories"] as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.let { p -> MailCategory.fromKey(p.content) } }
+                ?.toSet()
+                ?: defaults.shownCategories,
         )
     }
 }

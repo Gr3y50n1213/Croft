@@ -22,6 +22,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import androidx.compose.ui.test.performScrollTo
+import com.example.croft.mail.MailCategory
+import org.junit.Assert.assertFalse
 
 /** S49 Inbox and categories, as far as it exists: the Undo time. */
 @RunWith(RobolectricTestRunner::class)
@@ -36,13 +39,30 @@ class InboxSettingsScreenTest {
         rule.show(AnimationLevel.OFF) { InboxSettingsScreen(settings, onChange = { settings = it }, onBack = {}) }
         rule.onNodeWithTag(InboxSettingsTags.SCREEN).assertExists()
         for (s in listOf("3 s", "5 s", "10 s")) rule.onNodeWithText(s).assertExists()
-        rule.onNodeWithText("10 s").performClick()
+        rule.onNodeWithText("10 s").performScrollTo().performClick()
         rule.waitForIdle()
         assertEquals(10, settings.undoSeconds)
         assertEquals(10_000L, settings.undoWindowMs)
-        rule.onNodeWithText("3 s").performClick()
+        rule.onNodeWithText("3 s").performScrollTo().performClick()
         rule.waitForIdle()
         assertEquals(3_000L, settings.undoWindowMs)
         assertTrue(rule.onAllNodes(hasText("How long Undo stays", substring = true)).fetchSemanticsNodes().isNotEmpty())
+    }
+
+    @Test
+    fun s49_theCategoriesSwitchAndAToggleForEachCategory() {
+        var settings by mutableStateOf(MailSettings())
+        rule.show(AnimationLevel.OFF) { InboxSettingsScreen(settings, onChange = { settings = it }, onBack = {}) }
+        rule.onNodeWithTag(InboxSettingsTags.category(MailCategory.SOCIAL)).performScrollTo().performClick()
+        rule.waitForIdle()
+        assertTrue(MailCategory.SOCIAL in settings.shownCategories)
+        rule.onNodeWithTag(InboxSettingsTags.category(MailCategory.PROMOTIONS)).performScrollTo().performClick()
+        rule.waitForIdle()
+        assertFalse(MailCategory.PROMOTIONS in settings.shownCategories)
+        rule.onNodeWithTag(InboxSettingsTags.CATEGORIES).performScrollTo().performClick()
+        rule.waitForIdle()
+        assertFalse(settings.categoriesOn)
+        // With the chips off, the per-category toggles go.
+        rule.onNodeWithTag(InboxSettingsTags.category(MailCategory.PRIMARY)).assertDoesNotExist()
     }
 }

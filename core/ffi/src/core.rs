@@ -1305,7 +1305,7 @@ impl Core {
                 }
                 MessageScope::Folder { .. } | MessageScope::Starred { .. } => Vec::new(),
             };
-            list::page(conn, &ids, scope, now_ms(), before, limit)
+            list::page(conn, &ids, scope, now_ms(), before, limit, None)
         })
     }
 

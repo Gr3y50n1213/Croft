@@ -49,6 +49,7 @@ fn header(uid: u32, subject: &str, date_ms: i64) -> RemoteHeader {
         date_ms,
         size: 1200,
         flags: Flags::default(),
+        list: Default::default(),
     }
 }
 
@@ -1182,5 +1183,99 @@ fn a_reset_stores_the_validity_alone_and_the_row_helpers_count_what_they_say() {
         messages::uids_with_message_ids(c, a1 + 100, f1, &["<dup@x>"])
             .unwrap()
             .is_empty()
+    );
+}
+
+// ---- T35: inbox categories ----
+
+fn bulk_header(uid: u32, from: &str) -> RemoteHeader {
+    let mut h = header(uid, "Big sale", 1_000 + i64::from(uid));
+    h.from_addr = Some(from.into());
+    h.list.unsubscribe = Some("<https://shop.example/u>".into());
+    h.list.one_click = true;
+    h
+}
+
+fn category_of(c: &Connection, id: i64) -> String {
+    c.query_row("SELECT category FROM message WHERE id = ?1", [id], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_new_message_is_classified_once_and_a_sync_keeps_the_persons_choice() {
+    let (db, a1, f1, _, _) = two_accounts();
+    let c = db.connection();
+    let id = messages::upsert(c, a1, f1, &bulk_header(1, "deals@shop.example")).unwrap();
+    assert_eq!(category_of(c, id), "promotions");
+    let (unsub, one_click): (Option<String>, bool) = c
+        .query_row(
+            "SELECT list_unsubscribe, list_one_click FROM message WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(unsub.as_deref(), Some("<https://shop.example/u>"));
+    assert!(one_click);
+    // Moved to Primary by the person; the next sync of the same message keeps that.
+    assert!(
+        messages::set_category(c, a1, id, croft_mail_core::category::Category::Primary).unwrap()
+    );
+    messages::upsert(c, a1, f1, &bulk_header(1, "deals@shop.example")).unwrap();
+    assert_eq!(category_of(c, id), "primary");
+}
+
+#[test]
+fn a_rule_refiles_the_senders_mail_in_its_account_only_and_classifies_new_mail() {
+    use croft_mail_core::category::Category;
+    let (db, a1, f1, a2, f2) = two_accounts();
+    let c = db.connection();
+    let mine = messages::upsert(c, a1, f1, &bulk_header(1, "Deals@Shop.Example")).unwrap();
+    let theirs = messages::upsert(c, a2, f2, &bulk_header(1, "deals@shop.example")).unwrap();
+    assert_eq!(
+        messages::add_category_rule(c, a1, "deals@shop.example", Category::Primary).unwrap(),
+        1
+    );
+    assert_eq!(category_of(c, mine), "primary");
+    assert_eq!(
+        category_of(c, theirs),
+        "promotions",
+        "another account is untouched"
+    );
+    let next = messages::upsert(c, a1, f1, &bulk_header(2, "deals@shop.example")).unwrap();
+    assert_eq!(category_of(c, next), "primary", "new mail follows the rule");
+    assert_eq!(messages::category_rules(c, a2).unwrap(), vec![]);
+    // Deleting the account deletes its rules.
+    c.execute("DELETE FROM account WHERE id = ?1", [a1])
+        .unwrap();
+    assert_eq!(messages::category_rules(c, a1).unwrap(), vec![]);
+}
+
+#[test]
+fn unread_counts_per_category_leave_out_read_hidden_and_snoozed_mail() {
+    use croft_mail_core::category::Category;
+    let (db, a1, f1, _, _) = two_accounts();
+    let c = db.connection();
+    messages::upsert(c, a1, f1, &bulk_header(1, "deals@shop.example")).unwrap();
+    let read = messages::upsert(c, a1, f1, &bulk_header(2, "deals@shop.example")).unwrap();
+    let snoozed = messages::upsert(c, a1, f1, &bulk_header(3, "deals@shop.example")).unwrap();
+    messages::upsert(c, a1, f1, &header(4, "Hello", 4)).unwrap();
+    c.execute("UPDATE message SET is_seen = 1 WHERE id = ?1", [read])
+        .unwrap();
+    c.execute(
+        "UPDATE message SET snoozed_until = 10000 WHERE id = ?1",
+        [snoozed],
+    )
+    .unwrap();
+    let counts = messages::unread_by_category(c, a1, f1, 5_000).unwrap();
+    assert_eq!(
+        counts,
+        vec![
+            (Category::Primary, 1),
+            (Category::Updates, 0),
+            (Category::Promotions, 1),
+            (Category::Social, 0)
+        ]
     );
 }

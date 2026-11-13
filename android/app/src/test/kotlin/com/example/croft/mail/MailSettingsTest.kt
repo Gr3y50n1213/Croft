@@ -48,4 +48,20 @@ class MailSettingsTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun theCategoriesAreOnWithSocialOffByDefaultAndRoundTrip() {
+        val d = MailSettings()
+        assertEquals(true, d.categoriesOn)
+        assertEquals(setOf(MailCategory.PRIMARY, MailCategory.UPDATES, MailCategory.PROMOTIONS), d.shownCategories)
+        val changed = MailSettings(categoriesOn = false, shownCategories = setOf(MailCategory.SOCIAL, MailCategory.PRIMARY))
+        assertEquals(changed, MailSettingsJson.decodeOrDefault(MailSettingsJson.encode(changed)))
+        assertEquals("a file from before T35 has the defaults", d, MailSettingsJson.decodeOrDefault("""{"version":1,"undoSeconds":5}"""))
+        assertEquals(
+            "unknown categories are dropped",
+            setOf(MailCategory.UPDATES),
+            MailSettingsJson.decodeOrDefault("""{"version":1,"shownCategories":["updates","forums",3]}""").shownCategories,
+        )
+        assertEquals(emptySet<MailCategory>(), MailSettingsJson.decodeOrDefault("""{"version":1,"shownCategories":[]}""").shownCategories)
+    }
 }

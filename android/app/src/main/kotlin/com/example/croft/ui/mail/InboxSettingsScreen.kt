@@ -39,6 +39,10 @@ import kotlinx.coroutines.launch
 import com.example.croft.ui.appearance.ChoiceRow
 import com.example.croft.ui.appearance.SectionLabel
 import com.example.croft.ui.appearance.SettingsFrame
+import com.example.croft.ui.components.CroftCheckboxRow
+import com.example.croft.ui.components.CroftSwitchRow
+import com.example.croft.mail.MailCategory
+import androidx.compose.ui.state.ToggleableState
 
 /** Test tags of S49. */
 object InboxSettingsTags {
@@ -47,6 +51,8 @@ object InboxSettingsTags {
     const val REMOTE_IMAGES = "S49-remote-images"
     const val MARK_READ = "S49-mark-read"
     const val KNOWN_SENDERS = "S49-known-senders"
+    const val CATEGORIES = "S49-categories"
+    fun category(c: MailCategory) = "S49-category-${c.key}"
     fun knownSender(address: String) = "S49-known-$address"
 }
 
@@ -68,6 +74,27 @@ fun InboxSettingsScreen(
     session: MailSession? = null,
 ) {
     SettingsFrame(title = stringResource(R.string.inbox_settings_title), onBack = onBack, modifier = modifier.testTag(InboxSettingsTags.SCREEN)) {
+        // T35: the category chips above the Inbox, and which of them show.
+        SectionLabel(stringResource(R.string.inbox_categories_title))
+        CroftSwitchRow(
+            title = stringResource(R.string.inbox_categories_switch),
+            checked = settings.categoriesOn,
+            onCheckedChange = { onChange(settings.copy(categoriesOn = it)) },
+            hint = stringResource(R.string.inbox_categories_hint),
+            modifier = Modifier.testTag(InboxSettingsTags.CATEGORIES),
+        )
+        if (settings.categoriesOn) {
+            for (c in MailCategory.entries) {
+                CroftCheckboxRow(
+                    title = categoryName(c),
+                    state = ToggleableState(c in settings.shownCategories),
+                    onToggle = { on ->
+                        onChange(settings.copy(shownCategories = if (on) settings.shownCategories + c else settings.shownCategories - c))
+                    },
+                    modifier = Modifier.testTag(InboxSettingsTags.category(c)),
+                )
+            }
+        }
         SectionLabel(stringResource(R.string.inbox_undo_time))
         ChoiceRow(
             options = MailSettings.UndoChoices,

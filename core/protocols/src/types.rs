@@ -167,6 +167,92 @@ pub struct RemoteHeader {
     pub size: u32,
     /// Flags at fetch time.
     pub flags: Flags,
+    /// The list and bulk-mail headers (T35: categories; T37: unsubscribe).
+    pub list: ListHeaders,
+}
+
+/// A message's mailing-list and bulk-mail headers, unfolded and trimmed (T35). Each is at most
+/// [`ListHeaders::MAX_LEN`] characters; a longer value is dropped, not cut.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListHeaders {
+    /// `List-Id` (RFC 2919).
+    pub list_id: Option<String>,
+    /// `List-Unsubscribe` (RFC 2369): one or more `<...>` URIs.
+    pub unsubscribe: Option<String>,
+    /// `List-Unsubscribe-Post: List-Unsubscribe=One-Click` is present (RFC 8058).
+    pub one_click: bool,
+    /// `Precedence` (`bulk`, `list`, `junk`), lower case.
+    pub precedence: Option<String>,
+    /// `Auto-Submitted` (RFC 3834), lower case, without parameters.
+    pub auto_submitted: Option<String>,
+}
+
+impl ListHeaders {
+    /// The longest header value kept.
+    pub const MAX_LEN: usize = 2048;
+
+    /// Reads the headers from a block of `Name: value` lines (a header section, or the part of one
+    /// that was fetched). Folded lines are joined; names match without regard to case; the first
+    /// occurrence of each counts.
+    pub fn from_block(block: &str) -> Self {
+        let mut out = Self::default();
+        for (name, value) in unfold(block) {
+            match name.to_ascii_lowercase().as_str() {
+                "list-id" => set(&mut out.list_id, &value),
+                "list-unsubscribe" => set(&mut out.unsubscribe, &value),
+                "list-unsubscribe-post" => {
+                    out.one_click |= value
+                        .split(';')
+                        .any(|p| p.trim().eq_ignore_ascii_case("List-Unsubscribe=One-Click"));
+                }
+                "precedence" => set(&mut out.precedence, &value.to_ascii_lowercase()),
+                "auto-submitted" => {
+                    let v = value
+                        .split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase();
+                    set(&mut out.auto_submitted, &v);
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+fn set(slot: &mut Option<String>, value: &str) {
+    let v = value.trim();
+    if slot.is_none()
+        && !v.is_empty()
+        && v.len() <= ListHeaders::MAX_LEN
+        && !v.chars().any(char::is_control)
+    {
+        *slot = Some(v.to_owned());
+    }
+}
+
+/// `(name, value)` pairs of a header block, with folded continuation lines joined by a space.
+fn unfold(block: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in block.split('\n') {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(last) = out.last_mut() {
+                last.1.push(' ');
+                last.1.push_str(line.trim());
+            }
+            continue;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            out.push((name.trim().to_owned(), value.trim().to_owned()));
+        }
+    }
+    out
 }
 
 /// What a move produced: where each moved message ended up.
@@ -374,4 +460,40 @@ pub enum SearchOutcome {
     /// The server cannot run this search (it has no search, refused it, or the query has
     /// characters this adapter cannot send). Local results are all there is.
     Unsupported,
+}
+
+#[cfg(test)]
+mod list_header_tests {
+    use super::ListHeaders;
+
+    #[test]
+    fn list_headers_are_read_unfolded_and_case_blind() {
+        let block = "REFERENCES: <a@x>\r\nlist-id: Dev  list\r\n <dev.lists.example.org>\r\n\
+                     List-Unsubscribe: <https://example.org/u?t=1>,\r\n\t<mailto:leave@example.org>\r\n\
+                     List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nPrecedence: BULK\r\n\
+                     Auto-Submitted: auto-generated; type=x\r\n\r\n";
+        let h = ListHeaders::from_block(block);
+        assert_eq!(
+            h.list_id.as_deref(),
+            Some("Dev  list <dev.lists.example.org>")
+        );
+        assert_eq!(
+            h.unsubscribe.as_deref(),
+            Some("<https://example.org/u?t=1>, <mailto:leave@example.org>")
+        );
+        assert!(h.one_click);
+        assert_eq!(h.precedence.as_deref(), Some("bulk"));
+        assert_eq!(h.auto_submitted.as_deref(), Some("auto-generated"));
+    }
+
+    #[test]
+    fn the_first_occurrence_counts_and_long_or_odd_values_are_dropped() {
+        let long = "x".repeat(ListHeaders::MAX_LEN + 1);
+        let block = format!("List-Id: <a>\nList-Id: <b>\nPrecedence: {long}\nList-Unsubscribe-Post: something else\n");
+        let h = ListHeaders::from_block(&block);
+        assert_eq!(h.list_id.as_deref(), Some("<a>"));
+        assert_eq!(h.precedence, None);
+        assert!(!h.one_click);
+        assert_eq!(ListHeaders::from_block(""), ListHeaders::default());
+    }
 }

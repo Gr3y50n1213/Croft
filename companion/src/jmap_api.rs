@@ -210,6 +210,10 @@ pub async fn session(State(app): State<App>, Full(c): Full) -> ApiResult {
                                 "accountCapabilities": {
                     CORE: {},
                     jmap_compose::COMPOSE: {},
+                    jmap_search::SEARCH: {
+                        "maxQueryChars": jmap_search::MAX_QUERY_CHARS,
+                        "maxHits": jmap_search::MAX_HITS,
+                    },
                     MAIL: {
                         "maxMailboxesPerEmail": 1,
                         "maxMailboxDepth": null,
@@ -238,6 +242,7 @@ pub async fn session(State(app): State<App>, Full(c): Full) -> ApiResult {
             },
                         MAIL: {},
             jmap_compose::COMPOSE: {},
+            jmap_search::SEARCH: {},
         },
         "accounts": map,
         "primaryAccounts": primary.map_or_else(|| json!({}), |p| json!({ CORE: p, MAIL: p })),
@@ -267,11 +272,12 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
             "using and methodCalls are required",
         ));
     };
-    let mut compose = false;
+    let (mut compose, mut search) = (false, false);
     for cap in using {
         match cap.as_str() {
             Some(CORE | MAIL) => {}
             Some(jmap_compose::COMPOSE) => compose = true,
+            Some(jmap_search::SEARCH) => search = true,
             _ => {
                 return Ok(request_error(
                     "unknownCapability",
@@ -315,13 +321,16 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
             .collect()
     };
     let limits = app.auth.clone();
+    let search_limits = app.auth.clone();
     let user_id = c.user_id;
     let ctx = Ctx {
         core,
         epoch,
         accounts,
         compose,
+        search,
         send_allowed: Box::new(move |recipients| limits.send_budget(user_id, recipients)),
+        server_search_allowed: Box::new(move || search_limits.server_search_budget(user_id)),
     };
     let mut responses: Vec<Value> = Vec::new();
     let mut spent = body.len();
@@ -456,6 +465,10 @@ struct Ctx {
     compose: bool,
     /// Counts a send to that many recipients against the user's sending budget; false when over.
     send_allowed: Box<dyn Fn(usize) -> bool + Send + Sync>,
+    /// The request's `using` names the search capability (T33b).
+    search: bool,
+    /// Counts a search on the mail server against the user's budget; false when over.
+    server_search_allowed: Box<dyn Fn() -> bool + Send + Sync>,
 }
 
 type Answer = Vec<(String, Value)>;
@@ -500,6 +513,7 @@ impl Ctx {
             "CroftOutbox/send" if self.compose => one(name, self.outbox_send(args).await),
             "CroftOutbox/undo" if self.compose => one(name, self.outbox_undo(args).await),
             "CroftOutbox/get" if self.compose => one(name, self.outbox_get(args).await),
+            "CroftSearch/query" if self.search => one(name, self.search_query(args).await),
             _ => vec![("error".to_owned(), error("unknownMethod"))],
         }
     }
@@ -1153,6 +1167,8 @@ impl Ctx {
 
 #[path = "jmap_compose.rs"]
 mod jmap_compose;
+#[path = "jmap_search.rs"]
+mod jmap_search;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

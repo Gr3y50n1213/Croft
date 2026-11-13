@@ -1368,3 +1368,130 @@ async fn a_message_is_scheduled_through_jmap_listed_with_its_time_and_cancelled(
     assert_eq!(r[1][1]["list"], json!([]));
     stop(server).await;
 }
+
+const SEARCH_USING: [&str; 3] = [
+    "urn:ietf:params:jmap:core",
+    "urn:ietf:params:jmap:mail",
+    "urn:croft:params:jmap:search",
+];
+
+impl H {
+    async fn search(&self, token: &str, calls: Value) -> Vec<Value> {
+        let body = json!({ "using": SEARCH_USING, "methodCalls": calls });
+        let (s, v) = self
+            .raw(
+                Method::POST,
+                "/jmap/api",
+                token,
+                Some(body.to_string().into_bytes()),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        v["methodResponses"].as_array().unwrap().clone()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn search_finds_stored_mail_with_its_matches_and_only_the_callers() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let (_, bob) = h.user("bob");
+    let server = start_server(3).await;
+    let account = h.account(&t, &server).await;
+    h.inbox(&t, &account, 3).await;
+    // The method needs its capability.
+    let r = h
+        .jmap(
+            &t,
+            json!([["CroftSearch/query", {"accountId": account, "query": "Message"}, "q"]]),
+        )
+        .await;
+    assert_eq!(r[0][1]["type"], "unknownMethod");
+    let r = h
+        .search(
+            &t,
+            json!([
+                ["CroftSearch/query", {"accountId": account, "query": "subject:\"Message 2\""}, "q"],
+                ["Email/get", {"accountId": account, "#ids": {"resultOf": "q", "name": "CroftSearch/query", "path": "/ids"}, "properties": ["subject"]}, "g"],
+                ["CroftSearch/query", {"accountId": account, "query": "nothing-like-this-anywhere"}, "n"],
+            ]),
+        )
+        .await;
+    let ids = r[0][1]["ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 1, "{:?}", r[0]);
+    let id = ids[0].as_str().unwrap();
+    assert!(id.starts_with('m'));
+    assert_eq!(r[1][1]["list"][0]["subject"], "Message 2");
+    // The match in the subject, in UTF-16 code units (a quoted phrase is one match).
+    assert_eq!(r[0][1]["hits"][id]["subjectRanges"], json!([[0, 9]]));
+    assert_eq!(r[0][1]["serverSearched"], false);
+    assert_eq!(r[2][1]["ids"], json!([]));
+    // Another user cannot search the account.
+    let r = h
+        .search(
+            &bob,
+            json!([["CroftSearch/query", {"accountId": account, "query": "Message"}, "q"]]),
+        )
+        .await;
+    assert_eq!(r[0][1]["type"], "accountNotFound");
+    stop(server).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn search_arguments_are_bounded_and_server_searches_limited() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(2).await;
+    let account = h.account(&t, &server).await;
+    h.inbox(&t, &account, 2).await;
+    let long = "x".repeat(513);
+    let r = h
+        .search(
+            &t,
+            json!([
+                ["CroftSearch/query", {"accountId": account}, "a"],
+                ["CroftSearch/query", {"accountId": account, "query": long}, "b"],
+                ["CroftSearch/query", {"accountId": account, "query": "before:someday"}, "c"],
+                ["CroftSearch/query", {"accountId": account, "query": "x", "limit": 0}, "d"],
+                ["CroftSearch/query", {"accountId": account, "query": "x", "limit": 101}, "e"],
+                ["CroftSearch/query", {"accountId": account, "query": "x", "server": "yes"}, "f"],
+                ["CroftSearch/query", {"accountId": account, "query": "Message", "limit": 1}, "g"],
+            ]),
+        )
+        .await;
+    let described: Vec<_> = r[..6]
+        .iter()
+        .map(|c| (c[1]["type"].as_str(), c[1]["description"].as_str()))
+        .collect();
+    assert_eq!(
+        described,
+        [
+            (Some("invalidArguments"), Some("query")),
+            (Some("invalidArguments"), Some("query")),
+            (Some("invalidArguments"), Some("query")),
+            (Some("invalidArguments"), Some("limit")),
+            (Some("invalidArguments"), Some("limit")),
+            (Some("invalidArguments"), Some("server")),
+        ]
+    );
+    assert_eq!(r[6][1]["ids"].as_array().unwrap().len(), 1);
+    // The mail server is asked too, and its searches are limited per user.
+    let call = json!(["CroftSearch/query", {"accountId": account, "query": "Message", "server": true}, "s"]);
+    let mut answers = Vec::new();
+    for _ in 0..crate::api::SERVER_SEARCHES_PER_MINUTE + 1 {
+        answers.push(h.search(&t, json!([call.clone()])).await.remove(0));
+    }
+    assert_eq!(answers[0][1]["serverSearched"], true, "{:?}", answers[0]);
+    assert_eq!(answers[0][1]["failed"], false, "{:?}", answers[0]);
+    assert!(!answers[0][1]["ids"].as_array().unwrap().is_empty());
+    assert_eq!(answers.last().unwrap()[1]["type"], "rateLimit");
+    // Searching what is stored is not limited by it.
+    let r = h
+        .search(
+            &t,
+            json!([["CroftSearch/query", {"accountId": account, "query": "Message"}, "q"]]),
+        )
+        .await;
+    assert!(r[0][1]["ids"].is_array());
+    stop(server).await;
+}

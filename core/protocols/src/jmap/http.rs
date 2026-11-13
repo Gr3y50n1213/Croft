@@ -52,6 +52,8 @@ pub(crate) struct HttpResponse {
     /// The `WWW-Authenticate` headers' schemes, lower case (T38a: CardDAV sends a credential only
     /// after the server asks for one).
     pub auth_schemes: Vec<String>,
+    /// The `ETag` header, visible ASCII and at most 256 bytes (T39a: the version a DAV write made).
+    pub etag: Option<String>,
     /// The body of a 2xx answer.
     pub body: Vec<u8>,
 }
@@ -403,7 +405,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
     status_only: bool,
 ) -> Result<HttpResponse, BackendError> {
     let mut buf = Vec::with_capacity(4096);
-    let (head_len, status, location, content_length, chunked, auth_schemes) = loop {
+    let (head_len, status, location, content_length, chunked, auth_schemes, etag) = loop {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut response = httparse::Response::new(&mut headers);
         match response.parse(&buf) {
@@ -413,7 +415,19 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
                 let mut content_length = None;
                 let mut chunked = false;
                 let mut auth_schemes = Vec::new();
+                let mut etag = None;
                 for h in response.headers.iter() {
+                    if h.name.eq_ignore_ascii_case("etag") {
+                        etag = std::str::from_utf8(h.value)
+                            .ok()
+                            .map(str::trim)
+                            .filter(|v| {
+                                !v.is_empty()
+                                    && v.len() <= 256
+                                    && v.bytes().all(|b| (0x21..=0x7e).contains(&b))
+                            })
+                            .map(str::to_owned);
+                    }
                     if h.name.eq_ignore_ascii_case("www-authenticate") {
                         if let Some(scheme) = std::str::from_utf8(h.value)
                             .ok()
@@ -435,7 +449,15 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
                             .is_ok_and(|v| v.to_ascii_lowercase().contains("chunked"));
                     }
                 }
-                break (n, status, location, content_length, chunked, auth_schemes);
+                break (
+                    n,
+                    status,
+                    location,
+                    content_length,
+                    chunked,
+                    auth_schemes,
+                    etag,
+                );
             }
             Ok(httparse::Status::Partial) => {
                 if buf.len() >= MAX_HEAD || fill(reader, &mut buf, idle).await? == 0 {
@@ -454,6 +476,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
             status,
             location,
             auth_schemes,
+            etag,
             body: Vec::new(),
         });
     }
@@ -498,6 +521,7 @@ pub(crate) async fn read_response<R: AsyncRead + Unpin>(
         status,
         location,
         auth_schemes,
+        etag,
         body,
     })
 }

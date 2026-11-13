@@ -5,6 +5,71 @@ unverified, the next step.
 
 ---
 
+## T39a: The calendar in the core (13 November 2026)
+
+**Status:** on `task/t39a`, its own pull request; the independent review is running. The screens are T39b.
+
+**What was built.**
+- **One DAV client (protocols).** The CardDAV client became `dav/`, shared by CardDAV and CalDAV.
+  - It keeps the same rules: the credential only after a 401 that names its scheme, one origin, the bounded XML reader.
+  - CalDAV adds `/.well-known/caldav`, the `calendar-home-set`, the calendars that hold events (with colour and order;
+    tasks-only calendars are left out), `calendar-multiget`, and `text/calendar` writes up to 1 MiB.
+  - The XML reader now keeps an element's `name` attribute (for `<comp name="VEVENT"/>`).
+- **iCalendar (mail-core, `ical/`).** A reader and writer of Croft's own.
+  - Unknown lines and components are kept as written.
+  - Bounds: 1 MiB, 20,000 lines, 1,000 components, depth 8.
+  - `DTSTART`, `DTEND` and `DURATION` in every form, `RRULE`, `RDATE`, `EXDATE`, `RECURRENCE-ID` overrides, people, and
+    alarms relative to the start.
+- **Time zones.** `jiff` with its bundled time zone database. A `TZID` is looked up as an IANA name, also after a prefix
+  (`/mozilla.org/...`). Otherwise the object's own `VTIMEZONE` is read as a POSIX rule; failing that, the time is read as
+  UTC and marked.
+- **Repeats.**
+  - `DAILY`, `WEEKLY`, `MONTHLY` and `YEARLY`, with `INTERVAL`, `COUNT`, `UNTIL`, `BYDAY` (with ordinals), `BYMONTHDAY`,
+    `BYMONTH`, `BYSETPOS` and `WKST`.
+  - Expanded in the event's own zone, so 09:00 stays 09:00 across a daylight saving change.
+  - Any other rule shows its first occurrence and says so.
+  - Bounded by 100,000 periods, the year 2100, and 5,000 occurrences per window.
+- **Writing.** A new event comes with a `VTIMEZONE` made from the bundled database. A change to every occurrence (moving
+  the start drops the old overrides and exclusions), a change to one occurrence (an override), and the deletion of one (an
+  `EXDATE`). `SEQUENCE`, `DTSTAMP` and `LAST-MODIFIED` are updated, and alarms Croft does not show are kept.
+- **Storage (migration 0013).** `calendar` (colour, order, shown) and `event` (the object whole, first start and last end
+  for queries, and pending, revision and conflict as for contacts).
+- **The core (FFI v20).** `sync_calendars`, `calendars`, `set_calendar_shown`, `events_between`, `get_event`, `save_event`,
+  `delete_event` (all occurrences or one) and `next_reminders`.
+- **Fix to contacts (T38a).** The conflict mark was cleared by the server's version, which arrives in the same sync, so
+  S41's note could never show. It now stays until an edit made here. The storage test that asserted the old behaviour
+  was changed to the new one.
+
+**Checks.** All run locally and passed:
+- `cargo fmt`;
+- both clippy runs;
+- `cargo test` for the whole core, including:
+  - 29 iCalendar tests, with RFC 5545's examples and daylight saving in New York and London;
+  - CalDAV in-process tests;
+  - storage and FFI tests end to end against the in-process server;
+- SQLCipher;
+- `check_schema.py`.
+
+The Stalwart CalDAV integration test runs in CI. The S60 licence lists need `jiff`'s crates and are taken from CI's
+regenerated lists.
+
+**Review (one agent, opus, high effort).** 3 high, 6 medium and 8 low findings; credential handling and account
+scoping were found sound. Fixed with tests:
+- edits write only what changed, so another client's exceptions, alarms and long text stay;
+- the window and reminders read one object at a time, keep at most 20,000 occurrences, expand each object once, and stop
+  after 3 s saying so;
+- repeats have a work budget and skip to the window;
+- answers may carry calendar objects up to 1 MiB;
+- a change the server refuses is marked and no longer blocks the sync;
+- writes keep the server's new `ETag`, and a change whose server version is unknown is never sent blindly (contacts too).
+
+The lists of open-source licences (S60) gain the four `jiff` crates (rebuilt from `cargo metadata`; the Kotlin part is
+unchanged). The Companion's own lock file gains `jiff`.
+
+**Next.** T39b: S34 to S39 and the reminder notifications.
+
+---
+
 ## T38b: The contacts screens (13 November 2026)
 
 **Status:** on `task/t38b`, its own pull request (CI runs the Android tests; this machine cannot fetch from Maven).

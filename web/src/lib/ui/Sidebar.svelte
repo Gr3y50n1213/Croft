@@ -99,7 +99,7 @@
     min-height: 56px;
     padding: 0 20px;
     border: none;
-    border-radius: 16px;
+    border-radius: calc(16px * var(--round));
     background: var(--croft-color-primary-container);
     color: var(--croft-color-on-primary-container);
     font-weight: 600;
@@ -126,7 +126,7 @@
     min-height: 44px;
     padding: 0 16px;
     border: none;
-    border-radius: 22px;
+    border-radius: calc(22px * var(--round));
     background: transparent;
     text-align: start;
     cursor: pointer;

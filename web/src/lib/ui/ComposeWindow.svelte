@@ -82,7 +82,7 @@
     flex-direction: column;
     width: min(560px, calc(100vw - 32px));
     height: min(600px, calc(100vh - 120px));
-    border-radius: 16px 16px 0 0;
+    border-radius: calc(16px * var(--round)) calc(16px * var(--round)) 0 0;
     background: var(--croft-color-surface-container-lowest);
     box-shadow: 0 8px 24px color-mix(in srgb, var(--croft-color-scrim) 24%, transparent);
     overflow: hidden;
@@ -162,7 +162,7 @@
     display: flex;
     align-items: center;
     width: 280px;
-    border-radius: 12px 12px 0 0;
+    border-radius: calc(12px * var(--round)) calc(12px * var(--round)) 0 0;
     background: var(--croft-color-primary);
     color: var(--croft-color-on-primary);
   }

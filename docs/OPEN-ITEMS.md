@@ -54,6 +54,10 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 - **The web app on real browsers (T30):** tested with Chromium and its virtual authenticator only. To try: Safari and Firefox,
   platform passkeys (Touch ID, Windows Hello, a phone) and password managers, and single sign-on with a real provider. The
   Docker base images (`rust`, `node`, `debian`) are not pinned by digest yet.
+- **Web settings live in each browser (T32a):** W04's appearance and swipe settings are kept in the browser's storage, not synced
+  through the Companion yet (W04 says colours, density and shape should sync across devices). Settings sync is a later task. The
+  web About pane uses the same placeholder privacy and source addresses as the phone app (`web/src/lib/settings/links.ts`, see
+  "Placeholders from T17c").
 - **The push gateway needs the owner (T29), before the Play build has push:** a Firebase project for the app (its real application
   id), a service account key for it with permission to send through FCM, and a host for the gateway with a public https address
   (`gateway/README.md`). Real delivery through FCM is untested until then. T34 should register phones with their Companion's VAPID

@@ -9,7 +9,8 @@
   import type { EmailSummary } from '../jmap/client.ts';
   import type { MailAction } from '../mail/actions.ts';
   import { SwipeMachine, slotOf, type SwipeEffect } from '../swipe/machine.ts';
-  import { defaultSwipeSettings, type SwipeActionInfo } from '../swipe/model.ts';
+  import type { SwipeActionInfo } from '../swipe/model.ts';
+  import { settings as stored } from '../settings/store.svelte.ts';
   import { tuning } from '../swipe/tuning.ts';
 
   let {
@@ -37,8 +38,8 @@
   const sender = $derived(email.from?.[0]?.name || email.from?.[0]?.email || '(no sender)');
   const when = $derived(shortDate(email.receivedAt));
 
-  /** The swipe settings' actions as W01 actions (the defaults until W04 has the setting, T32). */
-  const settings = defaultSwipeSettings;
+  /** The swipe settings (W04's "Swipe and hover actions") as W01 actions. */
+  const settings = $derived(stored.swipe);
   function toMail(a: SwipeActionInfo): MailAction | null {
     switch (a.id) {
       case 'read':
@@ -202,10 +203,18 @@
     align-items: start;
     gap: 8px;
     padding: 8px 12px;
-    min-height: var(--croft-density-default-row-dp);
+    min-height: var(--row-min);
     border-bottom: 1px solid var(--croft-color-outline-variant);
     background: var(--croft-color-surface);
     transition: transform var(--croft-motion-spatial-fast-easing-duration) var(--croft-motion-spatial-fast-easing);
+  }
+
+  /* Container: rows as cards with a gap; Flat (the plain list): full width with dividers. */
+  :global([data-croft-list='container']) .row {
+    margin: 4px 8px;
+    border-bottom: none;
+    border-radius: var(--radius);
+    background: var(--croft-color-surface-container-low);
   }
 
   .row.focused {
@@ -251,6 +260,19 @@
     text-overflow: ellipsis;
   }
 
+  /* Preview lines follow the density: two when comfortable, none when compact. */
+  :global([data-croft-density='comfortable']) .preview {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+  }
+
+  :global([data-croft-density='compact']) .preview {
+    display: none;
+  }
+
   .sender {
     flex: 1;
   }
@@ -281,7 +303,7 @@
     display: none;
     gap: 2px;
     padding: 2px;
-    border-radius: 24px;
+    border-radius: calc(24px * var(--round));
     background: var(--croft-color-surface-container-high);
   }
 

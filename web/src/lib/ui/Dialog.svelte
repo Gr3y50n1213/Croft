@@ -29,7 +29,7 @@
     max-width: min(560px, 100vw - 32px);
     padding: 0;
     border: none;
-    border-radius: 28px;
+    border-radius: calc(28px * var(--round));
     background: var(--croft-color-surface-container-high);
     color: var(--croft-color-on-surface);
   }

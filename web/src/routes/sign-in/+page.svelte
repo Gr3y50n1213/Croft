@@ -145,7 +145,7 @@
     display: grid;
     gap: 12px;
     padding: 32px;
-    border-radius: 28px;
+    border-radius: calc(28px * var(--round));
     background: var(--croft-color-surface-container-lowest);
     color: var(--croft-color-on-surface);
   }

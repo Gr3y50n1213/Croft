@@ -31,7 +31,11 @@ const COLUMNS: &str =
      is_seen, is_flagged, has_attachments, pending_ops, to_json, \
      (SELECT COUNT(*) FROM message t
        WHERE t.account_id = message.account_id AND t.folder_id = message.folder_id
-         AND t.thread_key = message.thread_key AND t.local_hidden = 0)";
+         AND t.thread_key = message.thread_key AND t.local_hidden = 0), \
+     snooze_back_at";
+
+/// How long a woken message shows its Snoozed chip (T36).
+const BACK_FROM_SNOOZE_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Names (else addresses) from a stored `to_json`: an array whose items are strings or objects
 /// with `name` and/or `address`. Anything else gives no recipients (a damaged value must not
@@ -75,6 +79,9 @@ fn row(r: &Row<'_>) -> rusqlite::Result<MessageRow> {
         pending: r.get::<_, i64>(11)? > 0,
         recipients: recipients(&r.get::<_, String>(12)?),
         thread_count: u32::try_from(r.get::<_, i64>(13)?.max(1)).unwrap_or(u32::MAX),
+        back_from_snooze: r
+            .get::<_, Option<i64>>(14)?
+            .is_some_and(|t| crate::core::now_ms().saturating_sub(t) < BACK_FROM_SNOOZE_MS),
     })
 }
 
@@ -231,4 +238,23 @@ pub(crate) fn page(
         None
     };
     Ok(MessagePage { rows, next })
+}
+
+/// T36: the snoozed messages of one account (their wake time still ahead), soonest first, at most
+/// [`MAX_PAGE`], each with its wake time.
+pub(crate) fn snoozed_rows(
+    conn: &Connection,
+    account: i64,
+    now_ms: i64,
+) -> Result<Vec<(MessageRow, i64)>, CoreError> {
+    let sql = format!(
+        "SELECT {COLUMNS}, snoozed_until FROM message
+          WHERE account_id = ?1 AND local_hidden = 0 AND snoozed_until > ?2
+          ORDER BY snoozed_until, id LIMIT ?3"
+    );
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map(params![account, now_ms, MAX_PAGE], |r| {
+        Ok((row(r)?, r.get::<_, i64>(15)?))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }

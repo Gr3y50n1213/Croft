@@ -1279,3 +1279,70 @@ fn unread_counts_per_category_leave_out_read_hidden_and_snoozed_mail() {
         ]
     );
 }
+
+// ---- T36: snooze on this device ----
+
+#[test]
+fn a_snooze_hides_until_its_time_then_wakes_once_with_its_mark_and_stays_in_its_account() {
+    let (db, a1, f1, a2, f2) = two_accounts();
+    let c = db.connection();
+    let m1 = messages::upsert(c, a1, f1, &header(1, "Later", 1_000)).unwrap();
+    let m2 = messages::upsert(c, a2, f2, &header(1, "Other", 1_000)).unwrap();
+    assert!(messages::set_snooze(c, a1, m1, Some(10_000)).unwrap());
+    assert!(
+        !messages::set_snooze(c, a2, m1, Some(10_000)).unwrap(),
+        "not that account's message"
+    );
+    messages::set_snooze(c, a2, m2, Some(20_000)).unwrap();
+    assert!(
+        messages::list_by_folder(c, a1, f1, 5_000, 50, 0)
+            .unwrap()
+            .is_empty(),
+        "hidden until 10 000"
+    );
+    assert_eq!(messages::next_wake(c, a1).unwrap(), Some(10_000));
+    assert!(
+        messages::due_snoozes(c, a1, 9_999).unwrap().is_empty(),
+        "never early"
+    );
+    assert_eq!(messages::due_snoozes(c, a1, 10_000).unwrap(), vec![m1]);
+    assert!(messages::wake(c, a1, m1, 10_000).unwrap());
+    assert!(!messages::wake(c, a1, m1, 10_001).unwrap(), "once");
+    let back: Option<i64> = c
+        .query_row(
+            "SELECT snooze_back_at FROM message WHERE id = ?1",
+            [m1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(back, Some(10_000));
+    assert_eq!(
+        messages::list_by_folder(c, a1, f1, 10_000, 50, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(messages::next_wake(c, a1).unwrap(), None);
+    assert_eq!(
+        messages::next_wake(c, a2).unwrap(),
+        Some(20_000),
+        "the other account keeps its own"
+    );
+    // Snoozing again clears the mark; unsnoozing brings it back at once.
+    messages::set_snooze(c, a1, m1, Some(30_000)).unwrap();
+    let back: Option<i64> = c
+        .query_row(
+            "SELECT snooze_back_at FROM message WHERE id = ?1",
+            [m1],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(back, None);
+    messages::set_snooze(c, a1, m1, None).unwrap();
+    assert_eq!(
+        messages::list_by_folder(c, a1, f1, 11_000, 50, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+}

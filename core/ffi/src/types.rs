@@ -520,6 +520,9 @@ pub struct MessageRow {
     /// Who the message was sent to (display names, else addresses), for the Sent folder's rows.
     /// Read from the stored `to_json`; empty when the sync stored none.
     pub recipients: Vec<String>,
+    /// T36: woken from a snooze in the last 24 hours (the row shows a Snoozed chip).
+    #[uniffi(default = false)]
+    pub back_from_snooze: bool,
 }
 
 impl std::fmt::Debug for MessageRow {

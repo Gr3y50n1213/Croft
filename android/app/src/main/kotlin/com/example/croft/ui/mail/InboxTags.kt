@@ -26,6 +26,7 @@ object InboxTags {
     const val BOTTOM_BAR = "inbox-bottom-bar"
     const val NAV_MAIL = "nav-mail"
     const val NAV_CONTACTS = "nav-contacts"
+    const val NAV_CALENDAR = "nav-calendar"
     const val DRAWER = "inbox-drawer"
     const val SWITCHER = "inbox-switcher"
     const val PULL_INDICATOR = "inbox-pull-indicator"

@@ -20,6 +20,9 @@ sealed interface NotificationOpen {
 
     /** `croft://inbox`: the Inbox (the summary, the test notification, "Sign in again"). */
     data object Inbox : NotificationOpen
+
+    /** `croft://event/<account>/<id>/<key>`: S37 for that occurrence of the event (T39b, a reminder). */
+    data class Event(val account: Long, val eventId: Long, val keyMs: Long) : NotificationOpen
 }
 
 /**
@@ -42,6 +45,11 @@ object NotificationIntents {
             "message" -> if (ok) NotificationOpen.Message(account!!, message!!, uid!!) else NotificationOpen.Inbox
             "reply" -> if (ok) NotificationOpen.Reply(account!!, message!!, uid!!) else NotificationOpen.Inbox
             "inbox" -> NotificationOpen.Inbox
+            "event" -> {
+                val id = parts.getOrNull(1)?.toLongOrNull()
+                val key = parts.getOrNull(2)?.toLongOrNull()
+                if (account != null && id != null && id > 0 && key != null) NotificationOpen.Event(account, id, key) else null
+            }
             else -> null
         }
     }

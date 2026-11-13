@@ -99,7 +99,42 @@ private val sampleRow = MessageRowState()
 /** The whole catalogue: every control of docs/ux/controls.md in every state it has. */
 object GalleryCatalog {
     val sections: List<GallerySection> by lazy {
-        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), swipes(), listMarkers(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress(), alphabetIndex())
+        listOf(common(), buttons(), fab(), send(), chips(), fields(), toggles(), rows(), swipes(), listMarkers(), attachments(), banners(), snackbars(), dialogs(), sheets(), menus(), iconButtons(), longPress(), alphabetIndex(), calendarParts())
+    }
+
+    // ---- Calendar day header and event card (S34, S36, T39b) ----
+    private fun calendarParts(): GallerySection {
+        val zone = java.time.ZoneOffset.UTC
+        fun occ(title: String, allDay: Boolean, startHour: Int, location: String? = null, zoneUnknown: Boolean = false, unsupported: Boolean = false) =
+            com.example.croft.mail.calendar.Occurrence(
+                eventId = 1, account = 1, calendar = 1, color = null,
+                startMs = 1_794_787_200_000L + startHour * 3_600_000L, endMs = 1_794_787_200_000L + (startHour + 1) * 3_600_000L,
+                allDay = allDay, keyMs = 0, title = title, location = location, repeats = false,
+                repeatsUnsupported = unsupported, zoneUnknown = zoneUnknown, pending = false,
+            )
+        fun card(name: String, label: String, o: com.example.croft.mail.calendar.Occurrence, overlaps: Boolean = false) =
+            GalleryEntry(id("calendar", name), label, emptyList()) {
+                var tapped by remember { mutableStateOf("Tap the card") }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    com.example.croft.ui.calendar.EventCard(o, zone, overlaps, onClick = { tapped = "Opened" })
+                    Caption(tapped)
+                }
+            }
+        return GallerySection(
+            "calendar", "Calendar day header and event card",
+            listOf(
+                GalleryEntry(id("calendar", "day"), "Day header (a day, and today in a filled circle)", emptyList()) {
+                    Wrap {
+                        com.example.croft.ui.calendar.DayHeader(java.time.LocalDate.of(2026, 11, 7), today = false)
+                        com.example.croft.ui.calendar.DayHeader(java.time.LocalDate.of(2026, 11, 6), today = true)
+                    }
+                },
+                card("timed", "Event card: title, times and place", occ("Dentist", false, 15, "Mill Road Surgery")),
+                card("all_day", "Event card: all day", occ("Bank holiday", true, 0)),
+                card("overlap", "Event card: overlaps another event (warning icon)", occ("Standup", false, 12), overlaps = true),
+                card("notes", "Event card: time zone unknown, repeats Croft can't show", occ("Imported", false, 9, zoneUnknown = true, unsupported = true)),
+            ),
+        )
     }
 
     // ---- A to Z index (S40, T38b) ----

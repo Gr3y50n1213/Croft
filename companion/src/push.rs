@@ -191,9 +191,10 @@ fn outcome(
 pub async fn ping(app: &App, user_id: i64) {
     let auth = app.auth.clone();
     let store = app.store.clone();
+    let now = app.auth.now();
     let prepared = tokio::task::spawn_blocking(move || {
         let mut s = store.lock().unwrap_or_else(PoisonError::into_inner);
-        let targets = s.push_targets(auth.master(), user_id)?;
+        let targets = s.push_targets(auth.master(), user_id, now)?;
         if targets.is_empty() {
             return Ok::<_, crate::store::StoreError>(None);
         }

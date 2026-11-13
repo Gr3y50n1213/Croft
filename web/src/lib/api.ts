@@ -52,8 +52,12 @@ export class Api {
     #renewing: Promise<Session | null> | null = null;
   /** The Companion said this browser has no session: no need to ask again until a sign-in. */
   #signedOut = false;
+  /** The last renewal could not reach the Companion (offline): not the same as signed out. */
+  #unreachable = false;
   #now: () => number;
   #exclusive: Exclusive;
+  /** Told after every request whether the Companion answered at all (for the "Offline" notice). */
+  onReach: ((reached: boolean) => void) | null = null;
 
   constructor(fetchFn: Fetch, now: () => number = () => Date.now(), exclusive: Exclusive = unlocked) {
     this.#fetch = fetchFn;
@@ -63,6 +67,11 @@ export class Api {
 
   get session(): Session | null {
     return this.#session;
+  }
+
+  /** Whether the last renewal failed to reach the Companion (the app shows "Offline", not sign-in). */
+  get unreachable(): boolean {
+    return this.#unreachable;
   }
 
   /** Takes a sign-in's answer (the refresh cookie is already set by the browser). */
@@ -101,8 +110,10 @@ export class Api {
     try {
       res = await this.#fetch(path, init);
     } catch {
+      this.onReach?.(false);
       throw new ApiError('offline', 0);
     }
+    this.onReach?.(true);
     const data: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
       const code = isRecord(data) && typeof data['error'] === 'string' ? data['error'] : 'server';
@@ -130,8 +141,12 @@ export class Api {
     renew(): Promise<Session | null> {
     if (!this.#renewing) {
       this.#renewing = this.#exclusive(() => this.raw('POST', '/api/web/refresh'))
-        .then((a) => this.adopt(a))
+        .then((a) => {
+          this.#unreachable = false;
+          return this.adopt(a);
+        })
         .catch((e: unknown) => {
+          this.#unreachable = e instanceof ApiError && e.status === 0;
           // Only the Companion saying "no session" (401) ends it. A network failure, a rate limit
           // or a server error keeps what we have, to try again later.
           if (e instanceof ApiError && e.status === 401) {

@@ -14,10 +14,12 @@
   import SecurityPane from '#lib/settings/SecurityPane.svelte';
   import AccountsPane from '#lib/settings/AccountsPane.svelte';
   import AboutPane from '#lib/settings/AboutPane.svelte';
+  import NotificationsPane from '#lib/settings/NotificationsPane.svelte';
 
   /** W04's categories, in its order (more arrive with the features behind them). */
   const CATEGORIES: { id: string; name: string; icon: IconName; words: string }[] = [
     { id: 'accounts', name: 'Accounts', icon: 'account', words: 'Your mail accounts' },
+    { id: 'notifications', name: 'Notifications', icon: 'bell', words: 'New mail in this browser' },
     { id: 'swipe', name: 'Swipe and hover actions', icon: 'swipe', words: 'Trackpad swipes and the buttons on a row' },
     { id: 'appearance', name: 'Appearance', icon: 'palette', words: 'Colours, density and shape' },
     { id: 'security', name: 'Security', icon: 'lock', words: 'Passkeys and signed-in devices' },
@@ -81,6 +83,8 @@
         <SwipePane />
       {:else if shown.id === 'security'}
         <SecurityPane />
+      {:else if shown.id === 'notifications'}
+        <NotificationsPane user={me.id} />
       {:else if shown.id === 'accounts'}
         <AccountsPane />
       {:else}

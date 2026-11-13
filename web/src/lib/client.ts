@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { Api, type Exclusive } from './api.ts';
+import { connection } from './pwa/connection.svelte.ts';
 
 /** Refreshes never overlap across this origin's tabs (see `Exclusive`). */
 const exclusive: Exclusive = (fn) =>
@@ -12,6 +13,7 @@ const exclusive: Exclusive = (fn) =>
 
 /** The page's one client (the access token lives in it, in memory only). */
 export const api = new Api((input, init) => fetch(input, init), () => Date.now(), exclusive);
+api.onReach = (reached) => (connection.companionReached = reached);
 
 /** Who is signed in (`GET /api/me`). */
 export interface Me {

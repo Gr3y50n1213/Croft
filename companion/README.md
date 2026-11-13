@@ -161,6 +161,11 @@ The web app needs a host name of its own (`public_url` without a path, such as `
 serve nothing else on any port: browsers share cookies across a host's ports, so another service there could plant one. Put
 `Strict-Transport-Security` on that host at the reverse proxy too (the Companion sends it on its own answers).
 
+The web app can be installed (its manifest is `/manifest.webmanifest`) and opens offline: a service worker (`/service-worker.js`,
+with a CSP of its own that lets it reach this origin only) keeps the app's own files, never mail, tokens or anything from `/api`,
+`/jmap` or the sign-in paths. In W04's Notifications, a browser can subscribe to the content-free pings (T28) through the push
+service its maker runs (Google's for Chrome, Mozilla's for Firefox, Apple's for Safari): the ping says only that there is new mail.
+
 ## Commands
 
 ```

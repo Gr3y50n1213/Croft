@@ -135,7 +135,8 @@ impl Auth {
         Arc::new(crate::store::now_ms)
     }
 
-    fn now(&self) -> i64 {
+    /// The time now, by the Companion's clock (a test's own clock in tests).
+    pub(crate) fn now(&self) -> i64 {
         (self.clock)()
     }
 

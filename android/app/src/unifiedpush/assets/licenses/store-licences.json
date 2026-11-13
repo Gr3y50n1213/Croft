@@ -1,4 +1,53 @@
 {
  "version": 1,
- "entries": []
+ "entries": [
+  {
+   "name": "com.google.code.findbugs:jsr305",
+   "version": "3.0.2",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.code.gson:gson",
+   "version": "2.13.2",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.crypto.tink:tink",
+   "version": "1.23.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.errorprone:error_prone_annotations",
+   "version": "2.41.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "com.google.protobuf:protobuf-java",
+   "version": "4.33.6",
+   "licence": "BSD-3-Clause",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlinx:kotlinx-coroutines",
+   "version": "1.9.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.jetbrains.kotlinx:kotlinx-coroutines-core",
+   "version": "1.9.0",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  },
+  {
+   "name": "org.unifiedpush.android:connector",
+   "version": "3.3.5",
+   "licence": "Apache-2.0",
+   "origin": "Android"
+  }
+ ]
 }

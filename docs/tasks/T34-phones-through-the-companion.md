@@ -10,7 +10,8 @@ Built in steps, each its own pull request:
 - **T34b** the core's Companion client, and S06 Connect a Companion and S58 Companion and devices on Android;
 - **T34c** the Android flavours `play`, `fdroid`, `github` and their checks;
 - **T34d** push registration (UnifiedPush in `fdroid` and `github`, FCM through the gateway in `play`) and push in place of
-  periodic checks.
+  periodic checks;
+- **T34e** "Delete my Companion data" (READINESS row 7): the Companion's API, a public page, S58 and W04.
 
 Syncing a phone's mail through the Companion (instead of straight from the mail server) is not in T34: the phone already
 reaches its mail server; the Companion adds push, search and scheduled send (OPEN-ITEMS).

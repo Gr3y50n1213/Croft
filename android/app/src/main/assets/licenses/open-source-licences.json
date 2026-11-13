@@ -570,12 +570,6 @@
    "origin": "Android"
   },
   {
-   "name": "com.google.errorprone:error_prone_annotations",
-   "version": "2.15.0",
-   "licence": "Apache-2.0",
-   "origin": "Android"
-  },
-  {
    "name": "com.google.guava:listenablefuture",
    "version": "1.0",
    "licence": "Apache-2.0",
@@ -596,18 +590,6 @@
   {
    "name": "org.jetbrains.kotlin:kotlin-stdlib",
    "version": "2.4.21",
-   "licence": "Apache-2.0",
-   "origin": "Android"
-  },
-  {
-   "name": "org.jetbrains.kotlinx:kotlinx-coroutines",
-   "version": "1.9.0",
-   "licence": "Apache-2.0",
-   "origin": "Android"
-  },
-  {
-   "name": "org.jetbrains.kotlinx:kotlinx-coroutines-core",
-   "version": "1.9.0",
    "licence": "Apache-2.0",
    "origin": "Android"
   },
@@ -679,13 +661,13 @@
   },
   {
    "name": "async-channel",
-   "version": "2.5.0",
+   "version": "1.9.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
   {
    "name": "async-channel",
-   "version": "1.9.0",
+   "version": "2.5.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },
@@ -1777,13 +1759,13 @@
   },
   {
    "name": "thiserror",
-   "version": "2.0.21",
+   "version": "1.0.69",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },
   {
    "name": "thiserror",
-   "version": "1.0.69",
+   "version": "2.0.21",
    "licence": "MIT OR Apache-2.0",
    "origin": "Rust"
   },

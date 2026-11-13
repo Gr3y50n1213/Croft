@@ -110,6 +110,31 @@
         <item quantity="one">%d conversation deleted for good</item>
         <item quantity="other">%d conversations deleted for good</item>
     </plurals>
+    <!-- T37: S21's unsubscribe banner and S31. The sender's name is %1$s. -->
+    <string name="unsubscribe_banner">This is a mailing list from %1$s.</string>
+    <string name="unsubscribe_action">Unsubscribe</string>
+    <string name="unsubscribe_already">You unsubscribed from %1$s.</string>
+    <string name="unsubscribe_title">Unsubscribe from %1$s?</string>
+    <string name="unsubscribe_one_click">Croft will send one request to %1$s. You may get a couple more emails first.</string>
+    <string name="unsubscribe_email">Croft will send an email to %1$s from this account. You may get a couple more emails first.</string>
+    <string name="unsubscribe_website">This opens %1$s in your browser, where you finish unsubscribing.</string>
+    <plurals name="unsubscribe_delete_older">
+        <item quantity="one">Also delete the %d older message from this sender</item>
+        <item quantity="other">Also delete the %d older messages from this sender</item>
+    </plurals>
+    <string name="unsubscribe_cancel">Cancel</string>
+    <string name="unsubscribe_done">Unsubscribed from %1$s</string>
+    <plurals name="unsubscribe_done_deleted">
+        <item quantity="one">Unsubscribed from %1$s. %2$d older message moved to Trash.</item>
+        <item quantity="other">Unsubscribed from %1$s. %2$d older messages moved to Trash.</item>
+    </plurals>
+    <plurals name="unsubscribe_moved_older">
+        <item quantity="one">%d older message moved to Trash</item>
+        <item quantity="other">%d older messages moved to Trash</item>
+    </plurals>
+    <string name="unsubscribe_failed_unreachable">Couldn\'t reach the sender. Try again later.</string>
+    <string name="unsubscribe_failed_refused">The sender didn\'t accept the request. Nothing was deleted.</string>
+    <string name="unsubscribe_failed_cannot_send">Couldn\'t send the unsubscribe email from this account.</string>
     <plurals name="mail_snack_pinned">
         <item quantity="one">%d pinned</item>
         <item quantity="other">%d pinned</item>

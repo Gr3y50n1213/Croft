@@ -104,6 +104,21 @@ class InboxTexts(private val res: Resources) {
     fun deletedForever(n: Int): String = res.getQuantityString(R.plurals.mail_snack_deleted_forever, n, n)
     fun moved(n: Int): String = res.getQuantityString(R.plurals.mail_snack_moved, n, n)
     fun pinned(n: Int): String = res.getQuantityString(R.plurals.mail_snack_pinned, n, n)
+
+    /** T37: "Unsubscribed from News" (and how many older messages went to Trash). */
+    fun unsubscribed(sender: String, deleted: Int): String =
+        if (deleted == 0) res.getString(R.string.unsubscribe_done, sender)
+        else res.getQuantityString(R.plurals.unsubscribe_done_deleted, deleted, sender, deleted)
+
+    fun movedOlder(n: Int): String = res.getQuantityString(R.plurals.unsubscribe_moved_older, n, n)
+
+    fun unsubscribeFailed(problem: com.example.croft.mail.reading.UnsubscribeProblem?): String = res.getString(
+        when (problem) {
+            com.example.croft.mail.reading.UnsubscribeProblem.UNREACHABLE -> R.string.unsubscribe_failed_unreachable
+            com.example.croft.mail.reading.UnsubscribeProblem.CANNOT_SEND -> R.string.unsubscribe_failed_cannot_send
+            com.example.croft.mail.reading.UnsubscribeProblem.REFUSED, null -> R.string.unsubscribe_failed_refused
+        },
+    )
     fun unpinned(n: Int): String = res.getQuantityString(R.plurals.mail_snack_unpinned, n, n)
     fun followUp(n: Int): String = res.getQuantityString(R.plurals.mail_snack_follow_up, n, n)
     fun followUpDone(n: Int): String = res.getQuantityString(R.plurals.mail_snack_follow_up_done, n, n)

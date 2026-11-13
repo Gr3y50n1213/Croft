@@ -10,7 +10,7 @@ dependencies; the details are in the task files as they are written.
 | Task | Scope | Depends on |
 |---|---|---|
 | T35 | Inbox categories: the classifier in the core (headers `List-Id`, `List-Unsubscribe`, `Precedence`, sender patterns, and rules learnt from corrections; Gmail's own category labels on Gmail accounts), the category chips in S10 with unread counts, Move to Primary teaching the sender's rule, S49 Inbox and categories | phase 2 |
-| T36 | Snooze, pin and follow-up: snooze as a device schedule in the core and the queue (S29 presets and picker; Android wakes with an inexact alarm and a boot receiver; with a Companion, the Croft/Snoozed folder); pin and follow-up as IMAP or JMAP keywords that sync | T35 |
+| T36 | Snooze (T36; pin and follow-up as T36b): snooze as a device schedule in the core and the queue (S29 presets and picker; Android wakes with an inexact alarm and a boot receiver; with a Companion, the Croft/Snoozed folder); pin and follow-up as IMAP or JMAP keywords that sync | T35 |
 | T37 | One-tap unsubscribe (S31): RFC 8058 `List-Unsubscribe-Post` from the core, otherwise a prefilled email; always asks first | T35 |
 | T38 | Contacts: CardDAV (and JMAP Contacts where the server has it) sync in the core, vCard, contact storage per account; compose autocomplete from contacts and recent recipients; Android S40 to S42 | phase 2 |
 | T39 | Calendar: CalDAV (and JMAP Calendars where the server has it) sync in the core, iCalendar with recurrence and time zones, reminders; Android S34 to S39 | T38 (the shared DAV client) |

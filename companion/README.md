@@ -84,6 +84,11 @@ key is encrypted with the **master key**. The master key is a file, never in the
   lost their own passkeys gets back in. It is deliberately not in the admin API: whoever holds a user's link can become that user, and
   an admin must never be able to act as someone else. (The server's operator holds the master key, so nothing is hidden from them.)
 - **Admins** can list, disable and enable users and read the instance's audit log. They cannot read anyone's data or sign in as them.
+- **The Croft app on a phone** (T34a) signs in through the browser: it opens `/app/sign-in` in a Custom Tab, the person signs in
+  there with a passkey or single sign-on, and the browser is sent back to the app (`<application id>:/companion`) with a one-time
+  code that only the app holding the PKCE verifier can redeem (`POST /api/sign-in/app/exchange`, within a minute, once). The app then
+  has its own tokens, shown as its own device. Passkeys stay the Companion's own (the browser's), so nothing on your domain has to
+  name the app's signing key.
 
 ## Signing in through your identity provider (OIDC)
 

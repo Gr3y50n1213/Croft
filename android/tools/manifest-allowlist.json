@@ -37,6 +37,16 @@
     "receiver:androidx.work.impl.diagnostics.DiagnosticsReceiver": {
       "why": "WorkManager (T20): lets the shell ask for WorkManager's diagnostics in the log. Only the system or adb can hold android.permission.DUMP, so other apps cannot call it.",
       "permission": "android.permission.DUMP"
+    },
+    "activity:${namespace}.CompanionRedirectActivity": {
+      "why": "T34b, S06: the end of signing in to the person's Croft Companion through the browser (RFC 8252). The Companion's sign-in page sends the browser to ${applicationId}:/companion?code=...; this activity hands that address to the core and closes. It acts only while a sign-in the person started in the app is waiting (anything else is ignored), and the code is useless without the PKCE verifier the core keeps.",
+      "permission": null,
+      "actions": [
+        "android.intent.action.VIEW"
+      ],
+      "browsable-schemes": [
+        "${applicationId}"
+      ]
     }
   },
   "uri-grant-providers": {

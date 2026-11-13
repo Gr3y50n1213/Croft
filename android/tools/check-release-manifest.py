@@ -44,7 +44,10 @@ def check(manifest_path, allowlist_path):
     sub = lambda s: s.replace("${applicationId}", app_id).replace("${namespace}", namespace)
     allowed_perms = {sub(k) for k in allow["uses-permission"]}
     allowed_decl = {sub(k) for k in allow.get("permission", {})}
-    allowed_exp = {sub(k): v for k, v in allow["exported"].items()}
+    allowed_exp = {
+        sub(k): {**v, "browsable-schemes": [sub(x) for x in v.get("browsable-schemes", [])]} if isinstance(v, dict) else v
+        for k, v in allow["exported"].items()
+    }
     allowed_grant = {sub(k): v for k, v in allow.get("uri-grant-providers", {}).items()}
     errors = []
 

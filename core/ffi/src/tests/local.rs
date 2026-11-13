@@ -41,9 +41,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_13() {
-    assert_eq!(FFI_API_VERSION, 13);
-    assert_eq!(ffi_api_version(), 13);
+fn the_version_is_14() {
+    assert_eq!(FFI_API_VERSION, 14);
+    assert_eq!(ffi_api_version(), 14);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -1292,4 +1292,59 @@ fn a_removed_accounts_id_is_not_given_to_the_next_account() {
     assert_eq!(add("two"), 2);
     block(core.remove_account(2)).unwrap();
     assert_eq!(add("three"), 3);
+}
+
+#[test]
+fn a_companion_address_is_normalized_and_a_sign_in_is_finished_once() {
+    assert_eq!(
+        companion_address("companion.example.org/".into()).unwrap(),
+        "https://companion.example.org"
+    );
+    assert_eq!(
+        companion_address("http://companion.example.org".into()).unwrap_err(),
+        CompanionFailure::BadAddress
+    );
+    let db = TempDb::new();
+    let provider = MemProvider::new();
+    let core = db.open(&provider);
+    let start = core
+        .companion_begin(
+            "http://127.0.0.1:9".into(),
+            "com.example.croft:/companion".into(),
+        )
+        .unwrap();
+    assert!(start
+        .browser_url
+        .starts_with("http://127.0.0.1:9/app/sign-in?app_challenge="));
+    // The verifier stays in the core: the page address carries only the challenge.
+    assert_eq!(start.flow_id.len(), 43);
+    // A redirect without a code fails, and spends the flow.
+    assert_eq!(
+        block(core.companion_finish(
+            start.flow_id.clone(),
+            "com.example.croft:/companion?error=provider".into(),
+            "Test phone".into()
+        ))
+        .unwrap_err(),
+        CompanionFailure::SignInFailed
+    );
+    assert_eq!(
+        block(core.companion_finish(
+            start.flow_id,
+            "com.example.croft:/companion?code=abc".into(),
+            "Test phone".into()
+        ))
+        .unwrap_err(),
+        CompanionFailure::SignInFailed
+    );
+    // A secret that is not one is refused.
+    struct Ignore;
+    impl CompanionSecretSaver for Ignore {
+        fn save(&self, _: Vec<u8>) {}
+    }
+    assert_eq!(
+        core.companion_link(b"nonsense".to_vec(), Arc::new(Ignore))
+            .unwrap_err(),
+        CompanionFailure::SignedOut
+    );
 }

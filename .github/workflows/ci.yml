@@ -208,9 +208,17 @@ jobs:
       # checked-in files fails, and the files made here are uploaded (artifact licence-lists) to be checked in.
       - name: Make the licence lists again and compare (S60)
         working-directory: android
+        env:
+          CROFT_LICENCES_FETCH_POMS: "1"
         run: |
           python3 tools/gen_licences.py
-          git diff --exit-code -- app/src/main/assets/licenses app/src/play/assets/licenses app/src/unifiedpush/assets/licenses
+          lists="app/src/main/assets/licenses app/src/play/assets/licenses app/src/unifiedpush/assets/licenses"
+          if ! git diff --quiet -- $lists; then
+            git diff --stat -- $lists
+            # The files as made here (gzip, base64), to be checked in: tools/licence-lists-from-log.py reads them back.
+            for f in $(git diff --name-only -- $lists); do echo "LICENCE-LIST $f $(gzip -9c "$f" | base64 -w0)"; done
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

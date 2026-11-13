@@ -100,11 +100,32 @@ def rust_entries() -> list:
 POM_WITHOUT_LICENCE = {"com.google.guava:listenablefuture": "Apache-2.0"}
 
 
+# The libraries' own repositories (settings.gradle.kts): Google's for AndroidX and Google's libraries, then Maven Central.
+POM_REPOSITORIES = ("https://dl.google.com/android/maven2", "https://repo.maven.apache.org/maven2")
+
+
+def fetched_pom(group: str, artifact: str, version: str) -> list:
+    """The POM from the library's repository, when CROFT_LICENCES_FETCH_POMS=1 (CI). Gradle reads a library's `.module` file when it
+    has one and then never downloads the POM, which is where the licence is."""
+    if os.environ.get("CROFT_LICENCES_FETCH_POMS") != "1":
+        return []
+    import urllib.request
+    path = f"{group.replace('.', '/')}/{artifact}/{version}/{artifact}-{version}.pom"
+    for repo in POM_REPOSITORIES:
+        try:
+            with urllib.request.urlopen(f"{repo}/{path}", timeout=30) as r:
+                return [r.read()]
+        except Exception:
+            continue
+    return []
+
+
 def pom_licence(group: str, artifact: str, version: str, cache: Path) -> str:
     base = cache / group / artifact / version
-    for pom in sorted(base.glob("*/*.pom")):
+    poms = [p.read_bytes() for p in sorted(base.glob("*/*.pom"))] or fetched_pom(group, artifact, version)
+    for pom in poms:
         try:
-            root = ET.parse(pom).getroot()
+            root = ET.fromstring(pom)
         except ET.ParseError:
             continue
         ns = {"m": root.tag.split("}")[0].strip("{")} if root.tag.startswith("{") else {}

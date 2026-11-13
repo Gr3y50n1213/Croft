@@ -92,8 +92,15 @@ async fn send(
         &[],
         max_answer,
         Reach::Admin,
+        false,
     )
     .await
+}
+
+/// The host of an absolute `https` URL as this client reads it (the same parser that connects),
+/// lower-case: what a confirmation shows is what is connected to (T37).
+pub fn https_host(url: &str) -> Option<String> {
+    Url::parse(url).filter(|u| u.secure).map(|u| u.host)
 }
 
 /// Which addresses a request may reach.
@@ -120,6 +127,7 @@ async fn send_with(
     extra_headers: &[(&str, &str)],
     max_answer: usize,
     reach: Reach,
+    status_only: bool,
 ) -> Result<Answer, FetchError> {
     let url = Url::parse(url).ok_or(FetchError::BadUrl)?;
     if !url.is_allowed() {
@@ -154,6 +162,7 @@ async fn send_with(
         max_response: max_answer,
         extra_time: Duration::ZERO,
         error_body: true,
+        status_only,
         extra_headers,
     };
     let answer = http.send(&req).await.map_err(|e| match e.error {
@@ -236,6 +245,7 @@ pub async fn companion(
         &[],
         max_answer,
         Reach::Chosen,
+        false,
     )
     .await
 }
@@ -265,6 +275,7 @@ pub async fn post_push(
         headers,
         4096,
         Reach::Internet,
+        false,
     )
     .await
 }
@@ -285,8 +296,45 @@ pub async fn post_push_to_loopback_for_tests(
         headers,
         4096,
         Reach::Loopback,
+        false,
     )
     .await
+}
+
+/// The body of an RFC 8058 one-click unsubscribe.
+pub const ONE_CLICK_BODY: &str = "List-Unsubscribe=One-Click";
+
+/// RFC 8058 one-click unsubscribe (T37): one `POST` of [`ONE_CLICK_BODY`] as a form to `url`, an
+/// `https` address taken from a message's `List-Unsubscribe`. Anyone can write that header, so:
+/// public addresses only whatever the process's policy allows (a message never makes the phone or
+/// the Companion post into a private network), no `Authorization`, no cookies, no header from the
+/// message, no redirect followed, bounded waits. Returns the status; the answer's body is never
+/// read. Nothing about the address is logged.
+pub async fn post_unsubscribe(url: &str) -> Result<u16, FetchError> {
+    one_click(url, Reach::Internet).await
+}
+
+/// [`post_unsubscribe`] to plain http on this machine: for tests only (a fake sender).
+pub async fn post_unsubscribe_to_loopback_for_tests(url: &str) -> Result<u16, FetchError> {
+    one_click(url, Reach::Loopback).await
+}
+
+async fn one_click(url: &str, reach: Reach) -> Result<u16, FetchError> {
+    send_with(
+        "POST",
+        url,
+        None,
+        Some("application/x-www-form-urlencoded"),
+        ONE_CLICK_BODY.as_bytes(),
+        &[],
+        0,
+        reach,
+        // Done once the server answers: the body is never read, so a big or cut-off page after a
+        // 2xx is not reported as a failure (and does not invite a second tap).
+        true,
+    )
+    .await
+    .map(|answer| answer.status)
 }
 
 /// Encodes a form body (`application/x-www-form-urlencoded`), wiped when dropped.

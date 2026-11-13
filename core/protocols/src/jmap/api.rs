@@ -253,6 +253,7 @@ impl Client {
                 max_response,
                 extra_time,
                 error_body: false,
+                status_only: false,
                 extra_headers: &[],
             })
             .await

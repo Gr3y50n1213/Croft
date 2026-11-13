@@ -220,6 +220,7 @@ class ConversationController(
         expanded = first.initiallyExpanded
         phase = ConversationPhase.Ready
         launch { loadFolders(first.account) }
+        launch { loadUnsubscribe() }
         first.initiallyExpanded.forEach { id -> launch { loadBody(id) } }
         observeChanges(first.account)
     }
@@ -410,6 +411,71 @@ class ConversationController(
                 conversation = c.copy(messages = c.messages.map { if (it.id == target.id) it.copy(flagged = now) else it })
             } catch (e: MailException) {
                 snackbar.show(errorText(e.error))
+            }
+        }
+    }
+
+    // ---- Unsubscribe (T37, S21's banner and S31) ----
+
+    /** How the opened message can be unsubscribed from (S21's banner), or null. */
+    var unsubscribe by mutableStateOf<com.example.croft.mail.reading.UnsubscribeInfoData?>(null)
+        private set
+
+    /** S31 is open. */
+    var unsubscribeAsking by mutableStateOf(false)
+        private set
+
+    /** The request is on its way (the dialog's button waits). */
+    var unsubscribing by mutableStateOf(false)
+        private set
+
+    private suspend fun loadUnsubscribe() {
+        unsubscribe = try { reading?.unsubscribeInfo(openedId) } catch (e: ReadFailure) { null }
+    }
+
+    /** The banner's button: S31 asks first, because it contacts the sender. */
+    fun askUnsubscribe() { if (unsubscribe?.already == false) unsubscribeAsking = true }
+
+    fun dismissUnsubscribe() { if (!unsubscribing) unsubscribeAsking = false }
+
+    /**
+     * S31's Unsubscribe: the core unsubscribes the way it said; a page opens in the browser (the person just confirmed it). With
+     * [deleteOlder] the older mail from the sender goes to Trash, with Undo.
+     */
+    fun confirmUnsubscribe(deleteOlder: Boolean) {
+        val repo = reading ?: return
+        val info = unsubscribe ?: return
+        if (unsubscribing) return
+        unsubscribing = true
+        scope.launch {
+            val result = try {
+                repo.unsubscribe(openedId, info, deleteOlder)
+            } catch (e: ReadFailure) {
+                null
+            } finally {
+                unsubscribing = false
+                unsubscribeAsking = false
+            }
+            when {
+                result == null -> snackbar.show(texts.failed)
+                result.openUrl != null -> if (!browser(result.openUrl)) snackbar.show(readingTexts.noApp)
+                result.done -> {
+                    loadUnsubscribe()
+                    val text = if (result.deleteFailed) texts.unsubscribedNotDeleted(info.sender) else texts.unsubscribed(info.sender, result.deletedOps.size)
+                    if (result.deletedOps.isEmpty()) snackbar.show(text) else {
+                        snackbar.show(text, texts.undo, stayMs = session.undoWindowMs) { scope.launch { session.rowActions.undo(result.deletedOps) } }
+                    }
+                }
+                else -> {
+                    // The message changed since S31: show the new facts.
+                    if (result.problem == com.example.croft.mail.reading.UnsubscribeProblem.CHANGED) loadUnsubscribe()
+                    snackbar.show(texts.unsubscribeFailed(result.problem))
+                }
+            }
+            if (result?.openUrl != null && result.deletedOps.isNotEmpty()) {
+                snackbar.show(texts.movedOlder(result.deletedOps.size), texts.undo, stayMs = session.undoWindowMs) {
+                    scope.launch { session.rowActions.undo(result.deletedOps) }
+                }
             }
         }
     }

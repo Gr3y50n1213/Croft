@@ -40,4 +40,14 @@ interface ReadingRepository {
 
     /** The known senders of [account] (lower case, sorted), for the S49 list. */
     suspend fun trustedSenders(account: AccountId): List<String>
+
+    /** T37: how [messageId] can be unsubscribed from, or null when it cannot. Contacts no one. */
+    suspend fun unsubscribeInfo(messageId: MessageId): UnsubscribeInfoData? = null
+
+    /**
+     * T37: unsubscribes from the sender of [messageId] as [shown] (what S31 showed) says, only after S31's confirmation; nothing happens
+     * when the message no longer gives the same ([UnsubscribeProblem.CHANGED]). With [deleteOlder], their older mail goes to Trash.
+     */
+    suspend fun unsubscribe(messageId: MessageId, shown: UnsubscribeInfoData, deleteOlder: Boolean): UnsubscribeResultData =
+        UnsubscribeResultData(done = false, openUrl = null, problem = UnsubscribeProblem.REFUSED, deletedOps = emptyList())
 }

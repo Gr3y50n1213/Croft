@@ -285,6 +285,8 @@ private fun Messages(controller: ConversationController, session: MailSession) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (opened != null) Header(controller, opened, conversation.localOnly)
+        // T37: S21's unsubscribe banner on a mailing-list message.
+        controller.unsubscribe?.let { UnsubscribeBanner(it, onUnsubscribe = controller::askUnsubscribe) }
         conversation.messages.forEach { m ->
             if (m.id in controller.expanded) ExpandedMessage(controller, session, m) else CollapsedMessage(controller, session, m)
         }
@@ -514,6 +516,11 @@ private fun Sheets(controller: ConversationController) {
         )
     }
     controller.pendingLink?.let { link -> LinkDialog(link, onOpen = controller::confirmLink, onCancel = controller::cancelLink) }
+    // T37: S31, asked before anything contacts the sender.
+    val unsubscribe = controller.unsubscribe
+    if (controller.unsubscribeAsking && unsubscribe != null) {
+        UnsubscribeDialog(unsubscribe, busy = controller.unsubscribing, onConfirm = controller::confirmUnsubscribe, onCancel = controller::dismissUnsubscribe)
+    }
 }
 
 /**

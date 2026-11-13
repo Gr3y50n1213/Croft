@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import AxeBuilder from '@axe-core/playwright';
 import { test, expect, type Page } from '@playwright/test';
 import { Companion, totp, virtualAuthenticator, watchForErrors } from './companion.ts';
 
@@ -30,6 +31,9 @@ test('a passkey signs in to the app, the session survives a reload, and signing 
 
   await page.goto(`${companion.url}/`);
   await expect(page).toHaveURL(/\/sign-in$/);
+  // The sign-in screen has no accessibility violation (axe-core).
+  await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations.map((v) => v.id)).toEqual([]);
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page.getByTestId('user')).toHaveText('ann');
   await expect(page.locator('[data-screen="W01"]')).toBeVisible();

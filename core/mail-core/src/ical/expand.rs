@@ -352,3 +352,12 @@ fn push_if_overlaps(out: &mut Expansion, o: Occurrence, from: Timestamp, to: Tim
         out.occurrences.push(o);
     }
 }
+
+/// The bounds stored beside an object for queries, in Unix ms read in UTC: its first start and
+/// the end of its last occurrence (`None` for a repeat without end). `None` when it has no event
+/// with a start. All-day and floating times differ by up to a day from what a viewer sees, so a
+/// query widens its window by a day on each side.
+pub fn index_bounds(cal: &Calendar) -> Option<(i64, Option<i64>)> {
+    span(cal, &TimeZone::UTC)
+        .map(|s| (s.first.as_millisecond(), s.last.map(|l| l.as_millisecond())))
+}

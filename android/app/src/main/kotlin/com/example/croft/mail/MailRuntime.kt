@@ -55,6 +55,7 @@ object MailRuntime {
             opened = null
             current = null
         }
+        com.example.croft.mail.companion.CompanionRuntime.reset()
     }
 
     /** The open core, or null before [session] ran, or when it could not be opened. */

@@ -269,4 +269,34 @@ class SecretStoreTest {
             // right
         }
     }
+
+    @Test
+    fun theAppsOwnSecretIsKeptApartFromAccountsAndErasedWithEverything() {
+        assertNull(store.getApp(AppSecretKind.COMPANION))
+        store.putApp(AppSecretKind.COMPANION, bytes("made-up-companion-secret"))
+        store.put(3, SecretKind.PASSWORD, bytes("x"))
+        assertArrayEquals(bytes("made-up-companion-secret"), store.getApp(AppSecretKind.COMPANION))
+        // The sweep of orphaned account secrets never sees it.
+        assertEquals(setOf(3L), store.accountIds())
+        store.removeAccount(3)
+        assertTrue(store.hasAny())
+        // An account's file copied onto it does not open as it.
+        val accountFile = dir.listFiles { f -> f.name.startsWith(SecretStore.PREFIX) }
+        assertTrue(accountFile.isNullOrEmpty())
+        store.put(4, SecretKind.PASSWORD, bytes("y"))
+        val copied = dir.listFiles { f -> f.name.startsWith(SecretStore.PREFIX) }!!.single()
+        copied.copyTo(File(dir, "${SecretStore.APP_PREFIX}companion.v1"), overwrite = true)
+        assertNull(store.getApp(AppSecretKind.COMPANION))
+        // Erasing everything removes it too.
+        store.putApp(AppSecretKind.COMPANION, bytes("again"))
+        store.clear()
+        assertFalse(store.hasAny())
+        assertNull(store.getApp(AppSecretKind.COMPANION))
+        // Removing it removes only it.
+        store.putApp(AppSecretKind.COMPANION, bytes("again"))
+        store.put(5, SecretKind.PASSWORD, bytes("z"))
+        store.removeApp(AppSecretKind.COMPANION)
+        assertNull(store.getApp(AppSecretKind.COMPANION))
+        assertArrayEquals(bytes("z"), store.get(5, SecretKind.PASSWORD))
+    }
 }

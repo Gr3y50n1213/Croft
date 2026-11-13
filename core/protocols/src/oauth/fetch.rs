@@ -105,6 +105,9 @@ enum Reach {
     Internet,
     /// Plain http on this machine (tests of push only).
     Loopback,
+    /// An address a person chose (their Companion): the process's address policy applies, as it
+    /// does to mail servers. A phone sets none.
+    Chosen,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -128,6 +131,7 @@ async fn send_with(
     let http = Http::new(Trust::Roots, TIMEOUT, DEADLINE);
     let http = match reach {
         Reach::Admin => http.admin_configured(),
+        Reach::Chosen => http,
         Reach::Internet => {
             if !url.secure {
                 return Err(FetchError::BadUrl);
@@ -206,6 +210,32 @@ pub async fn post_json(
         Some("application/json"),
         json,
         max_answer,
+    )
+    .await
+}
+
+/// `method url` (GET, POST or DELETE) with a JSON body when given and, when given, a bearer token,
+/// to the person's own Croft Companion (T34b), reading at most `max_answer` bytes of the answer.
+/// The address is one they chose, so the process's address policy applies (none on a phone; the
+/// Companion server's own, should it ever call another Companion). The token and body are never
+/// logged.
+pub async fn companion(
+    method: &'static str,
+    url: &str,
+    bearer: Option<&str>,
+    json: Option<&[u8]>,
+    max_answer: usize,
+) -> Result<Answer, FetchError> {
+    let authorization = bearer.map(|t| Zeroizing::new(format!("Bearer {t}")));
+    send_with(
+        method,
+        url,
+        authorization.as_deref().map(String::as_str),
+        json.map(|_| "application/json"),
+        json.unwrap_or(&[]),
+        &[],
+        max_answer,
+        Reach::Chosen,
     )
     .await
 }

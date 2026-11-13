@@ -44,6 +44,7 @@ compile_error!("the test-server feature is host-only and must never be enabled f
 
 mod background;
 mod changes;
+mod companion;
 mod compose;
 mod core;
 mod credentials;
@@ -63,6 +64,10 @@ mod types;
 
 pub use crate::core::{Core, DiscoveryObserver};
 pub use background::{BackgroundCheck, NewMailInfo};
+pub use companion::{
+    companion_address, CompanionConnected, CompanionDevice, CompanionFailure, CompanionInfo,
+    CompanionLink, CompanionSecretSaver, CompanionSignInStart,
+};
 pub use compose::{
     compose_limits, is_valid_address, outbox_reason_default_message, outbox_reason_key,
     parse_recipient, parse_recipients, ComposeError, ComposeLimits, DraftAttachment, DraftCheck,
@@ -115,11 +120,15 @@ uniffi::setup_scaffolding!();
 /// `BodyState` and `RemoteImagesSetting`, and the error `ReadError`.
 /// Version 13 (T33a): scheduled send, `schedule_send`, `MAX_SCHEDULE_AHEAD_MS` and the new
 /// `ComposeError::BadSendTime`.
+/// Version 14 (T34b): the Companion connection: `companion_address`, `companion_probe`,
+/// `companion_begin`, `companion_finish`, `companion_link` and the object `CompanionLink`, the
+/// callback `CompanionSecretSaver`, the records `CompanionInfo`, `CompanionSignInStart`,
+/// `CompanionConnected`, `CompanionDevice` and the error `CompanionFailure`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 13;
+pub const FFI_API_VERSION: u32 = 14;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

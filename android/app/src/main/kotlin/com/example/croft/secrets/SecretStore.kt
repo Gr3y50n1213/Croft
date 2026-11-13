@@ -20,6 +20,12 @@ enum class SecretKind(internal val wireName: String) {
     OAUTH_ACCESS("oauth_access"),
 }
 
+/** The app's own secrets, not tied to an account. */
+enum class AppSecretKind(internal val wireName: String) {
+    /** The connection to the person's Croft Companion (T34b): the core's opaque blob. */
+    COMPANION("companion"),
+}
+
 /**
  * Account secrets (passwords, OAuth tokens), one wrapped file per `(account id, kind)` in [dir]
  * (the app's `noBackupFilesDir`, never backed up). Every file is the envelope of [box]; the
@@ -107,16 +113,60 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
         SecretKind.values().forEach { remove(accountId, it) }
     }
 
-    /** True when any account secret exists. Throws [IOException] when the folder cannot be listed (it must not read as "none"). */
+    /**
+     * True when any secret exists (an account's, or the app's own such as the Companion connection). Throws [IOException] when the
+     * folder cannot be listed (it must not read as "none").
+     */
     @Synchronized
     fun hasAny(): Boolean =
-        (dir.listFiles { f -> f.name.startsWith(PREFIX) } ?: throw IOException("cannot list the secrets")).isNotEmpty()
+        (dir.listFiles { f -> f.name.startsWith(PREFIX) || f.name.startsWith(APP_PREFIX) } ?: throw IOException("cannot list the secrets"))
+            .isNotEmpty()
 
-    /** Deletes every account secret (key loss, and "Erase all Croft data"). A file that cannot be deleted stays: check [hasAny] afterwards. */
+    /** Deletes every secret (key loss, and "Erase all Croft data"). A file that cannot be deleted stays: check [hasAny] afterwards. */
     @Synchronized
     fun clear() {
-        dir.listFiles { f -> f.name.startsWith(PREFIX) }?.forEach { it.delete() }
+        dir.listFiles { f -> f.name.startsWith(PREFIX) || f.name.startsWith(APP_PREFIX) }?.forEach { it.delete() }
     }
+
+    // ---- The app's own secrets (not an account's): the Companion connection (T34b). The sweep of orphaned account secrets never
+    // sees them (they are not under an account id); erasing everything removes them with the rest.
+
+    /** Stores (or replaces) the app's secret [kind]. Throws [SecretBoxException] when it cannot be sealed. */
+    fun putApp(kind: AppSecretKind, secret: ByteArray) {
+        val blob = box.seal(secret, appContext(kind))
+        synchronized(this) { writeAtomically(appFile(kind), blob) }
+    }
+
+    /** The app's secret [kind], or null; a damaged entry is deleted and reads as null (as [get]). */
+    fun getApp(kind: AppSecretKind): ByteArray? {
+        val f = appFile(kind)
+        val blob = synchronized(this) {
+            try {
+                f.readBytes()
+            } catch (e: java.io.FileNotFoundException) {
+                return null
+            }
+        }
+        try {
+            return box.open(blob, appContext(kind))
+        } catch (e: SecretBoxException) {
+            if (e.kind == SecretBoxException.Kind.CORRUPT) {
+                synchronized(this) {
+                    if (f.exists() && f.readBytes().contentEquals(blob)) f.delete()
+                }
+                return null
+            }
+            throw e
+        }
+    }
+
+    /** Deletes the app's secret [kind]. */
+    @Synchronized
+    fun removeApp(kind: AppSecretKind) {
+        appFile(kind).delete()
+    }
+
+    private fun appFile(kind: AppSecretKind) = File(dir, "$APP_PREFIX${kind.wireName}.v1")
 
     /** The ids that have at least one stored secret. */
     @Synchronized
@@ -130,6 +180,10 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
 
     internal companion object {
         const val PREFIX = "acct-"
+        const val APP_PREFIX = "app-"
+
+        /** Binds a blob to the app's entry, so an account's file copied onto it does not open. */
+        fun appContext(kind: AppSecretKind): ByteArray = "croft/app-secret/v1/${kind.wireName}".toByteArray(Charsets.UTF_8)
 
         /** Binds a blob to its entry, so a file copied onto another account or kind does not open. */
         fun context(accountId: Long, kind: SecretKind): ByteArray =

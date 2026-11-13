@@ -85,7 +85,7 @@ class EraseEverythingTest {
             AccountSecrets(s.secrets, signIns).addPasswordAccount(core, deadServer(email), "Alice", null, null, NEW_PASSWORD.toByteArray())
         }
 
-        fun ops(core: Core, s: AppSecrets, killAt: Int = -1): CoreAccountOps {
+        fun ops(core: Core, s: AppSecrets, killAt: Int = -1, endCompanion: suspend () -> Unit = {}): CoreAccountOps {
             var step = 0
             fun point() { if (step++ == killAt) throw Killed() }
             val accounts = AccountSecrets(s.secrets, signIns)
@@ -97,6 +97,7 @@ class EraseEverythingTest {
                 closeCore = { point(); core.close() },
                 eraseStorage = { point(); s.eraseEverything() },
                 clearLocalFiles = { point(); AppFiles.eraseMailFiles(root) },
+                endCompanion = endCompanion,
             )
         }
     }
@@ -150,6 +151,26 @@ class EraseEverythingTest {
         // The live data is intact, so the earlier database is only offered, never put back behind the person's back.
         assertTrue(next.quarantineRestore.available.value)
         assertTrue(phone.db.isFile)
+    }
+
+    @Test
+    fun anEraseSignsTheCompanionOutAndDeletesItsSecretEvenWhenItCannotBeReached() {
+        for (reachable in listOf(true, false)) {
+            val phone = Phone("companion-$reachable")
+            val s = phone.secrets()
+            s.databaseKey().close()
+            val core = phone.core(s)
+            s.secrets.putApp(AppSecretKind.COMPANION, "made-up companion session".toByteArray())
+            var signedOut = false
+            runBlocking {
+                phone.ops(core, s, endCompanion = {
+                    if (!reachable) throw java.io.IOException("made-up: unreachable")
+                    signedOut = true
+                }).eraseEverything()
+            }
+            assertEquals(reachable, signedOut)
+            assertFalse("the Companion secret is gone ($reachable)", phone.secrets().secrets.hasAny())
+        }
     }
 
     @Test

@@ -113,6 +113,21 @@ class ManifestCheck(unittest.TestCase):
         self.assertEqual(len(errs), 1)
         self.assertIn("https", errs[0])
 
+    COMPANION = (
+        '<activity android:name="com.example.croft.CompanionRedirectActivity" android:exported="true">'
+        '<intent-filter><action android:name="android.intent.action.VIEW" />'
+        '<category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" />'
+        '<data android:scheme="%s" /></intent-filter></activity>'
+    )
+
+    def test_the_companion_redirect_of_t34b_passes_only_for_the_apps_own_scheme(self):
+        self.assertEqual(run(extra_app=self.COMPANION % "com.example.croft"), [])
+        errs = run(extra_app=self.COMPANION % "https")
+        self.assertEqual(len(errs), 1)
+        self.assertIn("scheme not on the allowlist: https", errs[0])
+        errs = run(extra_app=self.COMPANION % "com.example.other")
+        self.assertEqual(len(errs), 1)
+
     def test_an_action_nobody_handles_fails(self):
         manifest = BASE.replace(
             '<intent-filter><action android:name="android.intent.action.MAIN" /></intent-filter>',

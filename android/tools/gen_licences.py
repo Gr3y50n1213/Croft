@@ -204,7 +204,8 @@ def main(argv: list) -> int:
     if sorted(map(key, by_store["fdroid"])) != sorted(map(key, by_store["github"])):
         raise SystemExit("the fdroid and github classpaths differ: they share one licence list")
     common = {key(e) for e in by_store["play"]} & {key(e) for e in by_store["fdroid"]}
-    order = lambda e: (e["origin"], e["name"].lower())
+    # The version too: two versions of one crate (getrandom) must not come in whatever order Cargo lists them.
+    order = lambda e: (e["origin"], e["name"].lower(), e["version"])
     entries = sorted(rust_entries() + [e for e in by_store["play"] if key(e) in common], key=order) + EXTRAS
     write(OUT, {"version": 1, "inputs": current_inputs(), "entries": entries})
     for store, path in STORE_OUT.items():

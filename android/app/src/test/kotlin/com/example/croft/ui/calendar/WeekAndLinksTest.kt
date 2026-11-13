@@ -8,6 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -165,7 +166,7 @@ class WeekAndLinksTest {
         val b = FakeCalendarBackend().apply { calendar(1, 10, "Sam"); occurrence(1, 1, "Lunch", ms("2026-11-06T12:00"), ms("2026-11-06T13:00")) }
         openWeek(b)
         val node = rule.onNodeWithTag(WeekTags.block(1, ms("2026-11-06T12:00"))).fetchSemanticsNode()
-        val action = node.config[androidx.compose.ui.semantics.SemanticsProperties.CustomActions].single { it.label == "Move" }
+        val action = node.config[SemanticsActions.CustomActions].single { it.label == "Move" }
         rule.runOnIdle { action.action() }
         assertEquals(1L, moveRequested?.eventId)
     }

@@ -113,6 +113,8 @@ uniffi::setup_scaffolding!();
 /// `allow_remote_content`, `trust_sender`, `untrust_sender`, `trusted_senders`, with the records
 /// `Conversation`, `ConversationMessage`, `MailAddress`, `MessageBody`, `AttachmentInfo`, the enums
 /// `BodyState` and `RemoteImagesSetting`, and the error `ReadError`.
+/// Version 13 (T33a): scheduled send, `schedule_send`, `MAX_SCHEDULE_AHEAD_MS` and the new
+/// `ComposeError::BadSendTime`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and

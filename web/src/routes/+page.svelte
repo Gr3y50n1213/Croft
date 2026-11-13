@@ -15,6 +15,7 @@
   import { Shortcuts, SHORTCUTS, type Command } from '#lib/mail/keys.ts';
   import type { MailAction } from '#lib/mail/actions.ts';
   import Sidebar from '#lib/ui/Sidebar.svelte';
+  import ScheduledList from '#lib/ui/ScheduledList.svelte';
   import MessageRow from '#lib/ui/MessageRow.svelte';
   import ReadingPane from '#lib/ui/ReadingPane.svelte';
   import Snackbar from '#lib/ui/Snackbar.svelte';
@@ -29,6 +30,8 @@
   const mail = new MailState(jmap);
   const compose = new ComposeState(jmap, () => mail.account, (m, u) => mail.notify(m, u));
   let error = $state('');
+  /** W01 shows Scheduled (the Companion's Outbox, T33a) instead of a folder. */
+  let scheduled = $state(false);
   /** Opened without a connection to the Companion: not signed out, just offline. */
   let offline = $state(false);
   let noAccounts = $state(false);
@@ -218,6 +221,8 @@
       typing,
       timeMs: e.timeStamp
     });
+    // In Scheduled there is no message list: only the commands that do not act on one.
+    if (c && scheduled && !['compose', 'help'].includes(c)) return;
     if (c) {
       e.preventDefault();
       run(c);
@@ -257,12 +262,19 @@
       mailboxes={mail.mailboxes}
       current={mail.mailbox}
       onaccount={(id) => void mail.openAccount(id)}
-      onmailbox={(id) => void mail.openMailbox(id)}
+      onmailbox={(id) => ((scheduled = false), void mail.openMailbox(id))}
       oncompose={() => compose.open()}
+      {scheduled}
+      onscheduled={() => ((scheduled = true), mail.close())}
     />
 
     <main class="content">
-    <h1 class="sr-only">{mail.current?.name ?? 'Mail'}</h1>
+    <h1 class="sr-only">{scheduled ? 'Scheduled' : (mail.current?.name ?? 'Mail')}</h1>
+    {#if scheduled && mail.account}
+      <section class="list" aria-label="Scheduled messages">
+        <ScheduledList {jmap} account={mail.account} {compose} />
+      </section>
+    {:else}
     <section class="list" aria-label="Messages" class:hidden-narrow={mail.open !== null}>
       <div class="list-bar">
         <IconButton icon="refresh" label="Refresh" onclick={() => void mail.refresh()} />
@@ -297,6 +309,7 @@
         {/each}
       </ul>
     </section>
+    {/if}
 
     <ReadingPane
       email={mail.open}

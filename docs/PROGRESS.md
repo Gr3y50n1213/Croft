@@ -5,6 +5,46 @@ unverified, the next step.
 
 ---
 
+## T33a: Scheduled send (13 November 2026)
+
+**Status:** on `task/t33`, its own pull request. An independent review covers the new JMAP methods once search (T33b) is built.
+
+**What was built.**
+- **The core**: `Core::schedule_send(account, draft, send_at_ms)`. The message waits in the Outbox until its time, then goes like
+  any other message: the same retries, copy in Sent and draft clean-up.
+  - A time already past, or inside the Undo window, is an ordinary send.
+  - More than a year and a day ahead is refused (`ComposeError::BadSendTime`).
+  - Until it starts going out, `undo_send` takes it back and the draft reopens.
+  - It survives a restart (the Outbox is stored).
+  - FFI v13; the Android app's expected version moves with it.
+- **The Companion**:
+  - `CroftOutbox/send` takes an optional `sendAt` (a strict `UTCDate`), and `CroftOutbox/get` lists each message with its time.
+  - A scheduled message counts against the sending budget when it is scheduled.
+  - Every user's core runs while the Companion runs, so scheduled mail goes out with no device online.
+- **The web app**:
+  - "Schedule send" in a compose window: tomorrow morning, tomorrow afternoon, Monday morning, or a date and time (at least a
+    minute ahead, within a year).
+  - A snackbar says when, with Undo.
+  - "Scheduled" in W01's sidebar lists what waits, with Cancel, which reopens the draft.
+
+**Checks.**
+- Core: 3 new tests, covering:
+  - a scheduled message waits and is taken back long after any Undo window;
+  - it goes out once at its time, after a restart;
+  - too far ahead is refused and a past time is an ordinary send.
+- Companion: 2 new tests: `sendAt` through JMAP (bad and too-far times refused, listed with its time, another user cannot cancel
+  it, cancel gives the draft back), and the strict `UTCDate` reader.
+- Web: 5 new unit tests (presets, the picker, how a time reads). One new Playwright test: schedule (a time a year away refused in
+  plain words), the snackbar, Scheduled after a reload, Cancel back into compose. axe-core clean on the dialog and the view.
+  93 unit and 28 Playwright tests in all.
+
+**Unverified.** A scheduled message actually delivered through a real SMTP server from the Companion. The core's own tests deliver
+one to the in-process SMTP server.
+
+**Next.** T33b: search through the Companion.
+
+---
+
 ## T32b: The installable web app, push in the browser, accessibility (13 November 2026)
 
 **Status:** on `task/t32b`, its own pull request; an independent review (below), every finding fixed but one part accepted.

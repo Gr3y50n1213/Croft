@@ -51,6 +51,8 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 - **Web compose (T31b):** the Companion does not yet ask the core to copy web drafts to the mail server's Drafts folder
   (`sync_draft_to_server`), and sending through a real SMTP server from the Companion is untested here. Attachments, address
   suggestions and rich text in web compose are still to come.
+- **Scheduled send (T33a):** the phone's S25 needs the Companion connection (T34) before it can schedule through it; until then
+  scheduling is on the web. The web's Scheduled view offers Cancel only (no "send now" or "change time" yet).
 - **The web app on real browsers (T30):** tested with Chromium and its virtual authenticator only. To try: Safari and Firefox,
   platform passkeys (Touch ID, Windows Hello, a phone) and password managers, and single sign-on with a real provider. The
   Docker base images (`rust`, `node`, `debian`) are not pinned by digest yet.

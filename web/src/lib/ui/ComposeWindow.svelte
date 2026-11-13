@@ -8,6 +8,8 @@
   import IconButton from './IconButton.svelte';
   import type { ComposeState, ComposeWindow } from '../mail/compose.svelte.ts';
   import { formatAddresses, parseAddresses } from '../mail/addresses.ts';
+  import { fromLocalInput, presets, problemWith, toLocalInput } from '../mail/schedule.ts';
+  import Dialog from './Dialog.svelte';
 
   /** One compose window (W02): floating bottom right, or docked as a bar when minimised. */
   let { win, compose }: { win: ComposeWindow; compose: ComposeState } = $props();
@@ -24,6 +26,31 @@
     win.fields.cc = parseAddresses(cc);
     win.fields.bcc = parseAddresses(bcc);
     compose.edited(win.key);
+  }
+
+  // Schedule send (S25): the presets, or a date and time.
+  let scheduling = $state(false);
+  let choices = $state(presets(new Date()));
+  let picked = $state('');
+  let pickProblem = $state('');
+
+  function openSchedule() {
+    changed();
+    const now = new Date();
+    choices = presets(now);
+    picked = toLocalInput(new Date(now.getTime() + 60 * 60_000));
+    pickProblem = '';
+    scheduling = true;
+  }
+
+  function schedule(at: Date) {
+    const problem = problemWith(at, new Date());
+    if (problem) {
+      pickProblem = problem;
+      return;
+    }
+    scheduling = false;
+    void compose.send(win.key, at);
   }
 
   function keydown(e: KeyboardEvent) {
@@ -70,13 +97,73 @@
     </label>
     <div class="foot">
       <button type="button" class="button" disabled={win.sending} onclick={() => (changed(), void compose.send(win.key))}>Send</button>
+      <IconButton icon="clock" label="Schedule send" onclick={openSchedule} />
       <span class="status" role="status">{win.status}</span>
       <IconButton icon="delete" label="Discard draft" onclick={() => void compose.discard(win.key)} />
     </div>
   </div>
 {/if}
 
+{#if scheduling}
+  <Dialog title="Schedule send" onclose={() => (scheduling = false)}>
+    <ul class="presets">
+      {#each choices as c (c.label)}
+        <li>
+          <button type="button" class="button tonal" onclick={() => schedule(c.at)}>
+            {c.label}
+            <span class="when">{c.at.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+    <form
+      class="pick"
+      onsubmit={(e) => {
+        e.preventDefault();
+        schedule(fromLocalInput(picked));
+      }}
+    >
+      <label class="field">
+        <span>Date and time</span>
+        <input type="datetime-local" bind:value={picked} required />
+      </label>
+      <button type="submit" class="button">Schedule</button>
+      {#if pickProblem}<p class="error" role="alert">{pickProblem}</p>{/if}
+    </form>
+    <p class="hint">Your Companion sends it then, even with this browser closed.</p>
+  </Dialog>
+{/if}
+
 <style>
+  .presets {
+    display: grid;
+    gap: 8px;
+    margin: 0 0 16px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .presets .button {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .when {
+    font-weight: 400;
+  }
+
+  .pick {
+    display: grid;
+    gap: 8px;
+  }
+
+  .hint {
+    color: var(--croft-color-on-surface-variant);
+    font-size: 14px;
+  }
+
   .window {
     display: flex;
     flex-direction: column;

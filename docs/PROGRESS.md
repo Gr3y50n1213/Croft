@@ -5,6 +5,34 @@ unverified, the next step.
 
 ---
 
+## T31b: The conversation and compose, W02 (13 November 2026)
+
+**Status:** on `task/t31b`, its own pull request; an independent review of the Companion side (below), every finding fixed.
+
+**What was built.**
+- **The Companion** (a Croft JMAP extension, `urn:croft:params:jmap:compose`): drafts (get, save as create or patch, discard,
+  check), the fields of a reply, reply all or forward by the core's rules, and the Outbox (send with the undo window, undo, list).
+  Isolation by the per-user core and the caller's accounts; a sending budget (messages a minute, recipients an hour and a day);
+  at most 1000 drafts per account.
+- **The core**: a reply keeps the thread's first reference and the 19 most recent, and quotes at most 1 MiB.
+- **The web app (W02)**: the conversation in the reading pane (earlier messages collapsed), Reply, Reply all and Forward; compose
+  windows floating bottom right, up to three, minimised to a dock; drafts saved after a second and on close; Send with Undo that
+  reopens the draft; `c`, `r`, `a`, `f` and Ctrl+Enter.
+
+**Checks.** 163 Companion tests, among them drafts through JMAP, replies and forwards from the core, send and Undo and the lock
+while in the Outbox, the capability for every method, isolation between users, the draft quota (1000, then `overQuota`), bounded
+gets, patches, the recipient budget. The core's test for trimmed references and capped quotes. 70 web unit tests (recipient
+fields). 18 Playwright tests, three new: a reply gets its fields from the core, sends and comes back with Undo; compose without a
+recipient is refused in plain words, three windows and the dock; the conversation and `f`. Clippy and `svelte-check` are clean.
+
+**Review** (one independent agent, opus, high effort, on the Companion side): no high, 2 medium, 1 low to medium, lows; all fixed
+with regression tests; not re-reviewed.
+
+**Not verified here:** delivery through a real SMTP server from the Companion (the tests' SMTP port is closed; delivery itself is
+the core's, tested in the core), drafts copied to the server's Drafts folder (the Companion does not ask the core to yet).
+
+---
+
 ## T31a: The web inbox, W01 (12 November 2026)
 
 **Status:** draft pull request #56 on `task/t31` (CI green before the review fixes, run 43327566934); an independent review focused

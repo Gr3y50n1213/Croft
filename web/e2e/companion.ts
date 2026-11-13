@@ -164,7 +164,7 @@ export class TestMail {
 }
 
 /** Adds the test server's account to the signed-in user of `page` (through the API, as the phone app does). */
-export async function addAccount(page: Page, mail: TestMail): Promise<void> {
+export async function addAccount(page: Page, mail: TestMail, smtpPort?: number): Promise<void> {
   const status = await page.evaluate(async (m) => {
     // The web app keeps its access token to itself: take a fresh one through the cookie.
     const r = await fetch('/api/web/refresh', { method: 'POST', headers: { 'x-croft-web': '1' } });
@@ -173,12 +173,22 @@ export async function addAccount(page: Page, mail: TestMail): Promise<void> {
       method: 'POST',
       headers: { authorization: `Bearer ${access_token}`, 'content-type': 'application/json' },
       body: JSON.stringify({
-        discovered: { email: 'alice@example.test', imap: { host: m.host, port: m.port, security: 'tls', username: m.username } },
+        discovered: {
+          email: 'alice@example.test',
+          imap: { host: m.host, port: m.port, security: 'tls', username: m.username },
+          // A send waits in the Outbox (the SMTP port is closed): enough for Send and Undo.
+          smtp: m.smtpPort ? { host: '127.0.0.1', port: m.smtpPort, security: 'tls', username: m.username } : undefined
+        },
         password: m.password,
         pin: m.fingerprint
       })
     });
     return `${add.status} ${await add.text()}`;
-  }, { host: mail.host, port: mail.port, username: mail.username, password: mail.password, fingerprint: mail.fingerprint });
+  }, { host: mail.host, port: mail.port, username: mail.username, password: mail.password, fingerprint: mail.fingerprint, smtpPort });
   if (!status.startsWith('200')) throw new Error(`adding the account: ${status}`);
+}
+
+/** A port on this machine where nothing listens. */
+export function closedPort(): Promise<number> {
+  return freePort();
 }

@@ -40,8 +40,9 @@ swipe settings, and Gmail-like keyboard shortcuts.
   in the tooltip, focus visible, `axe-core` in the end-to-end tests.
 
 ## Spec (T31b, W02)
-- **The Companion's JMAP gains sending**: `Email/set` create (a draft in Drafts, through the core's compose) and update of drafts,
-  `EmailSubmission/set` (send through the core's Outbox, with its undo window), `Identity/get` as today. Reviewed independently.
+- **The Companion's JMAP gains sending**, as a Croft extension (`urn:croft:params:jmap:compose`; see DECISIONS): drafts
+  (`CroftDraft/get`, `/set`, `/check`), reply fields by the core's rules (`CroftDraft/reply`), and the Outbox (`CroftOutbox/send`
+  with its undo window, `/undo`, `/get`). Reviewed independently.
 - **The conversation**: the thread's emails, newest expanded; Reply, Reply all, Forward.
 - **The compose window**: floating bottom right, minimise, up to three drafts docked; To, Cc, Bcc with address chips, subject,
   a plain-text body (rich text later); saved as a draft as on the phone; Send with the Undo snackbar.

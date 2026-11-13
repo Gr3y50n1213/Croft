@@ -12,7 +12,9 @@
 import { ApiError, type Api } from '../api.ts';
 
 export const MAIL = 'urn:ietf:params:jmap:mail';
-const USING = ['urn:ietf:params:jmap:core', MAIL];
+/** The Companion's compose extension (T31b): drafts, replies and the Outbox, by the core's rules. */
+export const COMPOSE = 'urn:croft:params:jmap:compose';
+const USING = ['urn:ietf:params:jmap:core', MAIL, COMPOSE];
 
 /** One mail account (a JMAP account). */
 export interface Account {
@@ -72,6 +74,25 @@ export const SUMMARY_PROPERTIES = [
 
 /** A method call: name, arguments, call id. */
 export type Invocation = [string, Record<string, unknown>, string];
+
+/** A draft (the Companion's compose extension). */
+export interface DraftFields {
+  identityId: string | null;
+  to: Address[];
+  cc: Address[];
+  bcc: Address[];
+  subject: string;
+  body: string;
+  inReplyTo: string | null;
+  references: string[];
+}
+
+export interface Draft extends DraftFields {
+  id: string;
+  outboxId: string | null;
+}
+
+export type ReplyKind = 'reply' | 'replyAll' | 'forward';
 
 /** A JMAP method error (`["error", {type}, id]`). */
 export class MethodError extends Error {
@@ -200,6 +221,73 @@ export class Jmap {
     const [[, res]] = (await this.request([['Email/set', { accountId, destroy: ids }, 'd']])) as [Invocation];
     return Object.keys((res['notDestroyed'] ?? {}) as object);
   }
+
+  /** A conversation's emails with their bodies, oldest first. */
+  async thread(accountId: string, threadId: string): Promise<EmailBody[]> {
+    const r = await this.request([
+      ['Thread/get', { accountId, ids: [threadId] }, 't'],
+      [
+        'Email/get',
+        {
+          accountId,
+          '#ids': { resultOf: 't', name: 'Thread/get', path: '/list/*/emailIds' },
+          properties: [...SUMMARY_PROPERTIES, 'htmlBody', 'textBody', 'bodyValues'],
+          fetchHTMLBodyValues: true,
+          fetchTextBodyValues: true
+        },
+        'e'
+      ]
+    ]);
+    const list = (r[1]![1]['list'] ?? []) as Record<string, unknown>[];
+    return list.map(withBody).sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+  }
+
+  /** The fields of a new reply, reply all or forward of `emailId` (by the core's rules; not saved). */
+  async replyFields(accountId: string, emailId: string, kind: ReplyKind): Promise<DraftFields> {
+    const [[, res]] = (await this.request([['CroftDraft/reply', { accountId, emailId, kind }, 'r']])) as [Invocation];
+    return res['draft'] as DraftFields;
+  }
+
+  /** Saves a draft (a new one without `id`); its id. */
+  async saveDraft(accountId: string, fields: DraftFields, id?: string): Promise<string> {
+    const args = id ? { accountId, update: { [id]: fields } } : { accountId, create: { k: fields } };
+    const [[, res]] = (await this.request([['CroftDraft/set', args, 's']])) as [Invocation];
+    const failed = (id ? res['notUpdated'] : res['notCreated']) as Record<string, { type: string }> | undefined;
+    const problem = failed && Object.values(failed)[0];
+    if (problem) throw new MethodError(problem.type);
+    return id ?? (res['created'] as Record<string, { id: string }>)['k']!.id;
+  }
+
+  async discardDraft(accountId: string, id: string): Promise<void> {
+    await this.request([['CroftDraft/set', { accountId, destroy: [id] }, 'd']]);
+  }
+
+  /** Sends a saved draft: it waits in the Outbox for the undo window. Its Outbox id. */
+  async send(accountId: string, draftId: string): Promise<{ outboxId: string; sendAt: string }> {
+    const [[, res]] = (await this.request([['CroftOutbox/send', { accountId, draftId }, 'o']])) as [Invocation];
+    return { outboxId: String(res['outboxId']), sendAt: String(res['sendAt']) };
+  }
+
+  /** Undoes a send within its window; the draft's id. */
+  async undoSend(accountId: string, outboxId: string): Promise<string> {
+    const [[, res]] = (await this.request([['CroftOutbox/undo', { accountId, outboxId }, 'u']])) as [Invocation];
+    return String(res['draftId']);
+  }
+
+  async loadDraft(accountId: string, id: string): Promise<Draft | null> {
+    const [[, res]] = (await this.request([['CroftDraft/get', { accountId, ids: [id] }, 'g']])) as [Invocation];
+    return ((res['list'] as Draft[])[0] ?? null);
+  }
+}
+
+function withBody(e: Record<string, unknown>): EmailBody {
+  const values = (e['bodyValues'] ?? {}) as Record<string, { value: string }>;
+  const part = (key: 'htmlBody' | 'textBody', type: string) => {
+    const parts = (e[key] ?? []) as { partId: string; type: string }[];
+    const p = parts.find((x) => x.type === type);
+    return p ? (values[p.partId]?.value ?? null) : null;
+  };
+  return { ...(e as unknown as EmailSummary), html: part('htmlBody', 'text/html'), text: part('textBody', 'text/plain') };
 }
 
 /** Plain words for a JMAP or API failure. */
@@ -208,5 +296,9 @@ export function explainMail(e: unknown): string {
   if (e instanceof ApiError && e.status === 401) return 'Your sign-in ended. Sign in again.';
   if (e instanceof MethodError && e.type === 'requestTooLarge') return 'That is too much at once. Try fewer.';
   if (e instanceof ApiError && e.code === 'rate_limited') return 'Too many requests. Wait a moment.';
+  if (e instanceof MethodError && e.type === 'rateLimit') return 'Too many messages sent just now. Wait a minute.';
+  if (e instanceof MethodError && e.type === 'noRecipient') return 'Add a recipient.';
+  if (e instanceof MethodError && e.type === 'invalidAddress') return 'Fix the address.';
+  if (e instanceof MethodError && e.type === 'tooLate') return "Too late: it's already being sent.";
   return 'Something went wrong. Try again.';
 }

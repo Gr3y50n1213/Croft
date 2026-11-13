@@ -796,3 +796,26 @@ fn addresses_with_invisible_or_direction_changing_characters_are_invalid() {
     assert!(is_valid_address("jörg@münchen.de"));
     assert!(is_valid_address("用户@例え.jp"));
 }
+
+#[test]
+fn a_reply_to_a_long_thread_keeps_its_root_and_recent_ids_and_a_huge_body_is_cut() {
+    let refs: Vec<String> = (0..600).map(|i| format!("<r{i}@example.org>")).collect();
+    let source = SourceMessage {
+        message_id: Some("<last@example.org>".into()),
+        subject: "Hi".into(),
+        references: refs,
+        text: Some("é".repeat(MAX_QUOTED_BYTES)),
+        ..SourceMessage::default()
+    };
+    let r = reply_fields(ReplyKind::Reply, &source, &[]);
+    assert_eq!(r.references.len(), MAX_REPLY_REFERENCES);
+    assert_eq!(r.references[0], "<r0@example.org>");
+    assert_eq!(
+        r.references.last().map(String::as_str),
+        Some("<last@example.org>")
+    );
+    assert!(r.body.len() < MAX_QUOTED_BYTES + 4096, "{}", r.body.len());
+    assert!(r.body.contains("[...]"));
+    let f = reply_fields(ReplyKind::Forward, &source, &[]);
+    assert!(f.body.len() < MAX_QUOTED_BYTES + 4096);
+}

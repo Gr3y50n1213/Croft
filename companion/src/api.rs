@@ -58,6 +58,8 @@ pub struct Auth {
     mail_limits: Mutex<Limits>,
     /// Per-user limits for the JMAP API (T27), and its requests running per user.
     jmap_limits: Mutex<Limits>,
+    /// Per-user sending budget (T31b): messages and recipients sent, by time.
+    sends: Mutex<std::collections::HashMap<i64, std::collections::VecDeque<(i64, u32)>>>,
     jmap_running: Arc<Mutex<std::collections::HashMap<i64, usize>>>,
     trusted_proxies: Vec<IpAddr>,
     clock: Clock,
@@ -103,6 +105,7 @@ impl Auth {
             ceremonies: Mutex::new(Ceremonies::default()),
             limits: Mutex::new(Limits::default()),
             mail_limits: Mutex::new(Limits::default()),
+            sends: Mutex::new(std::collections::HashMap::new()),
             jmap_limits: Mutex::new(Limits::default()),
             jmap_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
             trusted_proxies: trusted_proxies.iter().map(IpAddr::to_canonical).collect(),
@@ -160,6 +163,32 @@ impl Auth {
             .unwrap_or_else(PoisonError::into_inner)
             .request_key(key, self.now())
             .map_err(|r| ApiError::RateLimited(r.retry_after_s))
+    }
+
+    /// Counts a send of a message to `recipients` addresses against the user's sending budget
+    /// (T31b): at most [`SENDS_PER_MINUTE`] messages a minute, [`RECIPIENTS_PER_HOUR`] recipients
+    /// an hour and [`RECIPIENTS_PER_DAY`] a day. False when over it (nothing is counted then). A
+    /// stolen session cannot turn the account into a spam relay at full speed.
+    pub(crate) fn send_budget(&self, user_id: i64, recipients: usize) -> bool {
+        let now = self.now();
+        let n = u32::try_from(recipients).unwrap_or(u32::MAX);
+        let mut all = self.sends.lock().unwrap_or_else(PoisonError::into_inner);
+        let sent = all.entry(user_id).or_default();
+        while sent.front().is_some_and(|(t, _)| *t <= now - DAY_MS) {
+            sent.pop_front();
+        }
+        let since = |ms: i64| sent.iter().filter(move |(t, _)| *t > now - ms);
+        let messages_minute = since(60_000).count();
+        let hour: u64 = since(3_600_000).map(|(_, r)| u64::from(*r)).sum();
+        let day: u64 = sent.iter().map(|(_, r)| u64::from(*r)).sum();
+        if messages_minute >= SENDS_PER_MINUTE
+            || hour + u64::from(n) > RECIPIENTS_PER_HOUR
+            || day + u64::from(n) > RECIPIENTS_PER_DAY
+        {
+            return false;
+        }
+        sent.push_back((now, n));
+        true
     }
 
     /// Counts a JMAP request against the user.
@@ -347,6 +376,14 @@ async fn with_store<R: Send + 'static>(
 }
 
 /// Counts an unauthenticated request against the client's address.
+/// Messages a user may send a minute (T31b).
+pub const SENDS_PER_MINUTE: usize = 30;
+/// Recipients a user may send to in an hour (T31b).
+pub const RECIPIENTS_PER_HOUR: u64 = 1000;
+/// Recipients a user may send to in a day (T31b).
+pub const RECIPIENTS_PER_DAY: u64 = 3000;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
 fn limit(app: &App, peer: Option<Peer>, headers: &HeaderMap) -> Result<IpAddr, ApiError> {
     let ip = app.auth.client(peer, headers);
     app.auth

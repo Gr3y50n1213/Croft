@@ -120,7 +120,8 @@ def fetched_pom(group: str, artifact: str, version: str) -> list:
     return []
 
 
-def pom_licence(group: str, artifact: str, version: str, cache: Path) -> str:
+def pom_licence(group: str, artifact: str, version: str, cache: Path, depth: int = 0) -> str:
+    """The licence a POM names; when it names none, its parent's (up to four levels: protobuf-java and others declare it there)."""
     base = cache / group / artifact / version
     poms = [p.read_bytes() for p in sorted(base.glob("*/*.pom"))] or fetched_pom(group, artifact, version)
     for pom in poms:
@@ -133,6 +134,14 @@ def pom_licence(group: str, artifact: str, version: str, cache: Path) -> str:
             [e.text.strip() for e in root.findall(".//licenses/license/name") if e.text]
         if names:
             return " OR ".join(dict.fromkeys(spdx(n) for n in names))
+        parent = root.find("m:parent", ns) if ns else root.find("parent")
+        if parent is not None and depth < 4:
+            get = (lambda tag: (parent.findtext(f"m:{tag}", None, ns) if ns else parent.findtext(tag)) or "")
+            pg, pa, pv = get("groupId").strip(), get("artifactId").strip(), get("version").strip()
+            if pg and pa and pv:
+                found = pom_licence(pg, pa, pv, cache, depth + 1)
+                if found:
+                    return found
     return ""
 
 

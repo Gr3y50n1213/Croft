@@ -26,6 +26,7 @@ private class FakeBackend : CompanionBackend {
     var signedOut = false
     var rotateTo: ByteArray? = null
     var links = 0
+    val pushes = mutableMapOf<Long, String>()
 
     override suspend fun probe(url: String): CompanionFound {
         probeProblem?.let { throw CompanionException(it) }
@@ -54,6 +55,13 @@ private class FakeBackend : CompanionBackend {
             override suspend fun devices(): List<CompanionDeviceInfo> = backend.devices.toList()
             override suspend fun signOutDevice(id: Long) { backend.devices.removeAll { it.id == id } }
             override suspend fun signOut() { backend.signedOut = true }
+            override suspend fun pushKey() = "made-up-vapid-key"
+            override suspend fun addPush(endpoint: String, p256dh: String, auth: String): Long {
+                val id = (backend.pushes.keys.maxOrNull() ?: 0) + 1
+                backend.pushes[id] = endpoint
+                return id
+            }
+            override suspend fun removePush(id: Long) { backend.pushes.remove(id) }
         }
     }
 }
@@ -232,5 +240,20 @@ class CompanionConnectionTest {
         assertEquals(CompanionState.NotConnected(CompanionProblem.STORAGE), connection.state.value)
         assertTrue(backend.signedOut)
         assertNull(secrets.value)
+    }
+
+    @Test
+    fun pushCallsLoadTheLinkInAColdProcessAndFailQuietlyWhenNotConnected() = runBlocking<Unit> {
+        assertNull(connection.pushKey())
+        assertNull(connection.addPush("https://push.example.org/x", "k", "a"))
+        secrets.value = "made-up-secret".toByteArray()
+        val fresh = CompanionConnection(backend, secrets, REDIRECT, "Croft on this phone")
+        assertTrue(fresh.isConnected())
+        assertEquals("made-up-vapid-key", fresh.pushKey())
+        val id = fresh.addPush("https://push.example.org/x", "k", "a")!!
+        assertEquals(mapOf(id to "https://push.example.org/x"), backend.pushes)
+        fresh.removePush(id)
+        assertTrue(backend.pushes.isEmpty())
+        assertEquals(1, backend.links)
     }
 }

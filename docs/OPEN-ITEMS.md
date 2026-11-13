@@ -71,6 +71,14 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   again (a message for this is a later task). S58 has Disconnect but not yet "Delete my Companion data" and "Unregister this
   device" (READINESS row 7): with push, in T34d. The FFI hands the secret across in buffers the core cannot wipe (Kotlin wipes
   its copies).
+- **Push on phones (T34d):** untested on a phone. Try UnifiedPush (fdroid or github build with ntfy) and, once the publisher has a
+  Firebase project and a gateway (below), the Play build. Until it is tried the periodic check stays as the person set it; with
+  push working it could run less often. Accepted for now:
+  - a ping that comes while a check runs is dropped (KEEP), and the mail waits for the next change or the periodic check;
+  - a replayed ping can cause back-to-back checks (the gateway caps FCM at 60 an hour per device; UnifiedPush has no cap);
+  - an erase that races a ping in flight has the same window as the periodic check;
+  - the Firebase Installations id stays on the phone after Unregister;
+  - S58 does not name the UnifiedPush distributor in use.
 - **Push in browsers (T32b):** untested with the real push services (Google's for Chrome, Mozilla's for Firefox, Apple's for
   Safari) and with real notifications (headless Chromium refuses them); try on real browsers and an installed app on a phone.
   A refresh answer lost on a flapping connection still ends the session on the next try (no grace window for a just-rotated

@@ -5,6 +5,54 @@ unverified, the next step.
 
 ---
 
+## T34d: Push on the phone (13 November 2026)
+
+**Status:** on `task/t34d`, its own pull request. An independent review is below; its findings were fixed with tests, except two
+accepted in OPEN-ITEMS.
+
+**What was built.**
+- **The registrar** (`push/CompanionPush.kt`, `PushRuntime.kt`):
+  - an endpoint and this device's Web Push keys become a subscription at the person's Companion;
+  - only its id, the Companion's address and a hash are kept;
+  - it is subscribed again at each start;
+  - an authentic ping queues one mail check.
+- **F-Droid and GitHub:** UnifiedPush. Messages count only when they decrypted with this device's keys. The distributor is chosen
+  from S58.
+- **Play:** FCM through the push gateway, only in a build given the publisher's Firebase project and gateway (`android/README.md`).
+  Without them S58 says this build has no instant notifications.
+- **S58:** "Instant notifications" with Turn on, and "Unregister this device".
+- **Per-store checks:**
+  - manifest allowlist entries per store (`stores`, `CROFT_STORE`);
+  - licence lists per store, made again by CI from its own Gradle cache, following parent POMs, and checked in from its log
+    (`tools/licence-lists-from-log.py`);
+  - a CI guard against checked-in Firebase settings.
+
+**Review** (one independent agent, opus, high effort): no high finding.
+- **3 medium, fixed:**
+  - Turn on did network I/O on the main thread in Play;
+  - records outlived the subscription;
+  - racing registrations left orphans.
+- **Lows, fixed:**
+  - a malformed push key crashed every start;
+  - stray redirects started push;
+  - a ping could be lost in a cold process;
+  - a token was taken from the call;
+  - untracked licence files were missed;
+  - the log decoder had no output cap.
+
+**Checks.**
+- Locally: the tools' unit tests (registrar logic runs in CI).
+- In CI:
+  - the three stores compile;
+  - the Play unit tests pass (2406, with the licence test failing only until the lists were checked in);
+  - the Google services check passes on `fdroid` and `github`.
+
+**Unverified:** push on a real phone; real FCM delivery (needs the publisher's Firebase project and gateway).
+
+**Next:** T34e, "Delete my Companion data".
+
+---
+
 ## T34c: Store flavours `play`, `fdroid` and `github` (13 November 2026)
 
 **Status:** on `task/t34c`, its own pull request.

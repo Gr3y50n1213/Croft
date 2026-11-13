@@ -42,14 +42,37 @@ object CompanionRuntime {
                 secrets = KeystoreCompanionSecrets(open.secrets.secrets),
                 redirect = redirect(context),
                 deviceName = deviceName(),
+                onForgotten = { com.example.croft.push.PushRuntime.stopLater(context) },
             ).also { connection = it }
         }
+    }
+
+    /**
+     * The connection, opening the core first when the process is cold (a push or a check woke it). Null when there is no database
+     * (nothing was ever set up, or everything was erased) or the core cannot be opened.
+     */
+    suspend fun openedConnection(context: Context): CompanionConnection? {
+        connection?.let { return it }
+        if (!MailRuntime.databaseFile(context).exists()) return null
+        try {
+            MailRuntime.openedCore(context)
+        } catch (e: Exception) {
+            return null
+        } catch (e: UnsatisfiedLinkError) {
+            return null
+        }
+        return connection(context)
     }
 
     /** The browser came back to the app's redirect (from [com.example.croft.CompanionRedirectActivity]). */
     fun redirected(context: Context, uri: String) {
         val c = connection(context) ?: return
-        scope.launch { c.onRedirect(uri) }
+        val app = context.applicationContext
+        scope.launch {
+            // T34d: a sign-in that finished asks for push at once (UnifiedPush may still need the person to choose a distributor in
+            // S58). A redirect that finished nothing (any app can open the scheme) starts nothing.
+            if (c.onRedirect(uri)) com.example.croft.push.PushRuntime.start(app)
+        }
     }
 
     /** Forgets the connection object (the core was closed: an erase, or a test). */

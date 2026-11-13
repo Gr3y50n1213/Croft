@@ -36,6 +36,8 @@ pub struct DavRequest {
 
 #[derive(Default)]
 struct State {
+    user: String,
+    password: String,
     cards: BTreeMap<String, (String, String)>,
     /// (sequence, path, removed).
     log: Vec<(u64, String, bool)>,
@@ -64,9 +66,16 @@ impl Drop for DavServer {
 impl DavServer {
     /// Starts the server with an empty address book and sync support.
     pub async fn start() -> Self {
+        Self::start_with(DAV_USER, DAV_PASSWORD).await
+    }
+
+    /// The same, signing in `user` with `password`.
+    pub async fn start_with(user: &str, password: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let state: Shared = Arc::new(Mutex::new(State {
+            user: user.to_owned(),
+            password: password.to_owned(),
             sync: true,
             well_known: true,
             ..State::default()
@@ -198,7 +207,7 @@ async fn serve(mut stream: tokio::net::TcpStream, state: Shared) {
             headers: headers.clone(),
             body: body.clone(),
         });
-        if !authorized(authorization.as_deref()) {
+        if !authorized(&s, authorization.as_deref()) {
             (401, Vec::new(), String::new())
         } else {
             route(&mut s, &method, &path, &headers, &body)
@@ -217,14 +226,14 @@ async fn serve(mut stream: tokio::net::TcpStream, state: Shared) {
     let _ = stream.shutdown().await;
 }
 
-fn authorized(header: Option<&str>) -> bool {
+fn authorized(s: &State, header: Option<&str>) -> bool {
     use base64::Engine as _;
     let Some(b64) = header.and_then(|h| h.strip_prefix("Basic ")) else {
         return false;
     };
     base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
-        .is_ok_and(|raw| raw == format!("{DAV_USER}:{DAV_PASSWORD}").into_bytes())
+        .is_ok_and(|raw| raw == format!("{}:{}", s.user, s.password).into_bytes())
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {

@@ -15,6 +15,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import com.example.croft.mail.FakeData
 import com.example.croft.mail.MessageScope
@@ -64,14 +65,14 @@ class PinTest {
         rule.waitUntil(10_000) { !exists(PinnedTags.row(ids[4])) }
 
         // Unpin, then Undo at once (the test clock runs a snackbar's time out while it waits).
-        rule.onNodeWithTag(PinnedTags.unpin(ids[0])).performClick()
+        rule.onNodeWithTag(PinnedTags.unpin(ids[0])).performScrollTo().performClick()
         rule.onNodeWithText("Undo").performClick()
         step("Undo reaches the row actions") { f.actions.calls.contains("undo 1") }
         step("the message is pinned again") { ids[0] !in f.inboxIds() }
         step("the Pinned section shows it again") { exists(PinnedTags.row(ids[0])) }
 
         // Unpin another: it leaves the section and is back in the list at its date's place.
-        rule.onNodeWithTag(PinnedTags.unpin(ids[1])).performClick()
+        rule.onNodeWithTag(PinnedTags.unpin(ids[1])).performScrollTo().performClick()
         step("it leaves the section") { !exists(PinnedTags.row(ids[1])) }
         step("it is back in the Inbox") { ids[1] in f.inboxIds() }
     }

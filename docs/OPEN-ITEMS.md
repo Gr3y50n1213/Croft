@@ -48,6 +48,9 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 ## Companion (phase 2)
 - **Real passkeys and identity providers are untested (T24, T25).** The Companion's sign-in was tested with a software passkey and a fake OIDC provider only. To try on a real host: passkeys on a phone, a computer and a security key; OIDC against your own Authelia, Authentik, Keycloak or Entra ID (README, "Signing in through your identity provider").
 - **An identity provider with a private certificate authority (T25 review):** the Companion trusts the public roots only; a home-lab provider signed by its own CA cannot be used yet. A setting for an extra CA file is a later task if needed.
+- **Web compose (T31b):** the Companion does not yet ask the core to copy web drafts to the mail server's Drafts folder
+  (`sync_draft_to_server`), and sending through a real SMTP server from the Companion is untested here. Attachments, address
+  suggestions and rich text in web compose are still to come.
 - **The web app on real browsers (T30):** tested with Chromium and its virtual authenticator only. To try: Safari and Firefox,
   platform passkeys (Touch ID, Windows Hello, a phone) and password managers, and single sign-on with a real provider. The
   Docker base images (`rust`, `node`, `debian`) are not pinned by digest yet.

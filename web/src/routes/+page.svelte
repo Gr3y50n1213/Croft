@@ -10,6 +10,8 @@
   import { RENEW_BEFORE_MS } from '#lib/api.ts';
   import { Jmap, explainMail, type Mailbox } from '#lib/jmap/client.ts';
   import { MailState } from '#lib/mail/store.svelte.ts';
+  import { ComposeState } from '#lib/mail/compose.svelte.ts';
+  import ComposeWindow from '#lib/ui/ComposeWindow.svelte';
   import { Shortcuts, SHORTCUTS, type Command } from '#lib/mail/keys.ts';
   import type { MailAction } from '#lib/mail/actions.ts';
   import Sidebar from '#lib/ui/Sidebar.svelte';
@@ -21,7 +23,9 @@
   import Icon from '#lib/ui/Icon.svelte';
 
   let me: Me | null = $state(null);
-  const mail = new MailState(new Jmap(api));
+  const jmap = new Jmap(api);
+  const mail = new MailState(jmap);
+  const compose = new ComposeState(jmap, () => mail.account, (m, u) => mail.notify(m, u));
   let error = $state('');
   let noAccounts = $state(false);
   let help = $state(false);
@@ -144,8 +148,18 @@
       case 'help':
         help = true;
         return;
+      case 'compose':
+        compose.open();
+        return;
+      case 'reply':
+      case 'reply-all':
+      case 'forward': {
+        const id = mail.open?.id ?? mail.focused?.id;
+        if (id) void compose.reply(c === 'reply' ? 'reply' : c === 'reply-all' ? 'replyAll' : 'forward', id);
+        return;
+      }
       default:
-        // Reply, compose and search come with T31b and T33.
+        // Search comes with T33.
         return;
     }
   }
@@ -202,6 +216,7 @@
       current={mail.mailbox}
       onaccount={(id) => void mail.openAccount(id)}
       onmailbox={(id) => void mail.openMailbox(id)}
+      oncompose={() => compose.open()}
     />
 
     <main class="content">
@@ -243,6 +258,8 @@
 
     <ReadingPane
       email={mail.open}
+      conversation={mail.conversation}
+      onreply={(kind, id) => void compose.reply(kind, id)}
       loading={mail.opening}
       can={(a) => mail.open !== null && mail.can(a, [mail.open.id])}
       onact={actOnOpen}
@@ -259,6 +276,14 @@
       <button type="button" class="link" onclick={() => (help = true)}><kbd>?</kbd> all shortcuts</button>
     </footer>
   </div>
+
+  {#if compose.windows.length > 0}
+    <div class="dock" aria-label="Drafts">
+      {#each compose.windows as win (win.key)}
+        <ComposeWindow {win} {compose} />
+      {/each}
+    </div>
+  {/if}
 
   {#if mail.snack}
     <Snackbar message={mail.snack.message} canUndo={mail.snack.undo !== null} onundo={() => void mail.undo()} />
@@ -436,6 +461,17 @@
   .loading {
     padding: 32px;
     text-align: center;
+  }
+
+  .dock {
+    position: fixed;
+    right: 24px;
+    bottom: 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+    max-width: calc(100vw - 48px);
+    z-index: 10;
   }
 
   .shortcuts td {

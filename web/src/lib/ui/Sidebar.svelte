@@ -13,7 +13,8 @@
     mailboxes,
     current,
     onaccount,
-    onmailbox
+    onmailbox,
+    oncompose
   }: {
     accounts: Account[];
     account: string | null;
@@ -21,6 +22,7 @@
     current: string | null;
     onaccount: (id: string) => void;
     onmailbox: (id: string) => void;
+    oncompose: () => void;
   } = $props();
 
   const ICONS: Record<string, IconName> = {
@@ -44,7 +46,7 @@
 </script>
 
 <nav class="sidebar" aria-label="Folders">
-  <button class="compose" type="button" disabled title="Compose comes with the conversation view">
+  <button class="compose" type="button" title="Compose (c)" onclick={oncompose}>
     <Icon name="compose" /> Compose
   </button>
   <ul class="folders">

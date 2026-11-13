@@ -134,7 +134,10 @@ The web app (and later the phones) read and organise mail through a standard JMA
 `Core/echo`, `Mailbox/get`, `Email/query` (one mailbox, or flagged; newest first), `Email/get` (with the core's text and sanitised HTML
 bodies; remote content stays blocked), `Email/set` (read, flag, move, delete: to Trash, or for good when already in Trash), `Thread/get`,
 `Identity/get`, and `/changes` (no changes from the current state, otherwise `cannotCalculateChanges`, so the client fetches again).
-Sending, drafts, uploads, downloads and push come with later tasks. Limits: 600 requests a minute and 4 at once per user, 16 calls
+Composing and sending (T31b) are a Croft extension, `urn:croft:params:jmap:compose`, because the reply rules and the Outbox
+live in the core: `CroftDraft/get`, `/set`, `/reply` (reply, reply all, forward) and `/check`, and `CroftOutbox/send` (into the
+Outbox; sent when the undo window ends), `/undo` and `/get`. At most 1000 drafts per account; sending is limited per user to 30
+messages a minute, 1000 recipients an hour and 3000 a day. Uploads, downloads and the standard `EmailSubmission` come later. Limits: 600 requests a minute and 4 at once per user, 16 calls
 per request, 64 emails per `Email/get` (16 with bodies), and 4 MB for all of one request's answers.
 
 ## Push

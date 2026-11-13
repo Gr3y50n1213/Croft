@@ -33,6 +33,23 @@
 
 use base64::Engine as _;
 
+/// References kept in a reply: the thread's first id and the most recent ones.
+pub const MAX_REPLY_REFERENCES: usize = 20;
+/// The most of the original's text quoted in a reply or forward (the rest is left out, marked).
+pub const MAX_QUOTED_BYTES: usize = 1024 * 1024;
+
+/// `text` cut to [`MAX_QUOTED_BYTES`] at a character boundary, marked when cut.
+fn capped(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.len() <= MAX_QUOTED_BYTES {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut end = MAX_QUOTED_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    std::borrow::Cow::Owned(format!("{}\n[...]", &text[..end]))
+}
+
 /// An address with an optional display name.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Address {
@@ -1023,6 +1040,14 @@ pub fn reply_fields(kind: ReplyKind, source: &SourceMessage, own: &[String]) -> 
                 refs.push(id.clone());
             }
         }
+        // A long thread's list is trimmed as other clients do: the first id (the thread's root)
+        // and the most recent ones (T31b review: an incoming message with hundreds of ids made a
+        // reply that could not be saved).
+        if refs.len() > MAX_REPLY_REFERENCES {
+            let tail = refs.split_off(refs.len() - (MAX_REPLY_REFERENCES - 1));
+            refs.truncate(1);
+            refs.extend(tail);
+        }
         fields.references = refs;
     }
 
@@ -1042,7 +1067,7 @@ pub fn reply_fields(kind: ReplyKind, source: &SourceMessage, own: &[String]) -> 
             }
             body.push('\n');
             if let Some(text) = text {
-                body.push_str(text.replace("\r\n", "\n").trim_end());
+                body.push_str(capped(&text.replace("\r\n", "\n")).trim_end());
                 body.push('\n');
             }
             fields.body = body;
@@ -1063,7 +1088,7 @@ pub fn reply_fields(kind: ReplyKind, source: &SourceMessage, own: &[String]) -> 
             fields.body = format!(
                 "\n\nOn {}, {name} wrote:\n{}",
                 quote_date(source.date_ms),
-                quoted(text)
+                quoted(&capped(text))
             );
             fields.quote_included = true;
         }

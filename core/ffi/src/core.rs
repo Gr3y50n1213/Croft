@@ -613,7 +613,7 @@ impl Inner {
     }
 
     /// The path of the account's folder with this special use.
-    fn special_folder(
+    pub(crate) fn special_folder(
         db: &Db,
         account: i64,
         special_use: &str,

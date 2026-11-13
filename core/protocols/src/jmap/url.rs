@@ -67,6 +67,10 @@ impl Url {
         }
         let (host, port_text) = if let Some(inner) = authority.strip_prefix('[') {
             let (host, after) = inner.split_once(']')?;
+            // Only `:port` may follow the brackets (T37 review: `[addr]x.example` named another host).
+            if !after.is_empty() && !after.starts_with(':') {
+                return None;
+            }
             (host, after.strip_prefix(':'))
         } else {
             match authority.split_once(':') {
@@ -209,6 +213,9 @@ mod tests {
             "https://x.org:99999/",
             "https://x.org/a b",
             "https://x.org/\r\nHost: evil",
+            // T37 review: nothing but `:port` after an IPv6 literal.
+            "https://[2606:4700::1111]x.bank.example:443/u",
+            "https://[::1]evil/",
             "https://-x.org/",
             "https://x..org/",
             "https:///path",

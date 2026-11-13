@@ -90,4 +90,21 @@ class FakeReadingRepository(
     }
 
     override suspend fun trustedSenders(account: AccountId): List<String> = trusted[account]?.toList().orEmpty()
+
+    // ---- T37: unsubscribe, set up by a test ----
+
+    /** What [unsubscribeInfo] answers, per message. */
+    val unsubscribeInfos = HashMap<MessageId, UnsubscribeInfoData>()
+
+    /** What [unsubscribe] answers (by default: done). */
+    @Volatile var unsubscribeResult: UnsubscribeResultData = UnsubscribeResultData(done = true, openUrl = null, problem = null, deletedOps = emptyList())
+
+    override suspend fun unsubscribeInfo(messageId: MessageId): UnsubscribeInfoData? = unsubscribeInfos[messageId]
+
+    override suspend fun unsubscribe(messageId: MessageId, shown: UnsubscribeInfoData, deleteOlder: Boolean): UnsubscribeResultData {
+        calls += "unsubscribe:$messageId:$deleteOlder"
+        val result = unsubscribeResult
+        if (result.done) unsubscribeInfos[messageId]?.let { unsubscribeInfos[messageId] = it.copy(already = true) }
+        return result
+    }
 }

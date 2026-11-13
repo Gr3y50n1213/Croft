@@ -110,6 +110,9 @@ class ScriptedCore(
 
     override fun listFollowUp(account: Long?, before: CoreCursor?, limit: UInt): MessagePage = MessagePage(emptyList(), null)
 
+    // T37: no list headers in the scripted core.
+    override fun unsubscribeInfo(messageId: Long): uniffi.croft_ffi.UnsubscribeInfo? = null
+
     override suspend fun nextChange(after: ULong): ChangeBatch {
         val now = seq.first { it.toULong() > after }
         return synchronized(this) {

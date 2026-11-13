@@ -7,6 +7,7 @@ mod drafts;
 mod integration;
 mod reply;
 mod sending;
+mod unsubscribe;
 
 use std::path::Path;
 use std::sync::Arc;

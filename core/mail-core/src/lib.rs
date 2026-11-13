@@ -20,6 +20,7 @@ pub mod outbox_store;
 pub mod persist;
 pub mod search;
 pub mod sync_plan;
+pub mod unsubscribe;
 
 pub use ops::{
     AccountId, AwaitingUid, CancelError, Enqueued, Location, Op, OpId, OpKind, OpQueue, OpState,

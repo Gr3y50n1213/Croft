@@ -5,9 +5,60 @@ unverified, the next step.
 
 ---
 
+## T37: One-tap unsubscribe (13 November 2026)
+
+**Status:** on `task/t37`, its own pull request, after T36b.
+
+**What was built.**
+- **Reading the header (mail-core).** The first `https:` and first `mailto:` URI of `List-Unsubscribe`, each checked strictly. A
+  `mailto:` keeps one plain address, a subject and a body (500 characters at most); everything else is dropped.
+- **The way.** One-click (RFC 8058) when the message has `List-Unsubscribe-Post`, else the email, else the sender's page.
+- **One-click (protocols).** One bare form `POST` over the existing HTTPS client, under these rules:
+  - public addresses only, and on the Companion its own address policy too;
+  - no cookies, no `Authorization`, no redirects;
+  - done as soon as the status line comes back, so the body is never read.
+- **The email** goes through the Outbox (Undo while it waits). A draft that cannot be sent is removed.
+- **Storage (migration 0011).** The senders the person unsubscribed from, per account.
+- **The core (FFI v18).**
+  - `unsubscribe_info` shows the way, the host or address, the sender and their address, the email's subject and body, the older
+    mail, and "already".
+  - `unsubscribe` takes back what S31 showed and does nothing if the message no longer gives the same.
+- **Android.** S21's banner. S31 shows exactly what will be sent and to whom, and names the address "Also delete" goes by. The
+  outcomes appear as snackbars; a page opens in the browser only after S31.
+
+**Review:** an independent agent (opus, high effort). No high findings. Two medium:
+1. "Also delete" trusted a forged From and could trash the person's own Sent mail.
+2. The email way could send text the message wrote, to any address, with only the address shown.
+
+Lows:
+- errors after the sender was contacted lost the outcome (inviting a second tap);
+- a 2xx with a large body counted as a failure;
+- an IPv6 literal could show one host and reach another;
+- nothing tied S31 to what was done;
+- the Companion's policy was skipped;
+- a website deleted the older mail;
+- a failed send left a draft;
+- the Android call ran on the main thread.
+
+All fixed with regression tests. The From is still not authenticated (no DKIM; OPEN-ITEMS).
+
+**Checks.**
+- Core: fmt, both clippy runs, the whole test suite and `check_schema.py`, including:
+  - parsing;
+  - the request (exact bytes, redirects, private addresses, a 2xx followed by anything);
+  - the email path end to end against the in-process IMAP and SMTP servers;
+  - own and Sent mail never deleted;
+  - a changed message sending nothing;
+  - a missing Trash found before anything is sent.
+- Android: the banner, S31 with and without the delete, the email's text, failures, and the website after S31 (CI).
+
+**Next:** T38, contacts.
+
+---
+
 ## T36b: Pin and follow-up (13 November 2026)
 
-**Status:** on `task/t36b`, its own pull request, after T36.
+**Status:** merged.
 
 **What was built.**
 - **Keywords, two and fixed.** `$Pinned` and `$FollowUp` (`Keyword` in the protocols crate); nothing from the app or a message is

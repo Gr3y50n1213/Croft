@@ -60,6 +60,8 @@ pub struct Auth {
     jmap_limits: Mutex<Limits>,
     /// Per-user sending budget (T31b): messages and recipients sent, by time.
     sends: Mutex<std::collections::HashMap<i64, std::collections::VecDeque<(i64, u32)>>>,
+    /// Each user's server searches in the last minute (T33b).
+    server_searches: Mutex<std::collections::HashMap<i64, std::collections::VecDeque<i64>>>,
     jmap_running: Arc<Mutex<std::collections::HashMap<i64, usize>>>,
     trusted_proxies: Vec<IpAddr>,
     clock: Clock,
@@ -106,6 +108,7 @@ impl Auth {
             limits: Mutex::new(Limits::default()),
             mail_limits: Mutex::new(Limits::default()),
             sends: Mutex::new(std::collections::HashMap::new()),
+            server_searches: Mutex::new(std::collections::HashMap::new()),
             jmap_limits: Mutex::new(Limits::default()),
             jmap_running: Arc::new(Mutex::new(std::collections::HashMap::new())),
             trusted_proxies: trusted_proxies.iter().map(IpAddr::to_canonical).collect(),
@@ -189,6 +192,26 @@ impl Auth {
             return false;
         }
         sent.push_back((now, n));
+        true
+    }
+
+    /// Counts a search on the user's mail servers against the user (T33b): at most
+    /// [`SERVER_SEARCHES_PER_MINUTE`]. Each one reaches out to every folder searched on the mail
+    /// server, so a client cannot turn the Companion into a hammer on it. False when over.
+    pub(crate) fn server_search_budget(&self, user_id: i64) -> bool {
+        let now = self.now();
+        let mut all = self
+            .server_searches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let done = all.entry(user_id).or_default();
+        while done.front().is_some_and(|t| *t <= now - 60_000) {
+            done.pop_front();
+        }
+        if done.len() >= SERVER_SEARCHES_PER_MINUTE {
+            return false;
+        }
+        done.push_back(now);
         true
     }
 
@@ -379,6 +402,8 @@ async fn with_store<R: Send + 'static>(
 /// Counts an unauthenticated request against the client's address.
 /// Messages a user may send a minute (T31b).
 pub const SENDS_PER_MINUTE: usize = 30;
+/// Searches on a user's mail servers a minute (T33b).
+pub const SERVER_SEARCHES_PER_MINUTE: usize = 10;
 /// Recipients a user may send to in an hour (T31b).
 pub const RECIPIENTS_PER_HOUR: u64 = 1000;
 /// Recipients a user may send to in a day (T31b).

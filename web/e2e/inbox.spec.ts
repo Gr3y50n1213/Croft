@@ -225,3 +225,50 @@ test('deleting from Trash asks first, and Cancel keeps the email', async ({ page
   await expect(page.locator('.rows .subject', { hasText: subject })).toHaveCount(0);
   await expect(page.getByRole('status')).toContainText('Deleted for good');
 });
+
+test('search finds mail by its words, marks the matches, opens a result, and goes back to the folder', async ({ page }) => {
+  const errors = watchForErrors(page);
+  await signedInWithMail(page);
+  await page.locator('body').click({ position: { x: 5, y: 5 } });
+  // `/` goes to the search box.
+  await page.keyboard.press('/');
+  const box = page.getByRole('searchbox', { name: 'Search mail' });
+  await expect(box).toBeFocused();
+  await box.fill('proof ready');
+  await box.press('Enter');
+  await expect(page.getByRole('status').filter({ hasText: /result for “proof ready”/ })).toBeVisible();
+  await expect(rows(page)).toHaveCount(1);
+  const row = rows(page).first();
+  await expect(row.locator('.subject')).toHaveText('Your proof is ready');
+  await expect(row.locator('.subject mark')).toHaveText(['proof', 'ready']);
+  expect((await new AxeBuilder({ page }).analyze()).violations.map((v) => v.id)).toEqual([]);
+  // A result opens as any row does.
+  await row.locator('.subject').click();
+  await expect(page.getByRole('region', { name: 'Reading pane' }).getByRole('heading', { level: 2 })).toHaveText('Your proof is ready');
+
+  // A query by sender and a phrase: every plain message is from Ann, only one is "Message 7".
+  await box.fill('from:ann subject:"Message 7"');
+  await box.press('Enter');
+  await expect(rows(page)).toHaveCount(1);
+  await expect(rows(page).first().locator('.subject')).toHaveText('Message 7');
+  // Most bodies are not downloaded yet, so it offers the mail server too: the same answer, and
+  // nothing failed.
+  await expect(page.getByText('Searched the headers and the mail downloaded so far.')).toBeVisible();
+  await page.getByRole('button', { name: 'Search the server too' }).click();
+  await expect(page.getByRole('button', { name: 'Search the server too' })).toHaveCount(0);
+  await expect(rows(page)).toHaveCount(1);
+  await expect(page.getByText(/didn't answer|can't reach|can't run|sign in again/)).toHaveCount(0);
+  // Nothing found says so; a bad date says how to write one.
+  await box.fill('nothing-like-this-anywhere');
+  await box.press('Enter');
+  await expect(page.getByText('No results.')).toBeVisible();
+  await box.fill('before:someday');
+  await box.press('Enter');
+  await expect(page.getByRole('alert')).toHaveText('Check the search: dates are written like 2026-11-14.');
+
+  // Escape: back to the folder.
+  await box.press('Escape');
+  await expect(rows(page)).toHaveCount(31);
+  await expect(box).toHaveValue('');
+  expect(errors).toEqual([]);
+});

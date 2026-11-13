@@ -64,6 +64,20 @@ fn draft_json(d: &FfiDraft) -> Value {
     v
 }
 
+/// The most messages an account may have scheduled (waiting past their Undo window) at once, and
+/// the most recipients they may have together (T33 review): a stolen session must not line up a
+/// burst for later that outlives the session.
+pub const MAX_SCHEDULED: usize = 100;
+/// See [`MAX_SCHEDULED`].
+pub const MAX_SCHEDULED_RECIPIENTS: usize = 1000;
+/// A message whose time is more than this ahead counts as scheduled.
+const SCHEDULED_AFTER_MS: i64 = 60_000;
+
+/// The method error for a `sendAt` that is not a `UTCDate` or is more than a year and a day away.
+fn bad_send_at() -> Value {
+    json!({ "type": "invalidArguments", "description": "sendAt" })
+}
+
 /// A JMAP SetError for a property that is not right.
 fn invalid(property: &str) -> Value {
     json!({ "type": "invalidProperties", "properties": [property] })
@@ -205,6 +219,7 @@ fn compose_error(e: &ComposeError) -> Value {
         ComposeError::WrongState => "wrongState",
         ComposeError::CannotSend => "cannotSend",
         ComposeError::DraftTooLarge => "tooLarge",
+        ComposeError::BadSendTime => return bad_send_at(),
         ComposeError::Internal | ComposeError::Storage { .. } => "serverFail",
         _ => "invalidProperties",
     };
@@ -442,8 +457,10 @@ impl Ctx {
         }))
     }
 
-    /// `CroftOutbox/send`: counts against the user's mail limit (a stolen session must not turn
-    /// the account into a spam relay at full speed).
+    /// `CroftOutbox/send`: counts against the user's sending budget (a stolen session must not
+    /// turn the account into a spam relay at full speed); a scheduled message counts when it is
+    /// scheduled. With `sendAt` (a `UTCDate`) the message waits until then (S25, T33): the user's
+    /// core runs in the Companion, so it goes out with no device online.
     pub(super) async fn outbox_send(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
         let id = args
@@ -451,17 +468,52 @@ impl Ctx {
             .and_then(Value::as_str)
             .and_then(|d| parse_id(d, 'd'))
             .ok_or_else(|| error("invalidArguments"))?;
+        let now = crate::store::now_ms();
+        let send_at = match args.get("sendAt") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_str()
+                    .and_then(super::utc_date)
+                    // Checked here too, so a time the core would refuse never uses the budget.
+                    .filter(|at| *at <= now.saturating_add(croft_ffi::MAX_SCHEDULE_AHEAD_MS))
+                    .ok_or_else(bad_send_at)?,
+            ),
+        };
         // The budget counts recipients: the draft as it will be sent.
         let draft = self
             .blocking(move |c| c.load_draft(account, id))
             .await?
             .map_err(|e| compose_error(&e))?;
         let recipients = draft.content.to.len() + draft.content.cc.len() + draft.content.bcc.len();
+        if send_at.is_some_and(|at| at > now + SCHEDULED_AFTER_MS) {
+            let waiting = self
+                .blocking(move |c| c.list_outbox(account))
+                .await?
+                .map_err(|e| compose_error(&e))?;
+            let scheduled: Vec<_> = waiting
+                .iter()
+                .filter(|o| {
+                    o.state == OutboxItemState::Queued && o.send_at_ms > now + SCHEDULED_AFTER_MS
+                })
+                .collect();
+            let scheduled_recipients: usize = scheduled
+                .iter()
+                .map(|o| usize::try_from(o.recipient_count).unwrap_or(usize::MAX))
+                .sum();
+            if scheduled.len() >= MAX_SCHEDULED
+                || scheduled_recipients.saturating_add(recipients) > MAX_SCHEDULED_RECIPIENTS
+            {
+                return Err(error("overQuota"));
+            }
+        }
         if !(self.send_allowed)(recipients) {
             return Err(error("rateLimit"));
         }
         let started = self
-            .blocking(move |c| c.send(account, id))
+            .blocking(move |c| match send_at {
+                Some(at) => c.schedule_send(account, id, at),
+                None => c.send(account, id),
+            })
             .await?
             .map_err(|e| compose_error(&e))?;
         Ok(json!({

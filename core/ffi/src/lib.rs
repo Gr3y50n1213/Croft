@@ -69,7 +69,8 @@ pub use compose::{
     DraftContent, DraftProblem, DraftSummary, DraftSyncOutcome, FfiAddress, FfiDraft, FfiIdentity,
     OutboxItem, OutboxItemState, OutboxReason, ReplyDraft, SavedDraft, SendStarted, ServerCopy,
     ATTACHMENT_WARN_BYTES, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, MAX_BODY_BYTES,
-    MAX_DRAFT_ATTACHMENT_BYTES, MAX_RECIPIENTS, MAX_SUBJECT_CHARS, MAX_SUGGESTIONS,
+    MAX_DRAFT_ATTACHMENT_BYTES, MAX_RECIPIENTS, MAX_SCHEDULE_AHEAD_MS, MAX_SUBJECT_CHARS,
+    MAX_SUGGESTIONS,
 };
 pub use credentials::{CredentialProvider, FfiCredential, ProviderError};
 pub use error::{
@@ -112,11 +113,13 @@ uniffi::setup_scaffolding!();
 /// `allow_remote_content`, `trust_sender`, `untrust_sender`, `trusted_senders`, with the records
 /// `Conversation`, `ConversationMessage`, `MailAddress`, `MessageBody`, `AttachmentInfo`, the enums
 /// `BodyState` and `RemoteImagesSetting`, and the error `ReadError`.
+/// Version 13 (T33a): scheduled send, `schedule_send`, `MAX_SCHEDULE_AHEAD_MS` and the new
+/// `ComposeError::BadSendTime`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 12;
+pub const FFI_API_VERSION: u32 = 13;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

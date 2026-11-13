@@ -136,7 +136,12 @@ bodies; remote content stays blocked), `Email/set` (read, flag, move, delete: to
 `Identity/get`, and `/changes` (no changes from the current state, otherwise `cannotCalculateChanges`, so the client fetches again).
 Composing and sending (T31b) are a Croft extension, `urn:croft:params:jmap:compose`, because the reply rules and the Outbox
 live in the core: `CroftDraft/get`, `/set`, `/reply` (reply, reply all, forward) and `/check`, and `CroftOutbox/send` (into the
-Outbox; sent when the undo window ends), `/undo` and `/get`. At most 1000 drafts per account; sending is limited per user to 30
+Outbox; sent when the undo window ends, or at `sendAt` for a scheduled message, T33a: the Companion sends it with no device
+online), `/undo` (also cancels a scheduled message) and `/get`. Search (T33b) is another, `urn:croft:params:jmap:search`:
+`CroftSearch/query` takes the phone's query language (`from:`, `to:`, `subject:`, `in:`, `has:attachment`, `is:unread`,
+`before:`, `after:`, words and phrases) and answers email ids with the matched parts, from the core's index inside the user's
+encrypted mail database, and with `server: true` from the mail server too (10 such searches a minute per user). Queries are
+never logged or stored. At most 1000 drafts per account; sending is limited per user to 30
 messages a minute, 1000 recipients an hour and 3000 a day. Uploads, downloads and the standard `EmailSubmission` come later. Limits: 600 requests a minute and 4 at once per user, 16 calls
 per request, 64 emails per `Email/get` (16 with bodies), and 4 MB for all of one request's answers.
 

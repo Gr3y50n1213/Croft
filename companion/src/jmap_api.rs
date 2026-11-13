@@ -64,7 +64,70 @@ fn parse_id(id: &str, kind: char) -> Option<i64> {
     rest.parse().ok()
 }
 
-fn iso(ms: i64) -> String {
+/// A JMAP `UTCDate` (RFC 3339, `YYYY-MM-DDTHH:MM:SSZ`, optionally with fractional seconds, always
+/// `Z`) as Unix milliseconds; `None` for anything else, a date that does not exist included. The
+/// inverse of [`iso`] (days from the civil date, Howard Hinnant's algorithm).
+fn utc_date(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b.len() > 30 || b[b.len() - 1] != b'Z' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let part = s.get(r)?;
+        if part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    let millis = match b.len() {
+        20 => 0,
+        n if b[19] == b'.' && n > 21 => {
+            let frac = s.get(20..n - 1)?;
+            if !frac.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let ms3: String = frac.chars().chain(std::iter::repeat('0')).take(3).collect();
+            ms3.parse::<i64>().ok()?
+        }
+        _ => return None,
+    };
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1..=12).contains(&m) || d < 1 || hh > 23 || mm > 59 || ss > 59 {
+        return None;
+    }
+    if d > days_in[usize::try_from(m - 1).ok()?] {
+        return None;
+    }
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + hh * 3600 + mm * 60 + ss) * 1000) + millis)
+}
+
+pub(crate) fn iso(ms: i64) -> String {
     // RFC 3339 in UTC from Unix milliseconds (civil date from days, Howard Hinnant's algorithm).
     let secs = ms.div_euclid(1000);
     let days = secs.div_euclid(86_400);
@@ -147,6 +210,10 @@ pub async fn session(State(app): State<App>, Full(c): Full) -> ApiResult {
                                 "accountCapabilities": {
                     CORE: {},
                     jmap_compose::COMPOSE: {},
+                    jmap_search::SEARCH: {
+                        "maxQueryChars": jmap_search::MAX_QUERY_CHARS,
+                        "maxHits": jmap_search::MAX_HITS,
+                    },
                     MAIL: {
                         "maxMailboxesPerEmail": 1,
                         "maxMailboxDepth": null,
@@ -175,6 +242,7 @@ pub async fn session(State(app): State<App>, Full(c): Full) -> ApiResult {
             },
                         MAIL: {},
             jmap_compose::COMPOSE: {},
+            jmap_search::SEARCH: {},
         },
         "accounts": map,
         "primaryAccounts": primary.map_or_else(|| json!({}), |p| json!({ CORE: p, MAIL: p })),
@@ -204,11 +272,12 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
             "using and methodCalls are required",
         ));
     };
-    let mut compose = false;
+    let (mut compose, mut search) = (false, false);
     for cap in using {
         match cap.as_str() {
             Some(CORE | MAIL) => {}
             Some(jmap_compose::COMPOSE) => compose = true,
+            Some(jmap_search::SEARCH) => search = true,
             _ => {
                 return Ok(request_error(
                     "unknownCapability",
@@ -252,13 +321,17 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
             .collect()
     };
     let limits = app.auth.clone();
+    let search_limits = app.auth.clone();
     let user_id = c.user_id;
     let ctx = Ctx {
         core,
         epoch,
         accounts,
         compose,
+        search,
         send_allowed: Box::new(move |recipients| limits.send_budget(user_id, recipients)),
+        server_search_allowed: Box::new(move || search_limits.server_search_budget(user_id)),
+        searched: std::sync::atomic::AtomicBool::new(false),
     };
     let mut responses: Vec<Value> = Vec::new();
     let mut spent = body.len();
@@ -393,6 +466,12 @@ struct Ctx {
     compose: bool,
     /// Counts a send to that many recipients against the user's sending budget; false when over.
     send_allowed: Box<dyn Fn(usize) -> bool + Send + Sync>,
+    /// The request's `using` names the search capability (T33b).
+    search: bool,
+    /// Counts a search on the mail server against the user's budget; false when over.
+    server_search_allowed: Box<dyn Fn() -> bool + Send + Sync>,
+    /// This request already ran a `CroftSearch/query` (one per request).
+    searched: std::sync::atomic::AtomicBool,
 }
 
 type Answer = Vec<(String, Value)>;
@@ -437,6 +516,7 @@ impl Ctx {
             "CroftOutbox/send" if self.compose => one(name, self.outbox_send(args).await),
             "CroftOutbox/undo" if self.compose => one(name, self.outbox_undo(args).await),
             "CroftOutbox/get" if self.compose => one(name, self.outbox_get(args).await),
+            "CroftSearch/query" if self.search => one(name, self.search_query(args).await),
             _ => vec![("error".to_owned(), error("unknownMethod"))],
         }
     }
@@ -1090,11 +1170,42 @@ impl Ctx {
 
 #[path = "jmap_compose.rs"]
 mod jmap_compose;
+#[path = "jmap_search.rs"]
+mod jmap_search;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod unit {
     use super::*;
+
+    #[test]
+    fn utc_dates_are_read_strictly_and_round_trip() {
+        for ms in [0, 1_700_000_000_000, 951_782_400_000, 4_102_444_799_000] {
+            assert_eq!(utc_date(&iso(ms)), Some(ms), "{}", iso(ms));
+        }
+        assert_eq!(utc_date("2026-11-14T08:00:00Z"), Some(1_794_643_200_000));
+        assert_eq!(utc_date("2026-11-14T08:00:00.5Z"), Some(1_794_643_200_500));
+        assert!(utc_date("2024-02-29T00:00:00Z").is_some());
+        for bad in [
+            "",
+            "2026-11-14",
+            "2026-11-14T08:00:00",
+            "2026-11-14T08:00:00+01:00",
+            "2026-11-14 08:00:00Z",
+            "2026-13-01T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2026-11-31T00:00:00Z",
+            "2026-11-14T24:00:00Z",
+            "2026-11-14T08:60:00Z",
+            "2026-11-14T08:00:00.Z",
+            "2026-11-14T08:00:00.12a4Z",
+            "+026-11-14T08:00:00Z",
+            "2026-1a-14T08:00:00Z",
+            "2026-11-14T08:00:00.1234567890Z",
+        ] {
+            assert_eq!(utc_date(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn iso_dates_and_ids() {

@@ -14,12 +14,51 @@ import { ApiError, type Api } from '../api.ts';
 export const MAIL = 'urn:ietf:params:jmap:mail';
 /** The Companion's compose extension (T31b): drafts, replies and the Outbox, by the core's rules. */
 export const COMPOSE = 'urn:croft:params:jmap:compose';
-const USING = ['urn:ietf:params:jmap:core', MAIL, COMPOSE];
+const SEARCH = 'urn:croft:params:jmap:search';
+const USING = ['urn:ietf:params:jmap:core', MAIL, COMPOSE, SEARCH];
+
+/** A ranged match: `[start, end)` in UTF-16 code units (as JavaScript strings count). */
+export type Range = [number, number];
+
+/** What matched in one search result. */
+export interface SearchHit {
+  /** The subject the ranges count in (as the core stored it). */
+  subject?: string;
+  subjectRanges: Range[];
+  snippet: string | null;
+  snippetRanges: Range[];
+}
+
+/** A search's answer (`CroftSearch/query`) with the emails as list rows, best first. */
+export interface SearchResults {
+  emails: EmailSummary[];
+  hits: Record<string, SearchHit>;
+  /** Some stored emails have no downloaded body, so their text was not searched. */
+  bodiesPartial: boolean;
+  serverSearched: boolean;
+  unsupported: boolean;
+  offline: boolean;
+  signInNeeded: boolean;
+  failed: boolean;
+}
 
 /** One mail account (a JMAP account). */
 export interface Account {
   id: string;
   name: string;
+}
+
+/** A message in the Outbox (`CroftOutbox/get`). */
+export interface OutboxItem {
+  id: string;
+  state: 'queued' | 'sending' | 'failed';
+  sendAt: string;
+  attempts: number;
+  reason: string | null;
+  mayHaveBeenSent: boolean;
+  draftId: string | null;
+  subject: string;
+  recipientCount: number;
 }
 
 export type Role = 'inbox' | 'archive' | 'drafts' | 'sent' | 'junk' | 'trash' | 'outbox' | null;
@@ -97,9 +136,12 @@ export type ReplyKind = 'reply' | 'replyAll' | 'forward';
 /** A JMAP method error (`["error", {type}, id]`). */
 export class MethodError extends Error {
   readonly type: string;
-  constructor(type: string) {
+  /** The Companion's `description`, when it names what was wrong (`sendAt`). */
+  readonly description: string | undefined;
+  constructor(type: string, description?: string) {
     super(type);
     this.type = type;
+    this.description = description;
   }
 }
 
@@ -139,7 +181,10 @@ export class Jmap {
       methodCalls: calls
     });
     for (const [name, args] of r.methodResponses) {
-      if (name === 'error') throw new MethodError(String(args['type'] ?? 'serverFail'));
+      if (name === 'error') {
+        const d = args['description'];
+        throw new MethodError(String(args['type'] ?? 'serverFail'), typeof d === 'string' ? d : undefined);
+      }
     }
     return r.methodResponses;
   }
@@ -150,6 +195,38 @@ export class Jmap {
   }
 
   /** A page of a mailbox, newest first: the emails and the mailbox's total. */
+  /**
+   * Searches the account's stored mail (and, with `server`, its mail server) in the core's query
+   * language. The rows come back in the search's order.
+   */
+  async search(accountId: string, query: string, server = false): Promise<SearchResults> {
+    const r = await this.request([
+      ['CroftSearch/query', { accountId, query, server }, 'q'],
+      [
+        'Email/get',
+        {
+          accountId,
+          '#ids': { resultOf: 'q', name: 'CroftSearch/query', path: '/ids' },
+          properties: SUMMARY_PROPERTIES
+        },
+        'g'
+      ]
+    ]);
+    const q = r[0]![1];
+    const byId = new Map((r[1]![1]['list'] as EmailSummary[]).map((e) => [e.id, e]));
+    const emails = (q['ids'] as string[]).map((id) => byId.get(id)).filter((e): e is EmailSummary => !!e);
+    return {
+      emails,
+      hits: q['hits'] as Record<string, SearchHit>,
+      bodiesPartial: q['bodiesPartial'] === true,
+      serverSearched: q['serverSearched'] === true,
+      unsupported: q['unsupported'] === true,
+      offline: q['offline'] === true,
+      signInNeeded: q['signInNeeded'] === true,
+      failed: q['failed'] === true
+    };
+  }
+
   async page(
     accountId: string,
     mailboxId: string,
@@ -262,10 +339,21 @@ export class Jmap {
     await this.request([['CroftDraft/set', { accountId, destroy: [id] }, 'd']]);
   }
 
-  /** Sends a saved draft: it waits in the Outbox for the undo window. Its Outbox id. */
-  async send(accountId: string, draftId: string): Promise<{ outboxId: string; sendAt: string }> {
-    const [[, res]] = (await this.request([['CroftOutbox/send', { accountId, draftId }, 'o']])) as [Invocation];
+  /**
+   * Sends a saved draft: it waits in the Outbox for the undo window, or until `sendAt` (a
+   * `UTCDate`) when it is scheduled. Its Outbox id and when it goes.
+   */
+  async send(accountId: string, draftId: string, sendAt?: string): Promise<{ outboxId: string; sendAt: string }> {
+    const args: Record<string, unknown> = { accountId, draftId };
+    if (sendAt) args['sendAt'] = sendAt;
+    const [[, res]] = (await this.request([['CroftOutbox/send', args, 'o']])) as [Invocation];
     return { outboxId: String(res['outboxId']), sendAt: String(res['sendAt']) };
+  }
+
+  /** What waits in the account's Outbox: scheduled messages, ones in their undo window, failures. */
+  async outbox(accountId: string): Promise<OutboxItem[]> {
+    const [[, res]] = (await this.request([['CroftOutbox/get', { accountId }, 'g']])) as [Invocation];
+    return res['list'] as OutboxItem[];
   }
 
   /** Undoes a send within its window; the draft's id. */
@@ -300,5 +388,9 @@ export function explainMail(e: unknown): string {
   if (e instanceof MethodError && e.type === 'noRecipient') return 'Add a recipient.';
   if (e instanceof MethodError && e.type === 'invalidAddress') return 'Fix the address.';
   if (e instanceof MethodError && e.type === 'tooLate') return "Too late: it's already being sent.";
+  if (e instanceof MethodError && e.type === 'invalidArguments' && e.description === 'sendAt') return 'Choose a time within a year.';
+  if (e instanceof MethodError && e.type === 'invalidArguments' && e.description === 'query')
+    return 'Check the search: dates are written like 2026-11-14.';
+  if (e instanceof MethodError && e.type === 'rateLimit') return 'Too many searches on the server just now. Wait a minute.';
   return 'Something went wrong. Try again.';
 }

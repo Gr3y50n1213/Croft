@@ -6,7 +6,8 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
   import IconButton from './IconButton.svelte';
-  import type { EmailSummary } from '../jmap/client.ts';
+  import type { EmailSummary, SearchHit } from '../jmap/client.ts';
+  import { segments } from '../mail/highlight.ts';
   import type { MailAction } from '../mail/actions.ts';
   import { SwipeMachine, slotOf, type SwipeEffect } from '../swipe/machine.ts';
   import type { SwipeActionInfo } from '../swipe/model.ts';
@@ -21,7 +22,8 @@
     can,
     onopen,
     onselect,
-    onact
+    onact,
+    hit = null
   }: {
     email: EmailSummary;
     focused: boolean;
@@ -31,7 +33,14 @@
     onopen: () => void;
     onselect: () => void;
     onact: (a: MailAction) => void;
+    /** What a search matched in this row (T33b): marked in the subject; the snippet replaces the preview. */
+    hit?: SearchHit | null;
   } = $props();
+  // A search's ranges count in the subject it sends with them (T33 review: the stored subject may
+  // differ from Email/get's by characters the core removes).
+  const subjectText = $derived(hit?.subject ?? email.subject);
+  const subjectParts = $derived(segments(subjectText || '(no subject)', subjectText ? hit?.subjectRanges : []));
+  const previewParts = $derived(hit?.snippet ? segments(hit.snippet, hit.snippetRanges) : segments(email.preview ?? '', []));
 
   const seen = $derived(email.keywords['$seen'] === true);
   const flagged = $derived(email.keywords['$flagged'] === true);
@@ -180,8 +189,8 @@
       <span class="sender">{sender}</span>
       <span class="when">{when}</span>
     </span>
-    <span class="subject">{email.subject || '(no subject)'}</span>
-    <span class="preview">{email.preview}</span>
+    <span class="subject">{#each subjectParts as p, i (i)}{#if p.mark}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}</span>
+    <span class="preview">{#each previewParts as p, i (i)}{#if p.mark}<mark>{p.text}</mark>{:else}{p.text}{/if}{/each}</span>
     <span class="marks">
       {#if flagged}<span class="star" title="Starred"><Icon name="star" filled size={16} /></span>{/if}
       {#if !seen}<span class="sr-only">Unread</span>{/if}
@@ -281,6 +290,12 @@
   .preview {
     color: var(--croft-color-on-surface-variant);
     font-size: 14px;
+  }
+
+  mark {
+    border-radius: calc(3px * var(--round));
+    background: var(--croft-color-tertiary-container);
+    color: var(--croft-color-on-tertiary-container);
   }
 
   .unread .sender,

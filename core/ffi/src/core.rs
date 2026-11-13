@@ -1258,6 +1258,7 @@ impl Core {
                 inner
                     .handle
                     .read(|db| accounts::delete(db.connection(), id))?;
+                inner.engine.forget_deleted_account(id);
                 // The notification marker lives in the setting table, outside the account's rows.
                 // After the delete, so a background check that was still running cannot write a
                 // baseline back for an id that a later account may get again.

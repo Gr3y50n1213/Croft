@@ -2318,3 +2318,125 @@ async fn only_the_croft_app_and_a_real_challenge_get_a_code_and_never_with_a_bro
         .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
+
+// ---- T34b: the core's Companion client against a real Companion on this machine ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cores_companion_client_signs_in_lists_devices_renews_and_signs_out() {
+    use croft_protocols::companion::{probe, CompanionError, Session, SignIn};
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(crate::http::serve_on(
+        listener,
+        h.app.clone(),
+        crate::http::ServerLimits::default(),
+        std::future::pending(),
+    ));
+
+    // Found at the address, as typed (with a trailing slash).
+    let info = probe(&format!("{url}/")).await.unwrap();
+    assert_eq!(info.url, url);
+    assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(info.sso_name, None);
+    assert_eq!(
+        probe("http://127.0.0.1:9").await.unwrap_err(),
+        CompanionError::Unreachable
+    );
+
+    // The app's sign-in: the page's passkey step stands in for the browser.
+    let redirect = "com.example.croft:/companion";
+    let sign_in = SignIn::begin(&url, redirect).unwrap();
+    let page = sign_in.browser_url();
+    let challenge = page
+        .split("app_challenge=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (c, cred) = h.assertion(&mut ann).await;
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/sign-in/passkey/finish",
+            None,
+            Some(json!({ "ceremony": c, "credential": cred, "app": { "challenge": challenge, "redirect": redirect } })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let session = sign_in
+        .finish(v["redirect"].as_str().unwrap(), "Croft on a test phone")
+        .await
+        .unwrap();
+    let saved = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+    let keep = saved.clone();
+    session.set_saver(Box::new(move |s| keep.lock().unwrap().push(s.to_vec())));
+    assert_eq!(session.user_name().await.unwrap(), "ann");
+    let devices = session.devices().await.unwrap();
+    assert!(devices
+        .iter()
+        .any(|d| d.current && d.name == "Croft on a test phone"));
+    let first = session.secret().await.to_vec();
+    assert!(Session::from_secret(&first).is_some());
+
+    // The access token runs out (15 minutes): the call is refused once, the session renews with
+    // its refresh token, and the new secret is handed to the app.
+    h.advance(16 * 60 * 1000);
+    assert_eq!(session.user_name().await.unwrap(), "ann");
+    let renewed = saved.lock().unwrap().clone();
+    assert_eq!(renewed.len(), 1);
+    assert_ne!(renewed[0], first);
+    assert_eq!(session.secret().await.to_vec(), renewed[0]);
+
+    // An old secret (its refresh token already replaced) ends the session: as for any app, a
+    // refresh token used twice signs that device out.
+    h.advance(16 * 60 * 1000);
+    let stale = Session::from_secret(&first).unwrap();
+    assert_eq!(
+        stale.user_name().await.unwrap_err(),
+        CompanionError::SignedOut
+    );
+    assert_eq!(
+        session.user_name().await.unwrap_err(),
+        CompanionError::SignedOut
+    );
+
+    // A new sign-in, then signing out from the app ends it on the Companion.
+    let sign_in = SignIn::begin(&url, redirect).unwrap();
+    let challenge = sign_in
+        .browser_url()
+        .split("app_challenge=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (c, cred) = h.assertion(&mut ann).await;
+    let (_, v) = h
+        .call(
+            Method::POST,
+            "/api/sign-in/passkey/finish",
+            None,
+            Some(json!({ "ceremony": c, "credential": cred, "app": { "challenge": challenge, "redirect": redirect } })),
+        )
+        .await;
+    let session = sign_in
+        .finish(v["redirect"].as_str().unwrap(), "Croft on a test phone")
+        .await
+        .unwrap();
+    let kept = session.secret().await.to_vec();
+    session.sign_out().await.unwrap();
+    assert_eq!(
+        session.user_name().await.unwrap_err(),
+        CompanionError::SignedOut
+    );
+    let again = Session::from_secret(&kept).unwrap();
+    assert_eq!(
+        again.user_name().await.unwrap_err(),
+        CompanionError::SignedOut
+    );
+}

@@ -158,6 +158,41 @@ class AppSecretsTest {
     }
 
     @Test
+    fun aLossWithACompanionSessionMovesItAsideAndTheAppStillStarts() {
+        val s = secrets()
+        s.databaseKey().close()
+        makeDatabaseFiles()
+        s.secrets.putApp(AppSecretKind.COMPANION, "made-up companion session".toByteArray())
+        keys.lose()
+
+        // Before T34b's fix the Companion file stayed behind and blocked the new key at every start.
+        val fresh = secrets()
+        assertEquals(32, keyBytes(fresh).size)
+        assertFalse(fresh.secrets.hasAny())
+        assertNull(fresh.secrets.getApp(AppSecretKind.COMPANION))
+        assertEquals(listOf("app-companion.v1"), File(incidents().single(), "secrets").list()!!.toList())
+        // And the next start is an ordinary one.
+        secrets().databaseKey().close()
+    }
+
+    @Test
+    fun aWrongCallBringsTheCompanionSessionBackWithTheRest() {
+        val s = secrets()
+        s.databaseKey().close()
+        makeDatabaseFiles()
+        s.secrets.putApp(AppSecretKind.COMPANION, "made-up companion session".toByteArray())
+        val box = ScriptedBox(AesGcmSecretBox(keys))
+        box.openFailures += SecretBoxException.Kind.KEY_LOST
+        secrets(box).databaseKey().close()
+        assertFalse(db.exists())
+
+        db.writeText("the new, empty database")
+        val next = secrets()
+        next.databaseKey().close()
+        assertArrayEquals("made-up companion session".toByteArray(), next.secrets.getApp(AppSecretKind.COMPANION))
+    }
+
+    @Test
     fun aWrappedKeyThatFailsAuthenticationIsAlsoALossAndIsMovedAside() {
         val s = secrets()
         s.databaseKey().close()

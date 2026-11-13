@@ -72,6 +72,21 @@
 
         <!-- T20, S32: a tap on a new-mail notification and its Reply button open MainActivity through this alias. Not exported, so only
              Croft's own PendingIntents reach it; MainActivity honours a croft:// URI only when it came through here (NotificationIntents). -->
+        <!-- T34b, S06: the browser comes back here at the end of signing in to a Companion
+             (<applicationId>:/companion?code=..., RFC 8252). It hands the address to the connection and closes; see the class text. -->
+        <activity
+            android:name=".CompanionRedirectActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="${applicationId}" />
+            </intent-filter>
+        </activity>
         <activity-alias
             android:name=".OpenFromNotification"
             android:exported="false"

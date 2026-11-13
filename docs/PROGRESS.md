@@ -5,6 +5,57 @@ unverified, the next step.
 
 ---
 
+## T34b: The Companion client in the core, S06 and S58 on Android (13 November 2026)
+
+**Status:** on `task/t34b`, its own pull request. An independent review is below; its findings were fixed with tests, except three
+left in OPEN-ITEMS.
+
+**What was built.**
+- **The core's Companion client** (`core/protocols/src/companion.rs`, so the iPhone app can use it): the address, a probe (version,
+  single sign-on), the browser sign-in with PKCE (the verifier never leaves the core), and the app's session. The session renews its
+  15-minute access token with the refresh token and hands each new secret to the app. It also lists the person's devices, signs one
+  out, signs this one out, and has the push calls T34d needs. FFI v14: `companion_*` and `CompanionLink`.
+- **Android:**
+  - S06 Connect a Companion: the address, then Connect opens the Companion's page in a Custom Tab. A redirect activity, allowed by
+    the manifest check only for the app's own scheme, brings the code back.
+  - S58: who is signed in, the signed-in devices with Sign out, and Disconnect this phone.
+  - The secret is the app's own entry in the keystore-backed store, apart from the accounts' secrets.
+
+**Review** (one independent agent, opus, high effort).
+- **1 high:** after a key loss, the Companion secret stayed behind and blocked the new key, so the app could not start. It now moves
+  aside with the account secrets, and a restore brings it back.
+- **2 medium:** a call cancelled during a renewal (a closed screen), and a second link made from the stored secret, both spent an old
+  refresh token. The Companion's reuse rule then ended the session. Now:
+  - the renewal runs as its own task and finishes even when its caller gives up;
+  - the app keeps one link per process;
+  - a secret it could not store is kept in memory and stored at the next step.
+- **Lows, fixed:**
+  - a stray redirect from another app spent the sign-in (a refused code now leaves it waiting for the real one);
+  - plain `http` to this machine is now allowed only in debug builds;
+  - the client now follows the process's address policy;
+  - a new session that cannot be stored, and an erase, now sign the device out first;
+  - request bodies no longer copy tokens into JSON values;
+  - an overflow on a hostile expiry;
+  - a 400 no longer counts as signed out;
+  - no browser installed no longer crashes the app;
+  - long user names are cut.
+- **Left in OPEN-ITEMS:** a refresh answer lost on the network (the grace window from T32b), a sign-in lost when Android ends the
+  app, and the FFI's buffers that cannot be wiped.
+
+**Checks.**
+- Core: `cargo fmt --check`, both clippy runs, and `cargo test` for `croft-protocols` and `croft-ffi`, all clean. The full core suite
+  passed before the review fixes.
+- Companion: all 177 tests, including the end-to-end test of the core's client against a real Companion on this machine (probe,
+  sign-in, devices, renewal, an old secret ending the session, sign-out), and clippy.
+- The manifest checker's tests (28).
+- Android builds and unit tests run in CI only (Maven Central refuses this container).
+
+**Unverified:** a real phone (OPEN-ITEMS).
+
+**Next:** T34c, the Android flavours `play`, `fdroid` and `github`.
+
+---
+
 ## T34a: Signing a phone in to the Companion (13 November 2026)
 
 **Status:** on `task/t34a`, its own pull request. An independent review is below; every finding was fixed except one, which is

@@ -20,6 +20,8 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.example.croft.RustInfo
 import com.example.croft.debug.DebugGallery
+import com.example.croft.mail.companion.CompanionRuntime
+import com.example.croft.ui.companion.CompanionScreen
 import com.example.croft.mail.MailSession
 import com.example.croft.mail.MailSettings
 import com.example.croft.ui.mail.InboxSettingsScreen
@@ -108,6 +110,9 @@ enum class Route(val parent: Route?) {
 
     /** S60 About and diagnostics. */
     ABOUT(SETTINGS),
+
+    /** S06 Connect a Companion, and S58 Companion and devices once connected (T34b). */
+    COMPANION(SETTINGS),
 
     /** The open-source licences list, from S60. */
     LICENCES(ABOUT),
@@ -421,8 +426,12 @@ fun CroftNavHost(
                 onOpenAccounts = { route = Route.ACCOUNTS },
                 onOpenAbout = { route = Route.ABOUT },
                 onOpenNotifications = if (notifyStore != null) ({ route = Route.NOTIFICATIONS }) else null,
+                onOpenCompanion = if (CompanionRuntime.connection(context) != null) ({ route = Route.COMPANION }) else null,
                 onBack = { route = Route.HOME },
             )
+            Route.COMPANION -> CompanionRuntime.connection(context)?.let { c ->
+                CompanionScreen(connection = c, onBack = { route = Route.SETTINGS })
+            }
             Route.ACCOUNTS -> AccountsScreen(
                 session = session, prefs = accountPrefs, onPrefsChange = onAccountPrefsChange,
                 onAdd = { if (onboarding != null) { addReturn = Route.ACCOUNTS; route = Route.ADD_ACCOUNT } },

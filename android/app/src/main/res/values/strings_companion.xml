@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- Settings entry -->
+    <string name="settings_companion">Companion</string>
+    <string name="settings_companion_hint">Your Croft Companion: the web app, push and search</string>
+
+    <!-- S06 Connect a Companion -->
+    <string name="companion_title">Companion</string>
+    <string name="companion_intro">A Croft Companion is a server you or your organisation run. Connected, this phone gets instant notifications, and your mail is also on the web app, with search and scheduled send. Croft works without one.</string>
+    <string name="companion_address">Companion address</string>
+    <string name="companion_address_hint">companion.example.org</string>
+    <string name="companion_connect">Connect</string>
+    <string name="companion_problem_no_browser">Connecting needs a web browser on this phone. Install one, then try again.</string>
+    <string name="companion_waiting">Finish signing in in the browser, then come back here.</string>
+    <string name="companion_cancel">Cancel</string>
+
+    <!-- S58 Companion and devices -->
+    <string name="companion_connected_to">Connected to %1$s</string>
+    <string name="companion_signed_in_as">Signed in as %1$s</string>
+    <string name="companion_devices">Signed-in devices</string>
+    <string name="companion_this_device">This phone</string>
+    <string name="companion_sign_out_device">Sign out</string>
+    <string name="companion_disconnect">Disconnect this phone</string>
+    <string name="companion_disconnect_title">Disconnect this phone?</string>
+    <string name="companion_disconnect_body">This phone signs out of your Companion. Your mail on this phone is not touched.</string>
+    <string name="companion_disconnect_confirm">Disconnect</string>
+
+    <!-- Problems -->
+    <string name="companion_problem_bad_address">That is not a Companion address. Enter the address of its web page, like companion.example.org.</string>
+    <string name="companion_problem_not_a_companion">Something answers at that address, but not a Croft Companion. Check the address.</string>
+    <string name="companion_problem_unreachable">Can\'t reach the Companion. Check the address and your connection. A Companion needs a certificate this phone trusts.</string>
+    <string name="companion_problem_sign_in_failed">Signing in didn\'t work. Try again.</string>
+    <string name="companion_problem_signed_out">Your Companion signed this phone out. Connect again to use it.</string>
+    <string name="companion_problem_rate_limited">Too many tries. Wait a few minutes, then try again.</string>
+    <string name="companion_problem_server">The Companion refused. Try again later.</string>
+    <string name="companion_problem_storage">Croft couldn\'t keep the connection on this phone. Try again.</string>
+</resources>

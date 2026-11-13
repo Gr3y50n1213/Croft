@@ -657,6 +657,11 @@ impl Core {
         }
     }
 
+    /// The core's runtime, for objects that run their calls on it (the Companion link).
+    pub(crate) fn runtime_handle(&self) -> Handle {
+        self.rt.clone()
+    }
+
     /// The latest change's sequence number, without waiting (Rust callers only, such as the
     /// Companion's JMAP states; not part of the app bindings).
     pub fn change_seq(&self) -> u64 {

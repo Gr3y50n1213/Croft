@@ -48,6 +48,10 @@ pub struct CalendarInfo {
     pub color: Option<String>,
     /// Whether its events are shown.
     pub shown: bool,
+    /// Its events cannot be changed here (a calendar from a link, T39c).
+    pub read_only: bool,
+    /// It comes from a link the person added (T39c), and can be removed.
+    pub linked: bool,
 }
 
 /// How a calendar sync went.
@@ -211,6 +215,8 @@ pub struct EventDetail {
     pub conflict: bool,
     /// A change waits to be sent.
     pub pending: bool,
+    /// It cannot be changed here (a calendar from a link, T39c).
+    pub read_only: bool,
 }
 
 /// What S38 saves.
@@ -298,8 +304,107 @@ impl Core {
             .and_then(|(config, credential)| CalDav::new(&config, &credential).ok()))
     }
 
-    /// Sends the account's waiting changes, then brings in the server's.
+    /// Syncs the account's CalDAV calendars, then fetches its calendar links that are due. Links
+    /// count as calendars: an account whose server offers none but that has links is "done".
     async fn sync_calendars_now(&self, account: i64) -> Result<CalendarSyncOutcome, CoreError> {
+        let dav = self.sync_dav_calendars(account).await?;
+        let links = self.refresh_links(account, false).await?;
+        Ok(match (dav.result, links) {
+            (CalendarSyncResult::NotOffered, true) => CalendarSyncOutcome {
+                result: CalendarSyncResult::Done,
+                conflicts: dav.conflicts,
+            },
+            _ => dav,
+        })
+    }
+
+    /// Fetches the account's calendar links (those last fetched over an hour ago, or all when
+    /// `all`), each on its own: one that fails is left as it was until the next time. Returns
+    /// whether the account has any link.
+    pub(crate) async fn refresh_links(&self, account: i64, all: bool) -> Result<bool, CoreError> {
+        let links: Vec<store::CalendarRow> = self
+            .inner
+            .handle
+            .read(|db| store::calendars(db.connection(), account))?
+            .into_iter()
+            .filter(|c| c.source_url.is_some())
+            .collect();
+        let now = now_ms();
+        for c in &links {
+            let due = all
+                || c.link_fetched_at
+                    .is_none_or(|t| now.saturating_sub(t) >= LINK_EVERY_MS);
+            let Some(url) = c.source_url.as_deref().filter(|_| due) else {
+                continue;
+            };
+            let _ = self
+                .fetch_link(
+                    account,
+                    c.id,
+                    url,
+                    c.link_etag.as_deref(),
+                    c.link_modified.as_deref(),
+                )
+                .await;
+        }
+        Ok(!links.is_empty())
+    }
+
+    /// Fetches one link and replaces its calendar's events.
+    async fn fetch_link(
+        &self,
+        account: i64,
+        calendar: i64,
+        url: &str,
+        etag: Option<&str>,
+        modified: Option<&str>,
+    ) -> Result<(), LinkFailure> {
+        let answer = fetch_link_answer(url, etag, modified).await?;
+        let now = now_ms();
+        match answer {
+            LinkAnswer::NotModified => {
+                self.inner
+                    .handle
+                    .read(|db| {
+                        store::set_link_fetched(
+                            db.connection(),
+                            account,
+                            calendar,
+                            etag,
+                            modified,
+                            now,
+                        )
+                    })
+                    .map_err(|_| LinkFailure::Refused)?;
+            }
+            LinkAnswer::Changed {
+                body,
+                etag,
+                last_modified,
+            } => {
+                let parts = feed_parts(&body)?;
+                self.inner
+                    .handle
+                    .read(|db| {
+                        let c = db.connection();
+                        store::replace_link_events(c, account, calendar, &parts, now)?;
+                        store::set_link_fetched(
+                            c,
+                            account,
+                            calendar,
+                            etag.as_deref(),
+                            last_modified.as_deref(),
+                            now,
+                        )
+                    })
+                    .map_err(|_| LinkFailure::Refused)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends the account's waiting changes, then brings in the server's.
+    async fn sync_dav_calendars(&self, account: i64) -> Result<CalendarSyncOutcome, CoreError> {
         let outcome = |result, conflicts| CalendarSyncOutcome { result, conflicts };
         let dav = match self.caldav(account).await {
             Ok(Some(d)) => d,
@@ -518,6 +623,79 @@ impl Core {
     }
 }
 
+/// How often a calendar link is fetched again, at most.
+const LINK_EVERY_MS: i64 = 60 * 60 * 1000;
+
+/// Why a calendar link could not be added (or fetched).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LinkFailure {
+    /// Not an address Croft can use (only `https` and `webcal` to public addresses).
+    BadAddress,
+    /// The file is not a calendar (or has no events Croft can read).
+    NotACalendar,
+    /// The server could not be reached; try later.
+    Unreachable,
+    /// The server refused, or answered in a way Croft does not follow (too large, too many redirects).
+    Refused,
+    /// This account already has this link.
+    AlreadyAdded,
+}
+
+/// What adding a calendar link gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct LinkAdded {
+    /// The new calendar's id, when it was added.
+    pub calendar: Option<i64>,
+    /// Why not, when it was not.
+    pub failure: Option<LinkFailure>,
+}
+
+use croft_protocols::oauth::fetch::{calendar_link, LinkAnswer};
+
+/// Tests: fetch links from plain http on this machine (the in-process fake).
+#[cfg(test)]
+pub(crate) static LINK_LOOPBACK_FOR_TESTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+async fn fetch_link_answer(
+    url: &str,
+    etag: Option<&str>,
+    modified: Option<&str>,
+) -> Result<LinkAnswer, LinkFailure> {
+    use croft_protocols::oauth::fetch::FetchError;
+    #[cfg(test)]
+    let answer = if LINK_LOOPBACK_FOR_TESTS.load(std::sync::atomic::Ordering::Relaxed) {
+        croft_protocols::oauth::fetch::get_calendar_link_from_loopback_for_tests(
+            url, etag, modified,
+        )
+        .await
+    } else {
+        croft_protocols::oauth::fetch::get_calendar_link(url, etag, modified).await
+    };
+    #[cfg(not(test))]
+    let answer = croft_protocols::oauth::fetch::get_calendar_link(url, etag, modified).await;
+    answer.map_err(|e| match e {
+        FetchError::BadUrl => LinkFailure::BadAddress,
+        FetchError::Unreachable => LinkFailure::Unreachable,
+        FetchError::Refused | FetchError::Redirect => LinkFailure::Refused,
+    })
+}
+
+/// The file's events, one object per `UID`, as text; a file with none is not a calendar.
+fn feed_parts(body: &[u8]) -> Result<Vec<(String, String)>, LinkFailure> {
+    let text = std::str::from_utf8(body).map_err(|_| LinkFailure::NotACalendar)?;
+    let feed = ical::parse_feed(text).map_err(|_| LinkFailure::NotACalendar)?;
+    let parts: Vec<(String, String)> = ical::split_by_uid(&feed)
+        .into_iter()
+        .map(|(uid, cal)| (uid, cal.to_text()))
+        .filter(|(_, t)| t.len() <= ical::MAX_OBJECT)
+        .collect();
+    if parts.is_empty() {
+        return Err(LinkFailure::NotACalendar);
+    }
+    Ok(parts)
+}
+
 /// What to do with a change made here, after the server answered.
 enum Step {
     /// Taken by the server at this address, in this version when it said.
@@ -582,6 +760,33 @@ impl Core {
         .await?
     }
 
+    /// Adds a read-only calendar to `account` from a link (T39c): `url` is an `https` or `webcal`
+    /// address of an iCalendar file, fetched now (public addresses only, see
+    /// `croft_protocols::oauth::fetch::get_calendar_link`) and again at each sync, at most hourly.
+    /// Nothing is stored when the first fetch fails.
+    pub async fn subscribe_calendar(
+        self: std::sync::Arc<Self>,
+        account: i64,
+        url: String,
+        name: String,
+    ) -> Result<LinkAdded, CoreError> {
+        let core = self.clone();
+        self.spawn(
+            async move { core.subscribe_now(account, &url, &name).await },
+            false,
+        )
+        .await?
+    }
+
+    /// Removes a calendar that came from a link, with its events. False when there is no such
+    /// linked calendar in the account.
+    pub fn unsubscribe_calendar(&self, account: i64, id: i64) -> Result<bool, CoreError> {
+        Ok(self
+            .inner
+            .handle
+            .read(|db| store::remove_link(db.connection(), account, id))?)
+    }
+
     /// The calendars of `account`.
     pub fn calendars(&self, account: i64) -> Result<Vec<CalendarInfo>, CoreError> {
         Ok(self
@@ -595,6 +800,8 @@ impl Core {
                 name: c.name,
                 color: c.color,
                 shown: c.shown,
+                read_only: c.read_only,
+                linked: c.source_url.is_some(),
             })
             .collect())
     }
@@ -728,6 +935,9 @@ impl Core {
             status: ev.status.clone(),
             conflict: stored.conflict,
             pending: stored.pending != store::PENDING_NONE,
+            read_only: self.inner.handle.read(|db| {
+                store::is_read_only_event(db.connection(), stored.account_id, stored.id)
+            })?,
         }))
     }
 
@@ -1017,5 +1227,90 @@ impl std::fmt::Debug for ReminderInfo {
         f.debug_struct("ReminderInfo")
             .field("event_id", &self.event_id)
             .finish_non_exhaustive()
+    }
+}
+
+impl Core {
+    async fn subscribe_now(
+        &self,
+        account: i64,
+        url: &str,
+        name: &str,
+    ) -> Result<LinkAdded, CoreError> {
+        let failed = |f| {
+            Ok(LinkAdded {
+                calendar: None,
+                failure: Some(f),
+            })
+        };
+        self.inner
+            .handle
+            .read(|db| accounts::get(db.connection(), account))?
+            .ok_or(CoreError::NoSuchAccount)?;
+        #[cfg(test)]
+        let url = if LINK_LOOPBACK_FOR_TESTS.load(std::sync::atomic::Ordering::Relaxed) {
+            Some(url.to_owned())
+        } else {
+            calendar_link(url)
+        };
+        #[cfg(not(test))]
+        let url = calendar_link(url);
+        let Some(url) = url else {
+            return failed(LinkFailure::BadAddress);
+        };
+        let answer = match fetch_link_answer(&url, None, None).await {
+            Ok(a) => a,
+            Err(f) => return failed(f),
+        };
+        let LinkAnswer::Changed {
+            body,
+            etag,
+            last_modified,
+        } = answer
+        else {
+            return failed(LinkFailure::Refused);
+        };
+        let parts = match feed_parts(&body) {
+            Ok(p) => p,
+            Err(f) => return failed(f),
+        };
+        let name: String = name
+            .trim()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(200)
+            .collect();
+        let name = if name.is_empty() {
+            croft_protocols::oauth::fetch::https_host(&url).unwrap_or_default()
+        } else {
+            name
+        };
+        let now = now_ms();
+        let added = self.inner.handle.read(|db| {
+            let c = db.connection();
+            let Some(id) = store::add_link(c, account, &url, &name)? else {
+                return Ok::<_, croft_storage::StorageError>(None);
+            };
+            store::replace_link_events(c, account, id, &parts, now)?;
+            store::set_link_fetched(
+                c,
+                account,
+                id,
+                etag.as_deref(),
+                last_modified.as_deref(),
+                now,
+            )?;
+            Ok(Some(id))
+        })?;
+        Ok(match added {
+            Some(id) => LinkAdded {
+                calendar: Some(id),
+                failure: None,
+            },
+            None => LinkAdded {
+                calendar: None,
+                failure: Some(LinkFailure::AlreadyAdded),
+            },
+        })
     }
 }

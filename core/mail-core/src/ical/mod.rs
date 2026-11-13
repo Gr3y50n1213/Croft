@@ -145,10 +145,32 @@ pub struct Calendar {
 
 /// Reads one calendar object.
 pub fn parse(text: &str) -> Result<Calendar, IcalError> {
-    if text.len() > MAX_OBJECT {
+    parse_within(text, MAX_OBJECT, MAX_LINES, MAX_COMPONENTS)
+}
+
+/// The largest calendar file read from a link (T39c).
+pub const MAX_FEED: usize = 5 * 1024 * 1024;
+/// The most lines in a calendar file from a link.
+pub const MAX_FEED_LINES: usize = 200_000;
+/// The most components in a calendar file from a link.
+pub const MAX_FEED_COMPONENTS: usize = 20_000;
+
+/// Reads a whole calendar file from a link, with its own larger bounds; [`split_by_uid`] then makes
+/// one object per event, each within the usual bounds.
+pub fn parse_feed(text: &str) -> Result<Calendar, IcalError> {
+    parse_within(text, MAX_FEED, MAX_FEED_LINES, MAX_FEED_COMPONENTS)
+}
+
+fn parse_within(
+    text: &str,
+    max_bytes: usize,
+    max_lines: usize,
+    max_components: usize,
+) -> Result<Calendar, IcalError> {
+    if text.len() > max_bytes {
         return Err(IcalError::TooLarge);
     }
-    let lines = unfold(text)?;
+    let lines = unfold(text, max_lines)?;
     let mut stack: Vec<Component> = Vec::new();
     let mut root: Option<Component> = None;
     let mut count = 0usize;
@@ -173,7 +195,7 @@ pub fn parse(text: &str) -> Result<Calendar, IcalError> {
                     return Err(IcalError::NotACalendar);
                 }
                 count += 1;
-                if count > MAX_COMPONENTS || stack.len() >= MAX_DEPTH {
+                if count > max_components || stack.len() >= MAX_DEPTH {
                     return Err(IcalError::TooLarge);
                 }
                 stack.push(Component::new(&kind));
@@ -201,7 +223,7 @@ pub fn parse(text: &str) -> Result<Calendar, IcalError> {
 
 /// Unfolds lines: a line starting with a space or tab continues the one before. LF and CRLF both
 /// end a line.
-fn unfold(text: &str) -> Result<Vec<String>, IcalError> {
+fn unfold(text: &str, max_lines: usize) -> Result<Vec<String>, IcalError> {
     let mut out: Vec<String> = Vec::new();
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -210,7 +232,7 @@ fn unfold(text: &str) -> Result<Vec<String>, IcalError> {
                 last.push_str(rest);
             }
         } else {
-            if out.len() >= MAX_LINES {
+            if out.len() >= max_lines {
                 return Err(IcalError::TooLarge);
             }
             out.push(line.to_owned());
@@ -407,6 +429,55 @@ impl Calendar {
     pub fn has_events(&self) -> bool {
         self.root.children.iter().any(|c| c.kind == "VEVENT")
     }
+}
+
+/// Splits a calendar file (from a link) into one object per event `UID`, each with the file's
+/// own `VCALENDAR` lines and the `VTIMEZONE`s its events name, in the order of first appearance.
+/// Events without a `UID` are left out. At most [`MAX_COMPONENTS`] objects.
+pub fn split_by_uid(cal: &Calendar) -> Vec<(String, Calendar)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, Vec<Component>> =
+        std::collections::HashMap::new();
+    for c in cal.root.children.iter().filter(|c| c.kind == "VEVENT") {
+        let Some(uid) = c
+            .line("UID")
+            .map(|l| l.value.trim().to_owned())
+            .filter(|u| !u.is_empty() && u.len() <= 500)
+        else {
+            continue;
+        };
+        if !groups.contains_key(&uid) {
+            if order.len() >= MAX_COMPONENTS {
+                break;
+            }
+            order.push(uid.clone());
+        }
+        groups.entry(uid).or_default().push(c.clone());
+    }
+    let zones: Vec<(String, &Component)> = cal.time_zones();
+    order
+        .into_iter()
+        .filter_map(|uid| {
+            let events = groups.remove(&uid)?;
+            let used: std::collections::HashSet<String> = events
+                .iter()
+                .flat_map(|e| e.lines.iter())
+                .filter_map(|l| l.param("TZID").map(str::to_owned))
+                .collect();
+            let mut children: Vec<Component> = zones
+                .iter()
+                .filter(|(tzid, _)| used.contains(tzid))
+                .map(|(_, c)| (*c).clone())
+                .collect();
+            children.extend(events);
+            let root = Component {
+                kind: "VCALENDAR".into(),
+                lines: cal.root.lines.clone(),
+                children,
+            };
+            Some((uid, Calendar { root }))
+        })
+        .collect()
 }
 
 /// A date or time as an iCalendar property gives it.

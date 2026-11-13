@@ -966,3 +966,34 @@ fn one_occurrence_is_found_by_its_key_however_far_it_moved() {
     assert_eq!(week.len(), 1);
     assert_eq!(week[0].start, ts("2026-11-23T09:00:00Z"));
 }
+
+#[test]
+fn a_feed_is_split_into_one_object_per_uid_with_the_zones_it_uses() {
+    let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-CALNAME:Holidays\r\nBEGIN:VTIMEZONE\r\nTZID:Own Zone\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0100\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VTIMEZONE\r\nTZID:Unused\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0200\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:a\r\nDTSTART;TZID=Own Zone:20261113T090000\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:A\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:b\r\nDTSTART;VALUE=DATE:20261225\r\nSUMMARY:B\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:a\r\nRECURRENCE-ID;TZID=Own Zone:20261120T090000\r\nDTSTART;TZID=Own Zone:20261120T110000\r\nSUMMARY:A moved\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:No uid\r\nDTSTART:20261113T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let feed = parse_feed(text).expect("parses");
+    let parts = split_by_uid(&feed);
+    assert_eq!(
+        parts.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    let (_, a) = &parts[0];
+    assert_eq!(a.events().len(), 2);
+    assert_eq!(
+        a.time_zones()
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>(),
+        ["Own Zone"]
+    );
+    assert!(a.to_text().contains("X-WR-CALNAME:Holidays"));
+    // Each part reads back on its own, within the usual bounds.
+    assert!(parse(&a.to_text()).is_ok());
+    assert!(parts[1].1.time_zones().is_empty());
+    // A feed may be larger than one object, within its own bounds.
+    let big = format!(
+        "BEGIN:VCALENDAR\r\n{}END:VCALENDAR\r\n",
+        "X-A:1\r\n".repeat(MAX_LINES + 1)
+    );
+    assert!(parse(&big).is_err());
+    assert!(parse_feed(&big).is_ok());
+}

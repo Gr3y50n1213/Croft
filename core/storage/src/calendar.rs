@@ -38,6 +38,16 @@ pub struct CalendarRow {
     pub ctag: Option<String>,
     /// Whether its events are shown.
     pub shown: bool,
+    /// The link it is made from (T39c), for a read-only calendar from a link.
+    pub source_url: Option<String>,
+    /// Its events cannot be changed here (a calendar from a link).
+    pub read_only: bool,
+    /// The link's last `ETag`.
+    pub link_etag: Option<String>,
+    /// The link's last `Last-Modified`.
+    pub link_modified: Option<String>,
+    /// When the link was last fetched (Unix ms).
+    pub link_fetched_at: Option<i64>,
 }
 
 impl std::fmt::Debug for CalendarRow {
@@ -105,7 +115,9 @@ pub fn upsert_calendar(
 /// The account's calendars, in the server's order, then by name.
 pub fn calendars(conn: &Connection, account: i64) -> Result<Vec<CalendarRow>> {
     let mut stmt = conn.prepare(
-        r#"SELECT id, path, name, color, sort_order, sync_token, ctag, shown FROM calendar
+        r#"SELECT id, path, name, color, sort_order, sync_token, ctag, shown, source_url, read_only,
+                  link_etag, link_modified, link_fetched_at
+             FROM calendar
             WHERE account_id = ?1 ORDER BY sort_order IS NULL, sort_order, name, id"#,
     )?;
     let rows = stmt.query_map([account], |r| {
@@ -118,6 +130,11 @@ pub fn calendars(conn: &Connection, account: i64) -> Result<Vec<CalendarRow>> {
             sync_token: r.get(5)?,
             ctag: r.get(6)?,
             shown: r.get(7)?,
+            source_url: r.get(8)?,
+            read_only: r.get(9)?,
+            link_etag: r.get(10)?,
+            link_modified: r.get(11)?,
+            link_fetched_at: r.get(12)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -132,9 +149,13 @@ pub fn set_shown(conn: &Connection, account: i64, id: i64, shown: bool) -> Resul
 }
 
 /// Removes the account's calendars whose paths are not in `keep` (gone from the server), with their
-/// events, unless a change made here still waits in one.
+/// events, unless a change made here still waits in one. Calendars from links are not the server's
+/// and are never removed here.
 pub fn remove_calendars_not_in(conn: &Connection, account: i64, keep: &[String]) -> Result<()> {
-    for c in calendars(conn, account)? {
+    for c in calendars(conn, account)?
+        .into_iter()
+        .filter(|c| c.source_url.is_none())
+    {
         let waiting = conn
             .query_row(
                 "SELECT 1 FROM event WHERE account_id = ?1 AND calendar_id = ?2 AND pending <> 0 LIMIT 1",
@@ -271,7 +292,7 @@ pub fn create_local(
     conn.query_row(
         r#"INSERT INTO event (account_id, calendar_id, href, etag, uid, object, first_start, last_end, pending, updated_at)
            SELECT ?1, c.id, NULL, NULL, ?3, ?4, ?5, ?6, 1, ?7 FROM calendar c
-            WHERE c.account_id = ?1 AND c.id = ?2
+            WHERE c.account_id = ?1 AND c.id = ?2 AND c.read_only = 0
            RETURNING id"#,
         params![account, calendar, uid, object, first, last, now_ms],
         |r| r.get(0),
@@ -293,7 +314,8 @@ pub fn update_local(
     Ok(conn.execute(
         r#"UPDATE event SET object = ?3, first_start = ?4, last_end = ?5, updated_at = ?6, conflict = 0,
                             pending = CASE pending WHEN 1 THEN 1 ELSE 2 END, revision = revision + 1
-            WHERE account_id = ?1 AND id = ?2 AND pending <> 3"#,
+            WHERE account_id = ?1 AND id = ?2 AND pending <> 3
+              AND calendar_id IN (SELECT id FROM calendar WHERE account_id = ?1 AND read_only = 0)"#,
         params![account, id, object, first, last, now_ms],
     )? > 0)
 }
@@ -301,6 +323,9 @@ pub fn update_local(
 /// An event deleted on the device: one never sent goes at once; another is hidden until the server
 /// confirms. False when there is no such event in the account.
 pub fn delete_local(conn: &Connection, account: i64, id: i64) -> Result<bool> {
+    if is_read_only_event(conn, account, id)? {
+        return Ok(false);
+    }
     let gone = conn.execute(
         "DELETE FROM event WHERE account_id = ?1 AND id = ?2 AND pending = 1",
         params![account, id],
@@ -312,6 +337,118 @@ pub fn delete_local(conn: &Connection, account: i64, id: i64) -> Result<bool> {
         "UPDATE event SET pending = 3, revision = revision + 1 WHERE account_id = ?1 AND id = ?2 AND pending <> 3",
         params![account, id],
     )? > 0)
+}
+
+/// Whether event `id` of the account is in a read-only calendar (from a link).
+pub fn is_read_only_event(conn: &Connection, account: i64, id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            r#"SELECT c.read_only FROM event e JOIN calendar c ON c.id = e.calendar_id AND c.account_id = e.account_id
+                WHERE e.account_id = ?1 AND e.id = ?2"#,
+            params![account, id],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Adds a read-only calendar of the account made from `url` (T39c). `None` when the account
+/// already has that link.
+pub fn add_link(conn: &Connection, account: i64, url: &str, name: &str) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            r#"INSERT INTO calendar (account_id, path, name, source_url, read_only)
+               SELECT ?1, ?2, ?3, ?2, 1 WHERE EXISTS (SELECT 1 FROM account WHERE id = ?1)
+               ON CONFLICT (account_id, path) DO NOTHING
+               RETURNING id"#,
+            params![account, url, name],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Removes calendar `id` of the account if it is one from a link, with its events.
+pub fn remove_link(conn: &Connection, account: i64, id: i64) -> Result<bool> {
+    Ok(conn.execute(
+        "DELETE FROM calendar WHERE account_id = ?1 AND id = ?2 AND source_url IS NOT NULL",
+        params![account, id],
+    )? > 0)
+}
+
+/// Records a fetch of a link calendar: the version the server gave (when it gave one) and when.
+pub fn set_link_fetched(
+    conn: &Connection,
+    account: i64,
+    id: i64,
+    etag: Option<&str>,
+    modified: Option<&str>,
+    now_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        r#"UPDATE calendar SET link_etag = ?3, link_modified = ?4, link_fetched_at = ?5
+            WHERE account_id = ?1 AND id = ?2 AND source_url IS NOT NULL"#,
+        params![account, id, etag, modified, now_ms],
+    )?;
+    Ok(())
+}
+
+/// Replaces a link calendar's events with `parts` (one object per `UID`): new and changed ones are
+/// stored, and those no longer in the file go. Objects that cannot be read are left out. Returns how
+/// many were stored.
+pub fn replace_link_events(
+    conn: &Connection,
+    account: i64,
+    calendar: i64,
+    parts: &[(String, String)],
+    now_ms: i64,
+) -> Result<usize> {
+    let link: bool = conn
+        .query_row(
+            "SELECT 1 FROM calendar WHERE account_id = ?1 AND id = ?2 AND source_url IS NOT NULL",
+            params![account, calendar],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !link {
+        return Err(StorageError::NotFound("calendar"));
+    }
+    let mut keep: Vec<String> = Vec::with_capacity(parts.len());
+    let mut stored = 0usize;
+    for (uid, text) in parts {
+        let href = format!("link:{uid}");
+        // The text itself is the version: a changed event is stored again, an unchanged one is not.
+        if store_from_server(
+            conn,
+            account,
+            calendar,
+            &href,
+            &fingerprint(text),
+            text,
+            now_ms,
+        )?
+        .is_some()
+        {
+            stored += 1;
+            keep.push(href);
+        }
+    }
+    for (href, _) in server_events(conn, account, calendar)? {
+        if !keep.contains(&href) {
+            remove_from_server(conn, account, calendar, &href)?;
+        }
+    }
+    Ok(stored)
+}
+
+/// A short fingerprint of an object's text (FNV-1a, 64 bits) used as its version.
+fn fingerprint(text: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}-{}", text.len())
 }
 
 const COLUMNS: &str =
@@ -666,5 +803,60 @@ mod tests {
         assert!(pending(c, a).unwrap().is_empty());
         // Not a calendar object: refused.
         assert!(create_local(c, a, cal, "not ics", 5).is_err());
+    }
+
+    #[test]
+    fn a_link_calendar_is_read_only_kept_from_the_server_sync_and_replaced_by_each_fetch() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        let (a, b) = (account(c, 1), account(c, 2));
+        let url = "https://cal.example.org/holidays.ics";
+        let link = add_link(c, a, url, "Holidays").unwrap().unwrap();
+        assert_eq!(add_link(c, a, url, "Again").unwrap(), None, "one link once");
+        assert!(add_link(c, 99, url, "No account").unwrap().is_none());
+        let parts = vec![
+            ("x".to_owned(), event("x", "20261225T000000Z", "")),
+            ("y".to_owned(), event("y", "20261226T000000Z", "")),
+        ];
+        assert_eq!(replace_link_events(c, a, link, &parts, 1).unwrap(), 2);
+        // The CalDAV sync's clean-up leaves it alone.
+        remove_calendars_not_in(c, a, &[]).unwrap();
+        let cals = calendars(c, a).unwrap();
+        assert_eq!(cals.len(), 1);
+        assert!(cals[0].read_only && cals[0].source_url.as_deref() == Some(url));
+        // Its events cannot be changed or deleted here, nor added to.
+        let x = in_window(c, a, 0, i64::MAX / 2).unwrap().0[0].id;
+        assert!(is_read_only_event(c, a, x).unwrap());
+        assert!(!update_local(c, a, x, &event("x", "20261225T100000Z", ""), 2).unwrap());
+        assert!(!delete_local(c, a, x).unwrap());
+        assert!(create_local(c, a, link, &event("n", "20261225T000000Z", ""), 2).is_err());
+        // A new fetch: one changed, one gone, one new.
+        let next = vec![
+            ("x".to_owned(), event("x", "20261225T120000Z", "")),
+            ("z".to_owned(), event("z", "20261227T000000Z", "")),
+        ];
+        replace_link_events(c, a, link, &next, 3).unwrap();
+        let hrefs: Vec<String> = server_events(c, a, link)
+            .unwrap()
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(hrefs.len(), 2);
+        assert!(hrefs.contains(&"link:x".to_owned()) && hrefs.contains(&"link:z".to_owned()));
+        assert!(get(c, a, x)
+            .unwrap()
+            .unwrap()
+            .object
+            .contains("20261225T120000Z"));
+        set_link_fetched(c, a, link, Some("\"v2\""), None, 4).unwrap();
+        assert_eq!(
+            calendars(c, a).unwrap()[0].link_etag.as_deref(),
+            Some("\"v2\"")
+        );
+        // Another account cannot touch it; removing it takes its events.
+        assert!(replace_link_events(c, b, link, &next, 5).is_err());
+        assert!(!remove_link(c, b, link).unwrap());
+        assert!(remove_link(c, a, link).unwrap());
+        assert!(in_window(c, a, 0, i64::MAX / 2).unwrap().0.is_empty());
     }
 }

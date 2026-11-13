@@ -456,3 +456,164 @@ fn the_version_a_write_made_is_kept_and_a_refused_change_never_blocks_the_rest()
         before
     );
 }
+
+/// A calendar file server on this machine: answers every request with the current file and an ETag; 304 when asked about it.
+fn feed_server(file: std::sync::Arc<std::sync::Mutex<String>>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = block(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener.into_std().unwrap()).unwrap();
+            while let Ok((mut s, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                let body = file.lock().unwrap().clone();
+                let tag = format!("\"{}\"", body.len());
+                let answer = if head.contains(&format!("if-none-match: {tag}")) {
+                    "HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n".to_owned()
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nETag: {tag}\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = s.write_all(answer.as_bytes()).await;
+            }
+        });
+    });
+    format!("http://127.0.0.1:{port}/holidays.ics")
+}
+
+fn feed(events: &[(&str, &str, &str)]) -> String {
+    let mut s = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nX-WR-CALNAME:Holidays\r\n");
+    for (uid, date, summary) in events {
+        s.push_str(&format!("BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART;VALUE=DATE:{date}\r\nSUMMARY:{summary}\r\nEND:VEVENT\r\n"));
+    }
+    s.push_str("END:VCALENDAR\r\n");
+    s
+}
+
+#[test]
+fn a_calendar_link_is_added_read_only_refetched_and_removed() {
+    crate::calendar::LINK_LOOPBACK_FOR_TESTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let m = Mail::new();
+    let file = std::sync::Arc::new(std::sync::Mutex::new(feed(&[
+        ("xmas", "20261225", "Christmas"),
+        ("boxing", "20261226", "Boxing Day"),
+    ])));
+    let url = feed_server(file.clone());
+    let added = block(m.core().clone().subscribe_calendar(
+        m.account,
+        url.clone(),
+        " Holidays ".into(),
+    ))
+    .unwrap();
+    let id = added.calendar.expect("added");
+    assert_eq!(
+        block(
+            m.core()
+                .clone()
+                .subscribe_calendar(m.account, url.clone(), "Again".into())
+        )
+        .unwrap()
+        .failure,
+        Some(crate::calendar::LinkFailure::AlreadyAdded)
+    );
+    let cals = m.core().calendars(m.account).unwrap();
+    let c = cals.iter().find(|c| c.id == id).unwrap();
+    assert!(c.read_only && c.linked);
+    assert_eq!(c.name, "Holidays");
+    let dec = 1_798_156_800_000; // 2026-12-24T00:00:00Z
+    let titles = |m: &Mail| -> Vec<String> {
+        m.core()
+            .events_between(dec, dec + 4 * 86_400_000, "UTC".into())
+            .unwrap()
+            .occurrences
+            .into_iter()
+            .map(|o| o.title)
+            .collect()
+    };
+    assert_eq!(titles(&m), ["Christmas", "Boxing Day"]);
+    // Read-only: no edits, no deletes.
+    let o = m
+        .core()
+        .events_between(dec, dec + 4 * 86_400_000, "UTC".into())
+        .unwrap()
+        .occurrences[0]
+        .clone();
+    assert!(
+        m.core()
+            .get_event(m.account, o.event_id, None, "UTC".into())
+            .unwrap()
+            .unwrap()
+            .read_only
+    );
+    assert!(!m
+        .core()
+        .delete_event(m.account, o.event_id, EventScope::All, "UTC".into())
+        .unwrap());
+    let mut i = input("Mine now", o.start_ms, RepeatPreset::None);
+    i.end_ms = o.end_ms;
+    assert!(m
+        .core()
+        .save_event(
+            m.account,
+            Some(o.event_id),
+            id,
+            i,
+            EventScope::All,
+            "UTC".into()
+        )
+        .is_err());
+    // A sync within the hour does not fetch again; once due, it does (the file changed).
+    *file.lock().unwrap() = feed(&[
+        ("xmas", "20261225", "Christmas Day"),
+        ("eve", "20261231", "New Year's Eve"),
+    ]);
+    block(m.core().clone().sync_calendars(m.account)).unwrap();
+    assert_eq!(titles(&m), ["Christmas", "Boxing Day"]);
+    block(m.core().refresh_links(m.account, true)).unwrap();
+    assert_eq!(titles(&m), ["Christmas Day"]);
+    // The account has a link (a CalDAV sync that finds no calendars on the server is then "done").
+    assert!(block(m.core().refresh_links(m.account, false)).unwrap());
+    // Removing it takes its events; a CalDAV calendar cannot be removed this way.
+    assert!(m.core().unsubscribe_calendar(m.account, id).unwrap());
+    assert!(titles(&m).is_empty());
+    // Not a calendar, and addresses Croft does not take.
+    *file.lock().unwrap() = "<html>not a calendar</html>".into();
+    assert_eq!(
+        block(
+            m.core()
+                .clone()
+                .subscribe_calendar(m.account, url, "X".into())
+        )
+        .unwrap()
+        .failure,
+        Some(crate::calendar::LinkFailure::NotACalendar)
+    );
+}
+
+#[test]
+fn only_https_and_webcal_links_are_taken() {
+    let m = Mail::new();
+    for bad in [
+        "ftp://cal.example.org/a.ics",
+        "https://user:made-up@cal.example.org/a.ics",
+        "nonsense",
+    ] {
+        // Without the test switch, the real rules apply (the shared switch may be on in another test, so only addresses no rule takes).
+        let out = block(
+            m.core()
+                .clone()
+                .subscribe_calendar(m.account, bad.into(), "X".into()),
+        )
+        .unwrap();
+        assert!(out.calendar.is_none(), "{bad}");
+    }
+}

@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T39c: The week view and calendar links (13 November 2026)
 
-**Status:** on `task/t39c`, its own pull request. The independent review of the link fetch is done; its findings are fixed (`docs/REVIEW-QUEUE.md`).
+**Status:** merged (pull request #94; CI green on draft #93). The independent review of the link fetch is done; its findings are fixed (`docs/REVIEW-QUEUE.md`).
 
 **What was built.**
 - **Calendar links (core, migration 0014, FFI v21).**
@@ -63,7 +63,7 @@ Android tests (`WeekAndLinksTest`) run in CI.
 
 ## T39b: The calendar screens (13 November 2026)
 
-**Status:** on `task/t39b`, its own pull request (CI runs the Android tests). S35 Week and "Subscribe to a calendar link" are
+**Status:** merged (#92). S35 Week and "Subscribe to a calendar link" are
 T39c; RSVP is T40.
 
 **What was built.**
@@ -106,7 +106,7 @@ card. The Android tests run in CI only.
 
 ## T39a: The calendar in the core (13 November 2026)
 
-**Status:** on `task/t39a`, its own pull request; the independent review is running. The screens are T39b.
+**Status:** merged (#90); the independent review is done (`docs/REVIEW-QUEUE.md`). The screens are T39b.
 
 **What was built.**
 - **One DAV client (protocols).** The CardDAV client became `dav/`, shared by CardDAV and CalDAV.
@@ -171,7 +171,7 @@ unchanged). The Companion's own lock file gains `jiff`.
 
 ## T38b: The contacts screens (13 November 2026)
 
-**Status:** on `task/t38b`, its own pull request (CI runs the Android tests; this machine cannot fetch from Maven).
+**Status:** merged (#89).
 
 **What was built.**
 - **S40 Contacts** from the bottom bar (Mail and Contacts switch; Calendar waits for T39):

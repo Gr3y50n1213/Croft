@@ -29,6 +29,8 @@ use crate::jmap::url::Url;
 use crate::types::BackendError;
 use xml::Node;
 
+/// The longest collection name kept.
+const MAX_NAME_CHARS: usize = 200;
 /// The most hrefs asked for in one multiget.
 pub const MULTIGET_BATCH: usize = 50;
 /// The largest answer read for a listing or a multiget.
@@ -135,8 +137,9 @@ impl DavKind {
     }
 }
 
-/// Where and how to reach an account's DAV service.
-#[derive(Debug, Clone)]
+/// Where and how to reach an account's DAV service. `Debug` leaves the user name out (often an
+/// address).
+#[derive(Clone)]
 pub struct DavConfig {
     /// The service's origin, `https://host[:port]` (the account's mail host by default), or a
     /// full URL to start from.
@@ -428,10 +431,14 @@ impl Dav {
                     continue;
                 }
             }
-            let name = prop
+            let name: String = prop
                 .text_of("displayname")
                 .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| last_segment(&path));
+                .unwrap_or_else(|| last_segment(&path))
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(MAX_NAME_CHARS)
+                .collect();
             books.push(Collection {
                 sync_token: prop.text_of("sync-token").filter(|t| !t.is_empty()),
                 ctag: prop.text_of("getctag").filter(|t| !t.is_empty()),
@@ -613,6 +620,17 @@ impl Dav {
         card: &str,
         etag: Option<&str>,
     ) -> Result<WriteOutcome, BackendError> {
+        self.put_tagged(path, card, etag).await.map(|w| w.outcome)
+    }
+
+    /// [`Dav::put`], with the etag of the version written when the server gave one, so the next
+    /// change is conditional on exactly that version (T39a review: never on a newer one it did not see).
+    pub async fn put_tagged(
+        &self,
+        path: &str,
+        card: &str,
+        etag: Option<&str>,
+    ) -> Result<Written, BackendError> {
         if card.len() > self.kind.max_object() {
             return Err(BackendError::Permanent("the object is too large".into()));
         }
@@ -633,7 +651,11 @@ impl Dav {
                 &[condition],
             )
             .await?;
-        write_outcome(&answer, self.kind)
+        let outcome = write_outcome(&answer, self.kind)?;
+        let etag = (outcome == WriteOutcome::Done)
+            .then(|| answer.etag.clone())
+            .flatten();
+        Ok(Written { outcome, etag })
     }
 
     /// Deletes the object at `path` if it still has `etag`.
@@ -735,6 +757,23 @@ fn last_segment(path: &str) -> String {
 /// The same collection, with or without a trailing slash.
 fn path_eq(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+impl std::fmt::Debug for DavConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DavConfig")
+            .field("pinned", &self.pinned_cert.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a conditional write found, and the version it made when the server said (its `ETag`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// The outcome.
+    pub outcome: WriteOutcome,
+    /// The new etag, when the server gave one with a successful write.
+    pub etag: Option<String>,
 }
 
 impl std::fmt::Debug for Collection {

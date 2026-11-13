@@ -314,3 +314,145 @@ fn a_wrong_password_asks_for_sign_in_and_another_accounts_events_stay_apart() {
         .unwrap()
         .is_none());
 }
+
+fn series_with_exceptions() -> String {
+    "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:sync\r\nDTSTART:20261116T090000Z\r\nDTEND:20261116T093000Z\r\nRRULE:FREQ=WEEKLY;INTERVAL=1\r\nEXDATE:20261123T090000Z\r\nSUMMARY:Sync\r\nDESCRIPTION:Kept\\, as written\r\nBEGIN:VALARM\r\nACTION:AUDIO\r\nTRIGGER:-PT5M\r\nACKNOWLEDGED:20261101T000000Z\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:sync\r\nRECURRENCE-ID:20261130T090000Z\r\nDTSTART:20261130T110000Z\r\nDTEND:20261130T113000Z\r\nSUMMARY:Sync (moved)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n".into()
+}
+
+#[test]
+fn a_title_only_edit_writes_only_the_title_and_keeps_every_exception() {
+    let m = Mail::new();
+    let dav = block(DavServer::start_with("alice", crate::tests::PASSWORD));
+    dav.put_event("sync.ics", &series_with_exceptions());
+    m.core().set_carddav_url_for_tests(m.account, &dav.origin());
+    assert_eq!(sync(&m), CalendarSyncResult::Done);
+    let o = m
+        .core()
+        .events_between(MON, MON + WEEK, LONDON.into())
+        .unwrap()
+        .occurrences[0]
+        .clone();
+    // What S38 would send back: the event as get_event gives it, with a new title only.
+    let d = m
+        .core()
+        .get_event(m.account, o.event_id, None, LONDON.into())
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.repeat, RepeatPreset::Weekly);
+    let input = EventInput {
+        title: "Weekly sync".into(),
+        all_day: d.all_day,
+        start_ms: d.start_ms,
+        end_ms: d.end_ms,
+        zone: d.zone.clone(),
+        location: d.location.clone(),
+        notes: d.notes.clone(),
+        repeat: d.repeat,
+        reminders: d.reminders.clone(),
+    };
+    m.core()
+        .save_event(
+            m.account,
+            Some(o.event_id),
+            o.calendar,
+            input,
+            EventScope::All,
+            LONDON.into(),
+        )
+        .unwrap();
+    assert_eq!(sync(&m), CalendarSyncResult::Done);
+    let text = dav
+        .cards()
+        .into_iter()
+        .find(|(p, _)| p.ends_with("sync.ics"))
+        .unwrap()
+        .1;
+    for kept in [
+        "DTSTART:20261116T090000Z",
+        "RRULE:FREQ=WEEKLY;INTERVAL=1",
+        "EXDATE:20261123T090000Z",
+        "RECURRENCE-ID:20261130T090000Z",
+        "DESCRIPTION:Kept\\, as written",
+        "ACTION:AUDIO",
+        "ACKNOWLEDGED:20261101T000000Z",
+    ] {
+        assert!(text.contains(kept), "{kept} lost");
+    }
+    assert!(text.contains("SUMMARY:Weekly sync"));
+}
+
+#[test]
+fn the_version_a_write_made_is_kept_and_a_refused_change_never_blocks_the_rest() {
+    let m = Mail::new();
+    let dav = block(DavServer::start_with("alice", crate::tests::PASSWORD));
+    dav.put_event("review.ics", &once("review", "20261117T140000Z", "Review"));
+    m.core().set_carddav_url_for_tests(m.account, &dav.origin());
+    assert_eq!(sync(&m), CalendarSyncResult::Done);
+    let cal = m.core().calendars(m.account).unwrap()[0].id;
+    let o = m
+        .core()
+        .events_between(MON, MON + WEEK, LONDON.into())
+        .unwrap()
+        .occurrences[0]
+        .clone();
+    let edit = |title: &str| {
+        let mut i = input(title, o.start_ms, RepeatPreset::None);
+        i.end_ms = o.end_ms;
+        m.core()
+            .save_event(
+                m.account,
+                Some(o.event_id),
+                o.calendar,
+                i,
+                EventScope::All,
+                LONDON.into(),
+            )
+            .unwrap();
+    };
+    // Two edits in a row, each sent: the second is conditional on the version the first made.
+    edit("Review 1");
+    assert_eq!(sync(&m), CalendarSyncResult::Done);
+    edit("Review 2");
+    let out = block(m.core().clone().sync_calendars(m.account)).unwrap();
+    assert_eq!((out.result, out.conflicts), (CalendarSyncResult::Done, 0));
+    assert!(dav
+        .cards()
+        .iter()
+        .any(|(_, t)| t.contains("SUMMARY:Review 2")));
+    // A server that refuses every write: the change is marked and the rest of the sync still runs.
+    dav.set_refuse_puts(true);
+    edit("Review 3");
+    m.core()
+        .save_event(
+            m.account,
+            None,
+            cal,
+            input("New one", MON + 10 * HOUR, RepeatPreset::None),
+            EventScope::All,
+            LONDON.into(),
+        )
+        .unwrap();
+    dav.put_event(
+        "other.ics",
+        &once("other", "20261118T140000Z", "From elsewhere"),
+    );
+    let out = block(m.core().clone().sync_calendars(m.account)).unwrap();
+    assert_eq!((out.result, out.conflicts), (CalendarSyncResult::Done, 2));
+    assert!(titles(&m, MON, MON + WEEK)
+        .iter()
+        .any(|(t, _)| t == "From elsewhere"));
+    assert!(
+        m.core()
+            .get_event(m.account, o.event_id, None, LONDON.into())
+            .unwrap()
+            .unwrap()
+            .conflict
+    );
+    // Nothing waits any more: the next sync sends nothing.
+    let before = dav.requests().iter().filter(|r| r.method == "PUT").count();
+    assert_eq!(sync(&m), CalendarSyncResult::Done);
+    assert_eq!(
+        dav.requests().iter().filter(|r| r.method == "PUT").count(),
+        before
+    );
+}

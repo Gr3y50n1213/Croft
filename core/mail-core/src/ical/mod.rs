@@ -166,7 +166,10 @@ pub fn parse(text: &str) -> Result<Calendar, IcalError> {
         match line.name.as_str() {
             "BEGIN" => {
                 let kind = line.value.trim().to_ascii_uppercase();
-                if kind.is_empty() || (stack.is_empty() && kind != "VCALENDAR") {
+                let named = !kind.is_empty()
+                    && kind.len() <= 64
+                    && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+                if !named || (stack.is_empty() && kind != "VCALENDAR") {
                     return Err(IcalError::NotACalendar);
                 }
                 count += 1;
@@ -378,7 +381,7 @@ impl Calendar {
             .filter(|c| c.kind == "VEVENT")
             .map(Event::read)
             .collect();
-        out.sort_by_key(|e| e.recurrence_id.is_some());
+        out.sort_by_key(|e| e.is_override);
         out
     }
 
@@ -614,6 +617,8 @@ pub struct Event {
     pub exdates: Vec<When>,
     /// `RECURRENCE-ID`: this is an override of that occurrence.
     pub recurrence_id: Option<When>,
+    /// It has a `RECURRENCE-ID` line (readable or not): an override, never the master.
+    pub is_override: bool,
     /// `ORGANIZER`.
     pub organizer: Option<Person>,
     /// `ATTENDEE`s.
@@ -676,6 +681,7 @@ impl Event {
                 .take(MAX_DATES)
                 .collect(),
             recurrence_id: c.line("RECURRENCE-ID").and_then(read_when),
+            is_override: c.line("RECURRENCE-ID").is_some(),
             organizer: c.line("ORGANIZER").and_then(read_person),
             attendees: c
                 .lines_named("ATTENDEE")
@@ -725,7 +731,7 @@ impl std::fmt::Debug for Event {
         f.debug_struct("Event")
             .field("start", &self.start)
             .field("repeats", &self.rrule.is_some())
-            .field("override", &self.recurrence_id.is_some())
+            .field("override", &self.is_override)
             .field("attendees", &self.attendees.len())
             .finish_non_exhaustive()
     }

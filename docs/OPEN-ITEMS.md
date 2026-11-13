@@ -124,5 +124,8 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 - **Calendar repeats Croft does not expand (T39a).** `BYHOUR`, `BYMINUTE`, `BYSECOND`, `BYWEEKNO`, `BYYEARDAY` and
   `HOURLY` or finer rules show only their first occurrence. `VTIMEZONE`s with irregular rules (not a yearly `BYDAY` in
   `BYMONTH`) fall back to their standard offset. JMAP Calendars, tasks (`VTODO`) and attachments are not synced.
+  Reminders more than five weeks before their event are not posted; only the first 1,000 `EXDATE`s of an event are read;
+  an object that cannot be read is fetched again at every sync. A change that loses to the server's is dropped (marked
+  on the item), not kept as a copy.
 - **CardDAV against Radicale (T38a).** Only Stalwart's CardDAV is in the CI integration job; Radicale (in `test-servers/`) needs a
   config and an address book created before it can be tested.

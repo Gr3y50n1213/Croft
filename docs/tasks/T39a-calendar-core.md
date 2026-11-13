@@ -63,7 +63,7 @@ the calendars the person shows, with repeating events expanded in the right time
   Every table is scoped by `account_id`.
 - **Sync.** The same two-way rules as contacts:
   - this device's changes go first, conditional on the etag, with revisions;
-  - a 412 keeps the server's version and marks a conflict copy;
+  - a 412 keeps the server's version and marks the event (no copy is kept: T39a review);
   - a failed listing stops the sync;
   - the server's changes come in batches.
 - **The core (FFI v20).**

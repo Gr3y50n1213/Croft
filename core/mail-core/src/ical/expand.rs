@@ -15,6 +15,8 @@ use jiff::{SignedDuration, Timestamp};
 
 /// The most occurrences of one object returned for one window.
 pub const MAX_PER_WINDOW: usize = 5_000;
+/// The most occurrences [`span`] counts for a rule with `COUNT`; beyond it the span stays open.
+const SPAN_MAX: usize = 10_000;
 /// A margin around the window when it is turned into wall times (a zone is at most 26 hours from UTC).
 const WALL_MARGIN_HOURS: i64 = 30;
 
@@ -154,11 +156,11 @@ pub fn occurrences(cal: &Calendar, local: &TimeZone, from: Timestamp, to: Timest
     let mut out = Expansion::default();
     let Some(master) = events
         .iter()
-        .position(|e| e.recurrence_id.is_none())
+        .position(|e| !e.is_override)
         .and_then(|i| Master::of(&events[i], &zones, local).map(|m| (i, m)))
     else {
         // Only overrides (an invitation to one occurrence): each is shown on its own.
-        for (i, e) in events.iter().enumerate() {
+        for (i, e) in events.iter().enumerate().filter(|(_, e)| e.is_override) {
             if let Some(m) = Master::of(e, &zones, local) {
                 let start = zones.resolve(m.start, local).at;
                 push_if_overlaps(&mut out, single(&m, start, i), from, to);
@@ -234,7 +236,8 @@ pub fn occurrences(cal: &Calendar, local: &TimeZone, from: Timestamp, to: Timest
         .collect();
     // Overrides take the place of the occurrence they name; a cancelled one only removes it.
     for (i, e) in events.iter().enumerate() {
-        let Some(rid) = &e.recurrence_id else {
+        // An override whose RECURRENCE-ID cannot be read cannot be placed: it is left out.
+        let (true, Some(rid)) = (e.is_override, &e.recurrence_id) else {
             continue;
         };
         let key = key_of(rid, &m, &zones, local);
@@ -274,28 +277,48 @@ pub fn span(cal: &Calendar, local: &TimeZone) -> Option<Span> {
         let start = zones.resolve(m.start, local).at;
         first = Some(first.map_or(start, |f| f.min(start)));
         let mut end = m.end_of(m.wall_start(), start);
-        if e.recurrence_id.is_none() {
+        if !e.is_override {
             if let Some(r) = e
                 .rrule
                 .as_deref()
                 .and_then(rrule::parse)
                 .filter(|r| r.supported)
             {
-                if r.count.is_none() && r.until.is_none() {
-                    open = true;
-                } else {
-                    let until_wall = DateTime::constant(rrule::LAST_YEAR, 12, 31, 23, 59, 59, 0);
-                    let past = m.past_until(r.until);
-                    let (walls, _) = rrule::expand(
-                        &r,
-                        m.wall_start(),
-                        m.wall_start(),
-                        until_wall,
-                        usize::MAX,
-                        &past,
-                    );
-                    if let Some(w) = walls.last() {
-                        end = m.end_of(*w, wall_to_instant(*w, &m.tz));
+                let length = SignedDuration::from_secs(m.length_seconds());
+                match (r.count, r.until) {
+                    (None, None) => open = true,
+                    // An upper bound is enough for the index: UNTIL plus the length (and a day for
+                    // dates and wall times read in UTC).
+                    (_, Some(until)) => {
+                        let at = match until {
+                            rrule::Until::Instant(t) => t,
+                            rrule::Until::Wall(w) => wall_to_instant(w, &m.tz),
+                            rrule::Until::Date(d) => {
+                                wall_to_instant(d.to_datetime(jiff::civil::Time::midnight()), &m.tz)
+                            }
+                        };
+                        let bound = at
+                            .checked_add(length)
+                            .and_then(|t| t.checked_add(SignedDuration::from_hours(48)))
+                            .unwrap_or(Timestamp::MAX);
+                        end = end.max(bound);
+                    }
+                    (Some(_), None) => {
+                        let until_wall =
+                            DateTime::constant(rrule::LAST_YEAR, 12, 31, 23, 59, 59, 0);
+                        let past = m.past_until(None);
+                        let (walls, cut) = rrule::expand(
+                            &r,
+                            m.wall_start(),
+                            m.wall_start(),
+                            until_wall,
+                            SPAN_MAX,
+                            &past,
+                        );
+                        match walls.last() {
+                            Some(w) if !cut => end = m.end_of(*w, wall_to_instant(*w, &m.tz)),
+                            _ => open = true,
+                        }
                     }
                 }
             }
@@ -311,6 +334,39 @@ pub fn span(cal: &Calendar, local: &TimeZone) -> Option<Span> {
         first,
         last: if open { None } else { last },
     })
+}
+
+/// The occurrence of `cal` whose original start is `key`, seen from `local`, wherever it was moved.
+pub fn occurrence_at(cal: &Calendar, local: &TimeZone, key: Timestamp) -> Option<Occurrence> {
+    let events = cal.events();
+    let zones = Zones::of(cal);
+    // An override names its occurrence itself, however far it was moved.
+    if let Some(mi) = events.iter().position(|e| !e.is_override) {
+        if let Some(m) = Master::of(&events[mi], &zones, local) {
+            for (i, e) in events.iter().enumerate() {
+                let (true, Some(rid)) = (e.is_override, &e.recurrence_id) else {
+                    continue;
+                };
+                if key_of(rid, &m, &zones, local) == key {
+                    let om = Master::of(e, &zones, local)?;
+                    if e.status.as_deref() == Some("CANCELLED") {
+                        return None;
+                    }
+                    let start = zones.resolve(om.start, local).at;
+                    let mut o = single(&om, start, i);
+                    o.key = key;
+                    return Some(o);
+                }
+            }
+        }
+    }
+    let to = key
+        .checked_add(SignedDuration::from_millis(1))
+        .unwrap_or(key);
+    occurrences(cal, local, key, to)
+        .occurrences
+        .into_iter()
+        .find(|o| o.key == key)
 }
 
 fn in_window(wall: DateTime, from: DateTime, to: DateTime) -> Vec<DateTime> {

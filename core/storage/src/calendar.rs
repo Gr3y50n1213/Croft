@@ -344,7 +344,14 @@ pub fn pending(conn: &Connection, account: i64) -> Result<Vec<(StoredEvent, Stri
 }
 
 /// The server took version `revision` of event `id`'s change (see `contacts::confirm`).
-pub fn confirm(conn: &Connection, account: i64, id: i64, revision: i64, href: &str) -> Result<()> {
+pub fn confirm(
+    conn: &Connection,
+    account: i64,
+    id: i64,
+    revision: i64,
+    href: &str,
+    etag: Option<&str>,
+) -> Result<()> {
     let deleted = conn.execute(
         "DELETE FROM event WHERE account_id = ?1 AND id = ?2 AND pending = 3 AND revision = ?3",
         params![account, id, revision],
@@ -353,9 +360,9 @@ pub fn confirm(conn: &Connection, account: i64, id: i64, revision: i64, href: &s
         return Ok(());
     }
     let done = conn.execute(
-        "UPDATE event SET pending = 0, href = ?3, etag = NULL
+        "UPDATE event SET pending = 0, href = ?3, etag = ?5
           WHERE account_id = ?1 AND id = ?2 AND revision = ?4",
-        params![account, id, href, revision],
+        params![account, id, href, revision, etag],
     )?;
     if done == 0 && !href.is_empty() {
         conn.execute(
@@ -398,32 +405,53 @@ pub fn get(conn: &Connection, account: i64, id: i64) -> Result<Option<StoredEven
         .optional()?)
 }
 
-/// The account's events in shown calendars that may have an occurrence in `[from_ms, to_ms)`
-/// (the window widened by a day each side), at most [`MAX_WINDOW_ROWS`].
+/// An event the window query found: enough to load it on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowRow {
+    /// Row id.
+    pub id: i64,
+    /// Its calendar.
+    pub calendar_id: i64,
+    /// A change waits to be sent.
+    pub pending: bool,
+}
+
+/// The account's events in shown calendars that may have an occurrence in `[from_ms, to_ms)` (the
+/// window widened by a day each side), at most [`MAX_WINDOW_ROWS`], and whether more were left out.
+/// Only ids: the caller loads and reads one object at a time (T39a review: never all at once).
 pub fn in_window(
     conn: &Connection,
     account: i64,
     from_ms: i64,
     to_ms: i64,
-) -> Result<Vec<StoredEvent>> {
-    let mut stmt = conn.prepare(&format!(
-        r#"SELECT {COLUMNS}
+) -> Result<(Vec<WindowRow>, bool)> {
+    let mut stmt = conn.prepare(
+        r#"SELECT e.id, e.calendar_id, e.pending
              FROM event e JOIN calendar c ON c.id = e.calendar_id AND c.account_id = e.account_id
             WHERE e.account_id = ?1 AND c.shown = 1 AND e.pending <> 3
               AND e.first_start < ?3 AND (e.last_end IS NULL OR e.last_end > ?2)
             ORDER BY e.first_start, e.id
-            LIMIT ?4"#
-    ))?;
+            LIMIT ?4"#,
+    )?;
     let rows = stmt.query_map(
         params![
             account,
             from_ms.saturating_sub(DAY_MS),
             to_ms.saturating_add(DAY_MS),
-            MAX_WINDOW_ROWS
+            MAX_WINDOW_ROWS + 1
         ],
-        stored,
+        |r| {
+            Ok(WindowRow {
+                id: r.get(0)?,
+                calendar_id: r.get(1)?,
+                pending: r.get::<_, i64>(2)? != PENDING_NONE,
+            })
+        },
     )?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    let mut out: Vec<WindowRow> = rows.collect::<rusqlite::Result<_>>()?;
+    let cut = out.len() > MAX_WINDOW_ROWS as usize;
+    out.truncate(MAX_WINDOW_ROWS as usize);
+    Ok((out, cut))
 }
 
 #[cfg(test)]
@@ -573,13 +601,17 @@ mod tests {
         set_shown(c, a1, home, false).unwrap();
         let ids: Vec<i64> = in_window(c, a1, NOV_13, NOV_13 + 3_600_000)
             .unwrap()
+            .0
             .iter()
             .map(|e| e.id)
             .collect();
         assert_eq!(ids, [weekly, once]);
         assert!(!ids.contains(&old));
         assert_eq!(
-            in_window(c, a2, NOV_13, NOV_13 + 3_600_000).unwrap().len(),
+            in_window(c, a2, NOV_13, NOV_13 + 3_600_000)
+                .unwrap()
+                .0
+                .len(),
             1
         );
     }
@@ -595,7 +627,7 @@ mod tests {
         assert_eq!((waiting.pending, path.as_str()), (PENDING_CREATE, "/w/"));
         // Changed again while the create was on its way: the create's confirmation keeps the update.
         assert!(update_local(c, a, id, &event("n", "20261114T090000Z", ""), 2).unwrap());
-        confirm(c, a, id, waiting.revision, "/w/n.ics").unwrap();
+        confirm(c, a, id, waiting.revision, "/w/n.ics", None).unwrap();
         let now = get(c, a, id).unwrap().unwrap();
         assert_eq!(
             (now.pending, now.href.as_deref()),
@@ -617,12 +649,12 @@ mod tests {
             .unwrap()
             .object
             .contains("20261114T090000Z"));
-        confirm(c, a, id, now.revision, "/w/n.ics").unwrap();
+        confirm(c, a, id, now.revision, "/w/n.ics", Some("\"s2\"")).unwrap();
         assert_eq!(get(c, a, id).unwrap().unwrap().pending, PENDING_NONE);
         // A delete hides it until the server confirms; a conflict keeps the server's.
         assert!(delete_local(c, a, id).unwrap());
         assert!(get(c, a, id).unwrap().is_none());
-        assert!(in_window(c, a, 0, i64::MAX / 2).unwrap().is_empty());
+        assert!(in_window(c, a, 0, i64::MAX / 2).unwrap().0.is_empty());
         let rev = pending(c, a).unwrap()[0].0.revision;
         mark_conflict(c, a, id, rev).unwrap();
         let back = get(c, a, id).unwrap().unwrap();

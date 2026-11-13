@@ -82,6 +82,33 @@ impl Repeat {
     }
 }
 
+/// Which of [`EventFields`] the person changed: only those are written, so an edit never rewrites
+/// (and so never cuts short or loses the parameters of) what it did not change (T39a review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Changed {
+    /// The title.
+    pub title: bool,
+    /// The start, end, all-day and zone.
+    pub times: bool,
+    /// The place.
+    pub location: bool,
+    /// The notes.
+    pub notes: bool,
+    /// The reminders.
+    pub reminders: bool,
+}
+
+impl Changed {
+    /// Everything (a new event).
+    pub const ALL: Changed = Changed {
+        title: true,
+        times: true,
+        location: true,
+        notes: true,
+        reminders: true,
+    };
+}
+
 /// What S38 edits.
 #[derive(Clone, PartialEq, Eq)]
 pub struct EventFields {
@@ -104,6 +131,8 @@ pub struct EventFields {
     pub repeat: Repeat,
     /// Reminders, in minutes before the start.
     pub reminders: Vec<i64>,
+    /// What the person changed ([`Repeat::Keep`] leaves the repeat as it is).
+    pub changed: Changed,
 }
 
 impl std::fmt::Debug for EventFields {
@@ -228,13 +257,22 @@ fn set_reminders(c: &mut Component, reminders: &[i64]) {
 
 /// Writes the edited properties on `c`.
 fn write_fields(c: &mut Component, fields: &EventFields, now: Timestamp, with_rule: bool) {
-    let (start, end) = start_end(fields);
-    text_line(c, "SUMMARY", &fields.title);
-    c.set_lines("DTSTART", vec![when_line("DTSTART", &start)]);
-    c.set_lines("DURATION", vec![]);
-    c.set_lines("DTEND", vec![when_line("DTEND", &end)]);
-    text_line(c, "LOCATION", &fields.location);
-    text_line(c, "DESCRIPTION", &fields.notes);
+    let ch = fields.changed;
+    if ch.title {
+        text_line(c, "SUMMARY", &fields.title);
+    }
+    if ch.times {
+        let (start, end) = start_end(fields);
+        c.set_lines("DTSTART", vec![when_line("DTSTART", &start)]);
+        c.set_lines("DURATION", vec![]);
+        c.set_lines("DTEND", vec![when_line("DTEND", &end)]);
+    }
+    if ch.location {
+        text_line(c, "LOCATION", &fields.location);
+    }
+    if ch.notes {
+        text_line(c, "DESCRIPTION", &fields.notes);
+    }
     if with_rule && fields.repeat != Repeat::Keep {
         let rule = fields.repeat.rule(fields.start.date());
         c.set_lines(
@@ -243,7 +281,9 @@ fn write_fields(c: &mut Component, fields: &EventFields, now: Timestamp, with_ru
                 .unwrap_or_default(),
         );
     }
-    set_reminders(c, &fields.reminders);
+    if ch.reminders {
+        set_reminders(c, &fields.reminders);
+    }
     let sequence = c
         .line("SEQUENCE")
         .and_then(|l| l.value.trim().parse::<u32>().ok())
@@ -396,14 +436,25 @@ pub fn edit_all(cal: &mut Calendar, fields: &EventFields, now: Timestamp) -> boo
     write_fields(master, fields, now, true);
     let new_start = master.line("DTSTART").and_then(read_when);
     let new_rule = master.line("RRULE").map(|l| l.value.trim().to_owned());
-    if old_start != new_start || old_rule != new_rule {
+    let zones = super::zone::Zones::of(cal);
+    // The same moment written another way (UTC, another TZID spelling) is not a move.
+    let moved = match (&old_start, &new_start) {
+        (Some(a), Some(b)) => !same_moment(&zones, a, b),
+        (a, b) => a != b,
+    };
+    let rule_changed =
+        old_rule.as_deref().map(normalized_rule) != new_rule.as_deref().map(normalized_rule);
+    let Some(master) = cal.master_mut() else {
+        return false;
+    };
+    if moved || rule_changed {
         master.set_lines("EXDATE", vec![]);
         master.set_lines("RDATE", vec![]);
         cal.root
             .children
             .retain(|c| !(c.kind == "VEVENT" && c.line("RECURRENCE-ID").is_some()));
     }
-    if let (false, Some(z)) = (fields.all_day, fields.zone.as_deref()) {
+    if let (true, false, Some(z)) = (fields.changed.times, fields.all_day, fields.zone.as_deref()) {
         ensure_vtimezone(cal, z, fields.start);
     }
     true
@@ -434,8 +485,12 @@ pub fn recurrence_id(cal: &Calendar, key: Timestamp, local: &TimeZone) -> Option
 /// from the master (its other properties and attendees kept) or the override already there.
 pub fn edit_one(cal: &mut Calendar, rid: &When, fields: &EventFields, now: Timestamp) -> bool {
     let rid_line = when_line("RECURRENCE-ID", rid);
+    let zones = super::zone::Zones::of(cal);
     let existing = cal.root.children.iter().position(|c| {
-        c.kind == "VEVENT" && c.line("RECURRENCE-ID").and_then(read_when).as_ref() == Some(rid)
+        c.kind == "VEVENT"
+            && c.line("RECURRENCE-ID")
+                .and_then(read_when)
+                .is_some_and(|w| same_moment(&zones, &w, rid))
     });
     let mut over = match existing {
         Some(i) => cal.root.children.remove(i),
@@ -453,10 +508,14 @@ pub fn edit_one(cal: &mut Calendar, rid: &When, fields: &EventFields, now: Times
     over.set_lines("RECURRENCE-ID", vec![rid_line]);
     let mut f = fields.clone();
     f.repeat = Repeat::None;
+    // A new override needs its own start; the rest is the master's unless changed.
+    if existing.is_none() {
+        f.changed.times = true;
+    }
     write_fields(&mut over, &f, now, false);
     over.set_lines("RRULE", vec![]);
     cal.root.children.push(over);
-    if let (false, Some(z)) = (fields.all_day, fields.zone.as_deref()) {
+    if let (true, false, Some(z)) = (fields.changed.times, fields.all_day, fields.zone.as_deref()) {
         ensure_vtimezone(cal, z, fields.start);
     }
     true
@@ -464,8 +523,12 @@ pub fn edit_one(cal: &mut Calendar, rid: &When, fields: &EventFields, now: Times
 
 /// Deletes one occurrence: an `EXDATE` on the master, and its override, if any, removed.
 pub fn delete_one(cal: &mut Calendar, rid: &When, now: Timestamp) -> bool {
+    let zones = super::zone::Zones::of(cal);
     cal.root.children.retain(|c| {
-        !(c.kind == "VEVENT" && c.line("RECURRENCE-ID").and_then(read_when).as_ref() == Some(rid))
+        !(c.kind == "VEVENT"
+            && c.line("RECURRENCE-ID")
+                .and_then(read_when)
+                .is_some_and(|w| same_moment(&zones, &w, rid)))
     });
     let Some(master) = cal.master_mut() else {
         return false;
@@ -475,4 +538,25 @@ pub fn delete_one(cal: &mut Calendar, rid: &When, now: Timestamp) -> bool {
     master.set_lines("EXDATE", lines);
     master.set_lines("DTSTAMP", vec![make("DTSTAMP", &[], &utc_text(now))]);
     true
+}
+
+/// Whether two dates or times name the same moment (dates the same day; times the same instant,
+/// floating ones read in UTC on both sides).
+fn same_moment(zones: &super::zone::Zones, a: &When, b: &When) -> bool {
+    match (a, b) {
+        (When::Date(x), When::Date(y)) => x == y,
+        (When::Date(_), _) | (_, When::Date(_)) => false,
+        _ => zones.resolve(a, &TimeZone::UTC).at == zones.resolve(b, &TimeZone::UTC).at,
+    }
+}
+
+/// A rule's parts, upper case and sorted, without the defaults (`INTERVAL=1`, `WKST=MO`).
+fn normalized_rule(rule: &str) -> Vec<String> {
+    let mut parts: Vec<String> = rule
+        .split(';')
+        .map(|p| p.trim().to_ascii_uppercase())
+        .filter(|p| !p.is_empty() && p != "INTERVAL=1" && p != "WKST=MO")
+        .collect();
+    parts.sort();
+    parts
 }

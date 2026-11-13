@@ -53,6 +53,19 @@ unverified, the next step.
 The Stalwart CalDAV integration test runs in CI. The S60 licence lists need `jiff`'s crates and are taken from CI's
 regenerated lists.
 
+**Review (one agent, opus, high effort).** 3 high, 6 medium and 8 low findings; credential handling and account
+scoping were found sound. Fixed with tests:
+- edits write only what changed, so another client's exceptions, alarms and long text stay;
+- the window and reminders read one object at a time, keep at most 20,000 occurrences, expand each object once, and stop
+  after 3 s saying so;
+- repeats have a work budget and skip to the window;
+- answers may carry calendar objects up to 1 MiB;
+- a change the server refuses is marked and no longer blocks the sync;
+- writes keep the server's new `ETag`, and a change whose server version is unknown is never sent blindly (contacts too).
+
+The lists of open-source licences (S60) gain the four `jiff` crates (rebuilt from `cargo metadata`; the Kotlin part is
+unchanged). The Companion's own lock file gains `jiff`.
+
 **Next.** T39b: S34 to S39 and the reminder notifications.
 
 ---

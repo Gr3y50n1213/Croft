@@ -712,6 +712,7 @@ dependencies = [
  "croft-storage",
  "croft-test-support",
  "getrandom 0.4.3",
+ "jiff",
  "libc",
  "log",
  "rusqlite",
@@ -728,6 +729,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "croft-protocols",
+ "jiff",
 ]
 
 [[package]]
@@ -1902,6 +1904,7 @@ checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
 dependencies = [
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "log",
  "portable-atomic",

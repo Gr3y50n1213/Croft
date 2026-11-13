@@ -13,7 +13,7 @@ use crate::types::BackendError;
 
 pub use crate::dav::{
     Changes, Collection as CalendarCollection, DavConfig as CalDavConfig, Fetched as FetchedObject,
-    ItemRef as ObjectRef, WriteOutcome, MULTIGET_BATCH,
+    ItemRef as ObjectRef, WriteOutcome, Written, MULTIGET_BATCH,
 };
 
 /// An account's CalDAV client.
@@ -56,6 +56,16 @@ impl CalDav {
         etag: Option<&str>,
     ) -> Result<WriteOutcome, BackendError> {
         self.0.put(path, object, etag).await
+    }
+
+    /// Writes `object` at `path` like `put`, with the etag of the version written when the server gave one.
+    pub async fn put_tagged(
+        &self,
+        path: &str,
+        object: &str,
+        etag: Option<&str>,
+    ) -> Result<Written, BackendError> {
+        self.0.put_tagged(path, object, etag).await
     }
 
     /// Deletes the object at `path` if it still has `etag`.

@@ -10,9 +10,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use croft_mail_core::ical::expand::{occurrences, Occurrence};
-use croft_mail_core::ical::write::{self, EventFields, Repeat};
-use croft_mail_core::ical::zone::iana;
+use croft_mail_core::ical::expand::{occurrence_at, occurrences, Occurrence};
+use croft_mail_core::ical::write::{self, Changed, EventFields, Repeat};
+use croft_mail_core::ical::zone::{iana, Zones};
 use croft_mail_core::ical::{self, Calendar, Event, When};
 use croft_protocols::caldav::{CalDav, WriteOutcome};
 use croft_protocols::BackendError;
@@ -28,6 +28,12 @@ use crate::error::CoreError;
 const MAX_WINDOW_MS: i64 = 400 * 86_400_000;
 /// The most occurrences one window returns across all calendars.
 const MAX_OCCURRENCES: usize = 10_000;
+/// How long one window or reminders query may work before it says it was cut short.
+const WINDOW_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+/// The longest title or place in a window's list.
+const LIST_TEXT_CHARS: usize = 200;
+/// How far past the window [`Core::next_reminders`] looks for occurrences whose reminders fall in it.
+const REMINDER_LEAD_MS: i64 = 35 * 86_400_000;
 
 /// A calendar of an account.
 #[derive(Clone, PartialEq, Eq, uniffi::Record)]
@@ -337,22 +343,12 @@ impl Core {
             .inner
             .handle
             .read(|db| store::pending(db.connection(), account))?;
+        // A listing per calendar, read at most once, for deletes whose etag is not known.
+        let mut listings: HashMap<String, HashMap<String, String>> = HashMap::new();
         for (event, cal_path) in waiting {
             let rev = event.revision;
-            let etag = match (&event.href, &event.etag) {
-                (Some(_), Some(e)) => Some(e.clone()),
-                (Some(href), None) => match dav.changes(&cal_path, None).await {
-                    Ok(ch) => ch
-                        .changed
-                        .into_iter()
-                        .find(|r| &r.path == href)
-                        .map(|r| r.etag),
-                    Err(e) => return Ok(outcome(net(e), conflicts)),
-                },
-                (None, _) => None,
-            };
-            let step = match (event.pending, &event.href) {
-                (store::PENDING_CREATE, _) => {
+            let step = match (event.pending, &event.href, &event.etag) {
+                (store::PENDING_CREATE, _, _) => {
                     let uid = ical::parse(&event.object)
                         .ok()
                         .and_then(|c| c.events().into_iter().next().map(|e| e.uid))
@@ -363,40 +359,71 @@ impl Core {
                         })
                         .map_or_else(new_uid, Ok)?;
                     let href = format!("{}/{uid}.ics", cal_path.trim_end_matches('/'));
-                    match dav.put(&href, &event.object, None).await {
-                        // 412 on a create: most likely this one after a lost answer (the href comes from the UID).
-                        Ok(WriteOutcome::Done | WriteOutcome::Conflict) => Ok(Step::Confirm(href)),
-                        Ok(WriteOutcome::Gone) => Ok(Step::Keep),
+                    match dav.put_tagged(&href, &event.object, None).await {
+                        Ok(w) if w.outcome == WriteOutcome::Done => Ok(Step::Confirm(href, w.etag)),
+                        // 412 on a create: most likely this one after a lost answer (the href comes from
+                        // the UID); its etag comes with the next listing.
+                        Ok(w) if w.outcome == WriteOutcome::Conflict => {
+                            Ok(Step::Confirm(href, None))
+                        }
+                        Ok(_) => Ok(Step::Keep),
                         Err(e) => Err(e),
                     }
                 }
-                (store::PENDING_UPDATE, Some(href)) => match &etag {
-                    Some(e) => match dav.put(href, &event.object, Some(e)).await {
-                        Ok(WriteOutcome::Done) => Ok(Step::Confirm(href.clone())),
-                        Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
-                        Ok(WriteOutcome::Gone) => Ok(Step::Gone),
+                (store::PENDING_UPDATE, Some(href), Some(e)) => {
+                    match dav.put_tagged(href, &event.object, Some(e)).await {
+                        Ok(w) => Ok(match w.outcome {
+                            WriteOutcome::Done => Step::Confirm(href.clone(), w.etag),
+                            WriteOutcome::Conflict => Step::Conflict,
+                            WriteOutcome::Gone => Step::Gone,
+                        }),
                         Err(e) => Err(e),
-                    },
-                    None => Ok(Step::Gone),
+                    }
+                }
+                // The version on the server is not known (the server gave no etag with the last write,
+                // or the person changed it again before its listing): never sent blindly over a change
+                // it has not seen. The server's version is kept and the event marked (T39a review).
+                (store::PENDING_UPDATE, Some(_), None) => Ok(Step::Conflict),
+                (store::PENDING_DELETE, Some(href), Some(e)) => match dav.delete(href, e).await {
+                    Ok(WriteOutcome::Done | WriteOutcome::Gone) => {
+                        Ok(Step::Confirm(href.clone(), None))
+                    }
+                    Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
+                    Err(e) => Err(e),
                 },
-                (store::PENDING_DELETE, Some(href)) => match &etag {
-                    Some(e) => match dav.delete(href, e).await {
-                        Ok(WriteOutcome::Done | WriteOutcome::Gone) => {
-                            Ok(Step::Confirm(href.clone()))
+                (store::PENDING_DELETE, Some(href), None) => {
+                    if !listings.contains_key(&cal_path) {
+                        match dav.changes(&cal_path, None).await {
+                            Ok(ch) => {
+                                let map =
+                                    ch.changed.into_iter().map(|r| (r.path, r.etag)).collect();
+                                listings.insert(cal_path.clone(), map);
+                            }
+                            Err(e) => return Ok(outcome(net(e), conflicts)),
                         }
-                        Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
-                        Err(e) => Err(e),
-                    },
-                    None => Ok(Step::Confirm(href.clone())),
-                },
+                    }
+                    match listings.get(&cal_path).and_then(|l| l.get(href)) {
+                        // Already gone on the server.
+                        None => Ok(Step::Confirm(href.clone(), None)),
+                        // There, in a version this device may not have seen: kept, and marked.
+                        Some(_) => Ok(Step::Conflict),
+                    }
+                }
                 _ => Ok(Step::Keep),
             };
             match step {
-                Ok(Step::Confirm(href)) => self
-                    .inner
-                    .handle
-                    .read(|db| store::confirm(db.connection(), account, event.id, rev, &href))?,
-                Ok(Step::Conflict) => {
+                Ok(Step::Confirm(href, etag)) => self.inner.handle.read(|db| {
+                    store::confirm(
+                        db.connection(),
+                        account,
+                        event.id,
+                        rev,
+                        &href,
+                        etag.as_deref(),
+                    )
+                })?,
+                // Refused for good (403, 415 and the like): marked and left, so it never blocks the rest.
+                Ok(Step::Conflict) | Err(BackendError::Permanent(_)) => {
                     conflicts += 1;
                     self.inner
                         .handle
@@ -493,13 +520,14 @@ impl Core {
 
 /// What to do with a change made here, after the server answered.
 enum Step {
-    Confirm(String),
+    /// Taken by the server at this address, in this version when it said.
+    Confirm(String, Option<String>),
     Conflict,
     Gone,
     Keep,
 }
 
-fn fields_of(input: &EventInput, tz: &TimeZone) -> EventFields {
+fn fields_of(input: &EventInput, tz: &TimeZone, changed: Changed, repeat: Repeat) -> EventFields {
     let zone_name = if input.all_day {
         None
     } else {
@@ -524,8 +552,9 @@ fn fields_of(input: &EventInput, tz: &TimeZone) -> EventFields {
         zone: zone_name,
         location: input.location.chars().take(ical::MAX_TEXT_CHARS).collect(),
         notes: input.notes.chars().take(ical::MAX_TEXT_CHARS).collect(),
-        repeat: input.repeat.into(),
+        repeat,
         reminders: input.reminders.iter().copied().take(10).collect(),
+        changed,
     }
 }
 
@@ -584,7 +613,9 @@ impl Core {
     }
 
     /// The occurrences of every account's shown calendars that overlap `[from_ms, to_ms)`, seen
-    /// from `zone` (the device's IANA zone; UTC when unknown). At most a little over a year.
+    /// from `zone` (the device's IANA zone; UTC when unknown). At most a little over a year and
+    /// [`MAX_OCCURRENCES`] occurrences; `truncated` says when some were left out. Titles and places
+    /// are cut to 200 characters here ([`Core::get_event`] has them whole).
     pub fn events_between(
         &self,
         from_ms: i64,
@@ -594,68 +625,59 @@ impl Core {
         let to_ms = to_ms.min(from_ms.saturating_add(MAX_WINDOW_MS));
         let tz = zone_or_utc(&zone);
         let (from, to) = (ts(from_ms), ts(to_ms));
-        let rows = self.inner.handle.read(|db| {
-            let c = db.connection();
-            let mut out = Vec::new();
-            for a in accounts::list(c)? {
-                let colors: HashMap<i64, Option<String>> = store::calendars(c, a.id)?
-                    .into_iter()
-                    .map(|k| (k.id, k.color))
-                    .collect();
-                for e in store::in_window(c, a.id, from_ms, to_ms)? {
-                    let color = colors.get(&e.calendar_id).cloned().flatten();
-                    out.push((e, color));
-                }
-            }
-            Ok::<_, CoreError>(out)
-        })?;
-        let mut out = EventsWindow {
-            occurrences: Vec::new(),
-            truncated: false,
-        };
-        for (e, color) in rows {
-            let Ok(cal) = ical::parse(&e.object) else {
-                continue;
-            };
+        let mut kept: Vec<OccurrenceInfo> = Vec::new();
+        let mut truncated = false;
+        let clip = |t: &str| -> String { t.chars().take(LIST_TEXT_CHARS).collect() };
+        let cut = self.each_in_window(from_ms, to_ms, |row, account, color, cal| {
             let events = cal.events();
-            let exp = occurrences(&cal, &tz, from, to);
-            out.truncated |= exp.truncated;
+            let exp = occurrences(cal, &tz, from, to);
+            truncated |= exp.truncated;
             let repeats = events
-                .first()
+                .iter()
+                .find(|e| !e.is_override)
                 .is_some_and(|m| m.rrule.is_some() || !m.rdates.is_empty());
             for o in &exp.occurrences {
                 let Some(ev) = source(&events, o) else {
                     continue;
                 };
-                out.occurrences.push(OccurrenceInfo {
-                    event_id: e.id,
-                    account: e.account_id,
-                    calendar: e.calendar_id,
-                    color: color.clone(),
+                kept.push(OccurrenceInfo {
+                    event_id: row.id,
+                    account,
+                    calendar: row.calendar_id,
+                    color: color.map(str::to_owned),
                     start_ms: o.start.as_millisecond(),
                     end_ms: o.end.as_millisecond(),
                     all_day: o.all_day,
                     key_ms: o.key.as_millisecond(),
-                    title: ev.summary.clone().unwrap_or_default(),
-                    location: ev.location.clone(),
+                    title: ev.summary.as_deref().map(clip).unwrap_or_default(),
+                    location: ev.location.as_deref().map(clip),
                     repeats,
                     repeats_unsupported: exp.repeats_unsupported,
                     zone_unknown: !o.zone_known,
-                    pending: e.pending != store::PENDING_NONE,
+                    pending: row.pending,
                 });
             }
+            // Only the earliest are kept, so memory stays bounded whatever the calendars hold.
+            if kept.len() > 2 * MAX_OCCURRENCES {
+                sort_occurrences(&mut kept);
+                kept.truncate(MAX_OCCURRENCES);
+                truncated = true;
+            }
+        })?;
+        sort_occurrences(&mut kept);
+        if kept.len() > MAX_OCCURRENCES {
+            kept.truncate(MAX_OCCURRENCES);
+            truncated = true;
         }
-        out.occurrences
-            .sort_by_key(|o| (o.start_ms, o.end_ms, o.event_id));
-        if out.occurrences.len() > MAX_OCCURRENCES {
-            out.occurrences.truncate(MAX_OCCURRENCES);
-            out.truncated = true;
-        }
-        Ok(out)
+        Ok(EventsWindow {
+            occurrences: kept,
+            truncated: truncated || cut,
+        })
     }
 
-    /// Event `id` of `account`, as the occurrence whose original start is `key_ms` (or its first
-    /// occurrence), seen from `zone`. `None` when it is gone.
+    /// Event `id` of `account`, as the occurrence whose original start is `key_ms` (wherever it was
+    /// moved), else as its first occurrence (what a change to every occurrence edits), seen from
+    /// `zone`. `None` when it is gone.
     pub fn get_event(
         &self,
         account: i64,
@@ -670,27 +692,18 @@ impl Core {
         };
         let tz = zone_or_utc(&zone);
         let events = cal.events();
-        let Some(master) = events.first() else {
+        let Some(master) = events.iter().find(|e| !e.is_override) else {
             return Ok(None);
         };
         let repeats = master.rrule.is_some() || !master.rdates.is_empty();
-        // The occurrence: the one asked for, else the first.
-        let (from, to) = match key_ms {
-            Some(k) => (
-                ts(k.saturating_sub(366 * 86_400_000)),
-                ts(k.saturating_add(366 * 86_400_000)),
-            ),
-            None => (Timestamp::MIN, Timestamp::MAX),
-        };
-        let exp = occurrences(&cal, &tz, from, to);
         let occ = match key_ms {
-            Some(k) => exp.occurrences.iter().find(|o| o.key.as_millisecond() == k),
-            None => exp.occurrences.first(),
+            Some(k) => occurrence_at(&cal, &tz, ts(k)),
+            None => first_occurrence(&cal, &tz),
         };
         let Some(o) = occ else {
             return Ok(None);
         };
-        let ev = source(&events, o).unwrap_or(master);
+        let ev = source(&events, &o).unwrap_or(master);
         let rule_start = master.start.as_ref().map(|s| s.civil().date());
         Ok(Some(EventDetail {
             id: stored.id,
@@ -718,8 +731,10 @@ impl Core {
         }))
     }
 
-    /// Saves S38: a new event in `calendar` (when `id` is `None`), or a change to event `id`,
-    /// to every occurrence or to one. Stored at once, sent at the next sync. Returns the event's id.
+    /// Saves S38: a new event in `calendar` (when `id` is `None`), or a change to event `id`, to
+    /// every occurrence (the times are then those of its first occurrence, as [`Core::get_event`]
+    /// gives them with no key) or to one. Only what differs from the event as it is gets written.
+    /// Stored at once, sent at the next sync. Returns the event's id.
     pub fn save_event(
         &self,
         account: i64,
@@ -730,45 +745,72 @@ impl Core {
         zone: String,
     ) -> Result<i64, CoreError> {
         let tz = zone_or_utc(&zone);
-        let fields = fields_of(&input, &tz);
         let now = Timestamp::now();
-        match id {
-            None => {
-                let uid = new_uid()?;
-                let object = write::new_object(&fields, &uid, now).to_text();
-                self.inner
-                    .handle
-                    .read(|db| {
-                        store::create_local(db.connection(), account, calendar, &object, now_ms())
-                    })
-                    .map_err(|_| CoreError::NoSuchAccount)
+        let Some(id) = id else {
+            let fields = fields_of(&input, &tz, Changed::ALL, input.repeat.into());
+            let uid = new_uid()?;
+            let object = write::new_object(&fields, &uid, now).to_text();
+            return self
+                .inner
+                .handle
+                .read(|db| {
+                    store::create_local(db.connection(), account, calendar, &object, now_ms())
+                })
+                .map_err(|_| CoreError::NoSuchAccount);
+        };
+        let key = match scope {
+            EventScope::All => None,
+            EventScope::One { key_ms } => Some(key_ms),
+        };
+        let current = self
+            .get_event(account, id, key, zone.clone())?
+            .ok_or(CoreError::NoSuchMessage)?;
+        let mut sorted_new = input.reminders.clone();
+        sorted_new.sort_unstable();
+        sorted_new.dedup();
+        let times = input.start_ms != current.start_ms
+            || input.end_ms != current.end_ms
+            || input.all_day != current.all_day
+            || (input.zone.is_some() && input.zone != current.zone);
+        let changed = Changed {
+            title: input.title != current.title,
+            times,
+            location: input.location != current.location,
+            notes: input.notes != current.notes,
+            reminders: sorted_new != current.reminders,
+        };
+        // The repeat is rewritten only when it changed, or when it follows the start (weekly on its
+        // weekday, monthly on its day) and the start moved; a rule Croft did not write is kept.
+        let repeat = match (input.repeat, current.repeat) {
+            (RepeatPreset::Custom, _) => Repeat::Keep,
+            (new, old) if new != old => new.into(),
+            (new @ (RepeatPreset::Weekly | RepeatPreset::Monthly), _) if times => new.into(),
+            _ => Repeat::Keep,
+        };
+        let fields = fields_of(&input, &tz, changed, repeat);
+        let (_, mut cal) = self.event_object(account, id)?;
+        let done = match key {
+            None => write::edit_all(&mut cal, &fields, now),
+            Some(key_ms) => {
+                let rid = write::recurrence_id(&cal, ts(key_ms), &tz).ok_or(CoreError::Internal)?;
+                write::edit_one(&mut cal, &rid, &fields, now)
             }
-            Some(id) => {
-                let (_, mut cal) = self.event_object(account, id)?;
-                let done = match scope {
-                    EventScope::All => write::edit_all(&mut cal, &fields, now),
-                    EventScope::One { key_ms } => {
-                        let rid = write::recurrence_id(&cal, ts(key_ms), &tz)
-                            .ok_or(CoreError::Internal)?;
-                        write::edit_one(&mut cal, &rid, &fields, now)
-                    }
-                };
-                if !done {
-                    return Err(CoreError::Internal);
-                }
-                let text = cal.to_text();
-                if text.len() > ical::MAX_OBJECT {
-                    return Err(CoreError::Internal);
-                }
-                let saved = self.inner.handle.read(|db| {
-                    store::update_local(db.connection(), account, id, &text, now_ms())
-                })?;
-                if saved {
-                    Ok(id)
-                } else {
-                    Err(CoreError::NoSuchMessage)
-                }
-            }
+        };
+        if !done {
+            return Err(CoreError::Internal);
+        }
+        let text = cal.to_text();
+        if text.len() > ical::MAX_OBJECT {
+            return Err(CoreError::Internal);
+        }
+        if self
+            .inner
+            .handle
+            .read(|db| store::update_local(db.connection(), account, id, &text, now_ms()))?
+        {
+            Ok(id)
+        } else {
+            Err(CoreError::NoSuchMessage)
         }
     }
 
@@ -806,57 +848,121 @@ impl Core {
     }
 
     /// The reminders due in `[from_ms, to_ms)` across shown calendars, by time, seen from `zone`.
-    /// The app posts them; the window is at most a little over a year.
+    /// Each object is read and expanded once. Reminders more than five weeks before their
+    /// occurrence are not found (OPEN-ITEMS). The app posts them.
     pub fn next_reminders(
         &self,
         from_ms: i64,
         to_ms: i64,
         zone: String,
     ) -> Result<Vec<ReminderInfo>, CoreError> {
-        // An occurrence's reminders come up to a few weeks before it: look that far past the window.
-        const LOOKAHEAD_MS: i64 = 28 * 86_400_000;
-        let window =
-            self.events_between(from_ms, to_ms.saturating_add(LOOKAHEAD_MS), zone.clone())?;
+        let to_ms = to_ms.min(from_ms.saturating_add(MAX_WINDOW_MS));
         let tz = zone_or_utc(&zone);
+        let horizon = to_ms.saturating_add(REMINDER_LEAD_MS);
         let mut out = Vec::new();
-        let mut objects: HashMap<(i64, i64), Option<Calendar>> = HashMap::new();
-        for o in window.occurrences {
-            let cal = objects.entry((o.account, o.event_id)).or_insert_with(|| {
-                self.event_object(o.account, o.event_id)
-                    .ok()
-                    .map(|(_, c)| c)
-            });
-            let Some(cal) = cal.as_ref() else { continue };
+        self.each_in_window(from_ms, horizon, |row, account, _, cal| {
             let events = cal.events();
-            let exp = occurrences(cal, &tz, ts(o.start_ms), ts(o.start_ms.saturating_add(1)));
-            let Some(ev) = exp
-                .occurrences
-                .iter()
-                .find(|x| x.key.as_millisecond() == o.key_ms)
-                .and_then(|x| source(&events, x))
-            else {
-                continue;
-            };
-            if ev.status.as_deref() == Some("CANCELLED") {
-                continue;
-            }
-            for m in &ev.reminders {
-                let at = o.start_ms.saturating_sub(m.saturating_mul(60_000));
-                if at >= from_ms && at < to_ms {
-                    out.push(ReminderInfo {
-                        event_id: o.event_id,
-                        account: o.account,
-                        key_ms: o.key_ms,
-                        at_ms: at,
-                        start_ms: o.start_ms,
-                        title: o.title.clone(),
-                    });
+            let exp = occurrences(cal, &tz, ts(from_ms), ts(horizon));
+            for o in &exp.occurrences {
+                let Some(ev) = source(&events, o) else {
+                    continue;
+                };
+                if ev.status.as_deref() == Some("CANCELLED") {
+                    continue;
+                }
+                let start = o.start.as_millisecond();
+                for m in &ev.reminders {
+                    let at = start.saturating_sub(m.saturating_mul(60_000));
+                    if at >= from_ms && at < to_ms && out.len() < MAX_OCCURRENCES {
+                        out.push(ReminderInfo {
+                            event_id: row.id,
+                            account,
+                            key_ms: o.key.as_millisecond(),
+                            at_ms: at,
+                            start_ms: start,
+                            title: ev
+                                .summary
+                                .as_deref()
+                                .map(|t| t.chars().take(LIST_TEXT_CHARS).collect())
+                                .unwrap_or_default(),
+                        });
+                    }
                 }
             }
-        }
+        })?;
         out.sort_by_key(|r| (r.at_ms, r.event_id, r.key_ms));
         Ok(out)
     }
+}
+
+impl Core {
+    /// Calls `visit` with each event of every account's shown calendars that may touch
+    /// `[from_ms, to_ms)`: its row, account, calendar colour and parsed object, one object at a time
+    /// (T39a review: never every object in memory at once). Stops after [`WINDOW_DEADLINE`]. Returns
+    /// whether some were left out (the row limit or the deadline).
+    fn each_in_window(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+        mut visit: impl FnMut(&store::WindowRow, i64, Option<&str>, &Calendar),
+    ) -> Result<bool, CoreError> {
+        let deadline = std::time::Instant::now() + WINDOW_DEADLINE;
+        let accounts = self
+            .inner
+            .handle
+            .read(|db| accounts::list(db.connection()))?;
+        let mut cut = false;
+        for a in accounts {
+            let (rows, colors) = self.inner.handle.read(|db| {
+                let c = db.connection();
+                let (rows, more) = store::in_window(c, a.id, from_ms, to_ms)?;
+                cut |= more;
+                let colors: HashMap<i64, Option<String>> = store::calendars(c, a.id)?
+                    .into_iter()
+                    .map(|k| (k.id, k.color))
+                    .collect();
+                Ok::<_, CoreError>((rows, colors))
+            })?;
+            for row in rows {
+                if std::time::Instant::now() > deadline {
+                    return Ok(true);
+                }
+                let Some(stored) = self
+                    .inner
+                    .handle
+                    .read(|db| store::get(db.connection(), a.id, row.id))?
+                else {
+                    continue;
+                };
+                let Ok(cal) = ical::parse(&stored.object) else {
+                    continue;
+                };
+                let color = colors.get(&row.calendar_id).cloned().flatten();
+                visit(&row, a.id, color.as_deref(), &cal);
+            }
+        }
+        Ok(cut)
+    }
+}
+
+fn sort_occurrences(list: &mut [OccurrenceInfo]) {
+    list.sort_by_key(|o| (o.start_ms, o.end_ms, o.event_id, o.key_ms));
+}
+
+/// The first occurrence of `cal` (the master's own start, else the first after it).
+fn first_occurrence(cal: &Calendar, tz: &TimeZone) -> Option<Occurrence> {
+    let events = cal.events();
+    let master = events.iter().find(|e| !e.is_override)?;
+    let start = Zones::of(cal).resolve(master.start.as_ref()?, tz).at;
+    occurrence_at(cal, tz, start).or_else(|| {
+        let to = start
+            .checked_add(jiff::SignedDuration::from_millis(MAX_WINDOW_MS))
+            .ok()?;
+        occurrences(cal, tz, start, to)
+            .occurrences
+            .into_iter()
+            .next()
+    })
 }
 
 impl std::fmt::Debug for CalendarInfo {

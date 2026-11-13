@@ -17,7 +17,9 @@ const MAX_EVENTS: usize = 1_000_000;
 /// hundreds of megabytes).
 const MAX_NODES: usize = 200_000;
 /// The most text kept for one element (an `address-data` card, with room for escaping).
-const MAX_TEXT: usize = 512 * 1024;
+// Above the largest calendar object (1 MiB) with its XML escaping (T39a review: a larger object made
+// the whole answer unreadable and stopped the calendar's sync for good).
+const MAX_TEXT: usize = 3 * 1024 * 1024;
 /// The most `response` elements read from one answer.
 pub(crate) const MAX_RESPONSES: usize = 20_000;
 

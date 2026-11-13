@@ -380,7 +380,14 @@ fn stored(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredContact> {
 /// delete removes the row and a create or update keeps it at `href`, with no etag until the next
 /// listing. When the person changed it again meanwhile, only `href` is recorded and the newer change
 /// still waits (a create that went through becomes an update).
-pub fn confirm(conn: &Connection, account: i64, id: i64, revision: i64, href: &str) -> Result<()> {
+pub fn confirm(
+    conn: &Connection,
+    account: i64,
+    id: i64,
+    revision: i64,
+    href: &str,
+    etag: Option<&str>,
+) -> Result<()> {
     let deleted = conn.execute(
         "DELETE FROM contact WHERE account_id = ?1 AND id = ?2 AND pending = 3 AND revision = ?3",
         params![account, id, revision],
@@ -389,9 +396,9 @@ pub fn confirm(conn: &Connection, account: i64, id: i64, revision: i64, href: &s
         return Ok(());
     }
     let done = conn.execute(
-        "UPDATE contact SET pending = 0, href = ?3, etag = NULL
+        "UPDATE contact SET pending = 0, href = ?3, etag = ?5
           WHERE account_id = ?1 AND id = ?2 AND revision = ?4",
-        params![account, id, href, revision],
+        params![account, id, href, revision, etag],
     )?;
     if done == 0 && !href.is_empty() {
         conn.execute(
@@ -655,7 +662,7 @@ mod tests {
         );
         {
             let r = pending(c, a).unwrap()[0].0.revision;
-            confirm(c, a, new, r, "/b/n.vcf").unwrap();
+            confirm(c, a, new, r, "/b/n.vcf", None).unwrap();
         }
         assert!(pending(c, a).unwrap().is_empty());
         let got = get(c, a, new).unwrap().unwrap();
@@ -705,7 +712,7 @@ mod tests {
         assert_eq!(pending(c, a).unwrap()[0].0.pending, PENDING_DELETE);
         {
             let r = pending(c, a).unwrap()[0].0.revision;
-            confirm(c, a, new, r, "/b/n.vcf").unwrap();
+            confirm(c, a, new, r, "/b/n.vcf", None).unwrap();
         }
         assert!(pending(c, a).unwrap().is_empty());
 
@@ -727,7 +734,7 @@ mod tests {
         let sent = pending(c, a).unwrap()[0].0.revision;
         // The person edits while the create is on its way; then the create is confirmed.
         assert!(update_local(c, a, id, &card("n", "Second", "n@x.example"), 2).unwrap());
-        confirm(c, a, id, sent, "/b/n.vcf").unwrap();
+        confirm(c, a, id, sent, "/b/n.vcf", None).unwrap();
         let now = pending(c, a).unwrap();
         assert_eq!(now.len(), 1, "the edit still waits");
         assert_eq!(

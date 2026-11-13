@@ -26,7 +26,7 @@ account's address book. Compose suggests contacts first, then recent recipients.
   number with their kind; an address row has "Key attached" when the card carries a key (encryption is T41 and T42). The postal
   address, the birthday and the notes when there are any. "Recent conversations": the last three messages from or to the first
   address, from the device's search index, each opening the conversation. A conflict with the server shows a line: "Changed on
-  the server too; this copy was kept as a new contact". Invite (calendar) waits for T39; star (favourite) and photos are not in
+  the server too: your change was not sent and the server's version was kept" (wording fixed in T39a). Invite (calendar) waits for T39; star (favourite) and photos are not in
   this task (OPEN-ITEMS).
 - **S42 Edit contact.** First and last name, emails (add, remove), phones (add, remove), one postal address, organisation, notes,
   and "Save to" (the address book, chosen for a new contact only; the first book of the first account is the default). Save is

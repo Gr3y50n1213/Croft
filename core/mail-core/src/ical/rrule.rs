@@ -17,7 +17,10 @@ use jiff::Timestamp;
 /// No occurrence after this year is made.
 pub const LAST_YEAR: i16 = 2100;
 /// The most periods (days, weeks, months or years) looked at for one rule, whatever the window.
-pub const MAX_PERIODS: usize = 100_000;
+pub const MAX_PERIODS: usize = 50_000;
+/// The most work (days considered, roughly) one expansion may do; past it the expansion stops and
+/// says it was cut short. A hostile rule costs at most this, whatever its parts (T39a review).
+pub const MAX_WORK: u64 = 400_000;
 
 /// How often.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +171,18 @@ pub fn parse(text: &str) -> Option<Rule> {
         // Ordinals only make sense in monthly and yearly rules.
         rule.supported = false;
     }
+    if rule.freq == Freq::Weekly && !rule.by_month_day.is_empty() {
+        // Not allowed by RFC 5545: never guessed.
+        rule.supported = false;
+    }
+    if rule.freq == Freq::Yearly
+        && rule.by_month.is_empty()
+        && !rule.by_month_day.is_empty()
+        && rule.by_day.iter().any(|(n, _)| *n != 0)
+    {
+        // Ordinals within the year combined with month days: not expanded.
+        rule.supported = false;
+    }
     Some(rule)
 }
 
@@ -215,7 +230,8 @@ fn read_byday(v: &str) -> Option<(i32, Weekday)> {
 /// The occurrences of `rule` from `start` (always the first), in order, as wall times, that fall
 /// in `[from, to)`. `past_until` says whether an occurrence's wall time is after `UNTIL` (the
 /// caller knows the zone an instant `UNTIL` is compared in). At most `max` are returned; the flag
-/// says whether more were left out.
+/// says whether some were left out (more than `max`, or [`MAX_WORK`] reached). Without `COUNT`
+/// the periods before `from` are skipped, so a window far from the start costs no more.
 pub fn expand(
     rule: &Rule,
     start: DateTime,
@@ -257,7 +273,19 @@ pub fn expand(
     }
     let time = start.time();
     let first = start.date();
-    for k in 0..MAX_PERIODS {
+    let per_period = period_cost(rule);
+    let mut work: u64 = 0;
+    // Without COUNT nothing before the window needs counting: start one period before it.
+    let skip = if rule.count.is_none() {
+        periods_before(rule, first, from.date()).saturating_sub(1)
+    } else {
+        0
+    };
+    for k in skip..skip.saturating_add(MAX_PERIODS) {
+        work = work.saturating_add(per_period);
+        if work > MAX_WORK {
+            return (out, true);
+        }
         let Some(step) = i64::try_from(k)
             .ok()
             .and_then(|k| k.checked_mul(i64::from(rule.interval)))
@@ -292,6 +320,41 @@ enum Flow {
     Go,
     Stop,
     Full,
+}
+
+/// Roughly how many days one period of `rule` looks at.
+fn period_cost(rule: &Rule) -> u64 {
+    let months: u64 = match rule.freq {
+        Freq::Daily | Freq::Weekly => return 7,
+        Freq::Monthly => 1,
+        Freq::Yearly if !rule.by_month.is_empty() => rule.by_month.len() as u64,
+        Freq::Yearly if !rule.by_month_day.is_empty() => 12,
+        Freq::Yearly => return 1 + 53 * rule.by_day.len() as u64,
+    };
+    months * (1 + rule.by_month_day.len() as u64 + 5 * rule.by_day.len() as u64)
+}
+
+/// How many whole periods of `rule` lie between the one holding `first` and the one holding `day`.
+fn periods_before(rule: &Rule, first: Date, day: Date) -> usize {
+    if day <= first {
+        return 0;
+    }
+    let units: i64 = match rule.freq {
+        Freq::Daily => first
+            .until(day)
+            .map(|s| i64::from(s.get_days()))
+            .unwrap_or(0),
+        Freq::Weekly => week_start(first, rule.week_start)
+            .until(day)
+            .map(|s| i64::from(s.get_days()) / 7)
+            .unwrap_or(0),
+        Freq::Monthly => {
+            (i64::from(day.year()) * 12 + i64::from(day.month()))
+                - (i64::from(first.year()) * 12 + i64::from(first.month()))
+        }
+        Freq::Yearly => i64::from(day.year()) - i64::from(first.year()),
+    };
+    usize::try_from(units.max(0) / i64::from(rule.interval.max(1))).unwrap_or(0)
 }
 
 /// The first day of period `step` (in units of the frequency) counted from the one holding `first`.
@@ -399,7 +462,14 @@ fn month_days(rule: &Rule, first: Date, y: i16, m: i8) -> Vec<Date> {
         .flat_map(|&(n, w)| month_weekdays(y, m, n, w))
         .collect();
     match (rule.by_month_day.is_empty(), rule.by_day.is_empty()) {
-        (false, false) => by_md.into_iter().filter(|d| by_wd.contains(d)).collect(),
+        (false, false) => {
+            let mut wd = by_wd;
+            wd.sort_unstable();
+            by_md
+                .into_iter()
+                .filter(|d| wd.binary_search(d).is_ok())
+                .collect()
+        }
         (false, true) => by_md,
         (true, false) => by_wd,
         (true, true) => Date::new(y, m, first.day()).ok().into_iter().collect(),

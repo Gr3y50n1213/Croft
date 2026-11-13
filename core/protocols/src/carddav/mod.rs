@@ -11,7 +11,7 @@ use crate::types::BackendError;
 
 pub use crate::dav::{
     Changes, Collection as AddressBook, DavConfig as CardDavConfig, Fetched as FetchedCard,
-    ItemRef as CardRef, WriteOutcome, MULTIGET_BATCH,
+    ItemRef as CardRef, WriteOutcome, Written, MULTIGET_BATCH,
 };
 
 /// An account's CardDAV client.
@@ -50,6 +50,16 @@ impl CardDav {
         etag: Option<&str>,
     ) -> Result<WriteOutcome, BackendError> {
         self.0.put(path, card, etag).await
+    }
+
+    /// Writes `card` at `path` like `put`, with the etag of the version written when the server gave one.
+    pub async fn put_tagged(
+        &self,
+        path: &str,
+        card: &str,
+        etag: Option<&str>,
+    ) -> Result<Written, BackendError> {
+        self.0.put_tagged(path, card, etag).await
     }
 
     /// Deletes the card at `path` if it still has `etag`.

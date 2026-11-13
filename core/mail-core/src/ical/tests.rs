@@ -5,7 +5,7 @@
 
 use super::expand::{occurrences, span};
 use super::rrule;
-use super::write::{self, EventFields, Repeat};
+use super::write::{self, Changed, EventFields, Repeat};
 use super::zone::{iana, Zones};
 use super::*;
 use jiff::tz::TimeZone;
@@ -645,6 +645,7 @@ fn fields(title: &str) -> EventFields {
         notes: "Bring the plan; and the notes".into(),
         repeat: Repeat::Weekly,
         reminders: vec![10],
+        changed: write::Changed::ALL,
     }
 }
 
@@ -829,4 +830,139 @@ fn the_repeat_preset_of_a_rule_is_found_or_kept() {
     );
     assert_eq!(Repeat::of(Some("FREQ=YEARLY"), monday), Repeat::Yearly);
     assert_eq!(Repeat::of(Some("FREQ=DAILY;COUNT=5"), monday), Repeat::Keep);
+}
+
+#[test]
+fn a_title_only_edit_keeps_another_clients_exceptions_whatever_the_start_and_rule_look_like() {
+    // A series written in UTC with Apple's `INTERVAL=1`, one excluded day and one moved occurrence.
+    let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:h@example.org\r\nDTSTART:20261102T090000Z\r\nDTEND:20261102T093000Z\r\nRRULE:FREQ=WEEKLY;INTERVAL=1\r\nEXDATE:20261109T090000Z\r\nSUMMARY:Sync\r\nDESCRIPTION:Tab\there\r\nBEGIN:VALARM\r\nACTION:AUDIO\r\nTRIGGER:-PT5M\r\nACKNOWLEDGED:20261101T000000Z\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:h@example.org\r\nRECURRENCE-ID:20261116T090000Z\r\nDTSTART:20261116T110000Z\r\nDTEND:20261116T113000Z\r\nSUMMARY:Sync (moved)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let mut cal = parse(text).expect("parses");
+    let mut f = fields("Weekly sync");
+    f.changed = Changed {
+        title: true,
+        times: false,
+        location: false,
+        notes: false,
+        reminders: false,
+    };
+    f.repeat = Repeat::Keep;
+    assert!(write::edit_all(&mut cal, &f, ts("2026-11-01T00:00:00Z")));
+    let out = cal.to_text();
+    for kept in [
+        "DTSTART:20261102T090000Z",
+        "RRULE:FREQ=WEEKLY;INTERVAL=1",
+        "EXDATE:20261109T090000Z",
+        "RECURRENCE-ID:20261116T090000Z",
+        "DESCRIPTION:Tab\there",
+        "ACTION:AUDIO",
+        "ACKNOWLEDGED:20261101T000000Z",
+    ] {
+        assert!(out.contains(kept), "{kept} lost");
+    }
+    assert!(out.contains("SUMMARY:Weekly sync"));
+    assert!(
+        !out.contains("LOCATION"),
+        "an unchanged place is not written"
+    );
+    // The same start written another way, and the preset written in Croft's form, are not changes either.
+    let mut f = fields("Weekly sync");
+    f.zone = Some("UTC".into());
+    f.start = wall("2026-11-02T09:00");
+    f.end = wall("2026-11-02T09:30");
+    f.changed = Changed {
+        title: false,
+        times: true,
+        location: false,
+        notes: false,
+        reminders: false,
+    };
+    f.repeat = Repeat::Keep;
+    write::edit_all(&mut cal, &f, ts("2026-11-01T00:00:00Z"));
+    let e = cal.events();
+    assert_eq!(e.len(), 2, "the moved occurrence stays");
+    assert_eq!(e[0].exdates.len(), 1);
+    // An override written in another form is found, not duplicated.
+    let rid = When::Zoned(wall("2026-11-16T10:00"), "Europe/Berlin".into());
+    let mut f = fields("Sync (later)");
+    f.repeat = Repeat::None;
+    f.start = wall("2026-11-16T13:00");
+    f.end = wall("2026-11-16T13:30");
+    assert!(write::edit_one(
+        &mut cal,
+        &rid,
+        &f,
+        ts("2026-11-01T00:00:00Z")
+    ));
+    assert_eq!(cal.events().len(), 2);
+}
+
+#[test]
+fn hostile_rules_are_cut_short_quickly_and_windows_far_ahead_cost_nothing_more() {
+    let days: Vec<String> = (1..=31).chain(-31..=-1).map(|d| d.to_string()).collect();
+    let weekdays: Vec<String> = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+        .iter()
+        .flat_map(|d| (1..=5).chain(-5..=-1).map(move |n| format!("{n}{d}")))
+        .collect();
+    let rule = format!(
+        "FREQ=YEARLY;BYMONTH=1,2,3,4,5,6,7,8,9,10,11,12;BYMONTHDAY={};BYDAY={}",
+        days.join(","),
+        weekdays.join(",")
+    );
+    let ics = object(&format!("DTSTART:00010101T090000Z\nRRULE:{rule}"));
+    let cal = parse(&ics).expect("parses");
+    let started = std::time::Instant::now();
+    let e = occurrences(
+        &cal,
+        &TimeZone::UTC,
+        ts("2026-01-01T00:00:00Z"),
+        ts("2027-01-01T00:00:00Z"),
+    );
+    let _ = span(&cal, &TimeZone::UTC);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(e.occurrences.len() <= super::expand::MAX_PER_WINDOW);
+    // A daily repeat from 1900, asked about 2026: found without walking from 1900 under the budget.
+    let old = parse(&object("DTSTART:19000101T090000Z\nRRULE:FREQ=DAILY")).expect("parses");
+    let o = occurrences(
+        &old,
+        &TimeZone::UTC,
+        ts("2026-11-13T00:00:00Z"),
+        ts("2026-11-15T00:00:00Z"),
+    );
+    assert_eq!(o.occurrences.len(), 2);
+    assert!(!o.truncated);
+    // Rules RFC 5545 does not allow, or that Croft would get wrong, are not expanded.
+    for r in [
+        "FREQ=WEEKLY;BYMONTHDAY=3",
+        "FREQ=YEARLY;BYDAY=20MO;BYMONTHDAY=3",
+    ] {
+        assert!(!rrule::parse(r).expect("parses").supported, "{r}");
+    }
+}
+
+#[test]
+fn one_occurrence_is_found_by_its_key_however_far_it_moved() {
+    let text = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:m@example.org\r\nDTSTART:20261102T090000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:m@example.org\r\nRECURRENCE-ID:20261109T090000Z\r\nDTSTART:20290101T090000Z\r\nSUMMARY:Far away\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:m@example.org\r\nRECURRENCE-ID:not-a-date\r\nDTSTART:20261123T150000Z\r\nSUMMARY:Unplaceable\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let cal = parse(text).expect("parses");
+    let o = super::expand::occurrence_at(&cal, &TimeZone::UTC, ts("2026-11-09T09:00:00Z"))
+        .expect("found");
+    assert_eq!(o.start, ts("2029-01-01T09:00:00Z"));
+    assert_eq!(cal.events()[o.source].summary.as_deref(), Some("Far away"));
+    let plain = super::expand::occurrence_at(&cal, &TimeZone::UTC, ts("2026-11-16T09:00:00Z"))
+        .expect("found");
+    assert_eq!(plain.source, 0);
+    // The override with an unreadable RECURRENCE-ID is never taken as the master, and is not shown.
+    assert!(!cal.events()[0].is_override);
+    let week = occurrences(
+        &cal,
+        &TimeZone::UTC,
+        ts("2026-11-23T00:00:00Z"),
+        ts("2026-11-24T00:00:00Z"),
+    )
+    .occurrences;
+    assert_eq!(week.len(), 1);
+    assert_eq!(week[0].start, ts("2026-11-23T09:00:00Z"));
 }

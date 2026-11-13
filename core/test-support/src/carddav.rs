@@ -55,6 +55,8 @@ struct State {
     principal_href: Option<String>,
     /// The scheme named in `WWW-Authenticate` on a 401 (`Basic`), or none.
     challenge: Option<String>,
+    /// Every `PUT` is refused with 403 (a server that will not take an object).
+    refuse_puts: bool,
     requests: Vec<DavRequest>,
 }
 
@@ -160,6 +162,11 @@ impl DavServer {
     /// The scheme a 401 asks for (`None`: a 401 asks for nothing Croft has).
     pub fn set_challenge(&self, scheme: Option<&str>) {
         self.st().challenge = scheme.map(str::to_owned);
+    }
+
+    /// Refuses every `PUT` with 403 (`valid-calendar-object-resource` and the like), or stops.
+    pub fn set_refuse_puts(&self, on: bool) {
+        self.st().refuse_puts = on;
     }
 
     /// Every request so far.
@@ -440,18 +447,19 @@ fn route(
             }
             (207, Vec::new(), ms(&inner))
         }
+        ("PUT", _) if s.refuse_puts => (403, Vec::new(), String::new()),
         ("PUT", p) if (p.starts_with(BOOK) && p.len() > BOOK.len()) || (p.starts_with(CALENDAR) && p.len() > CALENDAR.len()) => {
             let current = s.cards.get(p).map(|(e, _)| e.clone());
             match (header(headers, "if-match"), header(headers, "if-none-match"), current) {
                 (Some(want), _, Some(have)) if want == have => {
-                    bump(s, p, Some(body.to_owned()));
-                    (204, Vec::new(), String::new())
+                    let etag = bump(s, p, Some(body.to_owned()));
+                    (204, vec![("ETag".into(), etag)], String::new())
                 }
                 (Some(_), _, Some(_)) => (412, Vec::new(), String::new()),
                 (Some(_), _, None) => (404, Vec::new(), String::new()),
                 (None, Some("*"), None) => {
-                    bump(s, p, Some(body.to_owned()));
-                    (201, Vec::new(), String::new())
+                    let etag = bump(s, p, Some(body.to_owned()));
+                    (201, vec![("ETag".into(), etag)], String::new())
                 }
                 (None, Some("*"), Some(_)) => (412, Vec::new(), String::new()),
                 _ => (400, Vec::new(), String::new()),

@@ -266,8 +266,8 @@ pub(crate) fn new_uid() -> Result<String, CoreError> {
 
 /// What to do with a change made here, after the server answered.
 enum Step {
-    /// Taken by the server (at this address).
-    Confirm(String),
+    /// Taken by the server at this address, in this version when it said.
+    Confirm(String, Option<String>),
     /// The server had changed it: its version is kept.
     Conflict,
     /// Removed on the server.
@@ -413,25 +413,15 @@ impl Core {
             .inner
             .handle
             .read(|db| store::pending(db.connection(), account))?;
+        // A listing per book, read at most once, for deletes whose etag is not known.
+        let mut listings: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, String>,
+        > = std::collections::HashMap::new();
         for (contact, book_path) in waiting {
             let rev = contact.revision;
-            // An update or delete needs the card's etag; one created here and not listed since has
-            // none yet: its current one first. A listing that fails stops the sync (nothing is
-            // decided from a failed answer).
-            let etag = match (&contact.href, &contact.etag) {
-                (Some(_), Some(e)) => Some(e.clone()),
-                (Some(href), None) => match dav.changes(&book_path, None).await {
-                    Ok(ch) => ch
-                        .changed
-                        .into_iter()
-                        .find(|r| &r.path == href)
-                        .map(|r| r.etag),
-                    Err(e) => return Ok(outcome(net(e), conflicts)),
-                },
-                (None, _) => None,
-            };
-            let step = match (contact.pending, &contact.href) {
-                (store::PENDING_CREATE, _) => {
+            let step = match (contact.pending, &contact.href, &contact.etag) {
+                (store::PENDING_CREATE, _, _) => {
                     let uid = vcard::parse(&contact.card)
                         .ok()
                         .and_then(|c| c.contact().uid)
@@ -442,44 +432,71 @@ impl Core {
                         })
                         .map_or_else(new_uid, Ok)?;
                     let href = format!("{}/{uid}.vcf", book_path.trim_end_matches('/'));
-                    match dav.put(&href, &contact.card, None).await {
+                    match dav.put_tagged(&href, &contact.card, None).await {
+                        Ok(w) if w.outcome == WriteOutcome::Done => Ok(Step::Confirm(href, w.etag)),
                         // 412 on a create: a card is already there, most likely this one after a lost
                         // answer (the href comes from the card's own UID). It is taken as created and
                         // the next listing brings the server's version.
-                        Ok(WriteOutcome::Done | WriteOutcome::Conflict) => Ok(Step::Confirm(href)),
+                        Ok(w) if w.outcome == WriteOutcome::Conflict => {
+                            Ok(Step::Confirm(href, None))
+                        }
                         // The book refused a new card (404 or 410): it stays waiting.
-                        Ok(WriteOutcome::Gone) => Ok(Step::Keep),
+                        Ok(_) => Ok(Step::Keep),
                         Err(e) => Err(e),
                     }
                 }
-                (store::PENDING_UPDATE, Some(href)) => match &etag {
-                    Some(e) => match dav.put(href, &contact.card, Some(e)).await {
-                        Ok(WriteOutcome::Done) => Ok(Step::Confirm(href.clone())),
-                        Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
-                        Ok(WriteOutcome::Gone) => Ok(Step::Gone),
+                (store::PENDING_UPDATE, Some(href), Some(e)) => {
+                    match dav.put_tagged(href, &contact.card, Some(e)).await {
+                        Ok(w) => Ok(match w.outcome {
+                            WriteOutcome::Done => Step::Confirm(href.clone(), w.etag),
+                            WriteOutcome::Conflict => Step::Conflict,
+                            WriteOutcome::Gone => Step::Gone,
+                        }),
                         Err(e) => Err(e),
-                    },
-                    // Listed without it: removed on the server meanwhile.
-                    None => Ok(Step::Gone),
+                    }
+                }
+                // The version on the server is not known: never sent blindly over a change it has not
+                // seen. The server's version is kept and the contact marked (T39a review).
+                (store::PENDING_UPDATE, Some(_), None) => Ok(Step::Conflict),
+                (store::PENDING_DELETE, Some(href), Some(e)) => match dav.delete(href, e).await {
+                    Ok(WriteOutcome::Done | WriteOutcome::Gone) => {
+                        Ok(Step::Confirm(href.clone(), None))
+                    }
+                    Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
+                    Err(e) => Err(e),
                 },
-                (store::PENDING_DELETE, Some(href)) => match &etag {
-                    Some(e) => match dav.delete(href, e).await {
-                        Ok(WriteOutcome::Done | WriteOutcome::Gone) => {
-                            Ok(Step::Confirm(href.clone()))
+                (store::PENDING_DELETE, Some(href), None) => {
+                    if !listings.contains_key(&book_path) {
+                        match dav.changes(&book_path, None).await {
+                            Ok(ch) => {
+                                let map =
+                                    ch.changed.into_iter().map(|r| (r.path, r.etag)).collect();
+                                listings.insert(book_path.clone(), map);
+                            }
+                            // A listing that fails stops the sync (nothing is decided from a failed answer).
+                            Err(e) => return Ok(outcome(net(e), conflicts)),
                         }
-                        Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
-                        Err(e) => Err(e),
-                    },
-                    None => Ok(Step::Confirm(href.clone())),
-                },
+                    }
+                    match listings.get(&book_path).and_then(|l| l.get(href)) {
+                        None => Ok(Step::Confirm(href.clone(), None)),
+                        Some(_) => Ok(Step::Conflict),
+                    }
+                }
                 _ => Ok(Step::Keep),
             };
             match step {
-                Ok(Step::Confirm(href)) => self
-                    .inner
-                    .handle
-                    .read(|db| store::confirm(db.connection(), account, contact.id, rev, &href))?,
-                Ok(Step::Conflict) => {
+                Ok(Step::Confirm(href, etag)) => self.inner.handle.read(|db| {
+                    store::confirm(
+                        db.connection(),
+                        account,
+                        contact.id,
+                        rev,
+                        &href,
+                        etag.as_deref(),
+                    )
+                })?,
+                // Refused for good (403, 415 and the like): marked and left, so it never blocks the rest.
+                Ok(Step::Conflict) | Err(BackendError::Permanent(_)) => {
                     conflicts += 1;
                     self.inner.handle.read(|db| {
                         store::mark_conflict(db.connection(), account, contact.id, rev)

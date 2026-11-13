@@ -10,7 +10,8 @@ W01, the inbox (T31a): folders, the list with hover actions and trackpad swipes,
 keyboard shortcuts (`?` lists them); W02 (T31b): the conversation and compose windows; W04, settings (T32a): appearance (applied
 before the first paint by `static/theme.js`, kept in this browser), swipe and hover actions, passkeys and signed-in devices, mail
 accounts, about; the installable app (T32b): a manifest, a service worker that keeps the app's own files so it opens offline,
-and push in the browser (W04's Notifications).
+and push in the browser (W04's Notifications); scheduled send and the Scheduled view (T33a); search in W01 (T33b: `/`, the
+phone's query language, matches marked, the mail server on request).
 
 ## Develop
 

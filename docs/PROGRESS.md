@@ -41,7 +41,7 @@ unverified, the next step.
 - **S37:** no Edit or Delete for an event from a link.
 - **S38:** new events never go to a calendar from a link.
 - **S39:**
-  - "Subscribe to a calendar link": the link, a name and the account, with each problem said plainly.
+  - "Subscribe to a calendar link" (in place on the screen): the link, a name and the account, with each problem said plainly.
   - Linked calendars show a link icon and Remove, which asks first.
 
 **Checks.** All local and passed:

@@ -44,7 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.mutableStateOf
@@ -120,7 +119,9 @@ fun CalendarsScreen(controller: CalendarController, onBack: () -> Unit, modifier
                     }
                 }
             }
-            if (state.knownAccounts.isNotEmpty()) {
+            if (subscribing) {
+                SubscribeForm(controller, onDone = { subscribing = false })
+            } else if (state.knownAccounts.isNotEmpty()) {
                 CroftButton(
                     stringResource(R.string.calendars_subscribe), { subscribing = true }, Modifier.padding(top = 12.dp).testTag(CalendarsTags.SUBSCRIBE),
                     kind = ButtonKind.TONAL, leadingIcon = Icons.Filled.Add,
@@ -129,7 +130,6 @@ fun CalendarsScreen(controller: CalendarController, onBack: () -> Unit, modifier
             Text(stringResource(R.string.calendars_note), Modifier.padding(top = 16.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
-    if (subscribing) SubscribeDialog(controller, onDone = { subscribing = false })
     removing?.let { c ->
         DestructiveDialog(
             title = stringResource(R.string.calendars_remove_title),
@@ -141,9 +141,12 @@ fun CalendarsScreen(controller: CalendarController, onBack: () -> Unit, modifier
     }
 }
 
-/** "Subscribe to a calendar link": the address, a name, and for which account; it says the calendar is read-only and fetched from time to time. */
+/**
+ * "Subscribe to a calendar link", in place on the screen (not a dialog): the address, a name, and for which account; it says the
+ * calendar is read-only and fetched from time to time.
+ */
 @Composable
-private fun SubscribeDialog(controller: CalendarController, onDone: () -> Unit) {
+private fun SubscribeForm(controller: CalendarController, onDone: () -> Unit) {
     val state by controller.state.collectAsState()
     val accounts = state.knownAccounts
     var url by remember { mutableStateOf("") }
@@ -152,38 +155,38 @@ private fun SubscribeDialog(controller: CalendarController, onDone: () -> Unit) 
     var busy by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<LinkProblem?>(null) }
     val scope = rememberCoroutineScope()
-    AlertDialog(
-        onDismissRequest = { if (!busy) onDone() },
-        title = { Text(stringResource(R.string.calendars_subscribe)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.calendars_subscribe_note), style = MaterialTheme.typography.bodyMedium)
-                CroftTextField(url, { url = it; problem = null }, stringResource(R.string.calendars_link_address), Modifier.fillMaxWidth().testTag(CalendarsTags.LINK_URL), keyboardType = KeyboardType.Uri)
-                CroftTextField(name, { name = it }, stringResource(R.string.calendars_link_name), Modifier.fillMaxWidth().testTag(CalendarsTags.LINK_NAME))
-                if (accounts.size > 1) {
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for (a in accounts) CroftFilterChip(a.label, account == a.id, { account = a.id })
-                    }
-                }
-                problem?.let { p ->
-                    Text(
-                        stringResource(
-                            when (p) {
-                                LinkProblem.BAD_ADDRESS -> R.string.calendars_link_bad_address
-                                LinkProblem.NOT_A_CALENDAR -> R.string.calendars_link_not_calendar
-                                LinkProblem.UNREACHABLE -> R.string.calendars_link_unreachable
-                                LinkProblem.REFUSED -> R.string.calendars_link_refused
-                                LinkProblem.ALREADY_ADDED -> R.string.calendars_link_already
-                                LinkProblem.TOO_MANY -> R.string.calendars_link_too_many
-                            },
-                        ),
-                        Modifier.testTag(CalendarsTags.LINK_ERROR).semantics { liveRegion = LiveRegionMode.Polite },
-                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
+    Column(
+        Modifier.fillMaxWidth().padding(top = 12.dp).clip(MaterialTheme.shapes.large)
+            .background(MaterialTheme.colorScheme.surfaceContainer).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(stringResource(R.string.calendars_subscribe), Modifier.semantics { heading() }, style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.calendars_subscribe_note), style = MaterialTheme.typography.bodyMedium)
+        CroftTextField(url, { url = it; problem = null }, stringResource(R.string.calendars_link_address), Modifier.fillMaxWidth().testTag(CalendarsTags.LINK_URL), keyboardType = KeyboardType.Uri)
+        CroftTextField(name, { name = it }, stringResource(R.string.calendars_link_name), Modifier.fillMaxWidth().testTag(CalendarsTags.LINK_NAME))
+        if (accounts.size > 1) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (a in accounts) CroftFilterChip(a.label, account == a.id, { account = a.id })
             }
-        },
-        confirmButton = {
+        }
+        problem?.let { p ->
+            Text(
+                stringResource(
+                    when (p) {
+                        LinkProblem.BAD_ADDRESS -> R.string.calendars_link_bad_address
+                        LinkProblem.NOT_A_CALENDAR -> R.string.calendars_link_not_calendar
+                        LinkProblem.UNREACHABLE -> R.string.calendars_link_unreachable
+                        LinkProblem.REFUSED -> R.string.calendars_link_refused
+                        LinkProblem.ALREADY_ADDED -> R.string.calendars_link_already
+                        LinkProblem.TOO_MANY -> R.string.calendars_link_too_many
+                    },
+                ),
+                Modifier.testTag(CalendarsTags.LINK_ERROR).semantics { liveRegion = LiveRegionMode.Polite },
+                color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Row(Modifier.align(Alignment.End), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton({ if (!busy) onDone() }) { Text(stringResource(R.string.control_cancel)) }
             CroftButton(
                 stringResource(R.string.calendars_link_add),
                 {
@@ -200,7 +203,6 @@ private fun SubscribeDialog(controller: CalendarController, onDone: () -> Unit) 
                 progress = if (busy) ButtonProgress.LOADING else ButtonProgress.IDLE,
                 kind = ButtonKind.TEXT,
             )
-        },
-        dismissButton = { TextButton({ if (!busy) onDone() }) { Text(stringResource(R.string.control_cancel)) } },
-    )
+        }
+    }
 }

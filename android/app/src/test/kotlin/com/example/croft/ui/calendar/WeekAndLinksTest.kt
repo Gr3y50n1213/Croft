@@ -109,7 +109,9 @@ class WeekAndLinksTest {
     private var moveRequested: Occurrence? = null
 
     private fun openWeek(b: FakeCalendarBackend, haptics: RecordingHaptics = RecordingHaptics()) {
-        ScreenshotKit.configure(360, 1600, false, 1.0f)
+        // Tall enough that the whole day fits and the grid never scrolls: a touch's place in a day column is then the same
+        // whether measured from the column's top or from its visible top.
+        ScreenshotKit.configure(360, 2600, false, 1.0f)
         rule.show(AnimationLevel.OFF, haptics) {
             val scope = rememberCoroutineScope()
             val c = remember { CalendarController(b, { listOf(CalendarAccount(1, "Sam")) }, scope, { utc }, { now }).also { it.setView(CalendarView.WEEK); it.start() } }

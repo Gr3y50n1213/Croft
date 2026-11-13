@@ -617,3 +617,24 @@ fn only_https_and_webcal_links_are_taken() {
         assert!(out.calendar.is_none(), "{bad}");
     }
 }
+
+#[test]
+fn zz_review_link_breaks_caldav_sync() {
+    crate::calendar::LINK_LOOPBACK_FOR_TESTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let m = Mail::new();
+    let dav = block(DavServer::start_with("alice", crate::tests::PASSWORD));
+    dav.put_event("review.ics", &once("review", "20261117T140000Z", "Review"));
+    m.core().set_carddav_url_for_tests(m.account, &dav.origin());
+    assert_eq!(sync(&m), CalendarSyncResult::Done);
+    let file = std::sync::Arc::new(std::sync::Mutex::new(feed(&[("xmas", "20261225", "Christmas")])));
+    let url = feed_server(file);
+    let id = block(m.core().clone().subscribe_calendar(m.account, url, "Holidays".into())).unwrap().calendar.unwrap();
+    // A server without calendar-order: the link sorts before the CalDAV calendar (simulated by giving the link order 1).
+    m.core().inner.handle.read(|db| db.connection().execute("UPDATE calendar SET sort_order = 1 WHERE id = ?1", [id]).unwrap());
+    dav.put_event("later.ics", &once("later", "20261118T140000Z", "Later"));
+    let before = dav.requests().len();
+    let r = sync(&m);
+    let reqs = dav.requests();
+    println!("result after link: {r:?}; requests this sync: {:?}", reqs[before..].iter().map(|q| (q.method.clone(), q.path.clone())).collect::<Vec<_>>());
+    println!("week: {:?}", titles(&m, MON, MON + WEEK));
+}

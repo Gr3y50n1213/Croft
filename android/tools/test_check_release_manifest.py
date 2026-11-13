@@ -232,7 +232,8 @@ class ManifestCheck(unittest.TestCase):
     UP_APP = (
         '<receiver android:name="org.unifiedpush.android.connector.internal.MessagingReceiverImpl" android:exported="true">'
         '<intent-filter><action android:name="org.unifiedpush.android.connector.MESSAGE" />'
-        '<action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" /></intent-filter></receiver>'
+        '<action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />'
+        '<action android:name="org.unifiedpush.android.connector.TEMP_UNAVAILABLE" /></intent-filter></receiver>'
         '<service android:name="org.unifiedpush.android.connector.internal.RaiseToForegroundService" android:exported="true">'
         '<intent-filter><action android:name="org.unifiedpush.android.connector.RAISE_TO_FOREGROUND" /></intent-filter></service>'
     )

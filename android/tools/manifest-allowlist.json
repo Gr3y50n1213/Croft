@@ -76,13 +76,14 @@
       "uses-permission": {},
       "exported": {
         "receiver:org.unifiedpush.android.connector.internal.MessagingReceiverImpl": {
-          "why": "T34d, fdroid and github: UnifiedPush's connector library. The distributor app (ntfy, for example) delivers new endpoints and messages to this receiver by broadcast; the library acts only on broadcasts carrying the random token of this app's own registration (anything else is dropped), and Croft counts a message only when it decrypted with this device's Web Push keys. Messages only make the app check for mail.",
+          "why": "T34d, fdroid and github: UnifiedPush's connector library. The distributor app (ntfy, for example) delivers new endpoints and messages to this receiver by broadcast; the library acts only on broadcasts carrying the random token of this app's own registration (anything else is dropped), and Croft counts a message only when it decrypted with this device's Web Push keys. Messages only make the app check for mail. TEMP_UNAVAILABLE (connector 3.3) is the distributor saying it cannot deliver for now; it is handled like the others, by the same token check.",
           "permission": null,
           "actions": [
             "org.unifiedpush.android.connector.MESSAGE",
             "org.unifiedpush.android.connector.UNREGISTERED",
             "org.unifiedpush.android.connector.NEW_ENDPOINT",
-            "org.unifiedpush.android.connector.REGISTRATION_FAILED"
+            "org.unifiedpush.android.connector.REGISTRATION_FAILED",
+            "org.unifiedpush.android.connector.TEMP_UNAVAILABLE"
           ]
         },
         "service:org.unifiedpush.android.connector.internal.RaiseToForegroundService": {

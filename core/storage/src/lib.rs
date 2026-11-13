@@ -23,6 +23,7 @@ pub mod reading;
 pub mod recipients;
 pub mod search;
 pub mod settings;
+pub mod unsubscribe;
 
 #[cfg(test)]
 mod jmap_ids_tests;
@@ -107,6 +108,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "pin_follow_up",
         sql: include_str!("../migrations/0010_pin_follow_up.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "unsubscribe",
+        sql: include_str!("../migrations/0011_unsubscribe.sql"),
     },
 ];
 

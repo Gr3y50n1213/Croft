@@ -64,6 +64,7 @@ mod test_server;
 #[cfg(test)]
 mod tests;
 mod types;
+mod unsubscribe;
 
 pub use crate::core::{Core, DiscoveryObserver};
 pub use background::{BackgroundCheck, NewMailInfo};
@@ -96,6 +97,7 @@ pub use snooze::SnoozedMessage;
 #[cfg(feature = "test-server")]
 pub use test_server::{TestImapServer, TestJmapServer, TestTokenEndpoint};
 pub use types::*;
+pub use unsubscribe::{UnsubscribeFailure, UnsubscribeInfo, UnsubscribeOutcome, UnsubscribeWay};
 
 uniffi::setup_scaffolding!();
 
@@ -139,11 +141,14 @@ uniffi::setup_scaffolding!();
 ///
 /// Version 17 (T36b): pin and follow-up: `set_pinned`, `set_follow_up`, `list_pinned`,
 /// `list_follow_up`, and `pinned` and `follow_up` on `MessageRow` and `ConversationMessage`.
+///
+/// Version 18 (T37): one-tap unsubscribe: `unsubscribe_info`, `unsubscribe`, the records
+/// `UnsubscribeInfo` and `UnsubscribeOutcome`, the enums `UnsubscribeWay` and `UnsubscribeFailure`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 17;
+pub const FFI_API_VERSION: u32 = 18;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

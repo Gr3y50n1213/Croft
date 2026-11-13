@@ -289,6 +289,43 @@ pub async fn post_push_to_loopback_for_tests(
     .await
 }
 
+/// The body of an RFC 8058 one-click unsubscribe.
+pub const ONE_CLICK_BODY: &str = "List-Unsubscribe=One-Click";
+
+/// The most of an unsubscribe answer that is read (and then dropped unread): enough for a page,
+/// so a large "you are unsubscribed" page is still a success.
+const ONE_CLICK_MAX_ANSWER: usize = 1024 * 1024;
+
+/// RFC 8058 one-click unsubscribe (T37): one `POST` of [`ONE_CLICK_BODY`] as a form to `url`, an
+/// `https` address taken from a message's `List-Unsubscribe`. Anyone can write that header, so:
+/// public addresses only whatever the process's policy allows (a message never makes the phone or
+/// the Companion post into a private network), no `Authorization`, no cookies, no header from the
+/// message, no redirect followed, bounded waits. Returns the status; the answer's body is not
+/// kept. Nothing about the address is logged.
+pub async fn post_unsubscribe(url: &str) -> Result<u16, FetchError> {
+    one_click(url, Reach::Internet).await
+}
+
+/// [`post_unsubscribe`] to plain http on this machine: for tests only (a fake sender).
+pub async fn post_unsubscribe_to_loopback_for_tests(url: &str) -> Result<u16, FetchError> {
+    one_click(url, Reach::Loopback).await
+}
+
+async fn one_click(url: &str, reach: Reach) -> Result<u16, FetchError> {
+    send_with(
+        "POST",
+        url,
+        None,
+        Some("application/x-www-form-urlencoded"),
+        ONE_CLICK_BODY.as_bytes(),
+        &[],
+        ONE_CLICK_MAX_ANSWER,
+        reach,
+    )
+    .await
+    .map(|answer| answer.status)
+}
+
 /// Encodes a form body (`application/x-www-form-urlencoded`), wiped when dropped.
 pub fn form(pairs: &[(&str, &str)]) -> Zeroizing<String> {
     // One buffer, sized for the worst case first, so no partial copy of a secret value is left

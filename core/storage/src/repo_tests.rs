@@ -1405,3 +1405,48 @@ fn pin_and_follow_up_columns_follow_the_keywords_in_their_account_and_a_sync_kee
     messages::upsert(c, a1, f1, &header(1, "Keep", 1_000)).unwrap();
     assert_eq!(marks(c, m), (false, false, "[]".to_owned()));
 }
+
+#[test]
+fn unsubscribe_reads_the_headers_counts_older_mail_and_remembers_per_account() {
+    use crate::unsubscribe;
+    let (db, a1, f1, a2, f2) = two_accounts();
+    let c = db.connection();
+    let mut h = header(1, "News", 3_000);
+    h.from_addr = Some("News@List.example".into());
+    h.list.unsubscribe = Some("<https://list.example/u>".into());
+    h.list.one_click = true;
+    let m = messages::upsert(c, a1, f1, &h).unwrap();
+    for (uid, date) in [(2, 1_000), (3, 2_000), (4, 9_000)] {
+        let mut o = header(uid, "Older", date);
+        o.from_addr = Some("news@list.example".into());
+        messages::upsert(c, a1, f1, &o).unwrap();
+    }
+    let mut other = header(1, "Theirs", 1_000);
+    other.from_addr = Some("news@list.example".into());
+    messages::upsert(c, a2, f2, &other).unwrap();
+    let got = unsubscribe::headers(c, a1, m).unwrap().unwrap();
+    assert_eq!(got.unsubscribe.as_deref(), Some("<https://list.example/u>"));
+    assert!(got.one_click);
+    assert_eq!(
+        unsubscribe::headers(c, a2, m).unwrap(),
+        None,
+        "not that account's"
+    );
+    let older = unsubscribe::older_from(c, a1, "news@list.example", 3_000, m, 50).unwrap();
+    assert_eq!(
+        older.len(),
+        2,
+        "two older, not the newer one, not the other account's"
+    );
+
+    assert!(!unsubscribe::is_unsubscribed(c, a1, "news@list.example").unwrap());
+    unsubscribe::remember(c, a1, "News@List.Example", 5).unwrap();
+    unsubscribe::remember(c, a1, "news@list.example", 6).unwrap();
+    assert!(unsubscribe::is_unsubscribed(c, a1, "NEWS@list.example").unwrap());
+    assert!(!unsubscribe::is_unsubscribed(c, a2, "news@list.example").unwrap());
+    accounts::delete(c, a1).unwrap();
+    let left: i64 = c
+        .query_row("SELECT count(*) FROM unsubscribed", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "forgotten with the account");
+}

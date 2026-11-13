@@ -107,6 +107,9 @@ import com.example.croft.ui.components.motionProbes
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import com.example.croft.mail.MailCategory
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The top of S10: search pill, selection bar (S11), category chips
@@ -169,14 +172,42 @@ fun InitialCircle(label: String, size: androidx.compose.ui.unit.Dp, container: a
 
 /** The category chips of S10. Only "All" until the smart-inbox phase; the row is a component so the others can join it. */
 @Composable
-fun CategoryChipsRow(modifier: Modifier = Modifier, categories: List<String> = listOf(stringResource(R.string.mail_category_all)), selected: Int = 0, onSelect: (Int) -> Unit = {}) {
+fun CategoryChipsRow(
+    shown: List<MailCategory>,
+    selected: MailCategory?,
+    counts: Map<MailCategory, Long>,
+    onSelect: (MailCategory?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // T35: All, then the categories S49 shows, always in the same order; a badge counts unread mail (never reordering the chips).
     Row(
-        modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag(InboxTags.CHIPS),
+        modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp).testTag(InboxTags.CHIPS),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        categories.forEachIndexed { i, name -> CroftFilterChip(name, selected = i == selected, onClick = { onSelect(i) }) }
+        CroftFilterChip(stringResource(R.string.mail_category_all), selected = selected == null, onClick = { onSelect(null) })
+        for (c in MailCategory.entries.filter { it in shown }) {
+            val unread = counts[c] ?: 0L
+            CroftFilterChip(
+                categoryName(c),
+                selected = selected == c,
+                onClick = { onSelect(c) },
+                count = unread.takeIf { it > 0 }?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt(),
+                modifier = Modifier.testTag(InboxTags.chip(c)),
+            )
+        }
     }
 }
+
+/** The name of a category, as the chips and S30 say it. */
+@Composable
+fun categoryName(c: MailCategory): String = stringResource(
+    when (c) {
+        MailCategory.PRIMARY -> R.string.mail_category_primary
+        MailCategory.UPDATES -> R.string.mail_category_updates
+        MailCategory.PROMOTIONS -> R.string.mail_category_promotions
+        MailCategory.SOCIAL -> R.string.mail_category_social
+    },
+)
 
 /** The icon of a selection action. */
 fun SelectionAction.icon(): ImageVector = when (this) {

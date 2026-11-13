@@ -27,6 +27,12 @@ pub(crate) const HEADER_PROPERTIES: &[&str] = &[
     "subject",
     "from",
     "keywords",
+    // T35: the list and bulk-mail headers (categories, and T37's unsubscribe).
+    "header:List-Id:asText",
+    "header:List-Unsubscribe:asRaw",
+    "header:List-Unsubscribe-Post:asText",
+    "header:Precedence:asText",
+    "header:Auto-Submitted:asText",
 ];
 /// Properties asked of `Email/get` for flags and membership.
 pub(crate) const FLAG_PROPERTIES: &[&str] = &["id", "keywords", "mailboxIds", "receivedAt"];
@@ -246,6 +252,16 @@ pub(crate) struct RawEmail {
     keywords: Option<HashMap<String, bool>>,
     #[serde(default, rename = "mailboxIds")]
     mailbox_ids: Option<HashMap<String, bool>>,
+    #[serde(default, rename = "header:List-Id:asText")]
+    list_id: Option<String>,
+    #[serde(default, rename = "header:List-Unsubscribe:asRaw")]
+    list_unsubscribe: Option<String>,
+    #[serde(default, rename = "header:List-Unsubscribe-Post:asText")]
+    list_unsubscribe_post: Option<String>,
+    #[serde(default, rename = "header:Precedence:asText")]
+    precedence: Option<String>,
+    #[serde(default, rename = "header:Auto-Submitted:asText")]
+    auto_submitted: Option<String>,
 }
 
 impl RawEmail {
@@ -293,8 +309,29 @@ impl RawEmail {
             .map(|id| bracket(id))
     }
 
+    /// The list and bulk-mail headers, read the same way as over IMAP.
+    fn list_headers(&self) -> crate::types::ListHeaders {
+        let mut block = String::new();
+        for (name, value) in [
+            ("List-Id", &self.list_id),
+            ("List-Unsubscribe", &self.list_unsubscribe),
+            ("List-Unsubscribe-Post", &self.list_unsubscribe_post),
+            ("Precedence", &self.precedence),
+            ("Auto-Submitted", &self.auto_submitted),
+        ] {
+            if let Some(v) = value {
+                block.push_str(name);
+                block.push(':');
+                block.push_str(v);
+                block.push('\n');
+            }
+        }
+        crate::types::ListHeaders::from_block(&block)
+    }
+
     /// Converts to a list row. `uid` is the UID in the folder the caller is listing.
     pub fn into_header(self, uid: Uid) -> RemoteHeader {
+        let list = self.list_headers();
         let flags = self.flags();
         let date_ms = self
             .sent_at
@@ -323,6 +360,7 @@ impl RawEmail {
             date_ms,
             size: u32::try_from(self.size.unwrap_or(0)).unwrap_or(u32::MAX),
             flags,
+            list,
         }
     }
 }

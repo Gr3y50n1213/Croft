@@ -30,6 +30,7 @@ import com.example.croft.mail.FolderId
 import com.example.croft.mail.FolderInfo
 import com.example.croft.mail.FolderRole
 import com.example.croft.mail.ListAnchor
+import com.example.croft.mail.MailCategory
 import com.example.croft.mail.MailError
 import com.example.croft.mail.MailEvent
 import com.example.croft.mail.MailException
@@ -118,6 +119,17 @@ class InboxTexts(private val res: Resources) {
     val sending: String get() = res.getString(R.string.compose_snack_sending)
     val tooLateToUndo: String get() = res.getString(R.string.compose_snack_too_late)
     val undoFailed: String get() = res.getString(R.string.compose_snack_undo_failed)
+    fun category(c: MailCategory): String = res.getString(
+        when (c) {
+            MailCategory.PRIMARY -> R.string.mail_category_primary
+            MailCategory.UPDATES -> R.string.mail_category_updates
+            MailCategory.PROMOTIONS -> R.string.mail_category_promotions
+            MailCategory.SOCIAL -> R.string.mail_category_social
+        },
+    )
+    fun movedToCategory(c: MailCategory): String = res.getString(R.string.mail_moved_to_category, category(c))
+    val always: String get() = res.getString(R.string.mail_category_always)
+    fun alwaysDone(c: MailCategory): String = res.getString(R.string.mail_category_always_done, category(c))
 }
 
 /**
@@ -185,6 +197,81 @@ class InboxController(
 
     var messageScope by mutableStateOf(startScope)
         private set
+
+    /** T35: the category chip chosen above the Inbox (`null`: All). Only the Inbox scopes are filtered. */
+    var category by mutableStateOf<MailCategory?>(null)
+        private set
+
+    /** T35: unread messages per category in the Inbox shown (S10's chip badges). */
+    var categoryCounts by mutableStateOf<Map<MailCategory, Long>>(emptyMap())
+        private set
+
+    /** Whether this scope is an Inbox (the unified one, or one account's), where categories apply. */
+    val isInboxScope: Boolean get() = messageScope == MessageScope.UnifiedInbox || scopeRole == FolderRole.INBOX
+
+    /** The category the list is filtered by: only in an Inbox scope. */
+    private val activeCategory: MailCategory? get() = category?.takeIf { isInboxScope }
+
+    /** The key of what the list shows (the scope, and the category when one applies): its cache entry. */
+    private val listKey: String get() = messageScope.key + (activeCategory?.let { ":${it.key}" } ?: "")
+
+    private suspend fun page(before: RowCursor?, limit: Int) =
+        repository.listMessagesIn(messageScope, activeCategory, before, limit)
+
+    /** T35: choose a category chip (`null`: All). */
+    fun chooseCategory(target: MailCategory?) {
+        if (target == category) return
+        generation++
+        clearSelection()
+        newCount = 0
+        arrived = emptySet()
+        category = target
+        restoring = false
+        pendingAnchor = null
+        restoreTarget = null
+        scope.launch { loadFirst() }
+    }
+
+    /** T35: the unread count per category of the Inbox shown. */
+    private suspend fun refreshCategoryCounts() {
+        if (!isInboxScope) return
+        val account = (messageScope as? MessageScope.Folder)?.account
+        categoryCounts = try { repository.categoryCounts(account) } catch (e: CancellationException) { throw e } catch (e: Exception) { categoryCounts }
+    }
+
+    /**
+     * T35: a category was chosen in the Move to sheet ("Move to Primary" and the like). The messages move there, and the snackbar
+     * offers "Always do this" for their senders. Categories are the phone's own: nothing waits for the server, so there is no Undo.
+     */
+    fun pickCategory(target: MailCategory) {
+        val request = moveRequest ?: return
+        moveRequest = null
+        if (request.fromSwipe) request.rows.singleOrNull()?.let { parkResolution = it.id to false }
+        val ids = request.rows.map { it.id }
+        clearSelection()
+        scope.launch {
+            setCategories(ids, target, always = false)
+            snackbar.show(texts.movedToCategory(target), actionLabel = texts.always) {
+                scope.launch {
+                    setCategories(ids, target, always = true)
+                    snackbar.show(texts.alwaysDone(target))
+                }
+            }
+        }
+    }
+
+    private suspend fun setCategories(ids: List<MessageId>, target: MailCategory, always: Boolean) {
+        for (id in ids) {
+            try {
+                repository.setCategory(id, target, always)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Gone meanwhile: nothing to move.
+            }
+        }
+        reloadHead()
+    }
 
     /** The rows loaded so far, newest first. */
     var rows by mutableStateOf<List<MessageRowData>>(emptyList())
@@ -424,8 +511,7 @@ class InboxController(
     }
 
     private suspend fun loadFirst() {
-        val s = messageScope
-        val key = s.key
+        val key = listKey
         val gen = generation
         val cached = session.cached(key)
         if (cached != null) {
@@ -439,13 +525,14 @@ class InboxController(
         }
         val limit = maxOf(cached?.rows?.size ?: 0, FIRST_PAGE)
         loadLock.withLock {
-            val page = repository.listMessages(s, null, limit)
+            val page = page(null, limit)
             if (gen != generation) return
             rows = page.rows
             next = page.next
             phase = LoadPhase.LOADED
             session.remember(key, rows, next)
         }
+        refreshCategoryCounts()
         val anchor = pendingAnchor
         if (anchor != null) {
             loadThrough(anchor)
@@ -491,11 +578,11 @@ class InboxController(
     }
 
     private suspend fun appendPage() {
-        val key = messageScope.key
+        val key = listKey
         val gen = generation
         loadLock.withLock {
             val cursor = next ?: return
-            val page = repository.listMessages(messageScope, cursor, PAGE)
+            val page = page(cursor, PAGE)
             if (gen != generation) return
             val known = HashSet<MessageId>(rows.size * 2)
             rows.forEach { known += it.id }
@@ -506,12 +593,13 @@ class InboxController(
     }
 
     private suspend fun reloadHead() {
-        val key = messageScope.key
+        refreshCategoryCounts()
+        val key = listKey
         val gen = generation
         loadLock.withLock {
             if (phase != LoadPhase.LOADED) return
             val old = rows
-            val page = repository.listMessages(messageScope, null, maxOf(old.size, FIRST_PAGE))
+            val page = page(null, maxOf(old.size, FIRST_PAGE))
             if (gen != generation) return
             val arrivals = if (old.isEmpty()) emptyList() else {
                 val known = HashSet<MessageId>(old.size * 2)
@@ -692,7 +780,7 @@ class InboxController(
         val ids = ArrayList<MessageId>()
         var cursor: RowCursor? = null
         do {
-            val page = repository.listMessages(messageScope, cursor, ALL_IDS_PAGE)
+            val page = page(cursor, ALL_IDS_PAGE)
             page.rows.forEach { ids += it.id }
             cursor = page.next
         } while (cursor != null)

@@ -38,6 +38,10 @@ import com.example.croft.mail.FolderId
 import com.example.croft.mail.FolderInfo
 import com.example.croft.ui.components.CroftBottomSheet
 import com.example.croft.ui.components.CroftTextField
+import com.example.croft.mail.MailCategory
+import com.example.croft.ui.components.CroftFilterChip
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 
 /** Test tags of S30 Move to. */
 object MoveTags {
@@ -45,9 +49,13 @@ object MoveTags {
     const val SEARCH = "S30-search"
     const val RECENTS = "S30-recents"
     const val DECLINE = "S30-decline"
+    const val LIST = "S30-list"
 
     /** The tag of the entry of folder [id]. */
     fun folder(id: FolderId) = "S30-folder-$id"
+
+    /** The tag of the entry of category [c] (T35). */
+    fun category(c: MailCategory) = "S30-category-${c.key}"
 }
 
 /** One entry of the folder tree: the folder and how deep it sits (the number of `/` in its path). */
@@ -98,6 +106,9 @@ fun MoveToSheet(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     footer: (@Composable () -> Unit)? = null,
+    /** T35: categories offered above the folders (an Inbox with the chips on); none otherwise. */
+    categories: List<MailCategory> = emptyList(),
+    onCategory: (MailCategory) -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val targets = remember(folders, excluding) { MoveRules.targets(folders, excluding) }
@@ -113,7 +124,7 @@ fun MoveToSheet(
             leadingIcon = Icons.Filled.Search,
             modifier = Modifier.testTag(MoveTags.SEARCH),
         )
-        LazyColumn(Modifier.fillMaxWidth().heightIn(max = SHEET_LIST_MAX_HEIGHT).padding(top = 8.dp)) {
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max = SHEET_LIST_MAX_HEIGHT).padding(top = 8.dp).testTag(MoveTags.LIST)) {
             if (!searching && recents.isNotEmpty()) {
                 item(key = "recent-heading") {
                     Text(stringResource(R.string.move_recent), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(vertical = 8.dp).semantics { heading() })
@@ -127,6 +138,23 @@ fun MoveToSheet(
                 item(key = "none") { Text(stringResource(R.string.move_none), modifier = Modifier.padding(vertical = 16.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             items(shown, key = { "folder-${it.folder.id}" }) { e -> FolderEntry(e.folder, e.depth, onPick) }
+            // T35: after the folders (moving to a folder is what the sheet is for), one row of chips.
+            if (!searching && categories.isNotEmpty()) {
+                item(key = "category-heading") {
+                    Text(stringResource(R.string.move_categories), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(vertical = 8.dp).semantics { heading() })
+                }
+                // One row of chips, so the folders stay in view.
+                item(key = "categories") {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        for (c in categories) {
+                            CroftFilterChip(categoryName(c), selected = false, onClick = { onCategory(c) }, modifier = Modifier.testTag(MoveTags.category(c)))
+                        }
+                    }
+                }
+            }
         }
         footer?.invoke()
     }

@@ -16,6 +16,7 @@ import uniffi.croft_ffi.Core
 import uniffi.croft_ffi.CoreException
 import uniffi.croft_ffi.FailureReason as CoreFailureReason
 import uniffi.croft_ffi.FolderInfo as CoreFolderInfo
+import uniffi.croft_ffi.InboxCategory
 import uniffi.croft_ffi.MessageRow as CoreMessageRow
 import uniffi.croft_ffi.MessageScope as CoreMessageScope
 import uniffi.croft_ffi.RowCursor as CoreRowCursor
@@ -89,6 +90,25 @@ class CoreMessageRepository(
         val page = core.listMessages(scope.toCore(), before?.let { CoreRowCursor(it.dateMs, it.id) }, limit.coerceIn(0, MAX_PAGE).toUInt())
         synchronized(accountOf) { page.rows.forEach { accountOf[it.id] = it.account } }
         MessagePage(page.rows.map { it.toApp(isSample(it.account)) }, page.next?.let { RowCursor(it.dateMs, it.id) })
+    }
+
+    override suspend fun listMessagesIn(scope: MessageScope, category: MailCategory?, before: RowCursor?, limit: Int): MessagePage = onIo {
+        val page = core.listMessagesIn(
+            scope.toCore(),
+            category?.toCore(),
+            before?.let { CoreRowCursor(it.dateMs, it.id) },
+            limit.coerceIn(0, MAX_PAGE).toUInt(),
+        )
+        synchronized(accountOf) { page.rows.forEach { accountOf[it.id] = it.account } }
+        MessagePage(page.rows.map { it.toApp(isSample(it.account)) }, page.next?.let { RowCursor(it.dateMs, it.id) })
+    }
+
+    override suspend fun categoryCounts(account: AccountId?): Map<MailCategory, Long> = onIo {
+        core.inboxCategoryCounts(account).associate { it.category.toApp() to it.unread.toLong() }
+    }
+
+    override suspend fun setCategory(id: MessageId, category: MailCategory, always: Boolean) = onIo {
+        core.setMessageCategory(id, category.toCore(), always)
     }
 
     override suspend fun nextChange(after: Long): ChangeBatch {
@@ -275,4 +295,18 @@ class CoreMessageRepository(
         const val MAX_REMEMBERED_OPS = 200
         const val RETRY_AFTER_ERROR_MS = 1_000L
     }
+}
+
+private fun MailCategory.toCore(): InboxCategory = when (this) {
+    MailCategory.PRIMARY -> InboxCategory.PRIMARY
+    MailCategory.UPDATES -> InboxCategory.UPDATES
+    MailCategory.PROMOTIONS -> InboxCategory.PROMOTIONS
+    MailCategory.SOCIAL -> InboxCategory.SOCIAL
+}
+
+private fun InboxCategory.toApp(): MailCategory = when (this) {
+    InboxCategory.PRIMARY -> MailCategory.PRIMARY
+    InboxCategory.UPDATES -> MailCategory.UPDATES
+    InboxCategory.PROMOTIONS -> MailCategory.PROMOTIONS
+    InboxCategory.SOCIAL -> MailCategory.SOCIAL
 }

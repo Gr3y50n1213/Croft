@@ -117,8 +117,8 @@ pub enum LocalEffect {
         account: AccountId,
         /// Folder path.
         folder: String,
-        /// The header.
-        header: RemoteHeader,
+        /// The header (boxed: it is much larger than the other effects).
+        header: Box<RemoteHeader>,
     },
     /// Store only the folder's new UIDVALIDITY, and set its UIDNEXT and HIGHESTMODSEQ to NULL
     /// (and leave the sync time alone). A UIDVALIDITY reset does not make the folder synced: its
@@ -640,7 +640,7 @@ impl<S: OpStore> PersistentQueue<S> {
                         effects.push(LocalEffect::PutHeader {
                             account,
                             folder: to.0.clone(),
-                            header: header.clone(),
+                            header: Box::new(header.clone()),
                         });
                     }
                 }
@@ -648,7 +648,7 @@ impl<S: OpStore> PersistentQueue<S> {
                     effects.push(LocalEffect::PutHeader {
                         account,
                         folder: folder.to_owned(),
-                        header: header.clone(),
+                        header: Box::new(header.clone()),
                     });
                 }
                 let map: BTreeMap<(&str, Uid), &Location> = moves_ref

@@ -72,6 +72,7 @@ fn msg(
             date_ms,
             size: 100,
             flags: Flags::default(),
+            list: Default::default(),
         },
     )
     .unwrap()

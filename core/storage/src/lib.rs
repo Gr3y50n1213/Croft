@@ -93,6 +93,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "reading",
         sql: include_str!("../migrations/0007_reading.sql"),
     },
+    Migration {
+        version: 8,
+        name: "categories",
+        sql: include_str!("../migrations/0008_categories.sql"),
+    },
 ];
 
 /// The version a fully migrated database reports in `PRAGMA user_version`.

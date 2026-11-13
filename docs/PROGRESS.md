@@ -5,6 +5,43 @@ unverified, the next step.
 
 ---
 
+## T35: Inbox categories (13 November 2026)
+
+**Status:** on `task/t35`, its own pull request. The first task of phase 3 (the plan is `docs/tasks/PHASE-3.md`).
+
+**What was built.**
+- **Headers.** IMAP and JMAP fetch `List-Id`, `List-Unsubscribe`, `List-Unsubscribe-Post`, `Precedence` and `Auto-Submitted`.
+  They are parsed unfolded, case-blind, bounded, and with control characters refused (`ListHeaders`), and stored on the message
+  (migration 0008).
+- **The classifier** (`mail-core/src/category.rs`, pure) applies these rules in order:
+  1. the person's rules (address, then domain);
+  2. social networks;
+  3. automated mail and mailing lists go to Updates;
+  4. bulk or unsubscribable mail goes to Promotions;
+  5. everything else is Primary.
+  It runs once, when a message is first stored.
+- **The core (FFI v15).** The Inbox filtered by category (`list_messages_in`), the unread count per category, and
+  `set_message_category` with "Always do this" (a `category_rule` row scoped by account, re-filing the sender's mail).
+- **Android:**
+  - S10's chips (All, then the categories S49 shows) with unread badges.
+  - A Category section in S30, with "Always do this" in the snackbar.
+  - S49's switch and per-category toggles (Social off by default), kept in the mail settings file.
+
+**Checks.**
+- Core: fmt, both clippy runs and the whole test suite, including:
+  - the classifier;
+  - header parsing;
+  - storage: classified once, a sync keeps the person's choice, rules re-file per account only, counts;
+  - the FFI filter, counts and moves.
+- Android: unit tests for the settings file, the fake repository's categories and S10's chips (CI).
+- One older Android test pinned "only All until the smart inbox phase" on purpose; it was rewritten for the chips.
+
+**Review:** none (DECISIONS); T37's unsubscribe, which acts on these headers, will have one.
+
+**Next:** T36, snooze, pin and follow-up.
+
+---
+
 ## T34e: "Delete my Companion data" (13 November 2026)
 
 **Status:** on `task/t34e`, its own pull request. It closes phase 2.

@@ -240,4 +240,31 @@ class FakeMessageRepositoryTest {
             assertNull(FileAnchorStore(file).load("unified"))
         } finally { file.delete() }
     }
+
+    @Test
+    fun categoriesFilterTheInboxCountUnreadAndAlwaysMovesTheSender() = run {
+        val r = repo(0)
+        val ids = r.injectNewMail(3)
+        val sender = r.snapshot(MessageScope.UnifiedInbox).first { it.id == ids[0] }.senderAddress
+        assertEquals(3, r.listMessagesIn(MessageScope.UnifiedInbox, MailCategory.PRIMARY, null, 50).rows.size)
+        assertEquals(0, r.listMessagesIn(MessageScope.UnifiedInbox, MailCategory.SOCIAL, null, 50).rows.size)
+        assertEquals(3L, r.categoryCounts(null)[MailCategory.PRIMARY])
+        r.setCategory(ids[0], MailCategory.SOCIAL, always = false)
+        assertEquals(listOf(ids[0]), r.listMessagesIn(MessageScope.UnifiedInbox, MailCategory.SOCIAL, null, 50).rows.map { it.id })
+        assertEquals(1L, r.categoryCounts(null)[MailCategory.SOCIAL])
+        // "Always do this" moves every message of that sender.
+        r.setCategory(ids[0], MailCategory.UPDATES, always = true)
+        val sameSender = r.snapshot(MessageScope.UnifiedInbox).filter { it.senderAddress == sender }.map { it.id }.toSet()
+        assertEquals(sameSender, r.listMessagesIn(MessageScope.UnifiedInbox, MailCategory.UPDATES, null, 50).rows.map { it.id }.toSet())
+        // No category: everything.
+        assertEquals(3, r.listMessagesIn(MessageScope.UnifiedInbox, null, null, 50).rows.size)
+    }
+
+    @Test
+    fun theSampleGuessUsesTheSenderOnly() {
+        assertEquals(MailCategory.UPDATES, guessCategory("no-reply@example.org"))
+        assertEquals(MailCategory.PROMOTIONS, guessCategory("deals@shop.example"))
+        assertEquals(MailCategory.SOCIAL, guessCategory("x@facebookmail.com"))
+        assertEquals(MailCategory.PRIMARY, guessCategory("ann@example.org"))
+    }
 }

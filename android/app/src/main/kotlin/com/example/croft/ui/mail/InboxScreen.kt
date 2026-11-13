@@ -65,6 +65,8 @@ import com.example.croft.mail.AccountId
 import com.example.croft.mail.AccountInfo
 import com.example.croft.mail.AccountState
 import com.example.croft.mail.FolderRole
+import com.example.croft.mail.LocalMailSettings
+import com.example.croft.mail.MailCategory
 import com.example.croft.mail.MailSession
 import com.example.croft.mail.MessageId
 import com.example.croft.mail.MessageRowData
@@ -257,6 +259,10 @@ private fun InboxBody(
     val scope = rememberCoroutineScope()
     val listState = controller.listState
     val settings = LocalThemeSettings.current
+    // T35: the category chips show in an Inbox, unless S49 turned them off.
+    val mailSettings = LocalMailSettings.current
+    val shownCategories = MailCategory.entries.filter { it in mailSettings.shownCategories }
+    val chipsOn = mailSettings.categoriesOn && controller.isInboxScope && shownCategories.isNotEmpty()
     val level = LocalMotionLevel.current
     val res = LocalContext.current.resources
     val locale = LocalConfiguration.current.locales[0]
@@ -386,7 +392,21 @@ private fun InboxBody(
             onDismiss = { controller.dismissBanner(it) },
             accountName = banner?.second?.label ?: "",
         )
-        if (!selecting) CategoryChipsRow(Modifier.padding(bottom = 8.dp))
+        // T35: the category chips, in an Inbox, unless S49 turned them off.
+        LaunchedEffect(chipsOn, shownCategories) {
+            // A chip turned off (or all of them) while chosen: back to All.
+            val chosen = controller.category
+            if (chosen != null && (!chipsOn || chosen !in shownCategories)) controller.chooseCategory(null)
+        }
+        if (!selecting && chipsOn) {
+            CategoryChipsRow(
+                shown = shownCategories,
+                selected = controller.category,
+                counts = controller.categoryCounts,
+                onSelect = controller::chooseCategory,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         if (localDrafts.isNotEmpty() && !selecting) LocalDraftsSection(localDrafts, onOpen = { d -> onOpenDraft?.invoke(d.accountId, d.id) }, Modifier.padding(horizontal = 12.dp))
 
         // The list area: pull to refresh, the list or its skeleton or empty state, the pill, the FAB and the snackbar.
@@ -485,6 +505,9 @@ private fun InboxBody(
             excluding = controller.moveExcluding,
             onPick = controller::pickMove,
             onDismiss = controller::dismissMove,
+            // T35: in an Inbox with the chips on, a message can also move to another category.
+            categories = if (chipsOn) MailCategory.entries else emptyList(),
+            onCategory = controller::pickCategory,
         )
     }
     // The first Archive or Delete of an account with no such folder: which folder is yours? (remembered, asked once)

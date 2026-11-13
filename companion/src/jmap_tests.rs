@@ -1327,16 +1327,15 @@ async fn a_message_is_scheduled_through_jmap_listed_with_its_time_and_cancelled(
             ]),
         )
         .await;
-    for i in 0..3 {
+    for call in &r[..3] {
         assert_eq!(
             (
-                r[i][0].as_str(),
-                r[i][1]["type"].as_str(),
-                r[i][1]["description"].as_str()
+                call[0].as_str(),
+                call[1]["type"].as_str(),
+                call[1]["description"].as_str()
             ),
             (Some("error"), Some("invalidArguments"), Some("sendAt")),
-            "{:?}",
-            r[i]
+            "{call:?}"
         );
     }
     // Scheduled: waits until then (seconds kept, milliseconds dropped by the date), listed with it.

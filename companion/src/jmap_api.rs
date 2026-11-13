@@ -1166,7 +1166,7 @@ mod unit {
         }
         assert_eq!(utc_date("2026-11-14T08:00:00Z"), Some(1_794_643_200_000));
         assert_eq!(utc_date("2026-11-14T08:00:00.5Z"), Some(1_794_643_200_500));
-        assert_eq!(utc_date("2024-02-29T00:00:00Z").is_some(), true);
+        assert!(utc_date("2024-02-29T00:00:00Z").is_some());
         for bad in [
             "",
             "2026-11-14",

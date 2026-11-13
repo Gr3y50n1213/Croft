@@ -160,6 +160,8 @@ class SwipeSemanticsTest {
         val expected = mapOf(
             SwipeAction.TOGGLE_READ to "Mark as read", SwipeAction.ARCHIVE to "Archive", SwipeAction.DELETE to "Delete",
             SwipeAction.TOGGLE_STAR to "Star", SwipeAction.SPAM to "Mark as spam", SwipeAction.MOVE_TO to "Move to",
+            // T36: Snooze became a swipe action.
+            SwipeAction.SNOOZE to "Snooze",
         )
         for (action in SwipeAction.picker.filter { it != SwipeAction.NONE }) for (direction in SwipeDirection.entries) {
             rule.runOnUiThread { settings = settings.with(direction, action) }
@@ -182,5 +184,6 @@ class SwipeSemanticsTest {
         rule.onNodeWithText("Star").assertExists()
         rule.onNodeWithText("Mark as spam").assertExists()
         rule.onNodeWithText("Move to").assertExists()
+        rule.onNodeWithText("Snooze").assertExists()
     }
 }

@@ -84,4 +84,36 @@ tokens: 15-minute access, rotating refresh, a device the person can sign out).
   forbidden group fails, each store's release passes the output checks, and the docs name the new tasks.
 
 ## Spec (T34d)
-Written in this file when it starts.
+- **The registrar** (`push/CompanionPush.kt`, every store):
+  - An endpoint and this device's Web Push keys become a subscription at the person's Companion (`CompanionLink.add_push`).
+  - Only the subscription id and a hash are kept, never the endpoint (for UnifiedPush, whoever holds it can wake the phone).
+  - A new endpoint replaces the old subscription and checks for mail missed meanwhile.
+  - A ping queues one mail check (unique one-time work, KEEP, with a network; not expedited, no foreground service), so a flood
+    of pings costs one check at a time.
+  - Only authentic pings count.
+- **fdroid and github:** UnifiedPush (`org.unifiedpush.android:connector`).
+  - The person's distributor gives the endpoint and keys, registered with the Companion's VAPID key.
+  - A message counts only when it decrypted with this device's keys, so it came from the Companion.
+  - Choosing a distributor happens only from S58.
+- **play:** FCM through the push gateway (`gateway/`).
+  - The app's token goes to `POST /register`, bound to the Companion's VAPID key.
+  - Only the gateway's own endpoint is subscribed.
+  - Messages come only from the app's Firebase project (the gateway), which forwards only what the Companion signed; their
+    content is not read.
+  - Active only in a build made with the publisher's Firebase project and gateway (`croft.fcm.*`, `croft.pushGateway`, from
+    outside the repository). Otherwise S58 says this build has no instant notifications.
+  - Firebase never makes a token by itself (auto-init off).
+- **S58:**
+  - "Instant notifications": on, waiting, not working, needs a UnifiedPush app, not in this build, off, with Turn on.
+  - Disconnect becomes "Unregister this device" (READINESS row 7); it ends the session, and with it the subscriptions.
+  - Erasing everything does the same.
+- **Periodic checks** stay as the person set them: a safety net while push is untested on phones.
+- **Store-specific manifest entries** are allowed only in their store's build: `stores` in `tools/manifest-allowlist.json`, with
+  `CROFT_STORE`.
+- **The S60 licence lists** come per store: the common list, plus each store's own (Firebase in play, UnifiedPush and Tink in
+  the others). CI makes them again from its own Gradle cache and fails on a difference.
+- Done when:
+  - unit tests cover the registrar (once, replace, gone, not connected, the endpoint never kept, only authentic pings), the
+    connection's push calls, the store manifest entries and the licence lists per store;
+  - the three stores build in CI;
+  - an independent review is done.

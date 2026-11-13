@@ -123,6 +123,19 @@ Three flavours in the dimension `store`, with one application id:
 `fdroid` and `github` share `app/src/unifiedpush/` (UnifiedPush, no Google services) and differ only in name. Task names carry the
 flavour: `assemblePlayDebug`, `testPlayDebugUnitTest`, `assembleFdroidRelease` and so on.
 
+**Push (T34d).** `fdroid` and `github` use UnifiedPush and need nothing at build time. `play` uses FCM through Croft's push gateway
+(`gateway/README.md`), and only when the build is given the publisher's Firebase project and gateway, from outside the repository
+(`~/.gradle/gradle.properties`, `-P`, or the environment):
+```
+croft.pushGateway=https://push.example.org        # CROFT_PUSH_GATEWAY
+croft.fcm.appId=...                               # CROFT_FCM_APP_ID      (the Firebase app id of this application id)
+croft.fcm.senderId=...                            # CROFT_FCM_SENDER_ID
+croft.fcm.apiKey=...                              # CROFT_FCM_API_KEY
+croft.fcm.projectId=...                           # CROFT_FCM_PROJECT_ID
+```
+These values identify the Firebase project and are not secrets, but they are the publisher's, so none is in the repository.
+Without all five, the Play build has no instant notifications: it checks for mail on the schedule set in S46.
+
 `tools/check-flavour-dependencies.py` fails if a Google Play services, Firebase or Play library is in the runtime classpath of `fdroid`
 or `github`. Open-source Google libraries such as AndroidX and Material Components are allowed. To run it:
 ```

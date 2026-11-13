@@ -258,7 +258,7 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
         epoch,
         accounts,
         compose,
-        send_allowed: Box::new(move || limits.mail_limit(user_id).is_ok()),
+        send_allowed: Box::new(move |recipients| limits.send_budget(user_id, recipients)),
     };
     let mut responses: Vec<Value> = Vec::new();
     let mut spent = body.len();
@@ -391,8 +391,8 @@ struct Ctx {
     accounts: Vec<i64>,
     /// The request's `using` names the compose capability (its methods are unknown otherwise).
     compose: bool,
-    /// Counts a send against the user's mail limit; false when over it.
-    send_allowed: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Counts a send to that many recipients against the user's sending budget; false when over.
+    send_allowed: Box<dyn Fn(usize) -> bool + Send + Sync>,
 }
 
 type Answer = Vec<(String, Value)>;

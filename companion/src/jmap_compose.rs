@@ -7,13 +7,14 @@
 //! JMAP leaves them to the client. Every method checks that the account is the caller's; the core
 //! checks that a draft or an Outbox item belongs to that account.
 //!
-//! - `CroftDraft/get` `{accountId, ids?}`: drafts (`d<id>`), in full.
-//! - `CroftDraft/set` `{accountId, create?, update?, destroy?}`: save (create or replace) and
-//!   discard drafts.
+//! - `CroftDraft/get` `{accountId, ids}`: drafts (`d<id>`), in full, at most 32 at once.
+//! - `CroftDraft/set` `{accountId, create?, update?, destroy?}`: save (create, or patch) and
+//!   discard drafts; at most 1000 drafts per account.
 //! - `CroftDraft/reply` `{accountId, emailId, kind: reply | replyAll | forward}`: the fields of a new
 //!   reply or forward (not saved).
 //! - `CroftDraft/check` `{accountId, id}`: why Send would be refused.
-//! - `CroftOutbox/send` `{accountId, draftId}`: into the Outbox, sent when the undo window ends.
+//! - `CroftOutbox/send` `{accountId, draftId}`: into the Outbox, sent when the undo window ends;
+//!   counted against the user's sending budget (messages a minute, recipients an hour and a day).
 //! - `CroftOutbox/undo` `{accountId, outboxId}`: back to its draft, while the window lasts.
 //! - `CroftOutbox/get` `{accountId}`: the Outbox.
 
@@ -27,6 +28,11 @@ use serde_json::{json, Map, Value};
 
 /// The capability of these methods.
 pub const COMPOSE: &str = "urn:croft:params:jmap:compose";
+/// Drafts one `CroftDraft/get` returns in full (T31b review: repeated or listed ids loaded and
+/// answered many times over).
+pub const MAX_DRAFTS_IN_GET: usize = 32;
+/// Drafts an account may hold (T31b review: one request could make thousands).
+pub const MAX_DRAFTS: usize = 1000;
 
 fn address_json(a: &FfiAddress) -> Value {
     json!({ "name": a.name, "email": a.address })
@@ -98,10 +104,21 @@ fn text(v: Option<&Value>, property: &str) -> Result<String, Value> {
     }
 }
 
-/// The draft's fields from a client object. Unknown properties are refused (a typo must not be
-/// dropped silently); the core checks the sizes and counts.
-fn content_from(v: &Value) -> Result<DraftContent, Value> {
+/// The draft's fields from a client object: a whole draft, or with `base` a patch on it (only the
+/// properties given change, as JMAP's `update`). Unknown properties are refused (a typo must not
+/// be dropped silently); the core checks the sizes and counts.
+fn content_from(v: &Value, base: Option<DraftContent>) -> Result<DraftContent, Value> {
     let o = v.as_object().ok_or_else(|| invalid("draft"))?;
+    let base = base.unwrap_or(DraftContent {
+        identity: None,
+        to: Vec::new(),
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: String::new(),
+        body: String::new(),
+        in_reply_to: None,
+        references: Vec::new(),
+    });
     const KNOWN: &[&str] = &[
         "identityId",
         "to",
@@ -116,17 +133,20 @@ fn content_from(v: &Value) -> Result<DraftContent, Value> {
         return Err(invalid(k));
     }
     let identity = match o.get("identityId") {
-        None | Some(Value::Null) => None,
+        None => base.identity,
+        Some(Value::Null) => None,
         Some(Value::String(s)) => Some(parse_id(s, 'i').ok_or_else(|| invalid("identityId"))?),
         Some(_) => return Err(invalid("identityId")),
     };
     let in_reply_to = match o.get("inReplyTo") {
-        None | Some(Value::Null) => None,
+        None => base.in_reply_to,
+        Some(Value::Null) => None,
         Some(Value::String(s)) => Some(s.clone()),
         Some(_) => return Err(invalid("inReplyTo")),
     };
     let references = match o.get("references") {
-        None | Some(Value::Null) => Vec::new(),
+        None => base.references,
+        Some(Value::Null) => Vec::new(),
         Some(Value::Array(a)) => a
             .iter()
             .map(|r| {
@@ -137,13 +157,34 @@ fn content_from(v: &Value) -> Result<DraftContent, Value> {
             .collect::<Result<_, _>>()?,
         Some(_) => return Err(invalid("references")),
     };
+    let or = |key: &str| o.contains_key(key);
     Ok(DraftContent {
         identity,
-        to: addresses(o.get("to"), "to")?,
-        cc: addresses(o.get("cc"), "cc")?,
-        bcc: addresses(o.get("bcc"), "bcc")?,
-        subject: text(o.get("subject"), "subject")?,
-        body: text(o.get("body"), "body")?,
+        to: if or("to") {
+            addresses(o.get("to"), "to")?
+        } else {
+            base.to
+        },
+        cc: if or("cc") {
+            addresses(o.get("cc"), "cc")?
+        } else {
+            base.cc
+        },
+        bcc: if or("bcc") {
+            addresses(o.get("bcc"), "bcc")?
+        } else {
+            base.bcc
+        },
+        subject: if or("subject") {
+            text(o.get("subject"), "subject")?
+        } else {
+            base.subject
+        },
+        body: if or("body") {
+            text(o.get("body"), "body")?
+        } else {
+            base.body
+        },
         in_reply_to,
         references,
     })
@@ -163,6 +204,8 @@ fn compose_error(e: &ComposeError) -> Value {
         ComposeError::TooLate => "tooLate",
         ComposeError::WrongState => "wrongState",
         ComposeError::CannotSend => "cannotSend",
+        ComposeError::DraftTooLarge => "tooLarge",
+        ComposeError::Internal | ComposeError::Storage { .. } => "serverFail",
         _ => "invalidProperties",
     };
     json!({ "type": kind })
@@ -191,37 +234,44 @@ fn reason_key(r: OutboxReason) -> String {
 }
 
 impl Ctx {
-    /// `CroftDraft/get`
+    /// `CroftDraft/get`: the drafts named (`ids` is required; at most [`MAX_DRAFTS_IN_GET`]
+    /// different ones).
     pub(super) async fn draft_get(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
-        let ids = Self::ids_arg(args, 'd')?;
+        let Some(asked) = args.get("ids").and_then(Value::as_array) else {
+            return Err(error("invalidArguments"));
+        };
+        let mut seen = std::collections::HashSet::new();
+        let asked: Vec<Value> = asked
+            .iter()
+            .filter(|v| seen.insert(v.to_string()))
+            .cloned()
+            .collect();
+        if asked.len() > MAX_DRAFTS_IN_GET {
+            return Err(error("requestTooLarge"));
+        }
+        let ids: Vec<(Value, Option<i64>)> = asked
+            .into_iter()
+            .map(|v| {
+                let id = v.as_str().and_then(|s| parse_id(s, 'd'));
+                (v, id)
+            })
+            .collect();
+        let wanted: Vec<Option<i64>> = ids.iter().map(|(_, id)| *id).collect();
         let found = self
             .blocking(move |c| {
-                let wanted: Vec<Option<i64>> = match ids {
-                    Some(ids) => ids,
-                    None => c
-                        .list_drafts(account)
-                        .map_err(|_| ())?
-                        .iter()
-                        .take(MAX_OBJECTS)
-                        .map(|d| Some(d.id))
-                        .collect(),
-                };
-                Ok::<_, ()>(
-                    wanted
-                        .into_iter()
-                        .map(|id| (id, id.and_then(|i| c.load_draft(account, i).ok())))
-                        .collect::<Vec<_>>(),
-                )
+                wanted
+                    .into_iter()
+                    .map(|id| id.and_then(|i| c.load_draft(account, i).ok()))
+                    .collect::<Vec<_>>()
             })
-            .await?
-            .map_err(|()| error("serverFail"))?;
+            .await?;
         let mut list = Vec::new();
         let mut not_found = Vec::new();
-        for (id, draft) in found {
+        for ((asked, _), draft) in ids.into_iter().zip(found) {
             match draft {
                 Some(d) => list.push(draft_json(&d)),
-                None => not_found.push(json!(id.map_or_else(String::new, |i| format!("d{i}")))),
+                None => not_found.push(asked),
             }
         }
         Ok(json!({ "accountId": format!("a{account}"), "list": list, "notFound": not_found }))
@@ -247,12 +297,26 @@ impl Ctx {
         }
         let mut created = Map::new();
         let mut not_created = Map::new();
+        // The account's drafts may not grow past MAX_DRAFTS.
+        let mut room = if create.is_empty() {
+            0
+        } else {
+            let held = self
+                .blocking(move |c| c.list_drafts(account).map(|d| d.len()))
+                .await?
+                .map_err(|e| compose_error(&e))?;
+            MAX_DRAFTS.saturating_sub(held)
+        };
         let mut updated = Map::new();
         let mut not_updated = Map::new();
         let mut destroyed = Vec::new();
         let mut not_destroyed = Map::new();
         for (key, v) in create {
-            let content = match content_from(&v) {
+            if room == 0 {
+                not_created.insert(key, json!({ "type": "overQuota" }));
+                continue;
+            }
+            let content = match content_from(&v, None) {
                 Ok(c) => c,
                 Err(e) => {
                     not_created.insert(key, e);
@@ -264,6 +328,7 @@ impl Ctx {
                 .await?
             {
                 Ok(saved) => {
+                    room -= 1;
                     created.insert(key, json!({ "id": format!("d{}", saved.id) }));
                 }
                 Err(e) => {
@@ -276,7 +341,12 @@ impl Ctx {
                 not_updated.insert(key, json!({ "type": "notFound" }));
                 continue;
             };
-            let content = match content_from(&v) {
+            // A patch on the stored draft: only the properties given change.
+            let Ok(stored) = self.blocking(move |c| c.load_draft(account, id)).await? else {
+                not_updated.insert(key, json!({ "type": "notFound" }));
+                continue;
+            };
+            let content = match content_from(&v, Some(stored.content)) {
                 Ok(c) => c,
                 Err(e) => {
                     not_updated.insert(key, e);
@@ -296,7 +366,8 @@ impl Ctx {
             }
         }
         for v in destroy {
-            let key = v.as_str().unwrap_or_default().to_owned();
+            // An id that is not one is answered as given (a non-string by its JSON text).
+            let key = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
             let Some(id) = parse_id(&key, 'd') else {
                 not_destroyed.insert(key, json!({ "type": "notFound" }));
                 continue;
@@ -380,7 +451,13 @@ impl Ctx {
             .and_then(Value::as_str)
             .and_then(|d| parse_id(d, 'd'))
             .ok_or_else(|| error("invalidArguments"))?;
-        if !(self.send_allowed)() {
+        // The budget counts recipients: the draft as it will be sent.
+        let draft = self
+            .blocking(move |c| c.load_draft(account, id))
+            .await?
+            .map_err(|e| compose_error(&e))?;
+        let recipients = draft.content.to.len() + draft.content.cc.len() + draft.content.bcc.len();
+        if !(self.send_allowed)(recipients) {
             return Err(error("rateLimit"));
         }
         let started = self

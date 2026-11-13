@@ -954,7 +954,7 @@ async fn drafts_are_saved_read_checked_and_discarded_through_jmap() {
         .compose(
             &t,
             json!([
-                ["CroftDraft/set", {"accountId": account, "update": {(draft.clone()): {"subject": "Hello", "body": "x"}}}, "u"],
+                ["CroftDraft/set", {"accountId": account, "update": {(draft.clone()): {"to": [], "subject": "Hello", "body": "x"}}}, "u"],
                 ["CroftDraft/check", {"accountId": account, "id": draft}, "c"],
                 ["CroftOutbox/send", {"accountId": account, "draftId": draft}, "s"],
             ]),
@@ -1149,4 +1149,148 @@ async fn compose_needs_its_capability_the_callers_account_and_is_rate_limited() 
     assert!(limited, "32 sends in a minute were not limited");
     stop(ann_server).await;
     stop(bob_server).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compose_work_is_bounded_and_updates_are_patches() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(1).await;
+    let account = h.sending_account(&t, &server).await;
+    h.inbox(&t, &account, 1).await;
+    // Every compose method needs the capability.
+    for m in [
+        "CroftDraft/get",
+        "CroftDraft/set",
+        "CroftDraft/reply",
+        "CroftDraft/check",
+        "CroftOutbox/send",
+        "CroftOutbox/undo",
+        "CroftOutbox/get",
+    ] {
+        let r = h.jmap(&t, json!([[m, {"accountId": account}, "x"]])).await;
+        assert_eq!(r[0][1]["type"], "unknownMethod", "{m}");
+    }
+    let r = h
+        .compose(
+            &t,
+            json!([["CroftDraft/set", {"accountId": account, "create": {"k": {
+                "to": [{"email": "bob@example.org"}], "subject": "Plans", "body": "Kept."}}}, "s"]]),
+        )
+        .await;
+    let d = r[0][1]["created"]["k"]["id"].as_str().unwrap().to_owned();
+    // A get names its drafts (no listing), each once, at most 32.
+    let many: Vec<String> = (0..33).map(|i| format!("d{}", 100_000 + i)).collect();
+    let r = h
+        .compose(
+            &t,
+            json!([
+                ["CroftDraft/get", {"accountId": account}, "a"],
+                ["CroftDraft/get", {"accountId": account, "ids": [d.clone(), d.clone(), d.clone(), 5]}, "b"],
+                ["CroftDraft/get", {"accountId": account, "ids": many}, "c"],
+            ]),
+        )
+        .await;
+    assert_eq!(r[0][1]["type"], "invalidArguments");
+    assert_eq!(
+        r[1][1]["list"].as_array().unwrap().len(),
+        1,
+        "repeated ids answered once"
+    );
+    assert_eq!(
+        r[1][1]["notFound"],
+        json!([5]),
+        "a bad id is echoed as given"
+    );
+    assert_eq!(r[2][1]["type"], "requestTooLarge");
+    // An update is a patch: To and the body stay.
+    let r = h
+        .compose(
+            &t,
+            json!([
+                ["CroftDraft/set", {"accountId": account, "update": {(d.clone()): {"subject": "New plans"}}, "destroy": [7]}, "u"],
+                ["CroftDraft/get", {"accountId": account, "ids": [d.clone()]}, "g"],
+            ]),
+        )
+        .await;
+    assert!(r[0][1]["notDestroyed"].get("7").is_some(), "{r:?}");
+    let got = &r[1][1]["list"][0];
+    assert_eq!(got["subject"], "New plans");
+    assert_eq!(got["to"][0]["email"], "bob@example.org");
+    assert_eq!(got["body"], "Kept.");
+    stop(server).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_account_holds_at_most_a_thousand_drafts() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(1).await;
+    let account = h.sending_account(&t, &server).await;
+    h.inbox(&t, &account, 1).await;
+    let mut made = 0;
+    let mut refused = 0;
+    for batch in 0..4 {
+        let creates: serde_json::Map<String, Value> = (0..256)
+            .map(|i| (format!("k{batch}-{i}"), json!({"subject": "x"})))
+            .collect();
+        let r = h
+            .compose(
+                &t,
+                json!([["CroftDraft/set", {"accountId": account, "create": creates}, "s"]]),
+            )
+            .await;
+        made += r[0][1]["created"].as_object().unwrap().len();
+        refused += r[0][1]["notCreated"]
+            .as_object()
+            .unwrap()
+            .values()
+            .filter(|e| e["type"] == "overQuota")
+            .count();
+    }
+    assert_eq!((made, refused), (1000, 24));
+    stop(server).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sending_budget_counts_recipients() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(1).await;
+    let account = h.sending_account(&t, &server).await;
+    h.inbox(&t, &account, 1).await;
+    let crowd: Vec<Value> = (0..400)
+        .map(|i| json!({"email": format!("r{i}@example.org")}))
+        .collect();
+    let creates: serde_json::Map<String, Value> = (0..3)
+        .map(|i| {
+            (
+                format!("k{i}"),
+                json!({"bcc": crowd, "subject": format!("s{i}")}),
+            )
+        })
+        .collect();
+    let r = h
+        .compose(
+            &t,
+            json!([["CroftDraft/set", {"accountId": account, "create": creates}, "s"]]),
+        )
+        .await;
+    let mut ids: Vec<String> = r[0][1]["created"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|v| v["id"].as_str().unwrap().to_owned())
+        .collect();
+    ids.sort();
+    let calls: Vec<Value> = ids
+        .iter()
+        .map(|id| json!(["CroftOutbox/send", {"accountId": account, "draftId": id}, "s"]))
+        .collect();
+    let r = h.compose(&t, Value::Array(calls)).await;
+    // 400 + 400 recipients fit the hour's 1000; a third 400 does not.
+    assert!(r[0][1]["outboxId"].is_string(), "{r:?}");
+    assert!(r[1][1]["outboxId"].is_string(), "{r:?}");
+    assert_eq!(r[2][1]["type"], "rateLimit");
+    stop(server).await;
 }

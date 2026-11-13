@@ -60,6 +60,8 @@ class PinTest {
         assertFalse("not in the list", exists(InboxTags.row(ids[0])))
         rule.onNodeWithTag(PinnedTags.TOGGLE).performClick()
         rule.waitUntil(10_000) { exists(PinnedTags.row(ids[4])) }
+        rule.onNodeWithTag(PinnedTags.TOGGLE).performClick()
+        rule.waitUntil(10_000) { !exists(PinnedTags.row(ids[4])) }
 
         // Unpin, then Undo at once (the test clock runs a snackbar's time out while it waits).
         rule.onNodeWithTag(PinnedTags.unpin(ids[0])).performClick()

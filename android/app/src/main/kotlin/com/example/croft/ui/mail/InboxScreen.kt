@@ -416,7 +416,8 @@ private fun InboxBody(
                 onToggle = controller::togglePinnedExpanded,
                 onOpen = onOpenMessage,
                 onUnpin = controller::unpin,
-                modifier = Modifier.padding(horizontal = 12.dp),
+                // At most about a third of the room it shares with the list, so the list (and its snackbar) always keeps space.
+                modifier = Modifier.weight(PINNED_WEIGHT, fill = false).padding(horizontal = 12.dp),
             )
         }
         if (localDrafts.isNotEmpty() && !selecting) LocalDraftsSection(localDrafts, onOpen = { d -> onOpenDraft?.invoke(d.accountId, d.id) }, Modifier.padding(horizontal = 12.dp))
@@ -662,3 +663,5 @@ private fun LazyItemScope.RowItem(
     }
 }
 
+/** T36b: the Pinned section's share of the room beside the list (weight 1): at most 0.6 / 1.6 of it. */
+private const val PINNED_WEIGHT = 0.6f

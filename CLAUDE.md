@@ -92,7 +92,7 @@ docker compose -f test-servers/docker-compose.yml down -v
 Android (needs `ANDROID_HOME`, NDK r29, cargo-ndk; see `android/README.md`). If Maven Central refuses a download,
 never use a mirror, an init script, a local repository or a hand-built classpath: push and let GitHub CI run the tests.
 ```
-cd android && ./gradlew :app:assembleDebug :app:testDebugUnitTest
+cd android && ./gradlew :app:assemblePlayDebug :app:testPlayDebugUnitTest   # flavours play, fdroid, github (T34c)
 ```
 Parallel work in one container: each task gets its own git worktree; container tests then need their own
 compose project name (`-p`) and host ports (the tests read `CROFT_TEST_*_PORT`). Remove a worktree once merged:

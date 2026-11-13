@@ -5,8 +5,11 @@
 #
 # Checks the release outputs: unsigned, not debuggable, no dependency-info block (F-Droid rejects it),
 # the merged manifest matches tools/manifest-allowlist.json, and 16 KB page alignment (APK and, when bundletool
-# is given, the AAB config). Run from android/ after `./gradlew :app:assembleRelease :app:bundleRelease`.
+# is given, the AAB config). Run from android/ after `./gradlew :app:assemblePlayRelease :app:bundlePlayRelease`.
 # Usage: tools/check-release-outputs.sh [path/to/bundletool.jar]
+#
+# CROFT_FLAVOR picks the store build (T34c): play (the default), fdroid or github. Only play has an AAB (Google Play takes bundles;
+# F-Droid builds its own APK and GitHub releases carry APKs), so the AAB checks run for play only.
 #
 # With CROFT_VARIANT=preview it checks the preview APK instead (after `./gradlew :app:assemblePreview`): signed with the debug
 # key (not unsigned, and not any other key), not debuggable, the same manifest allowlist, 16 KB alignment, no test-server code and
@@ -16,20 +19,30 @@ cd "$(dirname "$0")/.."
 sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:?set ANDROID_HOME}}"
 bt="$(ls -d "$sdk"/build-tools/* | sort -V | tail -1)"
 variant="${CROFT_VARIANT:-release}"
+flavor="${CROFT_FLAVOR:-play}"
+case "$flavor" in
+  play|fdroid|github) ;;
+  *) echo "FAIL unknown CROFT_FLAVOR: $flavor"; exit 1 ;;
+esac
+cap() { echo "$(tr '[:lower:]' '[:upper:]' <<<"${1:0:1}")${1:1}"; }
+# AGP's name for the variant: playRelease, fdroidPreview, ...
+full="$flavor$(cap "$variant")"
 case "$variant" in
   release)
-    apk=app/build/outputs/apk/release/app-release-unsigned.apk
-    aab=app/build/outputs/bundle/release/app-release.aab
+    apk="app/build/outputs/apk/$flavor/release/app-$flavor-release-unsigned.apk"
+    aab=""
+    [ "$flavor" = play ] && aab="app/build/outputs/bundle/${full}/app-$flavor-release.aab"
     [ -f "$apk" ] || { echo "FAIL missing $apk (is the release APK built unsigned?)"; exit 1; }
-    [ -f "$aab" ] || { echo "FAIL missing $aab"; exit 1; }
+    [ -z "$aab" ] || [ -f "$aab" ] || { echo "FAIL missing $aab"; exit 1; }
     ;;
   preview)
-    apk=app/build/outputs/apk/preview/app-preview.apk
+    apk="app/build/outputs/apk/$flavor/preview/app-$flavor-preview.apk"
     aab=""
     [ -f "$apk" ] || { echo "FAIL missing $apk"; exit 1; }
     ;;
   *) echo "FAIL unknown CROFT_VARIANT: $variant"; exit 1 ;;
 esac
+echo "Checking $full: $apk"
 fail=0
 bad() { echo "FAIL $*"; fail=1; }
 
@@ -38,8 +51,10 @@ if [ "$variant" = release ]; then
   if unzip -Z1 "$apk" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then bad "APK carries a v1 signature"; else echo "ok   APK has no v1 signature"; fi
   if grep -aq 'APK Sig Block 42' "$apk"; then bad "APK has a signing block"; else echo "ok   APK has no signing block (so no dependency blob)"; fi
   # Dependency info as a file in the bundle metadata.
-  if unzip -Z1 "$aab" | grep -q 'dependencies.pb'; then bad "AAB has dependencies.pb (dependenciesInfo.includeInBundle must be false)"; else echo "ok   AAB has no dependencies.pb"; fi
-  if unzip -Z1 "$aab" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then bad "AAB is signed"; else echo "ok   AAB is unsigned"; fi
+  if [ -n "$aab" ]; then
+    if unzip -Z1 "$aab" | grep -q 'dependencies.pb'; then bad "AAB has dependencies.pb (dependenciesInfo.includeInBundle must be false)"; else echo "ok   AAB has no dependencies.pb"; fi
+    if unzip -Z1 "$aab" | grep -Eq '^META-INF/[^/]+\.(RSA|DSA|EC|SF)$'; then bad "AAB is signed"; else echo "ok   AAB is unsigned"; fi
+  fi
 else
   # Preview: signed, and with the standard Android debug key (never an owner's release key). The debug certificate's subject is
   # "CN=Android Debug, O=Android, C=US".
@@ -57,18 +72,17 @@ if "$bt/aapt2" dump xmltree --file AndroidManifest.xml "$apk" | grep -q 'debugga
 # Permissions and exported components, on the merged manifest AGP packaged into the APK.
 # The app's own classes live in the namespace (gradle.properties), which the preview build's id suffix does not change.
 export CROFT_NAMESPACE="$(sed -n 's/^croft\.applicationId=//p' gradle.properties)"
-vcap="$(tr '[:lower:]' '[:upper:]' <<<"${variant:0:1}")${variant:1}"
-python3 tools/check-release-manifest.py "app/build/intermediates/packaged_manifests/$variant/process${vcap}ManifestForPackage/AndroidManifest.xml" || fail=1
+python3 tools/check-release-manifest.py "app/build/intermediates/packaged_manifests/$full/process$(cap "$full")ManifestForPackage/AndroidManifest.xml" || fail=1
 
 # 16 KB alignment: the libraries, then the whole APK.
-rm -rf "app/build/$variant-libs" && unzip -q "$apk" 'lib/*' -d "app/build/$variant-libs"
-tools/check-16kb-alignment.sh "app/build/$variant-libs" || fail=1
+rm -rf "app/build/$full-libs" && unzip -q "$apk" 'lib/*' -d "app/build/$full-libs"
+tools/check-16kb-alignment.sh "app/build/$full-libs" || fail=1
 # T16: the Rust library of the release must not carry the test-only IMAP server (`test-server` feature of croft-ffi, which is for
 # the host library of the JVM tests). Its UniFFI object exports symbols named after `TestImapServer`, and its crate is
 # `croft-test-support`; neither may appear in any library of the APK, as an exported symbol or as text anywhere in the file.
 nm_tool="$(ls "$sdk"/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-nm 2>/dev/null | sort -V | tail -1 || true)"
 [ -n "$nm_tool" ] || nm_tool="$(command -v llvm-nm || command -v nm || true)"
-libs=$(find "app/build/$variant-libs/lib" -name '*.so' | sort)
+libs=$(find "app/build/$full-libs/lib" -name '*.so' | sort)
 [ -n "$libs" ] || bad "no libraries found in the release APK"
 for lib in $libs; do
   syms=""; [ -z "$nm_tool" ] || syms="$("$nm_tool" -D "$lib" 2>/dev/null || true)"
@@ -83,7 +97,7 @@ done
 
 # T17c: the test hooks (`TestHooks` in src/debug, a stub in src/release) must not be in the release build. The debug class has a field
 # named debugOnlySecretsFactory that exists nowhere else; R8's mapping lists the original names of what the release build kept.
-mapping="app/build/outputs/mapping/$variant/mapping.txt"
+mapping="app/build/outputs/mapping/$full/mapping.txt"
 if [ -f "$mapping" ]; then
   if grep -q 'debugOnlySecretsFactory' "$mapping"; then bad "the release build contains the debug test hooks (debugOnlySecretsFactory)"; else echo "ok   no debug test hooks in the release build"; fi
 else
@@ -94,8 +108,8 @@ fi
 
 "$bt/zipalign" -c -P 16 4 "$apk" && echo "ok   zipalign -c -P 16 on the APK" || bad "zipalign -P 16"
 
-if [ "$variant" != release ]; then
-  echo "skip AAB 16 KB config (no AAB for $variant)"
+if [ -z "$aab" ]; then
+  echo "skip AAB 16 KB config (no AAB for $full)"
 elif [ $# -ge 1 ]; then
   if java -jar "$1" dump config --bundle="$aab" | grep -q 'PAGE_ALIGNMENT_16K'; then echo "ok   AAB config has PAGE_ALIGNMENT_16K"; else bad "AAB config lacks PAGE_ALIGNMENT_16K"; fi
 else

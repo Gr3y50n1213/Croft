@@ -4,7 +4,7 @@
 
 // T16: the tests of the app's mail layer against the real Rust core and a real (in-process) IMAP server, as plain JVM tests.
 // They have no Android or Compose types, so they run without Robolectric (`./gradlew :mailtests:test`; also a dependency of
-// `:app:testDebugUnitTest`, so one command and CI run both), like :swipe.
+// `:app:testPlayDebugUnitTest`, so one command and CI run both), like :swipe.
 //
 // There is no main code here. The tests compile the app's own data layer in place (`app/src/main/kotlin/.../mail`, minus the
 // files that need Android) and UniFFI bindings generated from the host library, which is built with croft-ffi's

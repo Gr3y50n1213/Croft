@@ -7,8 +7,8 @@ Depends on: T24 and T25 (sign-in), T28 (the push relay), T29 (the gateway for FC
 
 Built in steps, each its own pull request:
 - **T34a** signing a phone in to the Companion (Companion and web);
-- **T34b** the Android flavours `play`, `fdroid`, `github` and their checks;
-- **T34c** S06 Connect a Companion and S58 Companion and devices on Android;
+- **T34b** the core's Companion client, and S06 Connect a Companion and S58 Companion and devices on Android;
+- **T34c** the Android flavours `play`, `fdroid`, `github` and their checks;
 - **T34d** push registration (UnifiedPush in `fdroid` and `github`, FCM through the gateway in `play`) and push in place of
   periodic checks.
 
@@ -58,6 +58,11 @@ tokens: 15-minute access, rotating refresh, a device the person can sign out).
   Companion on this machine (probe, sign-in, devices, renewal with the new secret saved, an old secret ending the session, sign-out),
   Android unit tests (the connection's states, ignored redirects, a replaced secret kept, signed out by the Companion), the manifest
   check (the redirect activity allowed only for the app's own scheme), an independent review.
+- After the review: a renewal runs to the end even when its caller gives up (the new tokens are never lost to a closed screen);
+  one link per process (never a second one from the stored secret); a new secret that could not be stored is kept in memory and
+  stored at the next step; a code the Companion refuses leaves the sign-in waiting for the real one; only a 401 ends the session;
+  plain `http` to this machine only in debug builds; the Companion client follows the process's address policy; a key loss moves
+  the Companion secret aside with the accounts'; an erase and a secret that cannot be kept sign the device out first.
 
 ## Spec (T34c and T34d)
 Written in this file when each starts.

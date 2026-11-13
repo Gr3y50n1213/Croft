@@ -77,6 +77,8 @@ class CoreAccountOps(
     private val eraseStorage: () -> Unit,
     /** Deletes Croft's other files. */
     private val clearLocalFiles: () -> Unit,
+    /** Ends this device's Companion session (best effort; its secret is erased with the rest either way). */
+    private val endCompanion: suspend () -> Unit = {},
 ) : AccountOps {
     override suspend fun addSample(): AccountId = core.addDemoAccount().id
 
@@ -87,6 +89,13 @@ class CoreAccountOps(
     override suspend fun eraseEverything() {
         // Deleting files waits on the disk and the Keystore: not on the main thread.
         withContext(Dispatchers.IO) { eraseQuarantine() }
+        try {
+            endCompanion()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The secret goes with the rest; the device stays in the Companion's list until signed out there.
+        }
         for (account in core.listAccounts()) {
             try {
                 removeAccountAndSecrets(account.id)

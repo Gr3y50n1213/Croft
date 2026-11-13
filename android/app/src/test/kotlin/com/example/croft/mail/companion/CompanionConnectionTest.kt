@@ -25,6 +25,7 @@ private class FakeBackend : CompanionBackend {
     )
     var signedOut = false
     var rotateTo: ByteArray? = null
+    var links = 0
 
     override suspend fun probe(url: String): CompanionFound {
         probeProblem?.let { throw CompanionException(it) }
@@ -41,6 +42,7 @@ private class FakeBackend : CompanionBackend {
 
     override fun link(secret: ByteArray, onNewSecret: (ByteArray) -> Unit): CompanionLinkApi {
         linkProblem?.let { throw CompanionException(it) }
+        links++
         val backend = this
         return object : CompanionLinkApi {
             override val url = "https://companion.example.org"
@@ -58,8 +60,12 @@ private class FakeBackend : CompanionBackend {
 
 private class MemorySecrets : CompanionSecrets {
     var value: ByteArray? = null
+    var failPuts = false
     override fun get() = value?.copyOf()
-    override fun put(secret: ByteArray) { value = secret.copyOf() }
+    override fun put(secret: ByteArray) {
+        if (failPuts) throw java.io.IOException("made-up storage failure")
+        value = secret.copyOf()
+    }
     override fun remove() { value = null }
 }
 
@@ -179,5 +185,52 @@ class CompanionConnectionTest {
         )
         // Still kept: only being signed out by the Companion forgets it.
         assertArrayEquals("made-up-secret".toByteArray(), secrets.value)
+    }
+
+    @Test
+    fun aSecondVisitUsesTheOpenLinkNotTheStore() = runBlocking<Unit> {
+        secrets.value = "made-up-secret".toByteArray()
+        connection.load()
+        // Even if the store still held an older secret, the open link (with the newest tokens) is used.
+        secrets.value = "made-up-stale".toByteArray()
+        connection.load()
+        assertEquals(1, backend.links)
+        assertEquals(CompanionState.Connected("https://companion.example.org", "ann"), connection.state.value)
+    }
+
+    @Test
+    fun aSecretThatCouldNotBeSavedIsSavedAtTheNextStep() = runBlocking<Unit> {
+        secrets.value = "made-up-secret".toByteArray()
+        backend.rotateTo = "made-up-secret-2".toByteArray()
+        secrets.failPuts = true
+        connection.load()
+        assertArrayEquals("made-up-secret".toByteArray(), secrets.value)
+        secrets.failPuts = false
+        backend.rotateTo = null
+        connection.load()
+        assertArrayEquals("made-up-secret-2".toByteArray(), secrets.value)
+        assertEquals(1, backend.links)
+    }
+
+    @Test
+    fun aRefusedCodeLeavesTheSignInWaitingForTheRealOne() = runBlocking<Unit> {
+        connection.start("companion.example.org")
+        backend.finishProblem = CompanionProblem.SIGN_IN_FAILED
+        connection.onRedirect("$REDIRECT?code=from-another-app")
+        assertEquals(CompanionState.NotConnected(CompanionProblem.SIGN_IN_FAILED), connection.state.value)
+        backend.finishProblem = null
+        connection.onRedirect("$REDIRECT?code=the-real-one")
+        assertEquals(CompanionState.Connected("https://companion.example.org", "ann"), connection.state.value)
+        assertEquals(listOf("flow-1", "flow-1"), backend.finished.map { it.first })
+    }
+
+    @Test
+    fun aNewSessionThatCannotBeKeptIsSignedOut() = runBlocking<Unit> {
+        secrets.failPuts = true
+        connection.start("companion.example.org")
+        connection.onRedirect("$REDIRECT?code=made-up-code")
+        assertEquals(CompanionState.NotConnected(CompanionProblem.STORAGE), connection.state.value)
+        assertTrue(backend.signedOut)
+        assertNull(secrets.value)
     }
 }

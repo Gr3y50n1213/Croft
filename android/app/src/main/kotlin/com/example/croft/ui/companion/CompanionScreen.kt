@@ -4,6 +4,7 @@
 
 package com.example.croft.ui.companion
 
+import android.content.ActivityNotFoundException
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.layout.Arrangement
@@ -71,6 +72,7 @@ private fun problemText(p: CompanionProblem): String = stringResource(
         CompanionProblem.RATE_LIMITED -> R.string.companion_problem_rate_limited
         CompanionProblem.SERVER -> R.string.companion_problem_server
         CompanionProblem.STORAGE -> R.string.companion_problem_storage
+        CompanionProblem.NO_BROWSER -> R.string.companion_problem_no_browser
     },
 )
 
@@ -131,7 +133,11 @@ fun CompanionScreen(connection: CompanionConnection, onBack: () -> Unit, modifie
                                 val page = withContext(Dispatchers.IO) { connection.start(address) }
                                 busy = false
                                 if (page != null) {
-                                    CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(page))
+                                    try {
+                                        CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(page))
+                                    } catch (e: ActivityNotFoundException) {
+                                        connection.noBrowser()
+                                    }
                                 }
                             }
                         },

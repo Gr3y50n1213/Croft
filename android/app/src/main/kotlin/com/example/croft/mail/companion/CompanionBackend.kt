@@ -10,7 +10,7 @@ import uniffi.croft_ffi.CompanionSecretSaver
 import uniffi.croft_ffi.Core
 
 /** Why a Companion step did not work, in the app's terms (the screen owns the words). */
-enum class CompanionProblem { BAD_ADDRESS, NOT_A_COMPANION, UNREACHABLE, SIGN_IN_FAILED, SIGNED_OUT, RATE_LIMITED, SERVER, STORAGE }
+enum class CompanionProblem { BAD_ADDRESS, NOT_A_COMPANION, UNREACHABLE, SIGN_IN_FAILED, SIGNED_OUT, RATE_LIMITED, SERVER, STORAGE, NO_BROWSER }
 
 /** A Companion step failed. Carries only the category, never an address or a token. */
 class CompanionException(val problem: CompanionProblem) : Exception(problem.name)
@@ -82,7 +82,13 @@ class CoreCompanionBackend(private val core: Core) : CompanionBackend {
 
     override fun link(secret: ByteArray, onNewSecret: (ByteArray) -> Unit): CompanionLinkApi = mapped {
         val saver = object : CompanionSecretSaver {
-            override fun save(secret: ByteArray) = onNewSecret(secret)
+            override fun save(secret: ByteArray) {
+                try {
+                    onNewSecret(secret)
+                } finally {
+                    secret.fill(0)
+                }
+            }
         }
         CoreLink(core.companionLink(secret, saver))
     }

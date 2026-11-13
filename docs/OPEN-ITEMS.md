@@ -66,7 +66,11 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
 - **Phones and the Companion (T34b):** connecting was tested against a real Companion on this machine (the core's client) and with
   unit tests (the app's state), not on a phone: try a Custom Tab sign-in with a passkey and with single sign-on, and the way back to
   the app. A Companion behind a private certificate authority or a self-signed certificate cannot be connected yet (the phone trusts
-  the public roots only); an option to trust it, as for mail servers, is a later task.
+  the public roots only); an option to trust it, as for mail servers, is a later task. If Android ends the app while the browser
+  is in front (common on phones short of memory), the sign-in waiting in the core is lost and the way back does nothing: connect
+  again (a message for this is a later task). S58 has Disconnect but not yet "Delete my Companion data" and "Unregister this
+  device" (READINESS row 7): with push, in T34d. The FFI hands the secret across in buffers the core cannot wipe (Kotlin wipes
+  its copies).
 - **Push in browsers (T32b):** untested with the real push services (Google's for Chrome, Mozilla's for Firefox, Apple's for
   Safari) and with real notifications (headless Chromium refuses them); try on real browsers and an installed app on a phone.
   A refresh answer lost on a flapping connection still ends the session on the next try (no grace window for a just-rotated

@@ -10,6 +10,7 @@ import com.example.croft.mail.MailRuntime
 import com.example.croft.mail.accounts.AccountOps
 import com.example.croft.mail.accounts.CoreAccountOps
 import com.example.croft.mail.accounts.SavedSignIn
+import com.example.croft.mail.companion.CompanionRuntime
 import com.example.croft.mail.onboarding.StorageUnavailableException
 import com.example.croft.secrets.SecretKind
 import kotlinx.coroutines.CancellationException
@@ -48,6 +49,7 @@ private class LazyAccountOps(private val context: Context) : AccountOps {
             closeCore = { MailRuntime.forgetCore() },
             eraseStorage = { open.secrets.eraseEverything() },
             clearLocalFiles = { if (!MailRuntime.afterErase(context)) throw java.io.IOException("a file could not be deleted") },
+            endCompanion = { CompanionRuntime.connection(context)?.let { it.load(); it.disconnect() } },
         )
     }
 

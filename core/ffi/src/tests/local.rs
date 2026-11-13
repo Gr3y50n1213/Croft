@@ -1295,7 +1295,7 @@ fn a_removed_accounts_id_is_not_given_to_the_next_account() {
 }
 
 #[test]
-fn a_companion_address_is_normalized_and_a_sign_in_is_finished_once() {
+fn a_companion_address_is_normalized_and_a_sign_in_is_finished_once_by_its_own_code() {
     assert_eq!(
         companion_address("companion.example.org/".into()).unwrap(),
         "https://companion.example.org"
@@ -1318,15 +1318,26 @@ fn a_companion_address_is_normalized_and_a_sign_in_is_finished_once() {
         .starts_with("http://127.0.0.1:9/app/sign-in?app_challenge="));
     // The verifier stays in the core: the page address carries only the challenge.
     assert_eq!(start.flow_id.len(), 43);
-    // A redirect without a code fails, and spends the flow.
+    // A redirect without a code (or with someone else's) fails but leaves the flow for the real one.
+    for stray in [
+        "com.example.croft:/companion?error=provider",
+        "com.other.app:/companion?code=abc",
+    ] {
+        assert_eq!(
+            block(core.companion_finish(start.flow_id.clone(), stray.into(), "Test phone".into()))
+                .unwrap_err(),
+            CompanionFailure::SignInFailed
+        );
+    }
+    // The real one is tried (nothing listens on port 9) and that spends the flow.
     assert_eq!(
         block(core.companion_finish(
             start.flow_id.clone(),
-            "com.example.croft:/companion?error=provider".into(),
+            "com.example.croft:/companion?code=abc".into(),
             "Test phone".into()
         ))
         .unwrap_err(),
-        CompanionFailure::SignInFailed
+        CompanionFailure::Unreachable
     );
     assert_eq!(
         block(core.companion_finish(

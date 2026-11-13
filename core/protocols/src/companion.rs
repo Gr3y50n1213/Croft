@@ -16,7 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use std::sync::Arc;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::jmap::url::{is_loopback_name, Url};
@@ -75,7 +76,7 @@ fn from_fetch(e: &FetchError) -> CompanionError {
 }
 
 /// The Companion's address as the app keeps it: `https://host[:port]` (no path; the web app and
-/// API live at the root, T30), or `http://` to this machine (tests). What the person typed may
+/// API live at the root, T30), or `http://` to this machine in debug builds (tests). What the person typed may
 /// leave out `https://` and end with `/`.
 pub fn normalize(typed: &str) -> Result<String, CompanionError> {
     let t = typed.trim();
@@ -91,7 +92,9 @@ pub fn normalize(typed: &str) -> Result<String, CompanionError> {
     if url.path_and_query != "/" || with_scheme.contains('#') {
         return Err(CompanionError::BadAddress);
     }
-    if !url.secure && !is_loopback_name(&url.host) {
+    // Plain http only to this machine, and only in builds made for testing: in a release build
+    // another app on the phone could be listening on a loopback port.
+    if !url.secure && !(cfg!(debug_assertions) && is_loopback_name(&url.host)) {
         return Err(CompanionError::BadAddress);
     }
     let scheme = if url.secure { "https" } else { "http" };
@@ -113,7 +116,7 @@ pub struct Info {
 /// it offers single sign-on.
 pub async fn probe(typed: &str) -> Result<Info, CompanionError> {
     let url = normalize(typed)?;
-    let v = fetch::get(&format!("{url}/version"), 64)
+    let v = fetch::companion("GET", &format!("{url}/version"), None, None, 64)
         .await
         .map_err(|e| from_fetch(&e))?;
     let version = std::str::from_utf8(&v.body)
@@ -129,7 +132,8 @@ pub async fn probe(typed: &str) -> Result<Info, CompanionError> {
     if v.status != 200 || !looks_like_version {
         return Err(CompanionError::NotACompanion);
     }
-    let sso_name = match fetch::get(&format!("{url}/api/oidc"), 4096).await {
+    let sso_name = match fetch::companion("GET", &format!("{url}/api/oidc"), None, None, 4096).await
+    {
         Ok(a) if a.status == 200 => serde_json::from_slice::<Value>(&a.body)
             .ok()
             .filter(|v| v["enabled"] == true)
@@ -207,8 +211,9 @@ impl SignIn {
 
     /// Finishes the sign-in with the address the browser came back to (`<redirect>?code=...`):
     /// the code is redeemed with this sign-in's verifier for the app's session. `device` names it
-    /// in the person's list of devices.
-    pub async fn finish(self, callback: &str, device: &str) -> Result<Session, CompanionError> {
+    /// in the person's list of devices. [`CompanionError::SignInFailed`] leaves the sign-in usable:
+    /// a code that does not belong to it (another app firing the redirect) must not spend it.
+    pub async fn finish(&self, callback: &str, device: &str) -> Result<Session, CompanionError> {
         let query = callback
             .strip_prefix(&self.redirect)
             .and_then(|q| q.strip_prefix('?'))
@@ -228,9 +233,19 @@ impl SignIn {
             .filter(|c| !c.is_control())
             .take(64)
             .collect();
+        #[derive(Serialize)]
+        struct Exchange<'a> {
+            code: &'a str,
+            verifier: &'a str,
+            device: &'a str,
+        }
         let body = Zeroizing::new(
-            json!({ "code": code, "verifier": self.pkce.verifier.as_str(), "device": device })
-                .to_string(),
+            serde_json::to_string(&Exchange {
+                code,
+                verifier: &self.pkce.verifier,
+                device: &device,
+            })
+            .map_err(|_| CompanionError::Server)?,
         );
         let a = fetch::companion(
             "POST",
@@ -292,11 +307,12 @@ impl Tokens {
 pub type SecretSaver = Box<dyn Fn(Zeroizing<Vec<u8>>) + Send + Sync>;
 
 /// The app's session with its Companion. Calls are serialised, so a renewal is never made twice
-/// with the same refresh token.
+/// with the same refresh token. Keep one per process: two sessions made from the same secret
+/// would each spend the same refresh token, and the second spend ends the session (reuse).
 pub struct Session {
-    tokens: Mutex<Option<Tokens>>,
+    tokens: Arc<Mutex<Option<Tokens>>>,
     url: String,
-    saver: std::sync::Mutex<Option<SecretSaver>>,
+    saver: Arc<std::sync::Mutex<Option<SecretSaver>>>,
     now: fn() -> i64,
 }
 
@@ -327,12 +343,71 @@ pub struct Device {
     pub current: bool,
 }
 
+/// Hands the new secret to the app's saver, if it set one.
+fn save(saver: &std::sync::Mutex<Option<SecretSaver>>, t: &Tokens) {
+    if let Ok(bytes) = serde_json::to_vec(t) {
+        let bytes = Zeroizing::new(bytes);
+        if let Some(saver) = saver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            saver(bytes);
+        }
+    }
+}
+
+/// The renewal itself ([`Session::renew`] runs it as a task). Only a 401 means the session is over:
+/// a 400 or a proxy's error page says nothing about the tokens.
+async fn renew_in(
+    url: &str,
+    saver: &std::sync::Mutex<Option<SecretSaver>>,
+    slot: &mut Option<Tokens>,
+) -> Result<(), CompanionError> {
+    #[derive(Serialize)]
+    struct Refresh<'a> {
+        refresh_token: &'a str,
+    }
+    let Some(t) = slot.as_ref() else {
+        return Err(CompanionError::SignedOut);
+    };
+    let body = Zeroizing::new(
+        serde_json::to_string(&Refresh {
+            refresh_token: &t.refresh_token,
+        })
+        .map_err(|_| CompanionError::Server)?,
+    );
+    let a = fetch::companion(
+        "POST",
+        &format!("{url}/api/token/refresh"),
+        None,
+        Some(body.as_bytes()),
+        MAX_ANSWER,
+    )
+    .await
+    .map_err(|e| from_fetch(&e))?;
+    match a.status {
+        200 => {
+            let new = Tokens::from_answer(url, &a.body).ok_or(CompanionError::Server)?;
+            save(saver, &new);
+            *slot = Some(new);
+            Ok(())
+        }
+        401 => {
+            *slot = None;
+            Err(CompanionError::SignedOut)
+        }
+        429 => Err(CompanionError::RateLimited),
+        _ => Err(CompanionError::Server),
+    }
+}
+
 impl Session {
     fn new(tokens: Tokens) -> Self {
         Self {
             url: tokens.url.clone(),
-            tokens: Mutex::new(Some(tokens)),
-            saver: std::sync::Mutex::new(None),
+            tokens: Arc::new(Mutex::new(Some(tokens))),
+            saver: Arc::new(std::sync::Mutex::new(None)),
             now: system_now,
         }
     }
@@ -368,48 +443,25 @@ impl Session {
         )
     }
 
-    fn save(&self, t: &Tokens) {
-        if let Ok(bytes) = serde_json::to_vec(t) {
-            if let Some(saver) = self
-                .saver
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-            {
-                saver(Zeroizing::new(bytes));
-            }
-        }
-    }
-
     /// Renews the access token with the refresh token (replaced; the new secret is saved).
-    async fn renew(&self, slot: &mut Option<Tokens>) -> Result<(), CompanionError> {
-        let Some(t) = slot.as_ref() else {
-            return Err(CompanionError::SignedOut);
-        };
-        let body = Zeroizing::new(json!({ "refresh_token": t.refresh_token }).to_string());
-        let a = fetch::companion(
-            "POST",
-            &format!("{}/api/token/refresh", self.url),
-            None,
-            Some(body.as_bytes()),
-            MAX_ANSWER,
-        )
-        .await
-        .map_err(|e| from_fetch(&e))?;
-        match a.status {
-            200 => {
-                let new = Tokens::from_answer(&self.url, &a.body).ok_or(CompanionError::Server)?;
-                self.save(&new);
-                *slot = Some(new);
-                Ok(())
-            }
-            400 | 401 => {
-                *slot = None;
-                Err(CompanionError::SignedOut)
-            }
-            429 => Err(CompanionError::RateLimited),
-            _ => Err(CompanionError::Server),
-        }
+    ///
+    /// The renewal runs as its own task and holds the token lock until it is done, so that a
+    /// caller that gives up half way (a screen closed, a call cancelled) cannot lose the new
+    /// tokens after the Companion has already spent the old refresh token. Only the wait is
+    /// cancelled. Needs a Tokio runtime.
+    async fn renew(
+        &self,
+        slot: OwnedMutexGuard<Option<Tokens>>,
+    ) -> Result<OwnedMutexGuard<Option<Tokens>>, CompanionError> {
+        let url = self.url.clone();
+        let saver = Arc::clone(&self.saver);
+        let task = tokio::spawn(async move {
+            let mut slot = slot;
+            let r = renew_in(&url, &saver, &mut slot).await;
+            (slot, r)
+        });
+        let (slot, r) = task.await.map_err(|_| CompanionError::Server)?;
+        r.map(|()| slot)
     }
 
     /// A call to the Companion's API (`path` from the root), renewing the access token first when
@@ -420,12 +472,12 @@ impl Session {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value, CompanionError> {
-        let mut slot = self.tokens.lock().await;
+        let mut slot = Arc::clone(&self.tokens).lock_owned().await;
         let due = slot
             .as_ref()
-            .is_none_or(|t| t.access_expires_ms - RENEW_BEFORE_MS <= (self.now)());
+            .is_none_or(|t| t.access_expires_ms.saturating_sub(RENEW_BEFORE_MS) <= (self.now)());
         if due {
-            self.renew(&mut slot).await?;
+            slot = self.renew(slot).await?;
         }
         let body = body.map(|b| Zeroizing::new(b.to_string()));
         for attempt in 0..2 {
@@ -446,7 +498,7 @@ impl Session {
                 200..=299 => {
                     return Ok(serde_json::from_slice(&a.body).unwrap_or(Value::Null));
                 }
-                401 if attempt == 0 => self.renew(&mut slot).await?,
+                401 if attempt == 0 => slot = self.renew(slot).await?,
                 401 => return Err(CompanionError::SignedOut),
                 429 => return Err(CompanionError::RateLimited),
                 _ => return Err(CompanionError::Server),
@@ -460,7 +512,7 @@ impl Session {
         let me = self.call("GET", "/api/me", None).await?;
         me["name"]
             .as_str()
-            .map(str::to_owned)
+            .map(|n| n.chars().filter(|c| !c.is_control()).take(64).collect())
             .ok_or(CompanionError::Server)
     }
 
@@ -619,5 +671,112 @@ mod tests {
                 "{cb}"
             );
         }
+    }
+
+    /// A tiny Companion that answers one refresh slowly, then any call with 200. Counts refreshes.
+    async fn slow_companion(
+        delay: std::time::Duration,
+        status: u16,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&refreshes);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let count = Arc::clone(&count);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let body = if head.starts_with("POST /api/token/refresh") {
+                        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        tokio::time::sleep(delay).await;
+                        r#"{"access_token":"made-up-access-2","access_expires_ms":9999999999999,"refresh_token":"made-up-refresh-2"}"#
+                    } else {
+                        r#"{"name":"Test person"}"#
+                    };
+                    let status = if head.starts_with("POST /api/token/refresh") {
+                        status
+                    } else {
+                        200
+                    };
+                    let answer = format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(answer.as_bytes()).await;
+                });
+            }
+        });
+        (url, refreshes)
+    }
+
+    fn due_session(url: &str) -> Session {
+        let secret = format!(
+            r#"{{"url":"{url}","access_token":"made-up-access-1","access_expires_ms":0,"refresh_token":"made-up-refresh-1"}}"#
+        );
+        Session::from_secret(secret.as_bytes()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_call_given_up_during_a_renewal_still_keeps_the_new_tokens() {
+        let (url, refreshes) = slow_companion(std::time::Duration::from_millis(300), 200).await;
+        let session = due_session(&url);
+        let saved = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let into = Arc::clone(&saved);
+        session.set_saver(Box::new(move |s| into.lock().unwrap().push(s.to_vec())));
+
+        // The screen closes while the refresh is on its way: the call is dropped.
+        let gave_up =
+            tokio::time::timeout(std::time::Duration::from_millis(50), session.user_name()).await;
+        assert!(gave_up.is_err());
+
+        // The renewal finishes on its own and its tokens are saved and used.
+        assert_eq!(session.user_name().await.unwrap(), "Test person");
+        assert_eq!(
+            refreshes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "renewed once"
+        );
+        let saved = saved.lock().unwrap().clone();
+        assert_eq!(saved.len(), 1);
+        assert!(String::from_utf8_lossy(&saved[0]).contains("made-up-refresh-2"));
+        assert!(String::from_utf8_lossy(&session.secret().await).contains("made-up-refresh-2"));
+    }
+
+    #[tokio::test]
+    async fn only_a_401_ends_the_session() {
+        let (url, _) = slow_companion(std::time::Duration::ZERO, 400).await;
+        let session = due_session(&url);
+        assert_eq!(
+            session.user_name().await.unwrap_err(),
+            CompanionError::Server
+        );
+        assert!(!session.secret().await.is_empty(), "a 400 keeps the tokens");
+
+        let (url, _) = slow_companion(std::time::Duration::ZERO, 401).await;
+        let session = due_session(&url);
+        assert_eq!(
+            session.user_name().await.unwrap_err(),
+            CompanionError::SignedOut
+        );
+        assert!(session.secret().await.is_empty(), "a 401 ends it");
+    }
+
+    #[tokio::test]
+    async fn a_hostile_expiry_does_not_overflow() {
+        let (url, refreshes) = slow_companion(std::time::Duration::ZERO, 200).await;
+        let secret = format!(
+            r#"{{"url":"{url}","access_token":"a","access_expires_ms":{},"refresh_token":"r"}}"#,
+            i64::MIN
+        );
+        let s = Session::from_secret(secret.as_bytes()).unwrap();
+        assert_eq!(s.user_name().await.unwrap(), "Test person");
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

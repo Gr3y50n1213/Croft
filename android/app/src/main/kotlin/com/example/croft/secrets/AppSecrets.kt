@@ -395,8 +395,13 @@ class AppSecrets internal constructor(
     private fun databaseSiblings(): List<File> =
         listOf("", "-wal", "-shm", "-journal").map { File(databaseFile.path + it) }
 
-    private fun accountSecretFiles(): List<File> =
-        dir.listFiles { f -> f.name.startsWith(SecretStore.PREFIX) }?.toList() ?: throw IOException("cannot list the secrets")
+    /**
+     * Every file wrapped by the secret box apart from the database key: the account secrets and the app's own (the
+     * Companion session). They move aside and come back together; one left behind would block the new key.
+     */
+    private fun wrappedSecretFiles(): List<File> =
+        dir.listFiles { f -> f.name.startsWith(SecretStore.PREFIX) || f.name.startsWith(SecretStore.APP_PREFIX) }?.toList()
+            ?: throw IOException("cannot list the secrets")
 
     private fun moveAside() {
         // The notice first: a crash half way through must still show it.
@@ -406,7 +411,7 @@ class AppSecrets internal constructor(
             incidentThisStart = quarantine.moveAside(
                 listOf(
                     "database" to databaseSiblings(),
-                    "secrets" to accountSecretFiles(),
+                    "secrets" to wrappedSecretFiles(),
                     // Last: if the app is killed half way, the wrapped key is still there and the
                     // same decision is made again at the next start.
                     "key" to listOf(keyFile),
@@ -485,7 +490,7 @@ class AppSecrets internal constructor(
                 writeAtomically(marker, ByteArray(0))
                 val superseded = File(incident, "superseded")
                 quarantine.moveInto(File(superseded, "database"), databaseSiblings())
-                if (supersedeSecrets) quarantine.moveInto(File(superseded, "secrets"), accountSecretFiles())
+                if (supersedeSecrets) quarantine.moveInto(File(superseded, "secrets"), wrappedSecretFiles())
                 if (keyFile.exists()) {
                     File(superseded, "key").mkdirs()
                     keyFile.copyTo(File(superseded, "key/${keyFile.name}"), overwrite = true)

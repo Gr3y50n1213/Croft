@@ -191,24 +191,45 @@ impl Core {
 
     /// Finishes a sign-in with the address the browser came back to (`<redirect>?code=...`);
     /// `device` names this device in the person's list. A flow is used once: a second finish, or
-    /// one after ten minutes, is [`CompanionFailure::SignInFailed`].
+    /// one after ten minutes, is [`CompanionFailure::SignInFailed`]. A callback whose code the
+    /// Companion refuses (or that has none) leaves the flow waiting for the real one.
     pub async fn companion_finish(
         &self,
         flow_id: String,
         callback: String,
         device: String,
     ) -> Result<CompanionConnected, CompanionFailure> {
-        let sign_in = FLOWS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&flow_id)
-            .filter(|(at, _)| at.elapsed() < FLOW_LIFETIME)
-            .map(|(_, s)| s)
-            .ok_or(CompanionFailure::SignInFailed)?;
+        let sign_in = {
+            let mut flows = FLOWS.lock().unwrap_or_else(PoisonError::into_inner);
+            flows.retain(|_, (at, _)| at.elapsed() < FLOW_LIFETIME);
+            flows.remove(&flow_id)
+        }
+        .ok_or(CompanionFailure::SignInFailed)?;
         let task = self.spawn(
             async move {
-                let session = sign_in.finish(&callback, &device).await?;
-                let user_name = session.user_name().await?;
+                let (started, sign_in) = sign_in;
+                let session = match sign_in.finish(&callback, &device).await {
+                    Ok(s) => s,
+                    Err(CompanionError::SignInFailed) => {
+                        // Not this flow's code (a stray or forged redirect): the real one may
+                        // still come, so the flow stays until it is used or expires.
+                        FLOWS
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(flow_id, (started, sign_in));
+                        return Err(CompanionError::SignInFailed);
+                    }
+                    Err(e) => return Err(e),
+                };
+                let user_name = match session.user_name().await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        // The session is of no use without its secret kept: end it rather than
+                        // leave a device the person cannot use in their list.
+                        let _ = session.sign_out().await;
+                        return Err(e);
+                    }
+                };
                 let secret = session.secret().await.to_vec();
                 Ok::<_, CompanionError>(CompanionConnected {
                     url: session.url().to_owned(),

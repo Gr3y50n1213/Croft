@@ -45,7 +45,11 @@ sealed interface CompanionState {
  * The app's connection to a Croft Companion (T34b): connecting through the browser (S06), what S58 shows, signing devices out and
  * disconnecting. The secret lives in [secrets] only; a Companion that ended this device's session (SIGNED_OUT) makes the app forget it.
  *
- * A redirect that arrives with no sign-in waiting for it is ignored (another app could open the Croft scheme at any time).
+ * A redirect that arrives with no sign-in waiting for it is ignored (another app could open the Croft scheme at any time), and one whose
+ * code is refused leaves the sign-in waiting for the real one.
+ *
+ * One link per process: the Companion replaces the refresh token on every renewal, so a second link made from the kept secret would
+ * spend an old token and end the session. A new secret that could not be stored is kept in memory and stored at the next step.
  */
 class CompanionConnection(
     private val backend: CompanionBackend,
@@ -61,6 +65,7 @@ class CompanionConnection(
     private val lock = Mutex()
     private var link: CompanionLinkApi? = null
     private var pendingFlow: String? = null
+    @Volatile private var unsaved: ByteArray? = null
 
     private suspend fun <T> guarded(block: suspend () -> T): T? = try {
         block()
@@ -88,6 +93,8 @@ class CompanionConnection(
 
     private fun forget() {
         link = null
+        unsaved?.fill(0)
+        unsaved = null
         try {
             secrets.remove()
         } catch (e: Exception) {
@@ -95,12 +102,47 @@ class CompanionConnection(
         }
     }
 
-    private fun linkFrom(secret: ByteArray): CompanionLinkApi =
-        backend.link(secret) { next -> try { secrets.put(next) } catch (e: Exception) { /* kept in memory until the next start */ } }
+    private fun linkFrom(secret: ByteArray): CompanionLinkApi = backend.link(secret) { next -> save(next) }
+
+    /** Called (from the core) with each new secret. */
+    private fun save(next: ByteArray) {
+        synchronized(this) {
+            try {
+                secrets.put(next)
+                unsaved?.fill(0)
+                unsaved = null
+            } catch (e: Exception) {
+                // The link in memory has the new tokens; [saveLater] stores them at the next step.
+                unsaved?.fill(0)
+                unsaved = next.copyOf()
+            }
+        }
+    }
+
+    /** Stores a secret whose save failed earlier; false while it still cannot be stored. */
+    private fun saveLater(): Boolean = synchronized(this) {
+        val pending = unsaved ?: return true
+        try {
+            secrets.put(pending)
+            pending.fill(0)
+            unsaved = null
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     /** Reads the kept connection, and who is signed in. */
     suspend fun load() = lock.withLock {
         if (_state.value is CompanionState.Waiting) return@withLock
+        link?.let { l ->
+            // Already open in this process: never made again from the store (see the class note).
+            val shown = (_state.value as? CompanionState.Connected)?.userName.orEmpty()
+            _state.value = CompanionState.Connected(l.url, shown, problem = if (saveLater()) null else CompanionProblem.STORAGE)
+            val name = guarded { l.userName() } ?: return@withLock
+            (_state.value as? CompanionState.Connected)?.let { _state.value = it.copy(userName = name) }
+            return@withLock
+        }
         val secret = try {
             secrets.get()
         } catch (e: Exception) {
@@ -136,20 +178,53 @@ class CompanionConnection(
         }
     }
 
+    /** The sign-in page could not be opened: there is no browser on this device. */
+    fun noBrowser() {
+        if (_state.value is CompanionState.Waiting) {
+            pendingFlow = null
+            _state.value = CompanionState.NotConnected(CompanionProblem.NO_BROWSER)
+        }
+    }
+
     /** The browser came back to the app's redirect with [uri]. Ignored when no sign-in is waiting. */
     suspend fun onRedirect(uri: String) = lock.withLock {
         val flow = pendingFlow ?: return@withLock
         if (!uri.startsWith("$redirect?")) return@withLock
+        val joined = try {
+            backend.finish(flow, uri, deviceName)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: CompanionException) {
+            // A refused code leaves the core's flow waiting (it may have come from another app); anything else ended it.
+            if (e.problem != CompanionProblem.SIGN_IN_FAILED) pendingFlow = null
+            failed(e.problem)
+            return@withLock
+        } catch (e: Exception) {
+            pendingFlow = null
+            failed(CompanionProblem.STORAGE)
+            return@withLock
+        }
         pendingFlow = null
-        val joined = guarded { backend.finish(flow, uri, deviceName) } ?: return@withLock
+        val l = guarded { linkFrom(joined.secret) } ?: run {
+            joined.secret.fill(0)
+            return@withLock
+        }
         try {
             secrets.put(joined.secret)
         } catch (e: Exception) {
-            joined.secret.fill(0)
+            // Not kept, so of no use: end the session rather than leave a device the person cannot use in their list.
+            try {
+                l.signOut()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Best effort; S58 on another device can sign it out.
+            }
             _state.value = CompanionState.NotConnected(CompanionProblem.STORAGE)
             return@withLock
+        } finally {
+            joined.secret.fill(0)
         }
-        val l = guarded { linkFrom(joined.secret) }.also { joined.secret.fill(0) } ?: return@withLock
         link = l
         _state.value = CompanionState.Connected(joined.url, joined.userName)
     }

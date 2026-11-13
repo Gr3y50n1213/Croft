@@ -4,6 +4,7 @@
 
 package com.example.croft.push
 
+import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.CoroutineScope
@@ -21,12 +22,19 @@ class CroftFirebaseService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         scope.launch {
-            if (FcmRegistration.register(applicationContext, token)) PushRuntime.setStatus(PushStatus.ON)
+            // The token is asked of Firebase again rather than taken from the call, and registered only for a connected Companion.
+            val vapid = FcmRegistration.savedVapid(applicationContext) ?: return@launch
+            val current = FirebaseMessaging.getInstance().token.await() ?: return@launch
+            val endpoint = FcmRegistration.endpoint(applicationContext, current, vapid)
+            if (endpoint == null) {
+                PushRuntime.setStatus(PushStatus.FAILED)
+                return@launch
+            }
+            PushRuntime.onEndpoint(applicationContext, endpoint.url, endpoint.p256dh, endpoint.auth)
         }
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        if (!message.data.containsKey("wp")) return
-        scope.launch { PushRuntime.registrar(applicationContext)?.onPing(authentic = true) }
+        if (message.data.containsKey("wp")) PushRuntime.onPing(applicationContext, authentic = true)
     }
 }

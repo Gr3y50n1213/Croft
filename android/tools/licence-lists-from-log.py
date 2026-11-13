@@ -10,11 +10,13 @@ Only paths under app/src/*/assets/licenses/ are written.
 """
 import base64
 import gzip
+import io
 import json
 import re
 import sys
 from pathlib import Path
 
+MAX_BYTES = 4 * 1024 * 1024
 LINE = re.compile(r"LICENCE-LIST (app/src/[a-z]+/assets/licenses/[a-z-]+\.json) ([A-Za-z0-9+/=]+)\s*$")
 
 
@@ -25,7 +27,11 @@ def main() -> int:
         if not m:
             continue
         path, data = m.groups()
-        text = gzip.decompress(base64.b64decode(data)).decode("utf-8")
+        with gzip.GzipFile(fileobj=io.BytesIO(base64.b64decode(data))) as f:
+            raw = f.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise SystemExit(f"{path}: larger than {MAX_BYTES} bytes")
+        text = raw.decode("utf-8")
         json.loads(text)  # must be a list the app can read
         Path(path).write_text(text, encoding="utf-8")
         print(f"wrote {path}")

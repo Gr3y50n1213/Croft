@@ -201,6 +201,8 @@ jobs:
             ./gradlew -q :app:dependencies --configuration "${store}ReleaseRuntimeClasspath" > "$RUNNER_TEMP/$store-deps.txt"
           done
           python3 tools/check-flavour-dependencies.py "$RUNNER_TEMP/fdroid-deps.txt" "$RUNNER_TEMP/github-deps.txt"
+          # T34d: the publisher's Firebase project and gateway come from outside the repository, never from a checked-in file.
+          if git grep -nE '^\s*croft\.(fcm\.|pushGateway)' -- '*.properties'; then echo "Firebase or gateway settings are checked in"; exit 1; fi
       - name: Build the unsigned release APKs (each store) and the Play AAB
         working-directory: android
         run: ./gradlew :app:assemblePlayRelease :app:bundlePlayRelease :app:assembleFdroidRelease :app:assembleGithubRelease
@@ -213,10 +215,12 @@ jobs:
         run: |
           python3 tools/gen_licences.py
           lists="app/src/main/assets/licenses app/src/play/assets/licenses app/src/unifiedpush/assets/licenses"
-          if ! git diff --quiet -- $lists; then
-            git diff --stat -- $lists
+          # Changed or new (untracked) files both count.
+          changed="$(git status --porcelain --untracked-files=all -- $lists | cut -c4-)"
+          if [ -n "$changed" ]; then
+            echo "$changed"
             # The files as made here (gzip, base64), to be checked in: tools/licence-lists-from-log.py reads them back.
-            for f in $(git diff --name-only -- $lists); do echo "LICENCE-LIST $f $(gzip -9c "$f" | base64 -w0)"; done
+            for f in $changed; do echo "LICENCE-LIST ${f#android/} $(gzip -9c "${f#android/}" | base64 -w0)"; done
             exit 1
           fi
       - uses: actions/upload-artifact@v4

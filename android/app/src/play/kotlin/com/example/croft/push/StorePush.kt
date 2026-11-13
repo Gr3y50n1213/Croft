@@ -22,25 +22,18 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 object StorePush : StorePushProvider {
     override val kind: PushKind = PushKind.FCM
 
-    override suspend fun start(context: Context, vapid: String): PushStatus {
-        if (!BuildConfig.FCM_CONFIGURED || FirebaseApp.getApps(context).isEmpty()) return PushStatus.NOT_IN_THIS_BUILD
-        FcmRegistration.saveVapid(context, vapid)
-        val token = try {
-            FirebaseMessaging.getInstance().token.await()
-        } catch (e: Exception) {
-            return PushStatus.FAILED
-        } ?: return PushStatus.FAILED
-        return if (FcmRegistration.register(context, token)) PushStatus.ON else PushStatus.FAILED
+    private fun ready(context: Context) = BuildConfig.FCM_CONFIGURED && FirebaseApp.getApps(context).isNotEmpty()
+
+    override suspend fun start(context: Context, vapid: String): StoreStart {
+        if (!ready(context)) return StoreStart.Status(PushStatus.NOT_IN_THIS_BUILD)
+        val token = FirebaseMessaging.getInstance().token.await() ?: return StoreStart.Status(PushStatus.FAILED)
+        return FcmRegistration.endpoint(context, token, vapid) ?: StoreStart.Status(PushStatus.FAILED)
     }
 
     override fun stop(context: Context) {
         FcmRegistration.forget(context)
-        if (!BuildConfig.FCM_CONFIGURED || FirebaseApp.getApps(context).isEmpty()) return
-        try {
-            FirebaseMessaging.getInstance().deleteToken()
-        } catch (e: Exception) {
-            // The token stays with FCM; without a subscription at the Companion nothing is sent to it.
-        }
+        if (!ready(context)) return
+        FirebaseMessaging.getInstance().deleteToken()
     }
 }
 

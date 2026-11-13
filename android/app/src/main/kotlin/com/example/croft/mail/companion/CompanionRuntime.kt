@@ -42,6 +42,7 @@ object CompanionRuntime {
                 secrets = KeystoreCompanionSecrets(open.secrets.secrets),
                 redirect = redirect(context),
                 deviceName = deviceName(),
+                onForgotten = { com.example.croft.push.PushRuntime.stopLater(context) },
             ).also { connection = it }
         }
     }
@@ -68,9 +69,9 @@ object CompanionRuntime {
         val c = connection(context) ?: return
         val app = context.applicationContext
         scope.launch {
-            c.onRedirect(uri)
-            // T34d: a new connection asks for push at once (UnifiedPush may still need the person to choose a distributor in S58).
-            if (c.state.value is CompanionState.Connected) com.example.croft.push.PushRuntime.start(app)
+            // T34d: a sign-in that finished asks for push at once (UnifiedPush may still need the person to choose a distributor in
+            // S58). A redirect that finished nothing (any app can open the scheme) starts nothing.
+            if (c.onRedirect(uri)) com.example.croft.push.PushRuntime.start(app)
         }
     }
 

@@ -7,10 +7,11 @@ package com.example.croft.push
 import java.security.MessageDigest
 
 /**
- * What the app keeps about this device's push subscription at its Companion (T34d): the Companion's id for it and a hash of what was
- * subscribed. Not a secret, and never the endpoint itself (for UnifiedPush, whoever has the endpoint can wake the phone).
+ * What the app keeps about this device's push subscription (T34d): the Companion's id for it, which Companion ([companion], its
+ * address) and a hash of what was subscribed. Not a secret, and never the endpoint itself (for UnifiedPush, whoever has the endpoint
+ * can wake the phone).
  */
-data class PushRecord(val subscriptionId: Long, val hash: String)
+data class PushRecord(val subscriptionId: Long, val companion: String, val hash: String)
 
 /** Where the [PushRecord] is kept (a small preferences file in the app; memory in tests). */
 interface PushRecords {
@@ -56,43 +57,41 @@ enum class PushStatus {
 class CompanionPush(
     private val records: PushRecords,
     private val companion: PushCompanion,
+    /** The connected Companion's address: a record made at another Companion is never acted on here. */
+    private val companionUrl: String,
     private val checkNow: () -> Unit,
 ) {
+    /** The record, when it belongs to this Companion. */
+    private fun ours(): PushRecord? = records.get()?.takeIf { it.companion == companionUrl }
+
     /**
-     * A new or renewed endpoint with this device's Web Push keys (base64url). Subscribes it at the Companion unless the same one is
-     * already subscribed, then removes the subscription it replaces and checks for mail missed meanwhile. True when it is subscribed.
+     * An endpoint with this device's Web Push keys (base64url), new or the same as before. It is subscribed at the Companion every time
+     * (the Companion replaces a subscription with the same endpoint), so a subscription the Companion dropped meanwhile (signed out,
+     * delivery failures) comes back at the next start instead of S58 saying "On" with nothing behind it. A different endpoint replaces
+     * the old subscription and checks for mail missed meanwhile. True when it is subscribed.
      */
     suspend fun onEndpoint(endpoint: String, p256dh: String, auth: String): Boolean {
         val hash = hashOf(endpoint, p256dh, auth)
-        val old = records.get()
-        if (old?.hash == hash) return true
+        val old = ours()
         val id = companion.addPush(endpoint, p256dh, auth) ?: return false
-        records.put(PushRecord(id, hash))
-        if (old != null && old.subscriptionId != id) companion.removePush(old.subscriptionId)
-        checkNow()
+        records.put(PushRecord(id, companionUrl, hash))
+        if (old != null && old.subscriptionId != id && old.hash != hash) companion.removePush(old.subscriptionId)
+        if (old?.hash != hash) checkNow()
         return true
     }
 
     /** The endpoint is no more (unregistered by the distributor, or push turned off): the subscription goes too. */
     suspend fun onEndpointGone() {
-        val old = records.get() ?: return
+        val old = ours()
         records.clear()
-        companion.removePush(old.subscriptionId)
+        if (old != null) companion.removePush(old.subscriptionId)
     }
 
     /** Forgets the subscription without asking the Companion (it was signed out, which ended its subscriptions). */
     fun forget() = records.clear()
 
-    /**
-     * A ping. [authentic] says it was proven to come from the Companion (it decrypted with this device's keys, or it came through FCM,
-     * which only the gateway can send to and which forwards only messages the Companion signed); anything else is ignored.
-     */
-    fun onPing(authentic: Boolean) {
-        if (authentic) checkNow()
-    }
-
-    /** Whether a subscription is kept. */
-    fun isSubscribed(): Boolean = records.get() != null
+    /** Whether a subscription at this Companion is kept. */
+    fun isSubscribed(): Boolean = ours() != null
 
     companion object {
         /** A hash of what was subscribed, so a repeat of the same endpoint is not sent again. */

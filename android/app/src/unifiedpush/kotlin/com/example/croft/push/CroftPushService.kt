@@ -23,21 +23,17 @@ class CroftPushService : PushService() {
 
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
         val keys = endpoint.pubKeySet
-        val url = endpoint.url
-        scope.launch {
-            val push = PushRuntime.registrar(applicationContext)
-            if (push == null || keys == null) {
-                // Not connected (or a distributor without Web Push keys, which the Companion cannot encrypt for): nothing to subscribe.
-                PushRuntime.setStatus(if (push == null) PushStatus.NOT_CONNECTED else PushStatus.FAILED)
-                return@launch
-            }
-            PushRuntime.setStatus(if (push.onEndpoint(url, keys.pubKey, keys.auth)) PushStatus.ON else PushStatus.FAILED)
+        if (keys == null) {
+            // A distributor without Web Push keys: the Companion cannot encrypt for it.
+            PushRuntime.setStatus(PushStatus.FAILED)
+            return
         }
+        val url = endpoint.url
+        scope.launch { PushRuntime.onEndpoint(applicationContext, url, keys.pubKey, keys.auth) }
     }
 
     override fun onMessage(message: PushMessage, instance: String) {
-        val authentic = message.decrypted
-        scope.launch { PushRuntime.registrar(applicationContext)?.onPing(authentic) }
+        PushRuntime.onPing(applicationContext, authentic = message.decrypted)
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {
@@ -45,9 +41,6 @@ class CroftPushService : PushService() {
     }
 
     override fun onUnregistered(instance: String) {
-        scope.launch {
-            PushRuntime.registrar(applicationContext)?.onEndpointGone()
-            PushRuntime.setStatus(PushStatus.FAILED)
-        }
+        scope.launch { PushRuntime.onEndpointGone(applicationContext) }
     }
 }

@@ -119,6 +119,17 @@ class InboxTexts(private val res: Resources) {
     val sending: String get() = res.getString(R.string.compose_snack_sending)
     val tooLateToUndo: String get() = res.getString(R.string.compose_snack_too_late)
     val undoFailed: String get() = res.getString(R.string.compose_snack_undo_failed)
+    fun category(c: MailCategory): String = res.getString(
+        when (c) {
+            MailCategory.PRIMARY -> R.string.mail_category_primary
+            MailCategory.UPDATES -> R.string.mail_category_updates
+            MailCategory.PROMOTIONS -> R.string.mail_category_promotions
+            MailCategory.SOCIAL -> R.string.mail_category_social
+        },
+    )
+    fun movedToCategory(c: MailCategory): String = res.getString(R.string.mail_moved_to_category, category(c))
+    val always: String get() = res.getString(R.string.mail_category_always)
+    fun alwaysDone(c: MailCategory): String = res.getString(R.string.mail_category_always_done, category(c))
 }
 
 /**
@@ -228,11 +239,28 @@ class InboxController(
     }
 
     /**
-     * T35: moves a message to [target] ("Move to Primary" and the like); with [always] the sender's mail goes there from now on. The
-     * list and the chip counts follow at the next change notice.
+     * T35: a category was chosen in the Move to sheet ("Move to Primary" and the like). The messages move there, and the snackbar
+     * offers "Always do this" for their senders. Categories are the phone's own: nothing waits for the server, so there is no Undo.
      */
-    fun moveToCategory(id: MessageId, target: MailCategory, always: Boolean) {
+    fun pickCategory(target: MailCategory) {
+        val request = moveRequest ?: return
+        moveRequest = null
+        if (request.fromSwipe) request.rows.singleOrNull()?.let { parkResolution = it.id to false }
+        val ids = request.rows.map { it.id }
+        clearSelection()
         scope.launch {
+            setCategories(ids, target, always = false)
+            snackbar.show(texts.movedToCategory(target), actionLabel = texts.always) {
+                scope.launch {
+                    setCategories(ids, target, always = true)
+                    snackbar.show(texts.alwaysDone(target))
+                }
+            }
+        }
+    }
+
+    private suspend fun setCategories(ids: List<MessageId>, target: MailCategory, always: Boolean) {
+        for (id in ids) {
             try {
                 repository.setCategory(id, target, always)
             } catch (e: CancellationException) {
@@ -240,9 +268,8 @@ class InboxController(
             } catch (e: Exception) {
                 // Gone meanwhile: nothing to move.
             }
-            reloadHead()
-            refreshCategoryCounts()
         }
+        reloadHead()
     }
         private set
 

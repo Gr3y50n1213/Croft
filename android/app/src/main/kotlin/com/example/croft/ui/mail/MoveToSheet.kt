@@ -38,6 +38,8 @@ import com.example.croft.mail.FolderId
 import com.example.croft.mail.FolderInfo
 import com.example.croft.ui.components.CroftBottomSheet
 import com.example.croft.ui.components.CroftTextField
+import com.example.croft.mail.MailCategory
+import androidx.compose.material3.ListItem
 
 /** Test tags of S30 Move to. */
 object MoveTags {
@@ -48,6 +50,9 @@ object MoveTags {
 
     /** The tag of the entry of folder [id]. */
     fun folder(id: FolderId) = "S30-folder-$id"
+
+    /** The tag of the entry of category [c] (T35). */
+    fun category(c: MailCategory) = "S30-category-${c.key}"
 }
 
 /** One entry of the folder tree: the folder and how deep it sits (the number of `/` in its path). */
@@ -98,6 +103,9 @@ fun MoveToSheet(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     footer: (@Composable () -> Unit)? = null,
+    /** T35: categories offered above the folders (an Inbox with the chips on); none otherwise. */
+    categories: List<MailCategory> = emptyList(),
+    onCategory: (MailCategory) -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val targets = remember(folders, excluding) { MoveRules.targets(folders, excluding) }
@@ -114,6 +122,17 @@ fun MoveToSheet(
             modifier = Modifier.testTag(MoveTags.SEARCH),
         )
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = SHEET_LIST_MAX_HEIGHT).padding(top = 8.dp)) {
+            if (!searching && categories.isNotEmpty()) {
+                item(key = "category-heading") {
+                    Text(stringResource(R.string.move_categories), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(vertical = 8.dp).semantics { heading() })
+                }
+                items(categories, key = { "category-${it.key}" }) { c ->
+                    ListItem(
+                        headlineContent = { Text(categoryName(c)) },
+                        modifier = Modifier.fillMaxWidth().clickable { onCategory(c) }.testTag(MoveTags.category(c)),
+                    )
+                }
+            }
             if (!searching && recents.isNotEmpty()) {
                 item(key = "recent-heading") {
                     Text(stringResource(R.string.move_recent), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(vertical = 8.dp).semantics { heading() })

@@ -20,6 +20,9 @@
     <string name="move_categories">Category</string>
     <string name="mail_moved_to_category">Moved to %1$s</string>
     <string name="mail_category_always">Always do this</string>
+    <string name="inbox_categories_title">Categories</string>
+    <string name="inbox_categories_switch">Sort the Inbox into categories</string>
+    <string name="inbox_categories_hint">Decided on this phone from who sent the mail and how, never from what it says. Move a message to fix its category.</string>
     <string name="mail_category_always_done">Mail from this sender goes to %1$s from now on</string>
     <string name="mail_categories">Categories</string>
     <string name="mail_nav_mail">Mail</string>

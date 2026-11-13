@@ -64,6 +64,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import com.example.croft.mail.MailCategory
+import androidx.compose.ui.test.onAllNodesWithTag
 
 /**
  * The Inbox (S10), selection mode (S11), the drawer (S12), the account switcher (S13), pull to refresh and new mail (S17),
@@ -116,11 +118,26 @@ class InboxScreenTest {
     }
 
     @Test
-    fun s10_onlyAllIsInTheCategoryRowUntilTheSmartInboxPhase() {
+    fun s10_theCategoryChipsAreAllPrimaryUpdatesAndPromotions_withSocialOffByDefault() {
+        // T35 (the smart inbox phase): the chips S49 shows by default.
         open()
         rule.onNodeWithTag(InboxTags.CHIPS).assertIsDisplayed()
-        assertFalse(textExists("Primary"))
-        assertFalse(textExists("Promotions"))
+        for (c in listOf(MailCategory.PRIMARY, MailCategory.UPDATES, MailCategory.PROMOTIONS)) rule.onNodeWithTag(InboxTags.chip(c)).assertExists()
+        rule.onNodeWithTag(InboxTags.chip(MailCategory.SOCIAL)).assertDoesNotExist()
+    }
+
+    @Test
+    fun s10_aCategoryChipShowsOnlyItsMail_andAllShowsEverythingAgain() {
+        val f = InboxFixture(0)
+        val ids = f.repo.injectNewMail(3)
+        runBlocking { f.repo.setCategory(ids[0], MailCategory.PROMOTIONS, always = false) }
+        open(f)
+        rule.waitForRow(ids[1])
+        rule.onNodeWithTag(InboxTags.chip(MailCategory.PROMOTIONS)).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodesWithTag(InboxTags.row(ids[1])).fetchSemanticsNodes().isEmpty() }
+        rule.onNodeWithTag(InboxTags.row(ids[0])).assertExists()
+        rule.onNodeWithText("All").performClick()
+        rule.waitForRow(ids[1])
     }
 
     @Test

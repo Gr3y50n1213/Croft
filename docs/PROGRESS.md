@@ -5,9 +5,61 @@ unverified, the next step.
 
 ---
 
+## T38a: Contacts in the core (13 November 2026)
+
+**Status:** on `task/t38a`, its own pull request. The screens are T38b.
+
+**What was built.**
+- **vCard (mail-core).** 3.0 and 4.0, read and written, with bounds on size, lines and values. Folding, escaping,
+  quoted-printable and `mailto:`/`tel:` URIs are handled. Unknown lines are kept byte for byte, and an edit rewrites only the
+  kinds that changed (Apple's `item1.` groups survive).
+- **CardDAV (protocols).** A small client on the core's own HTTPS client:
+  - discovery: `/.well-known/carddav` (one redirect, same origin), the principal, and the home set;
+  - changes: `sync-collection`, with a full listing when the token is refused;
+  - `addressbook-multiget`;
+  - `PUT` and `DELETE`, conditional on the etag.
+  Requests only ever go to the settings' origin. Answers are read by a bounded XML reader that refuses any `DOCTYPE`. The HTTPS
+  client now sends `Content-Length` for every request with a body.
+- **Storage (migration 0012).** Address books, contacts (the whole card, what waits to be sent, a conflict mark) and their
+  addresses, per account.
+- **Sync.** Changes made here go out first, then the server's come in. A card the server changed keeps the server's version and
+  counts as a conflict.
+- **The core (FFI v19).** `sync_contacts`, `address_books`, `list_contacts` (A to Z, search), `get_contact`, `save_contact`,
+  `delete_contact`, `autocomplete` (contacts, then recent recipients), and `is_contact`.
+
+**Checks.**
+- Core: fmt, both clippy runs, the whole test suite and `check_schema.py`, including:
+  - vCard round trips and hostile cards;
+  - the CardDAV client against an in-process fake (discovery, tokens, multiget, conflicts, another origin refused);
+  - storage scoping;
+  - sync both ways end to end through the exported calls.
+- A Stalwart CardDAV test runs in the CI's integration job.
+
+**Review:** an independent agent (opus, high effort). It found no way for the credential to leave the account's server.
+
+Fixed, with regression tests:
+- a failed listing could delete an edited contact (medium-high);
+- edits made during a sync were dropped (medium);
+- a refused or repeated create lost or orphaned a contact (medium);
+- a hostile server could exhaust memory through multigets and large trees (medium);
+- the mail password went to `/.well-known/carddav` before the server asked for it (low-medium: it is now sent only after a 401
+  that names its scheme);
+- deletes made before the next listing were never sent;
+- a malformed pin fell back to the usual certificate checks;
+- etags went into headers unchecked, and `//host` paths were accepted;
+- quoted-printable was detected in values, slowly, and decoded `N` and `ADR` lost their parts;
+- a book missing from one answer took waiting changes with it;
+- contact data was in `Debug` output.
+
+Not re-reviewed.
+
+**Next:** T38b, the contacts screens (S40 to S42) and compose's autocomplete.
+
+---
+
 ## T37: One-tap unsubscribe (13 November 2026)
 
-**Status:** on `task/t37`, its own pull request, after T36b.
+**Status:** merged.
 
 **What was built.**
 - **Reading the header (mail-core).** The first `https:` and first `mailto:` URI of `List-Unsubscribe`, each checked strictly. A

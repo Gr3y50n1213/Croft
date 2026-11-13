@@ -12,6 +12,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod backend;
+pub mod carddav;
 pub mod companion;
 pub mod demo;
 pub mod discovery;

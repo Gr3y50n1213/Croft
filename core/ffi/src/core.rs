@@ -125,6 +125,10 @@ pub(crate) struct Inner {
     update_tokens: std::sync::atomic::AtomicU64,
     /// The connection the JMAP accounts' id maps use (T22).
     jmap_ids_db: Arc<Mutex<Db>>,
+    /// T38a: a CardDAV address other than the account's mail host, by account (tests, for now).
+    pub(crate) carddav_urls: Mutex<HashMap<i64, String>>,
+    /// T38a: one contacts sync at a time per account.
+    pub(crate) contact_syncs: tokio::sync::Mutex<()>,
 }
 
 /// What `add_account` has worked out for the account, ready to be stored and started.
@@ -782,6 +786,8 @@ impl Core {
             previous: Mutex::new(HashMap::new()),
             update_tokens: std::sync::atomic::AtomicU64::new(0),
             jmap_ids_db,
+            carddav_urls: Mutex::new(HashMap::new()),
+            contact_syncs: tokio::sync::Mutex::new(()),
         });
 
         watch_outbox(&inner, outbox_changes);

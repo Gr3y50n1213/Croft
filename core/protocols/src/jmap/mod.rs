@@ -77,7 +77,7 @@
 //! redirects. Croft's rule is the same policy as IMAP and SMTP, so the adapter has a small HTTP/1.1
 //! client on `tokio-rustls` (see `http.rs`) and reads answers with `serde_json`.
 
-mod api;
+pub(crate) mod api;
 mod backend;
 mod config;
 mod error;

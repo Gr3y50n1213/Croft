@@ -5,9 +5,45 @@ unverified, the next step.
 
 ---
 
+## T38a: Contacts in the core (13 November 2026)
+
+**Status:** on `task/t38a`, its own pull request, after T37. The screens are T38b.
+
+**What was built.**
+- **vCard (mail-core).** 3.0 and 4.0, read and written, with bounds on size, lines and values. Folding, escaping,
+  quoted-printable and `mailto:`/`tel:` URIs are handled. Unknown lines are kept byte for byte, and an edit rewrites only the
+  kinds that changed (Apple's `item1.` groups survive).
+- **CardDAV (protocols).** A small client on the core's own HTTPS client:
+  - discovery: `/.well-known/carddav` (one redirect, same origin), the principal, and the home set;
+  - changes: `sync-collection`, with a full listing when the token is refused;
+  - `addressbook-multiget`;
+  - `PUT` and `DELETE`, conditional on the etag.
+  Requests only ever go to the settings' origin. Answers are read by a bounded XML reader that refuses any `DOCTYPE`. The HTTPS
+  client now sends `Content-Length` for every request with a body.
+- **Storage (migration 0012).** Address books, contacts (the whole card, what waits to be sent, a conflict mark) and their
+  addresses, per account.
+- **Sync.** Changes made here go out first, then the server's come in. A card the server changed keeps the server's version and
+  counts as a conflict.
+- **The core (FFI v19).** `sync_contacts`, `address_books`, `list_contacts` (A to Z, search), `get_contact`, `save_contact`,
+  `delete_contact`, `autocomplete` (contacts, then recent recipients), and `is_contact`.
+
+**Checks.**
+- Core: fmt, both clippy runs, the whole test suite and `check_schema.py`, including:
+  - vCard round trips and hostile cards;
+  - the CardDAV client against an in-process fake (discovery, tokens, multiget, conflicts, another origin refused);
+  - storage scoping;
+  - sync both ways end to end through the exported calls.
+- A Stalwart CardDAV test runs in the CI's integration job.
+
+**Review:** pending.
+
+**Next:** T38b, the contacts screens (S40 to S42) and compose's autocomplete.
+
+---
+
 ## T37: One-tap unsubscribe (13 November 2026)
 
-**Status:** on `task/t37`, its own pull request, after T36b.
+**Status:** merged.
 
 **What was built.**
 - **Reading the header (mail-core).** The first `https:` and first `mailto:` URI of `List-Unsubscribe`, each checked strictly. A

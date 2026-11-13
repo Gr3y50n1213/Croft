@@ -116,3 +116,8 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   (shown with the address). Reading the user's own server's `Authentication-Results` (DKIM or DMARC pass) and requiring the From
   domain to match would close this; it needs the header stored at fetch.
 - **Unsubscribe email identity (T37).** The email goes from the account's default identity, not the alias the list mail was sent to.
+- **Contacts on another host (T38a).** CardDAV is only looked for on the account's mail host. A setting for a CardDAV address
+  elsewhere (Nextcloud beside a separate mail server) is needed, with care: the mail password would go there too.
+- **Contacts for Google and Microsoft accounts, JMAP Contacts (RFC 9610), groups and photos (T38a).** Not synced yet.
+- **CardDAV against Radicale (T38a).** Only Stalwart's CardDAV is in the CI integration job; Radicale (in `test-servers/`) needs a
+  config and an address book created before it can be tested.

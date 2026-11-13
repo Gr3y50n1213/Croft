@@ -144,6 +144,8 @@ fun InboxScreen(
     onOpenDraft: ((AccountId, Long) -> Unit)? = null,
     /** Contacts (S40) from the bottom bar. Null leaves the item disabled. */
     onOpenContacts: (() -> Unit)? = null,
+    /** Calendar (S34) from the bottom bar. Null leaves the item disabled. */
+    onOpenCalendar: (() -> Unit)? = null,
 ) {
     val controller = rememberInboxController(session, startScope)
     controller.haptics = LocalHaptics.current
@@ -199,7 +201,7 @@ fun InboxScreen(
         if (expanded) {
             Row(Modifier.fillMaxSize()) {
                 PermanentDrawerSheet(Modifier.width(DRAWER_WIDTH)) { drawerContent() }
-                InboxBody(controller, session, showMenu = false, showBottomBar = false, onMenu = {}, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, onOpenSearch = onOpenSearch, onOpenContacts = onOpenContacts, modifier = Modifier.weight(1f))
+                InboxBody(controller, session, showMenu = false, showBottomBar = false, onMenu = {}, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, onOpenSearch = onOpenSearch, onOpenContacts = onOpenContacts, onOpenCalendar = onOpenCalendar, modifier = Modifier.weight(1f))
             }
         } else {
             ModalNavigationDrawer(
@@ -207,7 +209,7 @@ fun InboxScreen(
                 drawerState = drawerState,
                 gesturesEnabled = drawerState.isOpen || !controller.isSelecting,
             ) {
-                InboxBody(controller, session, showMenu = true, showBottomBar = true, onMenu = { scope.launch { drawerState.open() } }, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, onOpenSearch = onOpenSearch, onOpenContacts = onOpenContacts, modifier = Modifier.fillMaxSize())
+                InboxBody(controller, session, showMenu = true, showBottomBar = true, onMenu = { scope.launch { drawerState.open() } }, onAccount = { switcherOpen = true }, onOpenMessage = onOpenMessage, onCompose = onCompose, onOpenDraft = onOpenDraft, onOpenSearch = onOpenSearch, onOpenContacts = onOpenContacts, onOpenCalendar = onOpenCalendar, modifier = Modifier.fillMaxSize())
             }
             BackHandler(enabled = drawerState.isOpen) { closeDrawer() }
         }
@@ -257,6 +259,7 @@ private fun InboxBody(
     onOpenDraft: ((AccountId, Long) -> Unit)?,
     onOpenSearch: (() -> Unit)?,
     onOpenContacts: (() -> Unit)?,
+    onOpenCalendar: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -497,6 +500,7 @@ private fun InboxBody(
                     else controller.refresh()
                 },
                 onContacts = onOpenContacts,
+                onCalendar = onOpenCalendar,
             )
         } else {
             Box(Modifier.windowInsetsPadding(WindowInsets.navigationBars))

@@ -74,7 +74,10 @@ data class NotifiedMessage(val account: Long, val messageId: Long, val uid: UInt
  * A tap on a notification (S32): [message] with the Inbox under it (or compose with a reply to it when [reply]), or the Inbox when null.
  * Compared by identity.
  */
-class OpenMessageRequest(val message: NotifiedMessage?, val reply: Boolean)
+class OpenMessageRequest(val message: NotifiedMessage?, val reply: Boolean, val event: OpenEvent? = null)
+
+/** T39b: a reminder's tap: S37 for that occurrence. */
+data class OpenEvent(val account: Long, val eventId: Long, val keyMs: Long)
 
 /** The screens reachable today. S50 and its drill-down live inside [APPEARANCE] (see `AppearanceFlow`). S02 to S05 and S09 live inside [ONBOARDING] and [ADD_ACCOUNT]. */
 enum class Route(val parent: Route?) {
@@ -143,6 +146,18 @@ enum class Route(val parent: Route?) {
 
     /** S42 Edit contact: a new one from S40, or S41's contact. It handles its own Back (it asks before discarding changes). */
     EDIT_CONTACT(CONTACT),
+
+    /** S34 Agenda and S36 Month (T39b), from the bottom bar. Back returns to the Inbox. */
+    CALENDAR(HOME),
+
+    /** S37 Event (the event is [CroftNavHost]'s `eventAccount`, `eventId` and `eventKey`). */
+    EVENT(CALENDAR),
+
+    /** S38 Event editor: a new event from S34 or S36, or S37's event. It handles its own Back. */
+    EVENT_EDITOR(EVENT),
+
+    /** S39 Calendars. */
+    CALENDARS(CALENDAR),
     ;
 
     /** How deep the screen is; going to a larger depth is "forward". */
@@ -254,6 +269,27 @@ fun CroftNavHost(
     // After a process restart the list controller is new: it reads the list (and syncs) again.
     LaunchedEffect(contactsController) { if (route == Route.CONTACTS || route == Route.CONTACT || route == Route.EDIT_CONTACT) contactsController?.start() }
     val openContacts: (() -> Unit)? = contactsController?.let { c -> { c.start(); route = Route.CONTACTS } }
+    // S34 to S39 (T39b): one controller per session; the event shown and the one being edited survive a rotation.
+    val calendarController = remember(session) {
+        session.calendar?.let { backend ->
+            com.example.croft.mail.calendar.CalendarController(
+                backend,
+                { session.repository.listAccounts().map { com.example.croft.mail.calendar.CalendarAccount(it.id, it.label.ifBlank { it.email }, it.isDemo) } },
+                scope,
+                onChanged = session.onCalendarChanged,
+            )
+        }
+    }
+    var eventAccount by rememberSaveable { mutableStateOf(0L) }
+    var eventId by rememberSaveable { mutableStateOf(0L) }
+    var eventKey by rememberSaveable { mutableStateOf<Long?>(null) }
+    // S38: a new event (on `newEventDay`), or `eventId` with this scope (null: every occurrence).
+    var editingNewEvent by rememberSaveable { mutableStateOf(true) }
+    var editScopeKey by rememberSaveable { mutableStateOf<Long?>(null) }
+    var newEventDay by rememberSaveable { mutableStateOf<String?>(null) }
+    if ((route == Route.CALENDAR || route == Route.EVENT || route == Route.EVENT_EDITOR || route == Route.CALENDARS) && calendarController == null) route = Route.HOME
+    LaunchedEffect(calendarController) { if (route == Route.CALENDAR || route == Route.EVENT || route == Route.EVENT_EDITOR || route == Route.CALENDARS) calendarController?.start() }
+    val openCalendar: (() -> Unit)? = calendarController?.let { c -> { c.start(); route = Route.CALENDAR } }
     // A debug-only route can never be reached from a release build, even from saved state.
     if (route == Route.GALLERY && !DebugGallery.available) route = Route.SETTINGS
     LaunchedEffect(composeRequest, route) {
@@ -286,6 +322,17 @@ fun CroftNavHost(
     LaunchedEffect(openRequest, route) {
         val open = openRequest ?: return@LaunchedEffect
         if (route == Route.ONBOARDING || route == Route.ADD_ACCOUNT || route == Route.COMPOSE) return@LaunchedEffect
+        open.event?.let { ev ->
+            onOpenRequestHandled()
+            if (calendarController != null) {
+                calendarController.start()
+                eventAccount = ev.account; eventId = ev.eventId; eventKey = ev.keyMs
+                route = Route.EVENT
+            } else {
+                route = Route.HOME
+            }
+            return@LaunchedEffect
+        }
         val m = open.message
         // The row must still be the message the notification was posted for (a deleted message's row id can be reused): else the Inbox.
         val same = m != null && withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -307,7 +354,7 @@ fun CroftNavHost(
     }
     // The sign-in flow has its own Back (one step back; on its first screen the system leaves the app).
     // Compose and the Outbox handle their own Back (compose saves first).
-    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION && route != Route.SEARCH && route != Route.NOTIFY_INTRO && route != Route.CONTACT && route != Route.EDIT_CONTACT) { route = route.parent ?: Route.HOME }
+    BackHandler(enabled = route != Route.HOME && route != Route.ONBOARDING && route != Route.ADD_ACCOUNT && route != Route.COMPOSE && route != Route.OUTBOX && route != Route.CONVERSATION && route != Route.SEARCH && route != Route.NOTIFY_INTRO && route != Route.CONTACT && route != Route.EDIT_CONTACT && route != Route.EVENT && route != Route.EVENT_EDITOR && route != Route.CALENDARS) { route = route.parent ?: Route.HOME }
 
     // Removing an account: the account in the core first (its task stops, nothing new is sent), then its saved secret (`AccountOps.remove`),
     // then the app's own entries for it (folder choices, order, name, colour: the prefs are written and waited for), then a fresh session.
@@ -410,6 +457,7 @@ fun CroftNavHost(
                 conversationNotice = conversationNotice,
                 onConversationNoticeShown = { conversationNotice = null },
                 onOpenContacts = openContacts,
+                onOpenCalendar = openCalendar,
             )
             Route.CONTACTS -> if (contactsController != null) {
                 val contactsState by contactsController.state.collectAsState()
@@ -419,6 +467,59 @@ fun CroftNavHost(
                     // A new contact needs an address book to go to.
                     onAdd = if (contactsState.books.isNotEmpty()) ({ editingNew = true; route = Route.EDIT_CONTACT }) else null,
                     onMail = { route = Route.HOME },
+                    onCalendar = openCalendar,
+                )
+            }
+            Route.CALENDAR -> if (calendarController != null) {
+                com.example.croft.ui.calendar.CalendarScreen(
+                    controller = calendarController,
+                    onOpen = { o -> eventAccount = o.account; eventId = o.eventId; eventKey = o.keyMs; route = Route.EVENT },
+                    onNew = { day -> editingNewEvent = true; editScopeKey = null; newEventDay = day.toString(); route = Route.EVENT_EDITOR },
+                    onCalendars = { route = Route.CALENDARS },
+                    onMail = { route = Route.HOME },
+                    onContacts = openContacts,
+                )
+            }
+            Route.CALENDARS -> if (calendarController != null) {
+                com.example.croft.ui.calendar.CalendarsScreen(calendarController, onBack = { route = Route.CALENDAR })
+            }
+            Route.EVENT -> session.calendar?.let { backend ->
+                val calState by (calendarController?.state ?: kotlinx.coroutines.flow.MutableStateFlow(com.example.croft.mail.calendar.CalendarState())).collectAsState()
+                com.example.croft.ui.calendar.EventScreen(
+                    backend = backend,
+                    account = eventAccount,
+                    id = eventId,
+                    keyMs = eventKey,
+                    calendars = calState.calendars[eventAccount].orEmpty(),
+                    onBack = { route = Route.CALENDAR },
+                    onEdit = { e, scopeChoice ->
+                        editingNewEvent = false
+                        editScopeKey = (scopeChoice as? com.example.croft.mail.calendar.EventScopeChoice.One)?.keyMs
+                        eventAccount = e.account
+                        route = Route.EVENT_EDITOR
+                    },
+                    onDeleted = { account -> calendarController?.reloadNow(); calendarController?.syncInBackground(account); route = Route.CALENDAR },
+                )
+            }
+            Route.EVENT_EDITOR -> session.calendar?.let { backend ->
+                val calState by (calendarController?.state ?: kotlinx.coroutines.flow.MutableStateFlow(com.example.croft.mail.calendar.CalendarState())).collectAsState()
+                com.example.croft.ui.calendar.EventEditorScreen(
+                    backend = backend,
+                    account = if (editingNewEvent) null else eventAccount,
+                    id = if (editingNewEvent) null else eventId,
+                    scope = editScopeKey?.let { com.example.croft.mail.calendar.EventScopeChoice.One(it) } ?: com.example.croft.mail.calendar.EventScopeChoice.All,
+                    newDate = newEventDay?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() },
+                    accounts = calState.accounts,
+                    calendars = calState.calendars,
+                    onSaved = { account, id ->
+                        calendarController?.reloadNow()
+                        calendarController?.syncInBackground(account)
+                        eventAccount = account; eventId = id
+                        // After a change to one occurrence, S37 shows that occurrence; otherwise the first.
+                        eventKey = editScopeKey
+                        route = Route.EVENT
+                    },
+                    onClose = { route = if (editingNewEvent) Route.CALENDAR else Route.EVENT },
                 )
             }
             Route.CONTACT -> session.contacts?.let { backend ->

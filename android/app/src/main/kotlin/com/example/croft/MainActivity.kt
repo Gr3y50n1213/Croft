@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
             is NotificationOpen.Message -> openRequest = OpenMessageRequest(NotifiedMessage(open.account, open.messageId, open.uid), reply = false)
             is NotificationOpen.Reply -> openRequest = OpenMessageRequest(NotifiedMessage(open.account, open.messageId, open.uid), reply = true)
             NotificationOpen.Inbox -> openRequest = OpenMessageRequest(null, reply = false)
+            is NotificationOpen.Event -> openRequest = OpenMessageRequest(null, reply = false, event = com.example.croft.ui.nav.OpenEvent(open.account, open.eventId, open.keyMs))
             null -> ComposeIntents.parse(intent, this)?.let { composeRequest = ComposeRequest(it) }
         }
     }

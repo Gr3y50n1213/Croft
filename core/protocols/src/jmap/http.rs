@@ -317,7 +317,9 @@ fn request_head(req: &HttpRequest<'_>) -> Zeroizing<String> {
         head.push_str(value);
         head.push_str("\r\n");
     }
-    if req.method == "POST" {
+    // Every request that carries a body says how long it is (T38a: WebDAV's `PROPFIND`, `REPORT`
+    // and `PUT` too, not only `POST`).
+    if req.method == "POST" || req.method == "PUT" || !req.body.is_empty() {
         // Written piecewise: `format!` would build the line in a separate, unwiped string.
         head.push_str("Content-Length: ");
         head.push_str(&req.body.len().to_string());

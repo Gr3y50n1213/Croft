@@ -40,6 +40,15 @@ class PinTest {
 
     private fun textExists(text: String, substring: Boolean = false) = rule.onAllNodes(hasText(text, substring = substring)).fetchSemanticsNodes().isNotEmpty()
 
+    /** Waits for [cond]; a timeout names the step, so a failure says where it stopped. */
+    private fun step(name: String, cond: () -> Boolean) {
+        try {
+            rule.waitUntil(10_000, cond)
+        } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
+            throw AssertionError("timed out at: $name", e)
+        }
+    }
+
     @Test
     fun aPinnedMessageIsInThePinnedSectionNotTheList_andItsUnpinPutsItBack() {
         val f = InboxFixture()
@@ -56,10 +65,11 @@ class PinTest {
         rule.waitUntil(10_000) { !exists(PinnedTags.row(ids[0])) }
         // Back in the list at its date's place (the list keeps its own scroll position).
         rule.waitUntil(10_000) { ids[0] in f.inboxIds() }
-        rule.waitUntil(10_000) { textExists("1 unpinned") }
+        step("the snackbar") { textExists("1 unpinned") }
         rule.onNodeWithText("Undo").performClick()
-        rule.waitUntil(10_000) { exists(PinnedTags.row(ids[0])) }
-        assertFalse("pinned again", ids[0] in f.inboxIds())
+        step("Undo reaches the row actions") { f.actions.calls.contains("undo 1") }
+        step("the message is pinned again") { ids[0] !in f.inboxIds() }
+        step("the Pinned section shows it again") { exists(PinnedTags.row(ids[0])) }
     }
 
     @Test

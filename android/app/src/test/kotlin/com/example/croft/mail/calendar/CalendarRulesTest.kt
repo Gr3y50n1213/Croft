@@ -4,6 +4,7 @@
 
 package com.example.croft.mail.calendar
 
+import com.example.croft.notify.CalendarReminderPlan
 import com.example.croft.ui.calendar.FakeCalendarBackend
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -106,7 +107,7 @@ class CalendarRulesTest {
     }
 
     @Test
-    fun theReminderJobPostsWhatFellDueOnce_andPlansTheNext() = runBlocking {
+    fun theReminderJobPostsWhatFellDueOnce_andPlansTheNext() = runBlocking<Unit> {
         val b = FakeCalendarBackend()
         val now = ms("2026-11-06T12:00")
         b.reminderList += Reminder(1, 1, 0, now - 60_000, now + 600_000, "Standup")

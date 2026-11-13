@@ -103,6 +103,10 @@ class InboxTexts(private val res: Resources) {
     fun deleted(n: Int): String = res.getQuantityString(R.plurals.mail_snack_deleted, n, n)
     fun deletedForever(n: Int): String = res.getQuantityString(R.plurals.mail_snack_deleted_forever, n, n)
     fun moved(n: Int): String = res.getQuantityString(R.plurals.mail_snack_moved, n, n)
+    fun pinned(n: Int): String = res.getQuantityString(R.plurals.mail_snack_pinned, n, n)
+    fun unpinned(n: Int): String = res.getQuantityString(R.plurals.mail_snack_unpinned, n, n)
+    fun followUp(n: Int): String = res.getQuantityString(R.plurals.mail_snack_follow_up, n, n)
+    fun followUpDone(n: Int): String = res.getQuantityString(R.plurals.mail_snack_follow_up_done, n, n)
     val undo: String get() = res.getString(R.string.mail_undo)
     val noArchive: String get() = res.getString(R.string.mail_snack_no_archive)
     val noTrash: String get() = res.getString(R.string.mail_snack_no_trash)
@@ -237,8 +241,52 @@ class InboxController(
         scope.launch { loadFirst() }
     }
 
+    /** T36b: the Pinned section above an Inbox (only with the All chip); empty elsewhere. */
+    var pinnedRows by mutableStateOf<List<MessageRowData>>(emptyList())
+        private set
+
+    /** T36b: the Pinned section shows every pinned row instead of the first [PINNED_COLLAPSED]. */
+    var pinnedExpanded by mutableStateOf(false)
+        private set
+
+    fun togglePinnedExpanded() { pinnedExpanded = !pinnedExpanded }
+
+    /** T36b: the pinned rows of the Inbox shown, read again with the list. */
+    private suspend fun refreshPinned() {
+        if (!isInboxScope || activeCategory != null) { pinnedRows = emptyList(); return }
+        val account = (messageScope as? MessageScope.Folder)?.account
+        pinnedRows = try { repository.listPinned(account) } catch (e: CancellationException) { throw e } catch (e: Exception) { pinnedRows }
+    }
+
+    /** T36b: the Pinned section's own Unpin: back in the list at its date's place, with Undo. */
+    fun unpin(row: MessageRowData) {
+        scope.launch {
+            try {
+                markWithUndo(texts.unpinned(1)) { repository.setPinned(listOf(row.id), false) }
+                refreshPinned()
+            } catch (e: MailException) {
+                haptics.perform(HapticEvent.Rejected)
+                snackbar.show(errorText(e.error))
+            }
+        }
+    }
+
+    /** T36b: a pin or follow-up change: it shows at once; Undo cancels it while it waits to be sent. */
+    private suspend fun markWithUndo(text: String, block: suspend () -> List<OpId>) {
+        val ops = block()
+        refreshPinned()
+        if (ops.isEmpty()) return
+        snackbar.show(text, texts.undo) {
+            scope.launch {
+                session.rowActions.undo(ops)
+                refreshPinned()
+            }
+        }
+    }
+
     /** T35: the unread count per category of the Inbox shown. */
     private suspend fun refreshCategoryCounts() {
+        refreshPinned()
         if (!isInboxScope) return
         val account = (messageScope as? MessageScope.Folder)?.account
         categoryCounts = try { repository.categoryCounts(account) } catch (e: CancellationException) { throw e } catch (e: Exception) { categoryCounts }
@@ -819,6 +867,10 @@ class InboxController(
                     snackbar.show(texts.deletedForever(ids.size))
                 }
                 SelectionAction.MOVE_TO, SelectionAction.SNOOZE -> Unit
+                SelectionAction.PIN -> markWithUndo(texts.pinned(ids.size)) { repository.setPinned(ids, true) }
+                SelectionAction.UNPIN -> markWithUndo(texts.unpinned(ids.size)) { repository.setPinned(ids, false) }
+                SelectionAction.FOLLOW_UP -> markWithUndo(texts.followUp(ids.size)) { repository.setFollowUp(ids, true) }
+                SelectionAction.FOLLOW_UP_DONE -> markWithUndo(texts.followUpDone(ids.size)) { repository.setFollowUp(ids, false) }
                 SelectionAction.RESTORE -> if (scopeRole == FolderRole.SNOOZED) unsnoozeRows(ids) else {
                     val byAccount = rows.filter { it.id in ids }.groupBy { it.account }
                     removeWithUndo(ids, texts.moved(ids.size)) {
@@ -1281,6 +1333,9 @@ class InboxController(
     companion object {
         /** Rows in the first page. */
         const val FIRST_PAGE = 50
+
+        /** T36b: the Pinned section shows this many rows until "Show all". */
+        const val PINNED_COLLAPSED = 3
 
         /** Rows in every later page. */
         const val PAGE = 100

@@ -414,6 +414,62 @@ class ConversationController(
         }
     }
 
+    // ---- Pin and follow-up (T36b) ----
+
+    /** Pin and Follow up are offered where the selection toolbar offers them. */
+    val pinOffered: Boolean get() = SelectionRules.snoozeOffered(openedRole)
+    val followUpOffered: Boolean get() = SelectionRules.followUpOffered(openedRole)
+
+    /** Whether the opened message is pinned, or marked to follow up (the menu says Unpin, or Done following up). */
+    val openedPinned: Boolean get() = opened?.pinned == true
+    val openedFollowUp: Boolean get() = opened?.followUp == true
+
+    /** Pins (or unpins) the conversation's messages in the opened folder, with Undo. */
+    fun togglePin() {
+        val value = !openedPinned
+        mark(if (value) texts.pinned(1) else texts.unpinned(1), { c, v -> c.copy(pinned = v) }, value) { ids ->
+            session.repository.setPinned(ids, value)
+        }
+    }
+
+    /** Marks (or clears) follow-up on the conversation's messages in the opened folder, with Undo. */
+    fun toggleFollowUp() {
+        val value = !openedFollowUp
+        mark(if (value) texts.followUp(1) else texts.followUpDone(1), { c, v -> c.copy(followUp = v) }, value) { ids ->
+            session.repository.setFollowUp(ids, value)
+        }
+    }
+
+    private fun mark(
+        text: String,
+        set: (com.example.croft.mail.reading.ConversationMessageData, Boolean) -> com.example.croft.mail.reading.ConversationMessageData,
+        value: Boolean,
+        change: suspend (List<MessageId>) -> List<com.example.croft.mail.OpId>,
+    ) {
+        val ids = targetRows().map { it.id }
+        if (ids.isEmpty()) return
+        fun show(v: Boolean) {
+            val c = conversation ?: return
+            conversation = c.copy(messages = c.messages.map { if (it.id in ids) set(it, v) else it })
+        }
+        scope.launch {
+            try {
+                val ops = change(ids)
+                show(value)
+                if (ops.isNotEmpty()) {
+                    snackbar.show(text, texts.undo) {
+                        scope.launch {
+                            session.rowActions.undo(ops)
+                            show(!value)
+                        }
+                    }
+                }
+            } catch (e: MailException) {
+                snackbar.show(errorText(e.error))
+            }
+        }
+    }
+
     // ---- Snooze (T36, S29) ----
 
     /** Snooze is offered where the selection toolbar offers it (not in Sent, Drafts, Outbox, Trash, Spam or Snoozed). */

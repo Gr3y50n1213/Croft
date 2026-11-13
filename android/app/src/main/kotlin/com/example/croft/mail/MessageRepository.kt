@@ -61,6 +61,15 @@ interface MessageRepository {
     /** T36: the soonest wake time of anything snoozed, for the wake-up job. */
     suspend fun nextSnoozeWake(): Long? = null
 
+    /** T36b: pins or unpins [ids] (a keyword that syncs); the operation ids, for Undo. */
+    suspend fun setPinned(ids: List<MessageId>, value: Boolean): List<OpId> = emptyList()
+
+    /** T36b: marks [ids] to follow up, or clears the mark ("Done"); the operation ids, for Undo. */
+    suspend fun setFollowUp(ids: List<MessageId>, value: Boolean): List<OpId> = emptyList()
+
+    /** T36b: the pinned messages in the Inbox of [account], or of every account (`null`), newest first: the Pinned section. */
+    suspend fun listPinned(account: AccountId?): List<MessageRowData> = emptyList()
+
     /** Returns as soon as anything changed after [after] (at once if [after] is old). Pass the batch's `seq` next time. */
     suspend fun nextChange(after: Long): ChangeBatch
 

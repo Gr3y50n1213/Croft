@@ -407,6 +407,18 @@ private fun InboxBody(
                 modifier = Modifier.padding(bottom = 8.dp),
             )
         }
+        // T36b: the Pinned section of an Inbox (with the All chip).
+        if (!selecting && controller.pinnedRows.isNotEmpty()) {
+            PinnedSection(
+                rows = controller.pinnedRows,
+                expanded = controller.pinnedExpanded,
+                collapsed = InboxController.PINNED_COLLAPSED,
+                onToggle = controller::togglePinnedExpanded,
+                onOpen = onOpenMessage,
+                onUnpin = controller::unpin,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+        }
         if (localDrafts.isNotEmpty() && !selecting) LocalDraftsSection(localDrafts, onOpen = { d -> onOpenDraft?.invoke(d.accountId, d.id) }, Modifier.padding(horizontal = 12.dp))
 
         // The list area: pull to refresh, the list or its skeleton or empty state, the pill, the FAB and the snackbar.

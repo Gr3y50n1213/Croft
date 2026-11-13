@@ -164,6 +164,22 @@ class ConversationScreenTest {
         assertNull(runBlocking { f.repo.nextSnoozeWake() })
     }
 
+    /** T36b: S21's Pin pins the conversation's messages in the folder, and the menu then says Unpin, which takes it back. */
+    @Test
+    fun pin_fromTheMenu_pinsAndTheMenuThenSaysUnpin() {
+        val f = ReadingFixture()
+        f.show(rule)
+        rule.waitForTag(BodyTags.body(NEWEST))
+        rule.onNodeWithTag(ReadingTags.MORE).performClick()
+        rule.onNodeWithText("Pin").performClick()
+        rule.waitUntil(10_000) { runBlocking { f.repo.listPinned(null) }.any { it.id == NEWEST } }
+        rule.waitUntil(10_000) { rule.onAllNodes(hasText("1 pinned")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag(ReadingTags.MORE).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Unpin")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Unpin").performClick()
+        rule.waitUntil(10_000) { runBlocking { f.repo.listPinned(null) }.isEmpty() }
+    }
+
     @Test
     fun moveTo_opensTheFolderSheet_andTheChosenFolderGetsTheMessages() {
         val f = ReadingFixture()

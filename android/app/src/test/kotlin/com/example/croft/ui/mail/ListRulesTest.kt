@@ -58,15 +58,25 @@ class ListRulesTest {
     @Test
     fun starFollowsTheSelectionInTheOverflowMenu() {
         // T36: Snooze follows Mark as spam (the overflow menu gained it with S29).
-        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM, SelectionAction.SNOOZE), toolbar(listOf(row(1), row(2, flagged = true))).overflow)
-        assertEquals(listOf(SelectionAction.UNSTAR, SelectionAction.SPAM, SelectionAction.SNOOZE), toolbar(listOf(row(1, flagged = true), row(2, flagged = true))).overflow)
+        // T36b: Pin and Follow up follow Star.
+        assertEquals(
+            listOf(SelectionAction.STAR, SelectionAction.PIN, SelectionAction.FOLLOW_UP, SelectionAction.SPAM, SelectionAction.SNOOZE),
+            toolbar(listOf(row(1), row(2, flagged = true))).overflow,
+        )
+        assertEquals(
+            listOf(SelectionAction.UNSTAR, SelectionAction.PIN, SelectionAction.FOLLOW_UP, SelectionAction.SPAM, SelectionAction.SNOOZE),
+            toolbar(listOf(row(1, flagged = true), row(2, flagged = true))).overflow,
+        )
     }
 
     @Test
     fun moveToIsTheLastItemOfTheOverflowMenu_whenEverythingSelectedIsInOneAccount() {
         val one = SelectionRules.toolbar(listOf(row(1), row(2)), FolderRole.INBOX, archiveAvailable = true, moveAvailable = true)
         assertEquals(SelectionAction.MOVE_TO, one.overflow.last())
-        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM, SelectionAction.SNOOZE, SelectionAction.MOVE_TO), one.overflow)
+        assertEquals(
+            listOf(SelectionAction.STAR, SelectionAction.PIN, SelectionAction.FOLLOW_UP, SelectionAction.SPAM, SelectionAction.SNOOZE, SelectionAction.MOVE_TO),
+            one.overflow,
+        )
         assertFalse("not offered when the selection spans accounts", SelectionAction.MOVE_TO in SelectionRules.toolbar(listOf(row(1)), FolderRole.INBOX, archiveAvailable = true, moveAvailable = false).overflow)
         assertFalse("not offered for nothing selected", SelectionAction.MOVE_TO in SelectionRules.toolbar(emptyList(), FolderRole.INBOX, archiveAvailable = true, moveAvailable = true).overflow)
         // Move to also works from Trash, Spam and Archive (it is how mail leaves them for a folder other than the Inbox).
@@ -85,6 +95,24 @@ class ListRulesTest {
         }
         assertFalse("not for nothing selected", SelectionAction.SNOOZE in toolbar(emptyList()).overflow)
         assertTrue("Unsnooze is the Snoozed folder's Restore", SelectionAction.RESTORE in toolbar(listOf(row(1)), FolderRole.SNOOZED).primary)
+    }
+
+    /** T36b: Pin and Follow up follow the selection like Star, and are offered where they mean something. */
+    @Test
+    fun pinAndFollowUpFollowTheSelection_andAreOfferedWhereTheyMeanSomething() {
+        fun marked(id: Long, pinned: Boolean = false, followUp: Boolean = false) = row(id).copy(pinned = pinned, followUp = followUp)
+        val all = toolbar(listOf(marked(1, pinned = true, followUp = true), marked(2, pinned = true, followUp = true))).overflow
+        assertTrue(SelectionAction.UNPIN in all && SelectionAction.FOLLOW_UP_DONE in all)
+        val mixed = toolbar(listOf(marked(1, pinned = true), marked(2))).overflow
+        assertTrue("one not pinned: Pin", SelectionAction.PIN in mixed && SelectionAction.UNPIN !in mixed)
+        for (role in listOf(FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX, FolderRole.TRASH, FolderRole.SPAM, FolderRole.SNOOZED)) {
+            assertFalse("no Pin in $role", SelectionAction.PIN in toolbar(listOf(row(1)), role).overflow)
+        }
+        assertTrue("follow up on sent mail", SelectionAction.FOLLOW_UP in toolbar(listOf(row(1)), FolderRole.SENT).overflow)
+        for (role in listOf(FolderRole.DRAFTS, FolderRole.OUTBOX, FolderRole.TRASH, FolderRole.SPAM)) {
+            assertFalse("no Follow up in $role", SelectionAction.FOLLOW_UP in toolbar(listOf(row(1)), role).overflow)
+        }
+        assertFalse(SelectionAction.PIN in toolbar(emptyList()).overflow)
     }
 
     @Test

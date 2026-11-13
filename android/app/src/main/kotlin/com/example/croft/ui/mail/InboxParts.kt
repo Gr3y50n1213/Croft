@@ -220,6 +220,8 @@ fun SelectionAction.icon(): ImageVector = when (this) {
     SelectionAction.SPAM -> CroftIcons.Shield
     SelectionAction.MOVE_TO -> CroftIcons.Folder
     SelectionAction.SNOOZE -> CroftIcons.Schedule
+    SelectionAction.PIN, SelectionAction.UNPIN -> CroftIcons.Pin
+    SelectionAction.FOLLOW_UP, SelectionAction.FOLLOW_UP_DONE -> CroftIcons.Flag
 }
 
 /** The words of a selection action; Restore depends on where the messages are (Move to inbox, Not spam, Restore). */
@@ -236,6 +238,10 @@ fun SelectionAction.label(role: FolderRole): String = stringResource(
         SelectionAction.SPAM -> R.string.mail_action_spam
         SelectionAction.MOVE_TO -> R.string.swipe_action_move_to
         SelectionAction.SNOOZE -> R.string.swipe_action_snooze
+        SelectionAction.PIN -> R.string.mail_action_pin
+        SelectionAction.UNPIN -> R.string.mail_action_unpin
+        SelectionAction.FOLLOW_UP -> R.string.mail_action_follow_up
+        SelectionAction.FOLLOW_UP_DONE -> R.string.mail_action_follow_up_done
         SelectionAction.RESTORE -> when (role) {
             FolderRole.SNOOZED -> R.string.mail_action_unsnooze
             FolderRole.SPAM -> R.string.mail_action_not_spam

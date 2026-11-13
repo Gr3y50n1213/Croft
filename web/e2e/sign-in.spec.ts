@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import AxeBuilder from '@axe-core/playwright';
+import { createHash } from 'node:crypto';
 import { test, expect, type Page } from '@playwright/test';
 import { Companion, totp, virtualAuthenticator, watchForErrors } from './companion.ts';
 
@@ -131,4 +132,54 @@ test('opening the app signed out, again and again, never locks the browser out o
   } finally {
     own.stop();
   }
+});
+
+test('the Croft app on a phone connects through the browser and gets a one-time code, not a browser session', async ({
+  page,
+  request
+}) => {
+  const errors = watchForErrors(page);
+  // A Companion of its own: the sign-in limits per address are shared by this file's other tests.
+  const own = await Companion.start();
+  await virtualAuthenticator(page);
+  await page.goto(own.addUser('phone-user'));
+  await page.getByRole('button', { name: /passkey/i }).click();
+  await expect(page.locator('#step-backup')).toBeVisible();
+  await page.context().clearCookies();
+  // What the app does: a made-up PKCE verifier and its S256 challenge.
+  const verifier = 'a-made-up-pkce-verifier-for-the-croft-app-e2e-test-only-42';
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  const q = new URLSearchParams({ app_challenge: challenge, app_redirect: 'com.example.croft:/companion' });
+  await page.goto(`${own.url}/app/sign-in?${q}`);
+  await expect(page.getByRole('heading', { name: 'Connect the Croft app' })).toBeVisible();
+  await expect(page.getByText('Only continue if you started this from the Croft app just now.')).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations.map((v) => v.id)).toEqual([]);
+
+  const finish = page.waitForResponse((r) => r.url().endsWith('/api/sign-in/passkey/finish'));
+  await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
+  const answer = (await (await finish).json()) as { redirect: string };
+  // The browser is sent to the app's own redirect with the code (Chromium here has no app for it).
+  expect(answer.redirect).toMatch(/^com\.example\.croft:\/companion\?code=[A-Za-z0-9_-]+$/);
+  await expect(page.getByRole('status')).toHaveText('Signed in. Go back to the Croft app to finish.');
+  // No session in this browser.
+  expect((await page.context().cookies()).filter((c) => c.name.includes('croft'))).toEqual([]);
+
+  // The app redeems the code with its verifier, once.
+  const code = new URL(answer.redirect).searchParams.get('code')!;
+  const redeem = (v: string) =>
+    request.post(`${own.url}/api/sign-in/app/exchange`, { data: { code, verifier: v, device: 'Croft for Android' } });
+  const tokens = await redeem(verifier);
+  expect(tokens.status()).toBe(200);
+  const body = await tokens.json();
+  expect(typeof body.access_token).toBe('string');
+  expect(typeof body.refresh_token).toBe('string');
+  expect((await redeem(verifier)).status()).toBe(401);
+
+  // Opened by hand, without the app's request, the page only explains.
+  await page.goto(`${own.url}/app/sign-in`);
+  await expect(page.getByText('This page is for the Croft app on your phone.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toHaveCount(0);
+  // The browser's own complaint that no app takes the redirect is expected here.
+  expect(errors.filter((e) => !/scheme does not have a registered handler|com\.example\.croft/.test(e))).toEqual([]);
+  own.stop();
 });

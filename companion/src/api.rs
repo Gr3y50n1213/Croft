@@ -53,6 +53,8 @@ pub struct Auth {
     public_url: String,
     master: Key,
     ceremonies: Mutex<Ceremonies>,
+    /// Phones' sign-in hand-over codes (T34a).
+    app_handovers: crate::app_signin::AppHandovers,
     limits: Mutex<Limits>,
     /// Per-user limits for the mail routes that connect out (T26).
     mail_limits: Mutex<Limits>,
@@ -105,6 +107,7 @@ impl Auth {
             public_url: public_url.trim_end_matches('/').to_owned(),
             master,
             ceremonies: Mutex::new(Ceremonies::default()),
+            app_handovers: crate::app_signin::AppHandovers::default(),
             limits: Mutex::new(Limits::default()),
             mail_limits: Mutex::new(Limits::default()),
             sends: Mutex::new(std::collections::HashMap::new()),
@@ -593,6 +596,12 @@ pub fn routes() -> Vec<Route> {
             post(sign_in_recovery),
         ),
         route(Method::POST, "/api/token/refresh", P, post(refresh)),
+        route(
+            Method::POST,
+            "/api/sign-in/app/exchange",
+            P,
+            post(app_exchange),
+        ),
         route(Method::POST, "/api/web/refresh", P, post(web_api::refresh)),
         route(
             Method::POST,
@@ -943,6 +952,19 @@ struct SignInFinish {
     /// The web app's sign-in (T30): the refresh token goes into a cookie.
     #[serde(default)]
     web: bool,
+    /// A phone's sign-in through `/app/sign-in` (T34a): no session here, a hand-over code for the
+    /// app instead.
+    app: Option<AppTarget>,
+}
+
+/// The app a passkey sign-in in the browser is for (T34a).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppTarget {
+    /// The app's PKCE challenge (S256).
+    challenge: String,
+    /// The app's redirect: one of [`crate::app_signin::APP_SCHEMES`].
+    redirect: String,
 }
 
 /// After a failed passkey check: count it for the address and audit it for the user. It never
@@ -994,6 +1016,15 @@ async fn sign_in_finish(
     let ip = limit(&app, peer, &headers)?;
     let req = body(req)?;
     web_api::check_web(&app, &headers, req.web)?;
+    if let Some(a) = &req.app {
+        // An app's sign-in never makes a browser session, and goes only to the Croft app.
+        if req.web
+            || !crate::app_signin::challenge_ok(&a.challenge)
+            || !crate::app_signin::is_app_redirect(&a.redirect)
+        {
+            return Err(ApiError::Invalid);
+        }
+    }
     let now = app.auth.now();
     let Some(Pending::SignIn {
         user_id: named,
@@ -1045,11 +1076,55 @@ async fn sign_in_finish(
     })
     .await??;
     match checked {
-        Checked::Good(user_id) => {
-            start_session(&app, user_id, device_name(req.device), false, req.web).await
-        }
+        Checked::Good(user_id) => match req.app {
+            Some(a) => {
+                let code = app.auth.app_handovers.put(user_id, &a.challenge, now)?;
+                let _ = with_store(&app, move |s| {
+                    s.audit(Some(user_id), "sign_in.passkey.app_handover", "ok")
+                })
+                .await;
+                Ok(
+                    Json(json!({ "redirect": format!("{}?code={}", a.redirect, code.as_str()) }))
+                        .into_response(),
+                )
+            }
+            None => start_session(&app, user_id, device_name(req.device), false, req.web).await,
+        },
         Checked::Bad(user_id) => Err(passkey_failed(&app, ip, user_id).await),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppExchange {
+    code: String,
+    verifier: String,
+    device: Option<String>,
+}
+
+/// `POST /api/sign-in/app/exchange` (T34a): a phone's hand-over code and its PKCE verifier for the
+/// app's own tokens (a new device the person sees and can sign out).
+async fn app_exchange(
+    State(app): State<App>,
+    MaybePeer(peer): MaybePeer,
+    headers: HeaderMap,
+    req: Result<Json<AppExchange>, JsonRejection>,
+) -> ApiResult {
+    let ip = limit(&app, peer, &headers)?;
+    let req = body(req)?;
+    let (code, verifier) = (
+        zeroize::Zeroizing::new(req.code),
+        zeroize::Zeroizing::new(req.verifier),
+    );
+    let Some(user_id) = app
+        .auth
+        .app_handovers
+        .redeem(&code, &verifier, app.auth.now())
+    else {
+        failed(&app, ip);
+        return Err(ApiError::Invalid);
+    };
+    start_session(&app, user_id, device_name(req.device), false, false).await
 }
 
 #[derive(Deserialize)]

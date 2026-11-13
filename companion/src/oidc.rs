@@ -234,12 +234,17 @@ impl Provider {
         url.starts_with("https://") || (self.allow_loopback_http && fetch::is_loopback_http(url))
     }
 
-    /// Whether the app's redirect is acceptable: an address on the Companion's own origin, under
+    /// Whether the app's redirect is acceptable: the Croft app's own redirect on a phone, or an
+    /// address on the Companion's own origin, under
     /// its `public_url` path, written in normal form. The URL is parsed as a browser does (WHATWG)
     /// and must read back exactly as given, so dot segments (`/../`, `%2e%2e`), backslashes,
     /// user names, a fragment or another port, which a browser would resolve elsewhere, are
     /// refused (review finding: `/croft/%2e%2e/page` left the Companion's path with the code).
     pub fn app_redirect_ok(&self, url: &str) -> bool {
+        // The Croft app on a phone (T34a): exactly its own redirect.
+        if crate::app_signin::is_app_redirect(url) {
+            return true;
+        }
         if url.len() > 512 || !url.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
             return false;
         }

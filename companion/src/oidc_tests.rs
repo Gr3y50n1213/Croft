@@ -1228,3 +1228,47 @@ async fn an_unknown_callback_state_does_not_lock_the_address_out() {
     let res = h.router.clone().oneshot(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn a_phone_signs_in_through_the_provider_to_the_croft_apps_own_redirect() {
+    let h = h_with(false).await;
+    let ann = h.user("ann");
+    h.link(ann, "made-up-sub-ann");
+    let app = app_side();
+    let start = |redirect: &str| {
+        format!(
+            "/api/sign-in/oidc/start?app_challenge={}&app_redirect={}",
+            app.challenge,
+            crate::oidc::with_query("", &[("x", redirect)]).trim_start_matches("?x=")
+        )
+    };
+    // Another app's scheme, or the Croft one with anything added, is refused.
+    for bad in [
+        "com.evil.app:/companion",
+        "com.example.croft:/companion?x=1",
+        "com.example.croft://companion",
+    ] {
+        let (s, loc, _) = h.raw(Method::GET, &start(bad), None, None).await;
+        assert_eq!((s, loc), (StatusCode::UNAUTHORIZED, None), "{bad}");
+    }
+    let (s, loc, v) = h
+        .raw(
+            Method::GET,
+            &start("com.example.croft:/companion"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::SEE_OTHER, "{v}");
+    let (s, loc) = h.browse(&loc.unwrap()).await;
+    assert_eq!(s, StatusCode::SEE_OTHER);
+    let loc = loc.unwrap();
+    assert!(
+        loc.starts_with("com.example.croft:/companion?code="),
+        "{loc}"
+    );
+    let back = query_of(&loc);
+    let (s, v) = h.exchange(&back["code"], &app.verifier).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["access_token"].is_string());
+}

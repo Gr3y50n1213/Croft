@@ -2102,3 +2102,178 @@ async fn the_web_sign_out_is_rate_limited() {
     }
     assert!(limited);
 }
+
+// ---- T34a: a phone signs in through the browser ----
+
+const APP_VERIFIER: &str = "a-made-up-pkce-verifier-for-the-croft-app-tests-only-1234";
+
+fn app_target() -> Value {
+    json!({ "challenge": crate::oidc::s256(APP_VERIFIER), "redirect": "com.example.croft:/companion" })
+}
+
+impl H {
+    /// A passkey sign-in on `/app/sign-in` for the app: the hand-over code from its redirect.
+    async fn app_code(&self, p: &mut Person) -> String {
+        let (c, cred) = self.assertion(p).await;
+        let (s, v) = self
+            .call(
+                Method::POST,
+                "/api/sign-in/passkey/finish",
+                None,
+                Some(json!({ "ceremony": c, "credential": cred, "app": app_target() })),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        // No tokens in the browser: only where to go.
+        assert!(
+            v.get("access_token").is_none() && v.get("refresh_token").is_none(),
+            "{v}"
+        );
+        let redirect = v["redirect"].as_str().unwrap();
+        redirect
+            .strip_prefix("com.example.croft:/companion?code=")
+            .unwrap()
+            .to_owned()
+    }
+
+    async fn app_exchange(&self, code: &str, verifier: &str) -> (StatusCode, Value) {
+        self.call(
+            Method::POST,
+            "/api/sign-in/app/exchange",
+            None,
+            Some(json!({ "code": code, "verifier": verifier, "device": "Croft for Android" })),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_phone_signs_in_through_the_browser_with_a_one_time_code_and_its_verifier() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let code = h.app_code(&mut ann).await;
+    let (s, v) = h.app_exchange(&code, APP_VERIFIER).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let tokens = signed(&v);
+    // The app's own device, with tokens of its own that refresh as any app's.
+    let (s, me) = h
+        .call(Method::GET, "/api/me", Some(&tokens.access), None)
+        .await;
+    assert_eq!((s, me["name"].as_str()), (StatusCode::OK, Some("ann")));
+    let (s, list) = h
+        .call(Method::GET, "/api/sessions", Some(&tokens.access), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["device"] == "Croft for Android" && d["current"] == true));
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/token/refresh",
+            None,
+            Some(json!({ "refresh_token": tokens.refresh })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // Once only.
+    let (s, _) = h.app_exchange(&code, APP_VERIFIER).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_code_needs_its_verifier_and_its_time_and_is_spent_by_any_try() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    // A wrong verifier (an app that caught the redirect without starting the sign-in) gets nothing,
+    // and the code is spent.
+    let code = h.app_code(&mut ann).await;
+    let (s, _) = h
+        .app_exchange(
+            &code,
+            "another-made-up-verifier-that-is-not-the-apps-own-at-all",
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = h.app_exchange(&code, APP_VERIFIER).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // Past its minute.
+    let code = h.app_code(&mut ann).await;
+    h.advance(crate::app_signin::APP_HANDOVER_TTL_MS);
+    let (s, _) = h.app_exchange(&code, APP_VERIFIER).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // A user disabled meanwhile gets no session.
+    let code = h.app_code(&mut ann).await;
+    let admin = h.add_user("root", Role::Admin);
+    h.store()
+        .set_disabled(admin, ann.id, true, h.now())
+        .unwrap();
+    let (s, _) = h.app_exchange(&code, APP_VERIFIER).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn only_the_croft_app_and_a_real_challenge_get_a_code_and_never_with_a_browser_session() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let challenge = crate::oidc::s256(APP_VERIFIER);
+    for (target, web) in [
+        (
+            json!({ "challenge": challenge, "redirect": "com.evil.app:/companion" }),
+            false,
+        ),
+        (
+            json!({ "challenge": challenge, "redirect": "https://elsewhere.test/companion" }),
+            false,
+        ),
+        (
+            json!({ "challenge": challenge, "redirect": "com.example.croft:/companion?x=1" }),
+            false,
+        ),
+        (
+            json!({ "challenge": "short", "redirect": "com.example.croft:/companion" }),
+            false,
+        ),
+        (
+            json!({ "challenge": challenge, "redirect": "com.example.croft:/companion", "extra": 1 }),
+            false,
+        ),
+        (app_target(), true),
+    ] {
+        let (c, cred) = h.assertion(&mut ann).await;
+        let mut body = json!({ "ceremony": c, "credential": cred, "app": target });
+        if web {
+            body["web"] = json!(true);
+        }
+        let (s, v) = h
+            .call(
+                Method::POST,
+                "/api/sign-in/passkey/finish",
+                None,
+                Some(body),
+            )
+            .await;
+        assert!(
+            s == StatusCode::UNAUTHORIZED
+                || s == StatusCode::BAD_REQUEST
+                || s == StatusCode::FORBIDDEN,
+            "{s} {v}"
+        );
+        assert!(v.get("redirect").is_none(), "{v}");
+    }
+    // A code is not an access token, nor a refresh token.
+    let code = h.app_code(&mut ann).await;
+    let (s, _) = h.call(Method::GET, "/api/me", Some(&code), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/token/refresh",
+            None,
+            Some(json!({ "refresh_token": code })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}

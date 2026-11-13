@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T38a: Contacts in the core (13 November 2026)
 
-**Status:** on `task/t38a`, its own pull request, after T37. The screens are T38b.
+**Status:** on `task/t38a`, its own pull request. The screens are T38b.
 
 **What was built.**
 - **vCard (mail-core).** 3.0 and 4.0, read and written, with bounds on size, lines and values. Folding, escaping,
@@ -35,7 +35,23 @@ unverified, the next step.
   - sync both ways end to end through the exported calls.
 - A Stalwart CardDAV test runs in the CI's integration job.
 
-**Review:** pending.
+**Review:** an independent agent (opus, high effort). It found no way for the credential to leave the account's server.
+
+Fixed, with regression tests:
+- a failed listing could delete an edited contact (medium-high);
+- edits made during a sync were dropped (medium);
+- a refused or repeated create lost or orphaned a contact (medium);
+- a hostile server could exhaust memory through multigets and large trees (medium);
+- the mail password went to `/.well-known/carddav` before the server asked for it (low-medium: it is now sent only after a 401
+  that names its scheme);
+- deletes made before the next listing were never sent;
+- a malformed pin fell back to the usual certificate checks;
+- etags went into headers unchecked, and `//host` paths were accepted;
+- quoted-printable was detected in values, slowly, and decoded `N` and `ADR` lost their parts;
+- a book missing from one answer took waiting changes with it;
+- contact data was in `Debug` output.
+
+Not re-reviewed.
 
 **Next:** T38b, the contacts screens (S40 to S42) and compose's autocomplete.
 

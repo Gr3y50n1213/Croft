@@ -32,6 +32,8 @@ pub struct DavRequest {
     pub headers: Vec<(String, String)>,
     /// The body.
     pub body: String,
+    /// It carried an `Authorization` header.
+    pub had_authorization: bool,
 }
 
 #[derive(Default)]
@@ -45,6 +47,8 @@ struct State {
     sync: bool,
     well_known: bool,
     principal_href: Option<String>,
+    /// The scheme named in `WWW-Authenticate` on a 401 (`Basic`), or none.
+    challenge: Option<String>,
     requests: Vec<DavRequest>,
 }
 
@@ -78,6 +82,7 @@ impl DavServer {
             password: password.to_owned(),
             sync: true,
             well_known: true,
+            challenge: Some("Basic".into()),
             ..State::default()
         }));
         let s = state.clone();
@@ -130,6 +135,11 @@ impl DavServer {
     /// Makes the principal's `href` point elsewhere (another origin, to test refusal).
     pub fn set_principal_href(&self, href: &str) {
         self.st().principal_href = Some(href.to_owned());
+    }
+
+    /// The scheme a 401 asks for (`None`: a 401 asks for nothing Croft has).
+    pub fn set_challenge(&self, scheme: Option<&str>) {
+        self.st().challenge = scheme.map(str::to_owned);
     }
 
     /// Every request so far.
@@ -206,9 +216,20 @@ async fn serve(mut stream: tokio::net::TcpStream, state: Shared) {
             path: path.clone(),
             headers: headers.clone(),
             body: body.clone(),
+            had_authorization: authorization.is_some(),
         });
         if !authorized(&s, authorization.as_deref()) {
-            (401, Vec::new(), String::new())
+            let challenge = s
+                .challenge
+                .as_ref()
+                .map(|c| {
+                    vec![(
+                        "WWW-Authenticate".to_owned(),
+                        format!("{c} realm=\"croft-test\""),
+                    )]
+                })
+                .unwrap_or_default();
+            (401, challenge, String::new())
         } else {
             route(&mut s, &method, &path, &headers, &body)
         }

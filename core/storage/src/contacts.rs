@@ -19,9 +19,11 @@ pub const PENDING_CREATE: i64 = 1;
 pub const PENDING_UPDATE: i64 = 2;
 /// Pending: deleted on the device (hidden until the server confirms).
 pub const PENDING_DELETE: i64 = 3;
+/// The most rows one list call reads.
+pub const MAX_LIST_ROWS: u32 = 10_000;
 
 /// An address book.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Book {
     /// Row id.
     pub id: i64,
@@ -35,8 +37,16 @@ pub struct Book {
     pub ctag: Option<String>,
 }
 
+impl std::fmt::Debug for Book {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Book")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A contact as the list shows it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ContactRow {
     /// Row id.
     pub id: i64,
@@ -48,6 +58,14 @@ pub struct ContactRow {
     pub sort_key: String,
     /// Its first address, if any.
     pub email: Option<String>,
+}
+
+impl std::fmt::Debug for ContactRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContactRow")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A whole stored contact.
@@ -69,6 +87,8 @@ pub struct StoredContact {
     pub pending: i64,
     /// The server had changed it; its version was kept.
     pub conflict: bool,
+    /// Grows with every change made on the device: a sync confirms only the version it sent.
+    pub revision: i64,
 }
 
 impl std::fmt::Debug for StoredContact {
@@ -113,7 +133,17 @@ pub fn books(conn: &Connection, account: i64) -> Result<Vec<Book>> {
 /// contacts.
 pub fn remove_books_not_in(conn: &Connection, account: i64, keep: &[String]) -> Result<()> {
     for b in books(conn, account)? {
-        if !keep.contains(&b.path) {
+        // A book that still holds changes made here is kept (a server that leaves it out of one
+        // answer must not take them with it).
+        let waiting: bool = conn
+            .query_row(
+                "SELECT 1 FROM contact WHERE account_id = ?1 AND book_id = ?2 AND pending <> 0 LIMIT 1",
+                params![account, b.id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !keep.contains(&b.path) && !waiting {
             conn.execute(
                 "DELETE FROM address_book WHERE account_id = ?1 AND id = ?2",
                 params![account, b.id],
@@ -293,7 +323,7 @@ pub fn update_local(
     let contact = parsed.contact();
     let n = conn.execute(
         r#"UPDATE contact SET card = ?3, display_name = ?4, sort_key = ?5, updated_at = ?6, conflict = 0,
-                              pending = CASE pending WHEN 1 THEN 1 ELSE 2 END
+                              pending = CASE pending WHEN 1 THEN 1 ELSE 2 END, revision = revision + 1
             WHERE account_id = ?1 AND id = ?2 AND pending <> 3"#,
         params![account, id, card, contact.display_name(), contact.sort_key(), now_ms],
     )?;
@@ -314,7 +344,7 @@ pub fn delete_local(conn: &Connection, account: i64, id: i64) -> Result<bool> {
         return Ok(true);
     }
     Ok(conn.execute(
-        "UPDATE contact SET pending = 3 WHERE account_id = ?1 AND id = ?2",
+        "UPDATE contact SET pending = 3, revision = revision + 1 WHERE account_id = ?1 AND id = ?2",
         params![account, id],
     )? > 0)
 }
@@ -322,12 +352,12 @@ pub fn delete_local(conn: &Connection, account: i64, id: i64) -> Result<bool> {
 /// The contacts with a change waiting, oldest first, with their book's path.
 pub fn pending(conn: &Connection, account: i64) -> Result<Vec<(StoredContact, String)>> {
     let mut stmt = conn.prepare(
-        r#"SELECT c.id, c.account_id, c.book_id, c.href, c.etag, c.card, c.pending, c.conflict, b.path
+        r#"SELECT c.id, c.account_id, c.book_id, c.href, c.etag, c.card, c.pending, c.conflict, c.revision, b.path
              FROM contact c JOIN address_book b ON b.id = c.book_id AND b.account_id = c.account_id
             WHERE c.account_id = ?1 AND c.pending <> 0
             ORDER BY c.updated_at, c.id"#,
     )?;
-    let rows = stmt.query_map([account], |r| Ok((stored(r)?, r.get(8)?)))?;
+    let rows = stmt.query_map([account], |r| Ok((stored(r)?, r.get(9)?)))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
@@ -341,29 +371,54 @@ fn stored(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredContact> {
         card: r.get(5)?,
         pending: r.get(6)?,
         conflict: r.get(7)?,
+        revision: r.get(8)?,
     })
 }
 
-/// The server took the change of contact `id`: a delete removes the row; a create or update keeps
-/// it, at `href`, with no etag until the next listing.
-pub fn confirm(conn: &Connection, account: i64, id: i64, href: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM contact WHERE account_id = ?1 AND id = ?2 AND pending = 3",
-        params![account, id],
+/// The server took version `revision` of contact `id`'s change. When it is still the latest, a
+/// delete removes the row and a create or update keeps it at `href`, with no etag until the next
+/// listing. When the person changed it again meanwhile, only `href` is recorded and the newer change
+/// still waits (a create that went through becomes an update).
+pub fn confirm(conn: &Connection, account: i64, id: i64, revision: i64, href: &str) -> Result<()> {
+    let deleted = conn.execute(
+        "DELETE FROM contact WHERE account_id = ?1 AND id = ?2 AND pending = 3 AND revision = ?3",
+        params![account, id, revision],
     )?;
+    if deleted > 0 {
+        return Ok(());
+    }
+    let done = conn.execute(
+        "UPDATE contact SET pending = 0, href = ?3, etag = NULL
+          WHERE account_id = ?1 AND id = ?2 AND revision = ?4",
+        params![account, id, href, revision],
+    )?;
+    if done == 0 && !href.is_empty() {
+        conn.execute(
+            "UPDATE contact SET href = ?3, etag = NULL, pending = CASE pending WHEN 1 THEN 2 ELSE pending END
+              WHERE account_id = ?1 AND id = ?2",
+            params![account, id, href],
+        )?;
+    }
+    Ok(())
+}
+
+/// The server had changed contact `id`: version `revision` of the device's change is dropped (the
+/// next sync brings the server's version) and the contact is marked so the screen can say so. A
+/// newer change made meanwhile stays waiting.
+pub fn mark_conflict(conn: &Connection, account: i64, id: i64, revision: i64) -> Result<()> {
     conn.execute(
-        "UPDATE contact SET pending = 0, href = ?3, etag = NULL WHERE account_id = ?1 AND id = ?2",
-        params![account, id, href],
+        "UPDATE contact SET pending = 0, conflict = 1, etag = NULL
+          WHERE account_id = ?1 AND id = ?2 AND revision = ?3",
+        params![account, id, revision],
     )?;
     Ok(())
 }
 
-/// The server had changed contact `id`: the device's change is dropped (the next sync brings the
-/// server's version) and the contact is marked so the screen can say so.
-pub fn mark_conflict(conn: &Connection, account: i64, id: i64) -> Result<()> {
+/// Removes contact `id` (gone from the server) if `revision` is still its latest change.
+pub fn remove_gone(conn: &Connection, account: i64, id: i64, revision: i64) -> Result<()> {
     conn.execute(
-        "UPDATE contact SET pending = 0, conflict = 1, etag = NULL WHERE account_id = ?1 AND id = ?2",
-        params![account, id],
+        "DELETE FROM contact WHERE account_id = ?1 AND id = ?2 AND revision = ?3",
+        params![account, id, revision],
     )?;
     Ok(())
 }
@@ -372,7 +427,7 @@ pub fn mark_conflict(conn: &Connection, account: i64, id: i64) -> Result<()> {
 pub fn get(conn: &Connection, account: i64, id: i64) -> Result<Option<StoredContact>> {
     Ok(conn
         .query_row(
-            "SELECT id, account_id, book_id, href, etag, card, pending, conflict FROM contact
+            "SELECT id, account_id, book_id, href, etag, card, pending, conflict, revision FROM contact
               WHERE account_id = ?1 AND id = ?2 AND pending <> 3",
             params![account, id],
             stored,
@@ -400,7 +455,7 @@ pub fn list(
                                 AND e.contact_id = c.id AND e.address LIKE '%' || ?2 || '%' ESCAPE '\'))
             ORDER BY c.sort_key, c.id LIMIT ?3 OFFSET ?4"#,
     )?;
-    let rows = stmt.query_map(params![account, q, limit.min(500), offset], |r| {
+    let rows = stmt.query_map(params![account, q, limit.min(MAX_LIST_ROWS), offset], |r| {
         Ok(ContactRow {
             id: r.get(0)?,
             account_id: r.get(1)?,
@@ -597,7 +652,10 @@ mod tests {
             PENDING_CREATE,
             "still a create"
         );
-        confirm(c, a, new, "/b/n.vcf").unwrap();
+        {
+            let r = pending(c, a).unwrap()[0].0.revision;
+            confirm(c, a, new, r, "/b/n.vcf").unwrap();
+        }
         assert!(pending(c, a).unwrap().is_empty());
         let got = get(c, a, new).unwrap().unwrap();
         assert_eq!(got.href.as_deref(), Some("/b/n.vcf"));
@@ -615,7 +673,10 @@ mod tests {
         )
         .unwrap();
         assert!(get(c, a, new).unwrap().unwrap().card.contains("FN:Edited"));
-        mark_conflict(c, a, new).unwrap();
+        {
+            let r = pending(c, a).unwrap()[0].0.revision;
+            mark_conflict(c, a, new, r).unwrap();
+        }
         assert!(get(c, a, new).unwrap().unwrap().conflict);
         store_from_server(
             c,
@@ -637,7 +698,10 @@ mod tests {
         );
         assert!(list(c, a, "", 50, 0).unwrap().is_empty());
         assert_eq!(pending(c, a).unwrap()[0].0.pending, PENDING_DELETE);
-        confirm(c, a, new, "/b/n.vcf").unwrap();
+        {
+            let r = pending(c, a).unwrap()[0].0.revision;
+            confirm(c, a, new, r, "/b/n.vcf").unwrap();
+        }
         assert!(pending(c, a).unwrap().is_empty());
 
         // A contact never sent is simply gone.
@@ -645,5 +709,41 @@ mod tests {
         assert!(delete_local(c, a, draft).unwrap());
         assert!(pending(c, a).unwrap().is_empty());
         assert!(!update_local(c, a + 1, new, &card("n", "X", "x@x.example"), 11).unwrap());
+    }
+
+    /// T38a review: a change made while a sync sends the previous one is not lost.
+    #[test]
+    fn an_edit_made_during_a_sync_stays_waiting() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        let a = account(c, 1);
+        let b = upsert_book(c, a, "/b/", "Contacts").unwrap();
+        let id = create_local(c, a, b, &card("n", "First", "n@x.example"), 1).unwrap();
+        let sent = pending(c, a).unwrap()[0].0.revision;
+        // The person edits while the create is on its way; then the create is confirmed.
+        assert!(update_local(c, a, id, &card("n", "Second", "n@x.example"), 2).unwrap());
+        confirm(c, a, id, sent, "/b/n.vcf").unwrap();
+        let now = pending(c, a).unwrap();
+        assert_eq!(now.len(), 1, "the edit still waits");
+        assert_eq!(
+            now[0].0.pending, PENDING_UPDATE,
+            "the create went through: now an update"
+        );
+        assert_eq!(now[0].0.href.as_deref(), Some("/b/n.vcf"));
+        assert!(now[0].0.card.contains("FN:Second"));
+        // The same for a conflict and for a delete made meanwhile.
+        let r = now[0].0.revision;
+        assert!(delete_local(c, a, id).unwrap());
+        mark_conflict(c, a, id, r).unwrap();
+        assert_eq!(pending(c, a).unwrap()[0].0.pending, PENDING_DELETE);
+        remove_gone(c, a, id, r).unwrap();
+        assert_eq!(
+            pending(c, a).unwrap().len(),
+            1,
+            "an older revision removes nothing"
+        );
+        // A book left out of one answer keeps its waiting changes.
+        remove_books_not_in(c, a, &[]).unwrap();
+        assert_eq!(books(c, a).unwrap().len(), 1);
     }
 }

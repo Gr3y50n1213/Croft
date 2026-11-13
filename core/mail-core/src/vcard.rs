@@ -49,7 +49,7 @@ pub enum Version {
 }
 
 /// A name in parts (`N`): family, given, additional, prefix, suffix.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Name {
     /// Family name.
     pub family: String,
@@ -78,7 +78,7 @@ impl Name {
 }
 
 /// An email or phone number with its kinds (`home`, `work`, `cell`, ... in lower case).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Typed {
     /// The address or number.
     pub value: String,
@@ -89,7 +89,7 @@ pub struct Typed {
 }
 
 /// A postal address (`ADR`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct PostalAddress {
     /// Street (with the post-office box and extended address folded in front, when given).
     pub street: String,
@@ -106,7 +106,7 @@ pub struct PostalAddress {
 }
 
 /// What Croft shows and edits of a card.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Contact {
     /// `UID`.
     pub uid: Option<String>,
@@ -178,7 +178,7 @@ struct Line {
 }
 
 /// A card as read: its version and every line between `BEGIN` and `END`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Card {
     /// The version.
     pub version: Version,
@@ -240,6 +240,8 @@ pub fn parse(text: &str) -> Result<Card, VcardError> {
 /// quoted-printable soft breaks; LF and CRLF both end a line.
 fn unfold(text: &str) -> Result<Vec<String>, VcardError> {
     let mut out: Vec<String> = Vec::new();
+    // Whether the logical line being built is quoted-printable (decided once, from its head).
+    let mut qp = false;
     let mut soft_break = false;
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -255,11 +257,12 @@ fn unfold(text: &str) -> Result<Vec<String>, VcardError> {
             if out.len() >= MAX_LINES {
                 return Err(VcardError::TooLarge);
             }
+            qp = head_is_quoted_printable(line);
             out.push(line.to_owned());
         }
-        soft_break = out.last().is_some_and(|l| {
-            l.ends_with('=') && l.to_ascii_uppercase().contains("QUOTED-PRINTABLE")
-        });
+        // A quoted-printable soft break (a trailing `=`) joins the next line. Only for a line whose
+        // own parameters say QUOTED-PRINTABLE: a value that merely contains the words never does.
+        soft_break = qp && out.last().is_some_and(|l| l.ends_with('='));
         if soft_break {
             if let Some(last) = out.last_mut() {
                 last.pop();
@@ -267,6 +270,26 @@ fn unfold(text: &str) -> Result<Vec<String>, VcardError> {
         }
     }
     Ok(out)
+}
+
+/// Whether a content line's name and parameters (before its first colon outside quotes) say
+/// `ENCODING=QUOTED-PRINTABLE`.
+fn head_is_quoted_printable(line: &str) -> bool {
+    let mut quoted = false;
+    let mut end = line.len();
+    for (i, c) in line.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ':' if !quoted => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    line[..end]
+        .to_ascii_uppercase()
+        .contains("QUOTED-PRINTABLE")
 }
 
 /// Splits `group.NAME;PARAM=a,b;PARAM="c":value`. `None` for a line without a colon or name.
@@ -322,7 +345,12 @@ fn parse_line(raw: &str) -> Option<Line> {
         .iter()
         .any(|e| e.eq_ignore_ascii_case("QUOTED-PRINTABLE"))
     {
-        line.value = escape(&quoted_printable(&line.value));
+        // Decoded text keeps its structure (`;` and `,` still separate N and ADR parts): only what
+        // would end the line or start an escape is escaped again.
+        line.value = quoted_printable(&line.value)
+            .replace('\\', "\\\\")
+            .replace("\r\n", "\\n")
+            .replace('\n', "\\n");
     }
     Some(line)
 }
@@ -749,6 +777,41 @@ fn fold_into(out: &mut String, line: &str) {
     out.push_str("\r\n");
 }
 
+impl std::fmt::Debug for Name {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("Name").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Typed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("Typed").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for PostalAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("PostalAddress").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Contact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("Contact").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Card {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("Card").finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -846,6 +909,20 @@ TEL;VALUE=uri;TYPE=voice:tel:+1-555-0100\nNOTE;ENCODING=QUOTED-PRINTABLE:Caf=C3=
         assert_eq!(back.uid.as_deref(), Some("uid-7"));
         assert_eq!(back.formatted_name, "Nora; Lindqvist");
         assert_eq!(back.note, "x".repeat(200));
+    }
+
+    /// T38a review: only a line's own parameters make it quoted-printable; decoded N keeps its parts.
+    #[test]
+    fn quoted_printable_is_decided_by_the_parameters_and_keeps_structure() {
+        let text = "BEGIN:VCARD\r\nVERSION:3.0\r\nNOTE:send it quoted-printable=\r\nEND:VCARD\r\n";
+        assert_eq!(
+            parse(text).unwrap().contact().note,
+            "send it quoted-printable="
+        );
+        let text = "BEGIN:VCARD\r\nVERSION:3.0\r\nN;ENCODING=QUOTED-PRINTABLE;CHARSET=UTF-8:M=C3=BCller;J=C3=BCrgen;;;\r\nEND:VCARD\r\n";
+        let c = parse(text).unwrap().contact();
+        assert_eq!(c.name.family, "Müller");
+        assert_eq!(c.name.given, "Jürgen");
     }
 
     #[test]

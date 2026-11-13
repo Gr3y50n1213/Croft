@@ -26,7 +26,7 @@ use crate::settings::{is_demo, url_host, AccountSettings};
 const MAX_LIST: u32 = 500;
 
 /// A phone or email with its kinds.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ContactValue {
     /// The address or number.
     pub value: String,
@@ -37,7 +37,7 @@ pub struct ContactValue {
 }
 
 /// A postal address.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ContactAddress {
     /// Street.
     pub street: String,
@@ -108,7 +108,7 @@ impl std::fmt::Debug for ContactSummary {
 }
 
 /// One contact (S41).
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ContactDetail {
     /// Id.
     pub id: i64,
@@ -129,7 +129,7 @@ pub struct ContactDetail {
 }
 
 /// An address book.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct AddressBookInfo {
     /// Id.
     pub id: i64,
@@ -264,6 +264,18 @@ fn new_uid() -> Result<String, CoreError> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// What to do with a change made here, after the server answered.
+enum Step {
+    /// Taken by the server (at this address).
+    Confirm(String),
+    /// The server had changed it: its version is kept.
+    Conflict,
+    /// Removed on the server.
+    Gone,
+    /// Still waiting.
+    Keep,
+}
+
 impl Core {
     /// The account's CardDAV client, or `None` when it has no contacts sync (the sample mailbox,
     /// an OAuth account, unreadable settings). Errors only for "ask again later".
@@ -279,7 +291,18 @@ impl Core {
         let Ok(settings) = AccountSettings::from_json(&row.config) else {
             return Ok(None);
         };
-        let pin = settings.applied_pin();
+        // A stored pin that cannot be read means no contacts sync (never a fall-back to the usual
+        // certificate checks, which mail itself would refuse).
+        let pin = match &settings {
+            AccountSettings::Imap(s) => match s.imap_config() {
+                Ok(c) => c.pinned_cert,
+                Err(_) => return Ok(None),
+            },
+            AccountSettings::Jmap(s) => match s.jmap_config() {
+                Ok(c) => c.pinned_cert,
+                Err(_) => return Ok(None),
+            },
+        };
         let (origin, username) = match &settings {
             AccountSettings::Imap(s) => {
                 let host = s.imap.host.trim().to_owned();
@@ -370,82 +393,95 @@ impl Core {
             store::remove_books_not_in(c, account, &keep)
         })?;
 
-        // Out: what was changed here.
+        // Out: what was changed here. Each change is confirmed only for the version that was sent
+        // (`revision`), so an edit made meanwhile still waits.
         let mut conflicts = 0u32;
         let waiting = self
             .inner
             .handle
             .read(|db| store::pending(db.connection(), account))?;
         for (contact, book_path) in waiting {
-            let result = match contact.pending {
-                store::PENDING_CREATE => {
+            let rev = contact.revision;
+            // An update or delete needs the card's etag; one created here and not listed since has
+            // none yet: its current one first. A listing that fails stops the sync (nothing is
+            // decided from a failed answer).
+            let etag = match (&contact.href, &contact.etag) {
+                (Some(_), Some(e)) => Some(e.clone()),
+                (Some(href), None) => match dav.changes(&book_path, None).await {
+                    Ok(ch) => ch
+                        .changed
+                        .into_iter()
+                        .find(|r| &r.path == href)
+                        .map(|r| r.etag),
+                    Err(e) => return Ok(outcome(net(e), conflicts)),
+                },
+                (None, _) => None,
+            };
+            let step = match (contact.pending, &contact.href) {
+                (store::PENDING_CREATE, _) => {
                     let uid = vcard::parse(&contact.card)
                         .ok()
                         .and_then(|c| c.contact().uid)
-                        .filter(|u| u.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+                        .filter(|u| {
+                            !u.is_empty()
+                                && u.len() <= 64
+                                && u.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        })
                         .map_or_else(new_uid, Ok)?;
                     let href = format!("{}/{uid}.vcf", book_path.trim_end_matches('/'));
-                    dav.put(&href, &contact.card, None).await.map(|o| (o, href))
+                    match dav.put(&href, &contact.card, None).await {
+                        // 412 on a create: a card is already there, most likely this one after a lost
+                        // answer (the href comes from the card's own UID). It is taken as created and
+                        // the next listing brings the server's version.
+                        Ok(WriteOutcome::Done | WriteOutcome::Conflict) => Ok(Step::Confirm(href)),
+                        // The book refused a new card (404 or 410): it stays waiting.
+                        Ok(WriteOutcome::Gone) => Ok(Step::Keep),
+                        Err(e) => Err(e),
+                    }
                 }
-                store::PENDING_UPDATE => match (&contact.href, &contact.etag) {
-                    (Some(href), etag) => {
-                        let etag = match etag {
-                            Some(e) => Some(e.clone()),
-                            // Created here and not listed since: its current etag first.
-                            None => dav
-                                .changes(&book_path, None)
-                                .await
-                                .ok()
-                                .and_then(|ch| ch.changed.into_iter().find(|r| &r.path == href))
-                                .map(|r| r.etag),
-                        };
-                        match etag {
-                            Some(e) => dav
-                                .put(href, &contact.card, Some(&e))
-                                .await
-                                .map(|o| (o, href.clone())),
-                            None => Ok((WriteOutcome::Gone, href.clone())),
+                (store::PENDING_UPDATE, Some(href)) => match &etag {
+                    Some(e) => match dav.put(href, &contact.card, Some(e)).await {
+                        Ok(WriteOutcome::Done) => Ok(Step::Confirm(href.clone())),
+                        Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
+                        Ok(WriteOutcome::Gone) => Ok(Step::Gone),
+                        Err(e) => Err(e),
+                    },
+                    // Listed without it: removed on the server meanwhile.
+                    None => Ok(Step::Gone),
+                },
+                (store::PENDING_DELETE, Some(href)) => match &etag {
+                    Some(e) => match dav.delete(href, e).await {
+                        Ok(WriteOutcome::Done | WriteOutcome::Gone) => {
+                            Ok(Step::Confirm(href.clone()))
                         }
-                    }
-                    (None, _) => continue,
+                        Ok(WriteOutcome::Conflict) => Ok(Step::Conflict),
+                        Err(e) => Err(e),
+                    },
+                    None => Ok(Step::Confirm(href.clone())),
                 },
-                store::PENDING_DELETE => match (&contact.href, &contact.etag) {
-                    (Some(href), Some(etag)) => {
-                        dav.delete(href, etag).await.map(|o| (o, href.clone()))
-                    }
-                    (Some(href), None) => Ok((WriteOutcome::Done, href.clone())),
-                    (None, _) => Ok((WriteOutcome::Done, String::new())),
-                },
-                _ => continue,
+                _ => Ok(Step::Keep),
             };
-            match result {
-                Ok((WriteOutcome::Done, href)) => {
-                    self.inner
-                        .handle
-                        .read(|db| store::confirm(db.connection(), account, contact.id, &href))?;
-                }
-                Ok((WriteOutcome::Conflict, _)) => {
+            match step {
+                Ok(Step::Confirm(href)) => self
+                    .inner
+                    .handle
+                    .read(|db| store::confirm(db.connection(), account, contact.id, rev, &href))?,
+                Ok(Step::Conflict) => {
                     conflicts += 1;
-                    self.inner
-                        .handle
-                        .read(|db| store::mark_conflict(db.connection(), account, contact.id))?;
-                }
-                Ok((WriteOutcome::Gone, href)) => {
-                    // Removed on the server: a delete is done, an update is dropped with it.
                     self.inner.handle.read(|db| {
-                        store::confirm(db.connection(), account, contact.id, &href)?;
-                        db.connection().execute(
-                            "DELETE FROM contact WHERE account_id = ?1 AND id = ?2",
-                            rusqlite::params![account, contact.id],
-                        )?;
-                        Ok::<_, croft_storage::StorageError>(())
+                        store::mark_conflict(db.connection(), account, contact.id, rev)
                     })?;
                 }
+                Ok(Step::Gone) => self
+                    .inner
+                    .handle
+                    .read(|db| store::remove_gone(db.connection(), account, contact.id, rev))?,
+                Ok(Step::Keep) => {}
                 Err(e) => return Ok(outcome(net(e), conflicts)),
             }
         }
 
-        // In: what changed on the server.
+        // In: what changed on the server, stored one batch at a time.
         let stored_books = self
             .inner
             .handle
@@ -467,18 +503,25 @@ impl Core {
                 .filter(|r| known.get(&r.path) != Some(&r.etag))
                 .map(|r| r.path.clone())
                 .collect();
-            let fetched = match dav.fetch(&book.path, &wanted).await {
-                Ok(f) => f,
-                Err(e) => return Ok(outcome(net(e), conflicts)),
-            };
+            for batch in wanted.chunks(croft_protocols::carddav::MULTIGET_BATCH) {
+                let fetched = match dav.fetch(&book.path, batch).await {
+                    Ok(f) => f,
+                    Err(e) => return Ok(outcome(net(e), conflicts)),
+                };
+                let now = now_ms();
+                self.inner.handle.read(|db| {
+                    let c = db.connection();
+                    for card in &fetched {
+                        store::store_from_server(
+                            c, account, book.id, &card.path, &card.etag, &card.text, now,
+                        )?;
+                    }
+                    Ok::<_, croft_storage::StorageError>(())
+                })?;
+            }
             let now = now_ms();
             self.inner.handle.read(|db| {
                 let c = db.connection();
-                for card in &fetched {
-                    store::store_from_server(
-                        c, account, book.id, &card.path, &card.etag, &card.text, now,
-                    )?;
-                }
                 for gone in &changes.removed {
                     store::remove_from_server(c, account, book.id, gone)?;
                 }
@@ -709,5 +752,33 @@ impl Core {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(account, url.to_owned());
+    }
+}
+
+impl std::fmt::Debug for ContactValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("ContactValue").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ContactAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("ContactAddress").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ContactDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("ContactDetail").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for AddressBookInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("AddressBookInfo").finish_non_exhaustive()
     }
 }

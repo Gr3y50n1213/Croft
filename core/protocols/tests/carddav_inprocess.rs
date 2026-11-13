@@ -40,10 +40,12 @@ async fn discovery_finds_the_address_book_through_the_well_known_redirect() {
     assert_eq!(books[0].path, BOOK);
     assert_eq!(books[0].name, "Contacts");
     assert_eq!(books[0].sync_token.as_deref(), Some("tok-0"));
+    // The first request asks without the credential; the server's challenge brings it.
     let paths: Vec<String> = server.requests().into_iter().map(|r| r.path).collect();
     assert_eq!(
         paths,
         [
+            "/.well-known/carddav",
             "/.well-known/carddav",
             "/dav/",
             "/dav/principals/alice/",
@@ -56,6 +58,54 @@ async fn discovery_finds_the_address_book_through_the_well_known_redirect() {
         matches!(err, croft_protocols::BackendError::Auth(_)),
         "{err:?}"
     );
+}
+
+/// T38a review: the password goes only to a server that asks for it, in the scheme it has.
+#[tokio::test]
+async fn the_credential_is_sent_only_after_the_server_asks_for_it() {
+    let server = DavServer::start().await;
+    let dav = client(&server, DAV_PASSWORD);
+    dav.discover().await.unwrap();
+    let r = server.requests();
+    assert!(
+        !r[0].had_authorization,
+        "the first request carries no credential"
+    );
+    assert!(r[1].had_authorization && r.iter().skip(1).all(|q| q.had_authorization));
+
+    // A server that asks for another scheme (or none) never gets it.
+    let server = DavServer::start().await;
+    server.set_challenge(Some("Negotiate"));
+    let err = client(&server, DAV_PASSWORD).discover().await;
+    assert!(
+        matches!(err, Err(croft_protocols::BackendError::Auth(_))),
+        "{err:?}"
+    );
+    assert!(server.requests().iter().all(|q| !q.had_authorization));
+}
+
+/// T38a review: a server answering with cards it was not asked for, or bad etags, gets them ignored.
+#[tokio::test]
+async fn only_requested_cards_and_clean_etags_are_taken() {
+    let server = DavServer::start().await;
+    server.put_card("a.vcf", &card("a", "Ann"));
+    server.put_card("b.vcf", &card("b", "Bo"));
+    let dav = client(&server, DAV_PASSWORD);
+    let one = dav.fetch(BOOK, &[format!("{BOOK}a.vcf")]).await.unwrap();
+    assert_eq!(one.len(), 1);
+    let too_many: Vec<String> = (0..60).map(|i| format!("{BOOK}{i}.vcf")).collect();
+    assert!(
+        dav.fetch(BOOK, &too_many).await.is_err(),
+        "one batch at a time"
+    );
+    assert!(dav
+        .put(&format!("{BOOK}a.vcf"), &card("a", "X"), Some("\"e\u{7}\""))
+        .await
+        .is_err());
+    assert!(dav
+        .delete(&format!("{BOOK}a.vcf"), &"x".repeat(300))
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -170,7 +220,7 @@ async fn writes_are_conditional_on_the_etag() {
     let puts: Vec<_> = server
         .requests()
         .into_iter()
-        .filter(|r| r.method == "PUT")
+        .filter(|r| r.method == "PUT" && r.had_authorization)
         .collect();
     assert!(puts[0]
         .headers

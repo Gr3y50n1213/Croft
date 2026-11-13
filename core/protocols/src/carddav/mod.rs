@@ -15,6 +15,7 @@
 
 pub(crate) mod xml;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use zeroize::Zeroizing;
@@ -50,7 +51,7 @@ pub struct CardDavConfig {
 }
 
 /// An address book.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AddressBook {
     /// Its path on the server (`/dav/card/alice/default/`).
     pub path: String,
@@ -63,7 +64,7 @@ pub struct AddressBook {
 }
 
 /// One card's address and version.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CardRef {
     /// Its path on the server.
     pub path: String,
@@ -72,7 +73,7 @@ pub struct CardRef {
 }
 
 /// What changed in a book.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Changes {
     /// Cards added or changed.
     pub changed: Vec<CardRef>,
@@ -121,6 +122,20 @@ pub struct CardDav {
     origin: Url,
     start: Url,
     authorization: Zeroizing<String>,
+    /// `basic` or `bearer`: the scheme the server must ask for before the credential is sent.
+    scheme: &'static str,
+    /// The server asked for the credential (a 401 naming [`CardDav::scheme`]): it goes with every
+    /// request from then on. Until then requests carry none (T38a review: the mail password never
+    /// goes to a CardDAV address that did not ask for it).
+    challenged: AtomicBool,
+}
+
+/// The longest etag sent back in a condition.
+const MAX_ETAG: usize = 256;
+
+/// An etag that may go into a header: visible ASCII, bounded.
+fn usable_etag(etag: &str) -> bool {
+    !etag.is_empty() && etag.len() <= MAX_ETAG && etag.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }
 
 const PROPFIND_PRINCIPAL: &str = r#"<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>"#;
@@ -137,6 +152,10 @@ impl CardDav {
         if !start.is_allowed() {
             return Err(bad());
         }
+        let scheme = match credential {
+            Credential::Password(_) => "basic",
+            Credential::OAuth2 { .. } => "bearer",
+        };
         let authorization = match credential {
             Credential::Password(pw) => crate::jmap::api::basic_header(&config.username, pw)?,
             Credential::OAuth2 { access_token, .. } => {
@@ -160,6 +179,8 @@ impl CardDav {
             origin: start.clone(),
             start,
             authorization,
+            scheme,
+            challenged: AtomicBool::new(false),
         })
     }
 
@@ -178,22 +199,37 @@ impl CardDav {
             headers.push(("Depth", d));
         }
         headers.extend_from_slice(extra);
-        let answer = self
-            .http
-            .send(&HttpRequest {
-                method,
-                url: &url,
-                authorization: Some(&self.authorization),
-                content_type,
-                body,
-                max_response: MAX_ANSWER,
-                extra_time: Duration::ZERO,
-                error_body: false,
-                status_only: false,
-                extra_headers: &headers,
-            })
-            .await
-            .map_err(|e| e.error)?;
+        let send = |with_credential: bool| {
+            let headers = &headers;
+            let url = &url;
+            async move {
+                self.http
+                    .send(&HttpRequest {
+                        method,
+                        url,
+                        authorization: with_credential.then_some(self.authorization.as_str()),
+                        content_type,
+                        body,
+                        max_response: MAX_ANSWER,
+                        extra_time: Duration::ZERO,
+                        error_body: false,
+                        status_only: false,
+                        extra_headers: headers,
+                    })
+                    .await
+                    .map_err(|e| e.error)
+            }
+        };
+        let challenged = self.challenged.load(Ordering::Relaxed);
+        let mut answer = send(challenged).await?;
+        if answer.status == 401
+            && !challenged
+            && answer.auth_schemes.iter().any(|s| s == self.scheme)
+        {
+            // The server asked for the credential, in the scheme it has: now it is sent.
+            self.challenged.store(true, Ordering::Relaxed);
+            answer = send(true).await?;
+        }
         // Only 401 means the sign-in: a 403 is also how RFC 6578 refuses an old sync token.
         match answer.status {
             401 => Err(BackendError::Auth(
@@ -353,7 +389,10 @@ impl CardDav {
                         .is_some_and(|s| status_code(&s) == Some(404));
                     if gone {
                         out.removed.push(path);
-                    } else if let Some(etag) = ok_prop(r).and_then(|p| p.text_of("getetag")) {
+                    } else if let Some(etag) = ok_prop(r)
+                        .and_then(|p| p.text_of("getetag"))
+                        .filter(|e| usable_etag(e))
+                    {
                         out.changed.push(CardRef { path, etag });
                     }
                 }
@@ -380,20 +419,26 @@ impl CardDav {
             {
                 continue;
             }
-            if let Some(etag) = prop.text_of("getetag") {
+            if let Some(etag) = prop.text_of("getetag").filter(|e| usable_etag(e)) {
                 out.changed.push(CardRef { path, etag });
             }
         }
         Ok(out)
     }
 
-    /// Fetches the cards at `paths` in `book` (`addressbook-multiget`, [`MULTIGET_BATCH`] at a
-    /// time). A card the server does not return is left out.
+    /// Fetches the cards at `paths` in `book` (`addressbook-multiget`), at most [`MULTIGET_BATCH`]
+    /// in one call, so the caller stores each batch before asking for the next. A card the server
+    /// does not return is left out; one it was not asked for is ignored.
     pub async fn fetch(
         &self,
         book: &str,
         paths: &[String],
     ) -> Result<Vec<FetchedCard>, BackendError> {
+        if paths.len() > MULTIGET_BATCH {
+            return Err(BackendError::Permanent(
+                "too many cards in one request".into(),
+            ));
+        }
         let mut out = Vec::new();
         for batch in paths.chunks(MULTIGET_BATCH) {
             let mut body = String::from(
@@ -422,10 +467,17 @@ impl CardDav {
                 let Some(path) = self.href_path(r) else {
                     continue;
                 };
-                let Some(prop) = ok_prop(r) else { continue };
-                if let (Some(etag), Some(text)) =
-                    (prop.text_of("getetag"), prop.text_of("address-data"))
+                // Only the cards asked for, each once.
+                if !batch.iter().any(|p| path_eq(p, &path))
+                    || out.iter().any(|c: &FetchedCard| c.path == path)
                 {
+                    continue;
+                }
+                let Some(prop) = ok_prop(r) else { continue };
+                if let (Some(etag), Some(text)) = (
+                    prop.text_of("getetag").filter(|e| usable_etag(e)),
+                    prop.text_of("address-data").filter(|t| t.len() <= MAX_CARD),
+                ) {
                     out.push(FetchedCard { path, etag, text });
                 }
             }
@@ -448,7 +500,7 @@ impl CardDav {
             Some(e) => ("If-Match", e),
             None => ("If-None-Match", "*"),
         };
-        if condition.1.contains(['\r', '\n']) {
+        if etag.is_some_and(|e| !usable_etag(e)) {
             return Err(BackendError::Permanent("the etag cannot be used".into()));
         }
         let answer = self
@@ -466,7 +518,7 @@ impl CardDav {
 
     /// Deletes the card at `path` if it still has `etag`.
     pub async fn delete(&self, path: &str, etag: &str) -> Result<WriteOutcome, BackendError> {
-        if etag.contains(['\r', '\n']) {
+        if !usable_etag(etag) {
             return Err(BackendError::Permanent("the etag cannot be used".into()));
         }
         let answer = self
@@ -552,6 +604,27 @@ fn last_segment(path: &str) -> String {
 /// The same collection, with or without a trailing slash.
 fn path_eq(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+impl std::fmt::Debug for AddressBook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("AddressBook").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for CardRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("CardRef").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for Changes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Contact data stays out of logs and error output.
+        f.debug_struct("Changes").finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]

@@ -12,7 +12,10 @@ use quick_xml::Reader;
 /// The deepest nesting read.
 const MAX_DEPTH: usize = 32;
 /// The most events read from one answer.
-const MAX_EVENTS: usize = 2_000_000;
+const MAX_EVENTS: usize = 1_000_000;
+/// The most elements kept from one answer (T38a review: a flood of empty elements built a tree of
+/// hundreds of megabytes).
+const MAX_NODES: usize = 200_000;
 /// The most text kept for one element (an `address-data` card, with room for escaping).
 const MAX_TEXT: usize = 512 * 1024;
 /// The most `response` elements read from one answer.
@@ -54,6 +57,7 @@ pub(crate) fn parse(text: &str) -> Result<Node, Unreadable> {
     let mut stack: Vec<Node> = vec![Node::default()];
     let mut events = 0usize;
     let mut responses = 0usize;
+    let mut nodes = 0usize;
     loop {
         events += 1;
         if events > MAX_EVENTS {
@@ -61,7 +65,8 @@ pub(crate) fn parse(text: &str) -> Result<Node, Unreadable> {
         }
         match reader.read_event().map_err(|_| Unreadable)? {
             Event::Start(e) => {
-                if stack.len() > MAX_DEPTH {
+                nodes += 1;
+                if stack.len() > MAX_DEPTH || nodes > MAX_NODES {
                     return Err(Unreadable);
                 }
                 let name = local(e.local_name().as_ref());
@@ -77,6 +82,10 @@ pub(crate) fn parse(text: &str) -> Result<Node, Unreadable> {
                 });
             }
             Event::Empty(e) => {
+                nodes += 1;
+                if nodes > MAX_NODES {
+                    return Err(Unreadable);
+                }
                 let node = Node {
                     name: local(e.local_name().as_ref()),
                     ..Node::default()

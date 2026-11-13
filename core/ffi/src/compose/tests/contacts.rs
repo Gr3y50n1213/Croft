@@ -186,3 +186,47 @@ fn a_server_without_carddav_or_a_wrong_password_says_so() {
         .set_carddav_url_for_tests(m.account, "http://127.0.0.1:9");
     assert_eq!(sync(&m).result, ContactsSyncResult::Unreachable);
 }
+
+/// T38a review: an edit to a contact created here, made before the next listing, survives a sync
+/// that cannot reach the server, and goes out at the next one.
+#[test]
+fn a_failed_listing_never_deletes_an_edited_contact() {
+    let m = Mail::new();
+    let dav = block(DavServer::start_with("alice", crate::tests::PASSWORD));
+    m.core().set_carddav_url_for_tests(m.account, &dav.origin());
+    sync(&m);
+    let book = m.core().address_books(m.account).unwrap()[0].id;
+    let id = m
+        .core()
+        .save_contact(m.account, None, book, fields("Dee First", "dee@x.example"))
+        .unwrap();
+    sync(&m);
+    assert_eq!(dav.cards().len(), 1);
+    m.core()
+        .save_contact(
+            m.account,
+            Some(id),
+            book,
+            fields("Dee Second", "dee@x.example"),
+        )
+        .unwrap();
+    m.core()
+        .set_carddav_url_for_tests(m.account, "http://127.0.0.1:9");
+    assert_eq!(sync(&m).result, ContactsSyncResult::Unreachable);
+    let kept = m
+        .core()
+        .get_contact(m.account, id)
+        .unwrap()
+        .expect("still there");
+    assert!(kept.pending && kept.display_name == "Dee Second");
+    m.core().set_carddav_url_for_tests(m.account, &dav.origin());
+    assert_eq!(sync(&m).result, ContactsSyncResult::Done);
+    assert!(dav.cards()[0].1.contains("FN:Dee Second"));
+    assert!(
+        !m.core()
+            .get_contact(m.account, id)
+            .unwrap()
+            .unwrap()
+            .pending
+    );
+}

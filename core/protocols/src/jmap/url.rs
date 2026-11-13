@@ -121,6 +121,10 @@ impl Url {
             return Self::parse(reference);
         }
         let reference = reference.split('#').next().unwrap_or("");
+        // `//host/x` names another host; it is never read as a path (T38a review).
+        if reference.starts_with("//") {
+            return None;
+        }
         let path = if reference.starts_with('/') {
             reference.to_string()
         } else {

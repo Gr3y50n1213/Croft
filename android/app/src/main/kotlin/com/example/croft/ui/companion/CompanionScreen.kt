@@ -65,7 +65,6 @@ object CompanionTags {
     const val PUSH_ON = "companion-push-on"
 }
 
-@Composable
 /** S58's push row (T34d): what push does now, and Turn on when it is not on. */
 @Composable
 private fun PushSection(status: PushStatus, onTurnOn: () -> Unit) {
@@ -90,6 +89,7 @@ private fun PushSection(status: PushStatus, onTurnOn: () -> Unit) {
     }
 }
 
+@Composable
 private fun problemText(p: CompanionProblem): String = stringResource(
     when (p) {
         CompanionProblem.BAD_ADDRESS -> R.string.companion_problem_bad_address

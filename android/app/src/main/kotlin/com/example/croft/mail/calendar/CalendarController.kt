@@ -29,8 +29,8 @@ data class AgendaItem(val occurrence: Occurrence, val overlaps: Boolean)
 /** A day of the agenda: its date and its events (empty for today with nothing on). */
 data class AgendaDay(val date: LocalDate, val items: List<AgendaItem>)
 
-/** The two views of the calendar this task builds (Week is T39c). */
-enum class CalendarView { AGENDA, MONTH }
+/** The calendar's views: S34 Agenda, S35 Week (T39c), S36 Month. */
+enum class CalendarView { AGENDA, WEEK, MONTH }
 
 /** Grouping and overlap rules of S34 and S36, pure. */
 object AgendaModel {
@@ -94,12 +94,18 @@ data class CalendarState(
     /** The accounts that have calendars, and their calendars. */
     val accounts: List<CalendarAccount> = emptyList(),
     val calendars: Map<Long, List<CalendarRef>> = emptyMap(),
+    /** Every account a calendar link can be added to (all but the sample mailbox). */
+    val knownAccounts: List<CalendarAccount> = emptyList(),
     val loaded: Boolean = false,
     val refreshing: Boolean = false,
     val problems: Map<Long, CalendarSync> = emptyMap(),
     val syncedOnce: Boolean = false,
     /** Some events of a window were left out (a very large calendar). */
     val truncated: Boolean = false,
+    /** S35: the first day shown and how many days (3 on phones, 7 on wide screens). */
+    val weekStart: LocalDate = LocalDate.MIN,
+    val weekDays: Int = 3,
+    val weekOccurrences: List<Occurrence> = emptyList(),
 ) {
     override fun toString(): String = "CalendarState($view, ${agenda.size} agenda, ${monthOccurrences.size} month, loaded=$loaded)"
 }
@@ -125,6 +131,9 @@ class CalendarController(
     private var syncJob: Job? = null
     private var all: List<CalendarAccount> = emptyList()
 
+    /** Now (Unix ms), for S35's current-time line. */
+    fun nowMs(): Long = clock()
+
     /** Today in the device's zone. */
     fun today(): LocalDate = Instant.ofEpochMilli(clock()).atZone(zone()).toLocalDate()
 
@@ -132,7 +141,7 @@ class CalendarController(
     fun start() {
         val today = today()
         mutable.update {
-            if (it.agendaFrom == LocalDate.MIN) it.copy(agendaFrom = today, agendaTo = today.plusDays(AGENDA_DAYS - 1), month = YearMonth.from(today), selected = today) else it
+            if (it.agendaFrom == LocalDate.MIN) it.copy(agendaFrom = today, agendaTo = today.plusDays(AGENDA_DAYS - 1), month = YearMonth.from(today), selected = today, weekStart = today) else it
         }
         scope.launch {
             all = runCatching { accounts() }.getOrDefault(emptyList())
@@ -199,6 +208,67 @@ class CalendarController(
         if (moved) scope.launch { reload() }
     }
 
+    /** S35: how many days the week shows (3 or 7, from the screen's width). */
+    fun setWeekDays(days: Int) {
+        if (days == mutable.value.weekDays) return
+        mutable.update { it.copy(weekDays = days) }
+        scope.launch { reload() }
+    }
+
+    /** S35: the previous or next set of days ([direction] -1 or 1), or today ([direction] 0). */
+    fun moveWeek(direction: Int) {
+        mutable.update { s -> s.copy(weekStart = if (direction == 0) today() else s.weekStart.plusDays(direction.toLong() * s.weekDays)) }
+        scope.launch { reload() }
+    }
+
+    /**
+     * S35: moves occurrence [o] so it starts at [newStartMs], keeping its length: for [EventScopeChoice.All] the whole series moves by
+     * the same amount (the core takes the first occurrence's times for every occurrence). True when it was saved.
+     */
+    suspend fun move(o: Occurrence, newStartMs: Long, scope: EventScopeChoice): Boolean {
+        val delta = newStartMs - o.startMs
+        if (delta == 0L) return false
+        val zoneName = zone().id
+        val key = (scope as? EventScopeChoice.One)?.keyMs
+        val data = try { backend.get(o.account, o.eventId, key, zoneName) } catch (e: CancellationException) { throw e } catch (e: Exception) { null } ?: return false
+        if (data.readOnly) return false
+        val draft = EventDraft(
+            title = data.title, allDay = data.allDay, startMs = data.startMs + delta, endMs = data.endMs + delta, zone = data.zone,
+            location = data.location, notes = data.notes, repeat = data.repeat, reminders = data.reminders,
+        )
+        return try {
+            backend.save(o.account, o.eventId, data.calendar, draft, scope, zoneName)
+            reload()
+            syncInBackground(o.account)
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** S39 (T39c): adds a calendar from a link to [account]. Null when it was added, else why not. */
+    suspend fun subscribe(account: Long, url: String, name: String): LinkProblem? {
+        val out = try { backend.subscribe(account, url, name) } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
+        return out.fold(
+            onSuccess = { readCalendars(); reload(); onChanged(); null },
+            onFailure = { (it as? LinkFailed)?.problem ?: LinkProblem.UNREACHABLE },
+        )
+    }
+
+    /** S39 (T39c): removes a calendar that came from a link. */
+    fun unsubscribe(account: Long, id: Long) {
+        scope.launch {
+            val done = try { backend.unsubscribe(account, id) } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
+            if (done) {
+                readCalendars()
+                reload()
+                onChanged()
+            }
+        }
+    }
+
     /** S39: shows or hides a calendar's events. */
     fun setShown(account: Long, id: Long, shown: Boolean) {
         scope.launch {
@@ -221,7 +291,7 @@ class CalendarController(
             val c = try { backend.calendars(a.id) } catch (e: CancellationException) { throw e } catch (e: Exception) { emptyList() }
             if (c.isNotEmpty()) map[a.id] = c
         }
-        mutable.update { it.copy(calendars = map, accounts = all.filter { a -> a.id in map }) }
+        mutable.update { it.copy(calendars = map, accounts = all.filter { a -> a.id in map }, knownAccounts = all.filterNot { a -> a.isDemo }) }
     }
 
     private suspend fun reload() {
@@ -233,10 +303,14 @@ class CalendarController(
             val agenda = backend.between(dayMs(s.agendaFrom), dayMs(s.agendaTo.plusDays(1)), zoneName)
             val grid = AgendaModel.monthGrid(s.month, firstDayOfWeek())
             val month = backend.between(dayMs(grid.first()), dayMs(grid.last().plusDays(1)), zoneName)
+            val week = if (s.weekStart == LocalDate.MIN) null else backend.between(dayMs(s.weekStart), dayMs(s.weekStart.plusDays(s.weekDays.toLong())), zoneName)
             mutable.update {
                 // A newer request moved the windows meanwhile: its own reload sets them.
-                if (it.agendaFrom != s.agendaFrom || it.agendaTo != s.agendaTo || it.month != s.month) it.copy(loaded = true)
-                else it.copy(agenda = agenda.occurrences, monthOccurrences = month.occurrences, truncated = agenda.truncated || month.truncated, loaded = true)
+                if (it.agendaFrom != s.agendaFrom || it.agendaTo != s.agendaTo || it.month != s.month || it.weekStart != s.weekStart || it.weekDays != s.weekDays) it.copy(loaded = true)
+                else it.copy(
+                    agenda = agenda.occurrences, monthOccurrences = month.occurrences, weekOccurrences = week?.occurrences.orEmpty(),
+                    truncated = agenda.truncated || month.truncated || week?.truncated == true, loaded = true,
+                )
             }
         } catch (e: CancellationException) {
             throw e

@@ -402,3 +402,7 @@ One line per choice made without the owner: the decision, the reason, the date. 
 | 2026-11-13 | T39b: event reminders are an inexact WorkManager job that runs at the next reminder (6 hours at the latest) and posts what fell due since its last run | No exact-alarm permission (READINESS rows 5 and Permissions); a reminder may be a few minutes late while the phone sleeps |
 | 2026-11-13 | T39b: S34's agenda lists today and the days with events, not every empty day | 60 empty rows would hide the events; today is always there so the person sees where they are |
 | 2026-11-13 | T39b: S35 Week (the time grid with drag to move) and subscribing to a calendar link are a separate task, T39c | Each is a large piece of its own; the agenda and month views cover reading and editing first |
+
+| 2026-11-13 | T39c: a calendar link is fetched like one-click unsubscribe (public addresses only, no credential), with at most two redirects to public `https` addresses and a 5 MiB cap; a link of a calendar is stored as a read-only calendar of the account the person picks | A pasted link must never reach the device's or the Companion's private network; tying it to an account keeps every query scoped as before |
+| 2026-11-13 | T39c: a calendar link's file is split into one stored object per event `UID` | The existing query, expansion and reminders work on it unchanged |
+| 2026-11-13 | T39c: S35's blocks jump from step to step while dragged, at every motion level | The step is the information; no animation to reduce |

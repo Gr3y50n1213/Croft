@@ -99,6 +99,27 @@
     <string name="calendars_note">Unchecked calendars stay in sync but are hidden.</string>
     <string name="calendars_show">Show %1$s</string>
 
+    <!-- T39c: S35 Week and calendar links -->
+    <string name="calendar_view_week">Week</string>
+    <string name="week_previous">Previous days</string>
+    <string name="week_next">Next days</string>
+    <string name="week_move">Move</string>
+    <string name="calendars_subscribe">Subscribe to a calendar link</string>
+    <string name="calendars_subscribe_note">Croft adds the calendar read-only and fetches it again from time to time. Paste the link the calendar\'s owner shares (https or webcal).</string>
+    <string name="calendars_link_address">Link</string>
+    <string name="calendars_link_name">Name (optional)</string>
+    <string name="calendars_link_add">Add</string>
+    <string name="calendars_link_bad_address">This isn\'t a link Croft can use: it needs an https or webcal address.</string>
+    <string name="calendars_link_not_calendar">This link doesn\'t lead to a calendar file.</string>
+    <string name="calendars_link_unreachable">Couldn\'t reach this link. Try again later.</string>
+    <string name="calendars_link_refused">The server refused, or sent something Croft doesn\'t take (too large or too many redirects).</string>
+    <string name="calendars_link_already">This account already has this calendar.</string>
+    <string name="calendars_linked">From a link, read-only</string>
+    <string name="calendars_remove">Remove %1$s</string>
+    <string name="calendars_remove_title">Remove this calendar?</string>
+    <string name="calendars_remove_message">Its events go from this device. You can add the link again later.</string>
+    <string name="calendars_remove_confirm">Remove</string>
+
     <!-- Reminders -->
     <string name="notify_channel_reminders">Event reminders</string>
     <string name="notify_reminder_text">Starts at %1$s</string>

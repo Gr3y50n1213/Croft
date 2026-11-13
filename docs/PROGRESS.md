@@ -5,9 +5,47 @@ unverified, the next step.
 
 ---
 
+## T38b: The contacts screens (13 November 2026)
+
+**Status:** on `task/t38b`, its own pull request (CI runs the Android tests; this machine cannot fetch from Maven).
+
+**What was built.**
+- **S40 Contacts** from the bottom bar (Mail and Contacts switch; Calendar waits for T39):
+  - the search, and account chips when more than one account has an address book;
+  - the list A to Z, with a heading per letter (by family name, as the core sorts, accents ignored; `#` last);
+  - the A to Z index on the trailing edge: tap or drag, a letter bubble, and the Tick haptic at each new letter;
+  - Add, pull to refresh, and a sync of every account when it opens;
+  - the sync problems named per account, and three empty states.
+- **S41 Contact:**
+  - Mail (compose to the first address) and Call (the dialler through `ACTION_DIAL`: no permission), Edit, and Delete, which
+    asks first;
+  - addresses and numbers with their kinds, "Key attached", the postal address, birthday and notes;
+  - the last three conversations with the first address, from the device's index;
+  - notes for a conflict copy and for an unsent change.
+- **S42 Edit contact:**
+  - first and last name, emails and phones (add and remove), one postal address, organisation, notes, and "Save to" for a new
+    contact;
+  - Save is off until something changed and there is a name or an address, and Close with changes asks;
+  - fields survive rotation;
+  - what S42 does not show (kinds, other addresses, the birthday, unknown vCard lines) is kept.
+- **Compose:** suggestions are the account's contacts first, then the addresses mail was sent to.
+- **Gallery:** the A to Z index, idle and dragging.
+
+**Checks.** Unit tests:
+- `ContactRulesTest`: sections, order, the editor, nothing personal in `toString`;
+- `ContactsScreenTest` (S40);
+- `ContactScreensTest` (S41, S42);
+- `ContactSuggestionsTest`.
+
+The Android tests run in CI only.
+
+**Next.** T39, the calendar.
+
+---
+
 ## T38a: Contacts in the core (13 November 2026)
 
-**Status:** on `task/t38a`, its own pull request. The screens are T38b.
+**Status:** merged (#86).
 
 **What was built.**
 - **vCard (mail-core).** 3.0 and 4.0, read and written, with bounds on size, lines and values. Folding, escaping,

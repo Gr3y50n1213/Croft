@@ -24,6 +24,8 @@ object InboxTags {
     const val SELECT_ALL_IN_FOLDER = "inbox-select-all-in-folder"
     const val BANNER = "inbox-banner"
     const val BOTTOM_BAR = "inbox-bottom-bar"
+    const val NAV_MAIL = "nav-mail"
+    const val NAV_CONTACTS = "nav-contacts"
     const val DRAWER = "inbox-drawer"
     const val SWITCHER = "inbox-switcher"
     const val PULL_INDICATOR = "inbox-pull-indicator"

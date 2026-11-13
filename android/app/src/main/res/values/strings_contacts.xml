@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- S40 Contacts -->
+    <string name="contacts_title">Contacts</string>
+    <string name="contacts_search_hint">Search contacts</string>
+    <string name="contacts_search_clear">Clear search</string>
+    <string name="contacts_filter_all">All</string>
+    <string name="contacts_add">Add contact</string>
+    <string name="contacts_loading">Loading contacts</string>
+    <string name="contacts_syncing">Syncing contacts</string>
+    <string name="contacts_empty_title">No contacts yet</string>
+    <string name="contacts_empty_message">Add one here, or on your mail server: they show here after the next sync.</string>
+    <string name="contacts_no_match">No contacts match</string>
+    <string name="contacts_not_offered_title">Your accounts don\'t offer contacts</string>
+    <string name="contacts_not_offered_message">Croft keeps contacts in your mail account\'s address book on the server (CardDAV). None of your accounts has one.</string>
+    <string name="contacts_unreachable">Couldn\'t reach %1$s. Pull down to try again.</string>
+    <string name="contacts_sign_in">%1$s needs you to sign in again.</string>
+
+    <!-- S41 Contact -->
+    <string name="contact_back">Back</string>
+    <string name="contact_edit">Edit</string>
+    <string name="contact_more">More options</string>
+    <string name="contact_delete">Delete contact</string>
+    <string name="contact_delete_title">Delete this contact?</string>
+    <string name="contact_delete_message">It is deleted from the address book on your mail server too.</string>
+    <string name="contact_delete_confirm">Delete</string>
+    <string name="contact_delete_failed">Couldn\'t delete the contact</string>
+    <string name="contact_mail">Mail</string>
+    <string name="contact_call">Call</string>
+    <string name="contact_mail_to">Mail %1$s</string>
+    <string name="contact_call_number">Call %1$s</string>
+    <string name="contact_no_dialler">No app here can make calls</string>
+    <string name="contact_key">Key attached</string>
+    <string name="contact_recent">Recent conversations</string>
+    <string name="contact_recent_none">No conversations with this contact on this device</string>
+    <string name="contact_conflict">Changed on the server too: this copy was kept as a new contact.</string>
+    <string name="contact_pending">Not on the server yet: it is sent at the next sync.</string>
+    <string name="contact_gone">This contact is no longer here.</string>
+    <string name="contact_address">Address</string>
+    <string name="contact_birthday">Birthday</string>
+    <string name="contact_notes">Notes</string>
+    <string name="contact_kind_work">Work</string>
+    <string name="contact_kind_home">Home</string>
+    <string name="contact_kind_mobile">Mobile</string>
+    <string name="contact_kind_other">Other</string>
+
+    <!-- S42 Edit contact -->
+    <string name="edit_contact_title_new">New contact</string>
+    <string name="edit_contact_title">Edit contact</string>
+    <string name="edit_contact_close">Close</string>
+    <string name="edit_contact_save">Save</string>
+    <string name="edit_contact_save_unchanged">Change something first</string>
+    <string name="edit_contact_save_needs_name">Add a name or an email address</string>
+    <string name="edit_contact_save_failed">Couldn\'t save the contact</string>
+    <string name="edit_contact_first">First name</string>
+    <string name="edit_contact_last">Last name</string>
+    <string name="edit_contact_email">Email</string>
+    <string name="edit_contact_add_email">Add email</string>
+    <string name="edit_contact_remove_email">Remove this email</string>
+    <string name="edit_contact_phone">Phone</string>
+    <string name="edit_contact_add_phone">Add phone</string>
+    <string name="edit_contact_remove_phone">Remove this phone</string>
+    <string name="edit_contact_street">Street</string>
+    <string name="edit_contact_locality">Town or city</string>
+    <string name="edit_contact_region">Region</string>
+    <string name="edit_contact_postal_code">Postcode</string>
+    <string name="edit_contact_country">Country</string>
+    <string name="edit_contact_organization">Organisation</string>
+    <string name="edit_contact_notes">Notes</string>
+    <string name="edit_contact_save_to">Save to</string>
+    <string name="edit_contact_book">%1$s (%2$s)</string>
+    <string name="edit_contact_discard_title">Discard changes?</string>
+    <string name="edit_contact_discard_message">Your changes to this contact are not saved.</string>
+    <string name="edit_contact_discard">Discard</string>
+</resources>

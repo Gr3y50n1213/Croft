@@ -145,6 +145,7 @@ object MailRuntime {
             compose = CoreComposeBackend(open.core),
             reading = CoreReadingRepository(open.core),
             search = com.example.croft.mail.search.CoreSearchBackend(open.core),
+            contacts = com.example.croft.mail.contacts.CoreContactsBackend(open.core),
             onSnoozesChanged = { snoozePlanner.execute { planSnoozes() } },
         )
     }

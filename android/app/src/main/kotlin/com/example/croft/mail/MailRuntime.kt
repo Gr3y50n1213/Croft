@@ -132,6 +132,11 @@ object MailRuntime {
         }
         val mapping = FileFolderMapping(File(context.noBackupFilesDir, "croft-folders.txt"))
         val repository = CoreMessageRepository(open.core, mapping)
+        // T36: snoozes that fell due while the app was closed come back before the list first draws; the wake-up job is planned.
+        val app = context.applicationContext
+        val planSnoozes = { try { com.example.croft.notify.SnoozeSchedule.plan(app, open.core.nextSnoozeWake()) } catch (e: Exception) { /* the next change */ } }
+        try { open.core.wakeDueSnoozes() } catch (e: Exception) { /* the job tries again */ }
+        planSnoozes()
         return MailSession(
             repository = repository,
             anchors = FileAnchorStore(File(context.noBackupFilesDir, "croft-list-anchors-core.json")),
@@ -140,8 +145,12 @@ object MailRuntime {
             compose = CoreComposeBackend(open.core),
             reading = CoreReadingRepository(open.core),
             search = com.example.croft.mail.search.CoreSearchBackend(open.core),
+            onSnoozesChanged = { snoozePlanner.execute { planSnoozes() } },
         )
     }
+
+    /** T36: plans the snooze wake-up off the caller's thread (it reads the core). */
+    private val snoozePlanner = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     /**
      * Finishes a removal that a crash cut short ([AccountSweep]): saved secrets and the folder choices of ids the core does not list, and

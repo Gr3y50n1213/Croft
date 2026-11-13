@@ -14,6 +14,7 @@ Things only the owner can decide or do. Newest first within each section.
 - How notifications group, and how the lock screen looks ("N new messages" only), on real phones from several makers.
 - That sound and vibration follow the account's channel in system settings.
 - Archive, Delete and Mark read from a notification while Croft is closed (the core opens in the background), and Undo within the window.
+- Snooze (T36): how late the wake-up job runs under Doze (WorkManager, no exact alarm), and that "Back in your inbox" appears once.
 
 ## Placeholders to replace
 - Android application ID / package name: `com.example.croft` (Google Play refuses `com.example`, and the ID can never change after the first Play upload: pick it before then, usually a reversed domain you own such as `org.yourdomain.croft`) (defined once, in `android/gradle.properties` as `croft.applicationId` once the Android project exists).
@@ -98,3 +99,10 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   `push_allowed_networks` setting (never shared with `mail_allowed_networks`). Real push services (Mozilla, Google and Apple for browsers;
   ntfy and other UnifiedPush distributors) are not tested here.
 - **JMAP thread ids are not stable yet (T27):** the Companion names a thread by the lowest email id of the core's conversation view, which treats Trash and Junk differently; the core should expose its stored conversation key so `threadId` never changes (RFC 8621).
+
+## Smart inbox (phase 3)
+- **Snooze is on this phone only (T36).** Other devices keep showing a snoozed message. Snooze that follows the person across devices
+  needs the Companion (a `Croft/Snoozed` folder it moves mail to and back at the wake time, as `docs/ux/server-contract.md` describes);
+  a later task. The web app keeps Snooze hidden until then (the rule in `docs/ux/controls.md`).
+- **A woken message stays at its date's place (T36).** The list is ordered by the message's date, so a message back from snooze is
+  unread with a Snoozed chip and a notification, but not at the top. Putting it at the top needs a separate sort key in the list query.

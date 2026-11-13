@@ -23,7 +23,8 @@ A message can be put away until a chosen time and comes back to the Inbox, unrea
   - Snoozes due while the app was closed are applied before the list first draws.
 - **Android:**
   - S29, a sheet with the presets Later today (18:00, or in three hours after 15:00), Tomorrow (08:00), This weekend (Saturday 09:00)
-    and Next week (Monday 08:00), plus Pick date and time.
+    and Next week (Monday 08:00), plus Pick date and time. This weekend is left out on Saturday and Sunday (it would mean
+    next week's).
   - Snooze is offered on the swipe action, in the selection toolbar and in S21's overflow menu, with Undo (it unsnoozes).
   - The Snoozed folder in the drawer lists them with their wake time, with Unsnooze.
   - A woken message shows a Snoozed chip for 24 hours, and a notification says "Back in your inbox" (only where notifications

@@ -57,21 +57,34 @@ class ListRulesTest {
 
     @Test
     fun starFollowsTheSelectionInTheOverflowMenu() {
-        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM), toolbar(listOf(row(1), row(2, flagged = true))).overflow)
-        assertEquals(listOf(SelectionAction.UNSTAR, SelectionAction.SPAM), toolbar(listOf(row(1, flagged = true), row(2, flagged = true))).overflow)
+        // T36: Snooze follows Mark as spam (the overflow menu gained it with S29).
+        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM, SelectionAction.SNOOZE), toolbar(listOf(row(1), row(2, flagged = true))).overflow)
+        assertEquals(listOf(SelectionAction.UNSTAR, SelectionAction.SPAM, SelectionAction.SNOOZE), toolbar(listOf(row(1, flagged = true), row(2, flagged = true))).overflow)
     }
 
     @Test
     fun moveToIsTheLastItemOfTheOverflowMenu_whenEverythingSelectedIsInOneAccount() {
         val one = SelectionRules.toolbar(listOf(row(1), row(2)), FolderRole.INBOX, archiveAvailable = true, moveAvailable = true)
         assertEquals(SelectionAction.MOVE_TO, one.overflow.last())
-        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM, SelectionAction.MOVE_TO), one.overflow)
+        assertEquals(listOf(SelectionAction.STAR, SelectionAction.SPAM, SelectionAction.SNOOZE, SelectionAction.MOVE_TO), one.overflow)
         assertFalse("not offered when the selection spans accounts", SelectionAction.MOVE_TO in SelectionRules.toolbar(listOf(row(1)), FolderRole.INBOX, archiveAvailable = true, moveAvailable = false).overflow)
         assertFalse("not offered for nothing selected", SelectionAction.MOVE_TO in SelectionRules.toolbar(emptyList(), FolderRole.INBOX, archiveAvailable = true, moveAvailable = true).overflow)
         // Move to also works from Trash, Spam and Archive (it is how mail leaves them for a folder other than the Inbox).
         for (role in listOf(FolderRole.TRASH, FolderRole.SPAM, FolderRole.ARCHIVE, FolderRole.SENT)) {
             assertTrue(SelectionAction.MOVE_TO in SelectionRules.toolbar(listOf(row(1)), role, archiveAvailable = true, moveAvailable = true).overflow)
         }
+    }
+
+    @Test
+    fun snoozeIsInTheOverflowMenu_exceptWhereItMeansNothing_andTheSnoozedFolderUnsnoozes() {
+        for (role in listOf(FolderRole.INBOX, FolderRole.ARCHIVE, FolderRole.OTHER)) {
+            assertTrue("Snooze in $role", SelectionAction.SNOOZE in toolbar(listOf(row(1)), role).overflow)
+        }
+        for (role in listOf(FolderRole.SNOOZED, FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX, FolderRole.TRASH, FolderRole.SPAM)) {
+            assertFalse("no Snooze in $role", SelectionAction.SNOOZE in toolbar(listOf(row(1)), role).overflow)
+        }
+        assertFalse("not for nothing selected", SelectionAction.SNOOZE in toolbar(emptyList()).overflow)
+        assertTrue("Unsnooze is the Snoozed folder's Restore", SelectionAction.RESTORE in toolbar(listOf(row(1)), FolderRole.SNOOZED).primary)
     }
 
     @Test

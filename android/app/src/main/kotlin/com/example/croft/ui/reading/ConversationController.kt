@@ -32,6 +32,8 @@ import com.example.croft.mail.reading.ReadingRules
 import com.example.croft.mail.reading.RemoteImages
 import com.example.croft.ui.components.CroftSnackbarState
 import com.example.croft.ui.mail.InboxTexts
+import com.example.croft.ui.mail.SelectionRules
+import com.example.croft.ui.mail.SnoozePresets
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -64,7 +66,12 @@ data class ChipKey(val messageId: MessageId, val attachmentId: Long)
  * What S20 hands to the Inbox when it closes after an action that has an Undo: the text and the operations Undo cancels. [ops] null: no
  * Undo button (delete forever, which cannot be undone). Compared by identity: two equal results are two notices.
  */
-class ConversationNotice(val text: String, val ops: List<OpId>?)
+class ConversationNotice(
+    val text: String,
+    val ops: List<OpId>?,
+    /** T36: the messages that were snoozed; Undo unsnoozes them (a snooze is kept on the phone and queues nothing). */
+    val unsnooze: List<MessageId> = emptyList(),
+)
 
 /** The Move to question of S20: the messages in [account] that would move, and the folder they are in. */
 data class ConversationMove(val account: AccountId, val excluding: Set<Long>)
@@ -159,6 +166,10 @@ class ConversationController(
         private set
 
     var moveRequest by mutableStateOf<ConversationMove?>(null)
+        private set
+
+    /** T36: S29 is open for the conversation's messages in the opened folder. */
+    var snoozeOpen by mutableStateOf(false)
         private set
 
     var folderRequest by mutableStateOf<ConversationFolderRequest?>(null)
@@ -397,6 +408,36 @@ class ConversationController(
                 session.rowActions.setFlagged(ReadingRules.rowOf(target, conversation?.localOnly ?: false), now)
                 val c = conversation ?: return@launch
                 conversation = c.copy(messages = c.messages.map { if (it.id == target.id) it.copy(flagged = now) else it })
+            } catch (e: MailException) {
+                snackbar.show(errorText(e.error))
+            }
+        }
+    }
+
+    // ---- Snooze (T36, S29) ----
+
+    /** Snooze is offered where the selection toolbar offers it (not in Sent, Drafts, Outbox, Trash, Spam or Snoozed). */
+    val snoozeOffered: Boolean get() = SelectionRules.snoozeOffered(openedRole)
+
+    fun openSnooze() { if (conversation != null) snoozeOpen = true }
+
+    /** The clock and time zone S29 counts its presets from (the session's, so tests can set them). */
+    fun nowMs(): Long = session.clock()
+    val zone: java.time.ZoneId get() = session.zone
+
+    fun dismissSnooze() { snoozeOpen = false }
+
+    /** Snoozes the conversation's messages in the opened folder until [untilMs]; the screen closes and the Inbox offers Undo. */
+    fun pickSnooze(untilMs: Long) {
+        snoozeOpen = false
+        val ids = targetRows().map { it.id }
+        if (ids.isEmpty()) return
+        scope.launch {
+            try {
+                session.repository.snooze(ids, untilMs)
+                session.onSnoozesChanged()
+                val label = SnoozePresets.label(untilMs, session.clock(), session.zone, java.util.Locale.getDefault())
+                onClose(ConversationNotice(texts.snoozedUntil(label), null, unsnooze = ids))
             } catch (e: MailException) {
                 snackbar.show(errorText(e.error))
             }

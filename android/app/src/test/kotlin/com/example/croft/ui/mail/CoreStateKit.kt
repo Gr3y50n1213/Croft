@@ -90,6 +90,17 @@ class ScriptedCore(
 
     override fun setMessageCategory(messageId: Long, category: uniffi.croft_ffi.InboxCategory, always: Boolean) {}
 
+    // T36: no snooze in the scripted core; the screens' snooze is tested over the fake repository.
+    override fun snooze(ids: List<Long>, untilMs: Long) {}
+
+    override fun unsnooze(ids: List<Long>) {}
+
+    override fun listSnoozed(account: Long?): List<uniffi.croft_ffi.SnoozedMessage> = emptyList()
+
+    override fun wakeDueSnoozes(): List<Long> = emptyList()
+
+    override fun nextSnoozeWake(): Long? = null
+
     override suspend fun nextChange(after: ULong): ChangeBatch {
         val now = seq.first { it.toULong() > after }
         return synchronized(this) {

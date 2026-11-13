@@ -5,9 +5,46 @@ unverified, the next step.
 
 ---
 
+## T36: Snooze (13 November 2026)
+
+**Status:** on `task/t36`, its own pull request. Pin and follow-up moved to T36b (`docs/tasks/PHASE-3.md`).
+
+**What was built.**
+- **The core (FFI v16, migration 0009).**
+  - `snooze` (a wake time in the future, at most a year ahead) and `unsnooze`.
+  - `list_snoozed`, soonest first: the Snoozed folder.
+  - `wake_due_snoozes`: due messages come back unread through the queue and are marked "back from snooze" for 24 hours.
+  - `next_snooze_wake`, for the app's wake-up.
+- **Android:**
+  - S29 with Later today, Tomorrow, This weekend, Next week, and Pick date and time.
+  - Snooze in the swipe actions (a new "Inbox zero" preset: Archive and Snooze), the selection toolbar and S21's overflow menu,
+    each with Undo.
+  - The Snoozed folder in the drawer with each wake time, and Unsnooze.
+  - A Snoozed chip on a woken message.
+  - The wake-up: one WorkManager job for the soonest time, planned at every change and at app start; due snoozes are woken before
+    the list first draws; "Back in your inbox" says how many came back (only where notifications are on).
+
+**Checks.**
+- Core: fmt, both clippy runs and the whole test suite, including:
+  - storage: hide, wake once, unread through the queue, bounds and account scoping;
+  - the FFI calls;
+  - `check_schema.py`.
+- Android: unit tests for S29's presets by time of day, weekday and time zone, the wake job's delay, snooze with Undo from the
+  toolbar and from S21, the Snoozed folder with Unsnooze, and the chip (CI).
+- Older Android tests pinned Snooze as "not offered yet" (S21's menu, the toolbar's overflow, the swipe picker); they were
+  rewritten on purpose for the new behaviour.
+
+**Unverified:** how late the job runs under Doze on real phones (OPEN-ITEMS).
+
+**Review:** none (DECISIONS).
+
+**Next:** T36b, pin and follow-up.
+
+---
+
 ## T35: Inbox categories (13 November 2026)
 
-**Status:** on `task/t35`, its own pull request. The first task of phase 3 (the plan is `docs/tasks/PHASE-3.md`).
+**Status:** merged. The first task of phase 3 (the plan is `docs/tasks/PHASE-3.md`).
 
 **What was built.**
 - **Headers.** IMAP and JMAP fetch `List-Id`, `List-Unsubscribe`, `List-Unsubscribe-Post`, `Precedence` and `Auto-Submitted`.

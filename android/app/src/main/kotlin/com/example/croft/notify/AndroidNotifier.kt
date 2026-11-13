@@ -85,6 +85,27 @@ class AndroidNotifier(context: Context) : Notifier {
 
     override fun clearSignIn(account: Long) = manager.cancel(signInTag(account), 0)
 
+    /** T36: "Back in your inbox": how many snoozed messages came back. Nothing of the messages themselves. */
+    fun postBackFromSnooze(count: Int): Boolean {
+        if (!canPost() || count <= 0) return false
+        ensureStatusChannel()
+        val text = context.resources.getQuantityString(R.plurals.notify_snooze_back, count, count)
+        val n = NotificationCompat.Builder(context, STATUS_CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_croft)
+            .setContentTitle(context.getString(R.string.mail_unsnoozed))
+            .setContentText(text)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(openIntent(Uri.parse("croft://inbox")))
+            .setAutoCancel(true)
+            .build()
+        return try {
+            manager.notify(SNOOZE_TAG, 0, n)
+            true
+        } catch (e: SecurityException) {
+            false
+        }
+    }
+
     /** Removes one message's notification and updates (or removes) the account's summary. */
     fun cancelMessage(account: Long, messageId: Long) {
         manager.cancel(mailTag(account), notificationId(messageId))
@@ -210,6 +231,7 @@ class AndroidNotifier(context: Context) : Notifier {
     companion object {
         const val MAIL_CHANNEL_PREFIX = "croft-mail-"
         const val STATUS_CHANNEL = "croft-status"
+        const val SNOOZE_TAG = "croft-snooze-back"
 
         /** The most notifications of one account shown one by one per check; the summary counts the rest. */
         const val MAX_SHOWN = 8

@@ -39,6 +39,9 @@ enum class SelectionAction {
 
     /** Move to a folder chosen in the Move to sheet (S30; the swipe action Move to has this route too). In the overflow menu. */
     MOVE_TO,
+
+    /** T36: snooze until a time chosen in S29 (the swipe action Snooze has this route too). In the overflow menu. */
+    SNOOZE,
 }
 
 /** The bar's buttons in order, and what goes in the overflow menu. */
@@ -61,7 +64,8 @@ object SelectionRules {
     fun toolbar(selected: List<MessageRowData>, role: FolderRole, archiveAvailable: Boolean, spamAvailable: Boolean = true, moveAvailable: Boolean = false): SelectionToolbar {
         val primary = ArrayList<SelectionAction>()
         when (role) {
-            FolderRole.ARCHIVE, FolderRole.SPAM, FolderRole.TRASH -> primary += SelectionAction.RESTORE
+            // T36: in Snoozed, Restore is Unsnooze.
+            FolderRole.ARCHIVE, FolderRole.SPAM, FolderRole.TRASH, FolderRole.SNOOZED -> primary += SelectionAction.RESTORE
             FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX -> Unit
             else -> if (archiveAvailable) primary += SelectionAction.ARCHIVE
         }
@@ -71,9 +75,16 @@ object SelectionRules {
         overflow += if (selected.all { it.flagged } && selected.isNotEmpty()) SelectionAction.UNSTAR else SelectionAction.STAR
         // Mark as spam is the swipe action that the bar did not have: it goes in the overflow menu, where the swipe's rules put it.
         if (spamAvailable && SwipeRules.available(com.example.croft.swipe.SwipeAction.SPAM, role, hasArchive = true, hasSpam = true)) overflow += SelectionAction.SPAM
+        // T36: Snooze, where mail can be put away (not from Snoozed itself, Sent, Drafts, the Outbox, Trash or Spam).
+        if (selected.isNotEmpty() && snoozeOffered(role)) overflow += SelectionAction.SNOOZE
         if (moveAvailable && selected.isNotEmpty()) overflow += SelectionAction.MOVE_TO
         return SelectionToolbar(primary, overflow)
     }
+
+    /** T36: Snooze means nothing for mail that is sent, a draft, in the Outbox, deleted, spam or already snoozed. */
+    fun snoozeOffered(role: FolderRole?): Boolean = role !in SNOOZE_NOT_IN
+
+    private val SNOOZE_NOT_IN = setOf(FolderRole.SNOOZED, FolderRole.SENT, FolderRole.DRAFTS, FolderRole.OUTBOX, FolderRole.TRASH, FolderRole.SPAM)
 
     /** More than this many messages in a bulk Archive or Delete ask first (docs/ux/message-list.md). */
     const val CONFIRM_ABOVE = 50

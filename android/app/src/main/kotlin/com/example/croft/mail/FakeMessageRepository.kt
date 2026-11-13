@@ -131,6 +131,35 @@ class FakeMessageRepository(
         }
     }
 
+    // ---- T36: snooze, kept in memory ----
+
+    private val snoozedUntil = HashMap<MessageId, Long>()
+
+    override suspend fun snooze(ids: List<MessageId>, untilMs: Long) = synchronized(lock) {
+        if (untilMs <= clock()) throw MailException(MailError.FAILED)
+        val touched = all.filter { it.id in ids.toSet() }
+        if (touched.isEmpty()) throw MailException(MailError.NOT_FOUND)
+        touched.forEach { snoozedUntil[it.id] = untilMs }
+        all.replaceAll { if (it.id in ids.toSet()) it.copy(backFromSnooze = false) else it }
+        changed(touched.map { FolderRef(it.account, it.folder) }.toSet(), emptySet())
+    }
+
+    override suspend fun unsnooze(ids: List<MessageId>) = synchronized(lock) {
+        val touched = all.filter { it.id in ids.toSet() }
+        ids.forEach { snoozedUntil.remove(it) }
+        changed(touched.map { FolderRef(it.account, it.folder) }.toSet(), emptySet())
+    }
+
+    override suspend fun wakeDueSnoozes(): List<MessageId> = synchronized(lock) {
+        val now = clock()
+        val due = snoozedUntil.filterValues { it <= now }.keys.toList()
+        due.forEach { snoozedUntil.remove(it) }
+        if (due.isNotEmpty()) update(due) { it.copy(seen = false, backFromSnooze = true) }
+        due
+    }
+
+    override suspend fun nextSnoozeWake(): Long? = synchronized(lock) { snoozedUntil.values.minOrNull() }
+
     // ---- T35: categories, kept in memory (a guess from the sender until the person moves a message) ----
 
     private val categoryOf = HashMap<MessageId, MailCategory>()
@@ -154,7 +183,7 @@ class FakeMessageRepository(
 
     override suspend fun categoryCounts(account: AccountId?): Map<MailCategory, Long> = synchronized(lock) {
         val inboxes = folderList.filter { it.role == FolderRole.INBOX && (account == null || it.account == account) }.map { it.id }.toSet()
-        val unread = all.filter { it.folder in inboxes && !it.seen }
+        val unread = all.filter { it.folder in inboxes && !it.seen && it.id !in snoozedUntil }
         MailCategory.entries.associateWith { c -> unread.count { category(it) == c }.toLong() }
     }
 
@@ -250,15 +279,17 @@ class FakeMessageRepository(
     private fun scopeRows(scope: MessageScope): List<MessageRowData> = when (scope) {
         MessageScope.UnifiedInbox -> {
             val inboxes = folderList.filter { it.role == FolderRole.INBOX }.map { it.id }.toSet()
-            all.filter { it.folder in inboxes }
+            all.filter { it.folder in inboxes && it.id !in snoozedUntil }
         }
         is MessageScope.Folder -> {
             val role = folderList.firstOrNull { it.id == scope.folderId }?.role
             when (role) {
                 // Virtual folders: starred mail of the account (not in Trash or Spam), and nothing snoozed.
                 FolderRole.STARRED -> all.filter { it.account == scope.account && it.flagged && !inFolderOf(it, FolderRole.TRASH) && !inFolderOf(it, FolderRole.SPAM) }
-                FolderRole.SNOOZED -> emptyList()
-                else -> all.filter { it.folder == scope.folderId }
+                FolderRole.SNOOZED -> all.filter { it.account == scope.account && it.id in snoozedUntil }
+                    .map { it.copy(snoozedUntilMs = snoozedUntil[it.id]) }
+                    .sortedWith(compareBy<MessageRowData> { it.snoozedUntilMs }.thenBy { it.id })
+                else -> all.filter { it.folder == scope.folderId && it.id !in snoozedUntil }
             }
         }
     }

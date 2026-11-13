@@ -528,13 +528,23 @@ fun EmptyState(kind: EmptyKind, lastSynced: String?, onCompose: () -> Unit, onSe
  * the top refreshes.
  */
 @Composable
-fun MailBottomBar(enabled: Boolean, onMail: () -> Unit, modifier: Modifier = Modifier) {
+fun MailBottomBar(
+    enabled: Boolean,
+    onMail: () -> Unit,
+    modifier: Modifier = Modifier,
+    selected: MailDestination = MailDestination.MAIL,
+    /** Opens Contacts (S40), or scrolls it to the top when it is the one shown. Null where the session has no contacts: the item is disabled. */
+    onContacts: (() -> Unit)? = null,
+) {
     NavigationBar(modifier.testTag(InboxTags.BOTTOM_BAR)) {
-        NavigationBarItem(selected = true, onClick = onMail, enabled = enabled, icon = { Icon(Icons.Filled.Email, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_mail)) })
+        NavigationBarItem(selected = selected == MailDestination.MAIL, onClick = onMail, enabled = enabled, icon = { Icon(Icons.Filled.Email, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_mail)) }, modifier = Modifier.testTag(InboxTags.NAV_MAIL))
         NavigationBarItem(selected = false, onClick = {}, enabled = false, icon = { Icon(Icons.Filled.DateRange, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_calendar)) })
-        NavigationBarItem(selected = false, onClick = {}, enabled = false, icon = { Icon(Icons.Filled.Person, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_contacts)) })
+        NavigationBarItem(selected = selected == MailDestination.CONTACTS, onClick = { onContacts?.invoke() }, enabled = enabled && onContacts != null, icon = { Icon(Icons.Filled.Person, contentDescription = null) }, label = { Text(stringResource(R.string.mail_nav_contacts)) }, modifier = Modifier.testTag(InboxTags.NAV_CONTACTS))
     }
 }
+
+/** The top-level destination a [MailBottomBar] shows as selected. */
+enum class MailDestination { MAIL, CONTACTS }
 
 /**
  * The fast scroller: a thumb on the trailing edge that shows while the list scrolls and can be dragged; while it is dragged a

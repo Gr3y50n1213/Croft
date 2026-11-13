@@ -55,6 +55,8 @@ class MailSession(
     val search: com.example.croft.mail.search.SearchBackend? = null,
     /** T36: called after a snooze or an unsnooze, so the app plans its wake-up job again. Nothing in tests. */
     val onSnoozesChanged: () -> Unit = {},
+    /** S40 to S42 (T38b): the core's contacts. Null where there is no core (tests of other screens): Contacts stays disabled in the bottom bar. */
+    val contacts: com.example.croft.mail.contacts.ContactsBackend? = null,
 ) {
     private val cache = HashMap<String, CachedList>()
 

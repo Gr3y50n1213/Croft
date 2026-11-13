@@ -234,12 +234,17 @@ impl Provider {
         url.starts_with("https://") || (self.allow_loopback_http && fetch::is_loopback_http(url))
     }
 
-    /// Whether the app's redirect is acceptable: an address on the Companion's own origin, under
+    /// Whether the app's redirect is acceptable: the Croft app's own redirect on a phone, or an
+    /// address on the Companion's own origin, under
     /// its `public_url` path, written in normal form. The URL is parsed as a browser does (WHATWG)
     /// and must read back exactly as given, so dot segments (`/../`, `%2e%2e`), backslashes,
     /// user names, a fragment or another port, which a browser would resolve elsewhere, are
     /// refused (review finding: `/croft/%2e%2e/page` left the Companion's path with the code).
     pub fn app_redirect_ok(&self, url: &str) -> bool {
+        // The Croft app on a phone (T34a): exactly its own redirect.
+        if crate::app_signin::is_app_redirect(url) {
+            return true;
+        }
         if url.len() > 512 || !url.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
             return false;
         }
@@ -384,19 +389,22 @@ impl Provider {
         if self.settings.create_users {
             scope.push_str(" groups");
         }
-        let url = with_query(
-            &d.authorization_endpoint,
-            &[
-                ("response_type", "code"),
-                ("client_id", &self.settings.client_id),
-                ("redirect_uri", &self.redirect_uri),
-                ("scope", &scope),
-                ("state", &state),
-                ("nonce", &nonce),
-                ("code_challenge", &challenge),
-                ("code_challenge_method", "S256"),
-            ],
-        );
+        let mut params = vec![
+            ("response_type", "code"),
+            ("client_id", self.settings.client_id.as_str()),
+            ("redirect_uri", self.redirect_uri.as_str()),
+            ("scope", scope.as_str()),
+            ("state", state.as_str()),
+            ("nonce", nonce.as_str()),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+        ];
+        // For a phone (T34a review): the provider always asks the person, so a flow some other app
+        // started never completes silently on a session the browser already has.
+        if crate::app_signin::is_app_redirect(app_redirect) {
+            params.push(("prompt", "login"));
+        }
+        let url = with_query(&d.authorization_endpoint, &params);
         let flow = Flow {
             nonce,
             verifier,
@@ -550,6 +558,11 @@ impl TakenFlow {
     /// What the flow is for.
     pub fn purpose(&self) -> &Purpose {
         &self.0.purpose
+    }
+
+    /// The app's PKCE challenge.
+    pub fn app_challenge(&self) -> &str {
+        &self.0.app_challenge
     }
 }
 

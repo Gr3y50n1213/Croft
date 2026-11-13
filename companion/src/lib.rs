@@ -7,6 +7,7 @@
 //! sign-in: passkeys, TOTP with recovery codes, tokens, rate limits and the admin's user management.
 
 pub mod api;
+pub mod app_signin;
 pub mod auth;
 pub mod ceremony;
 pub mod cli;

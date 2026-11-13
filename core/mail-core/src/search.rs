@@ -137,10 +137,13 @@ impl SearchQuery {
     }
 }
 
-/// An FTS5 string for one term: the text in double quotes with `"` doubled; a word also matches
-/// longer words that start with it.
+/// An FTS5 string for one term: the text in double quotes with `"` doubled; a word of two or more
+/// characters also matches longer words that start with it (a single character matches only
+/// itself: as a prefix it would match nearly everything, at the cost of reading every row, T33
+/// review).
 fn fts_term(t: &TextTerm) -> String {
     match t {
+        TextTerm::Word(w) if w.chars().count() < 2 => format!("\"{}\"", w.replace('"', "\"\"")),
         TextTerm::Word(w) => format!("\"{}\"*", w.replace('"', "\"\"")),
         TextTerm::Phrase(p) => format!("\"{}\"", p.replace('"', "\"\"")),
     }
@@ -310,6 +313,11 @@ mod tests {
             vec![w("lunch"), TextTerm::Phrase("next friday".into())]
         );
         assert_eq!(q.fts().unwrap(), "\"lunch\"* \"next friday\"");
+        // One character is a whole word, not a prefix of every word.
+        assert_eq!(
+            parse("a b lunch").unwrap().fts().unwrap(),
+            "\"a\" \"b\" \"lunch\"*"
+        );
     }
 
     #[test]

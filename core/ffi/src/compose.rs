@@ -1892,10 +1892,11 @@ impl Core {
         self.send_draft(account_id, draft_id, Some(send_at_ms))
     }
 
-    /// Undo send, inside the window: nothing is sent, the message leaves the Outbox and the draft
-    /// is editable again. Returns the draft's id: reopen compose with
-    /// [`Core::load_draft`] (the cursor position is the app's to restore).
-    /// [`ComposeError::TooLate`] once the window has closed or the message started going out.
+    /// Undo send: nothing is sent, the message leaves the Outbox and the draft is editable again.
+    /// Returns the draft's id: reopen compose with [`Core::load_draft`] (the cursor position is the
+    /// app's to restore). Works while the message has never been handed to the server: inside
+    /// the Undo window, until a scheduled message's time, and after it when it could not go yet
+    /// (offline). [`ComposeError::TooLate`] once it started going out.
     pub fn undo_send(&self, account_id: i64, outbox_id: u64) -> Result<i64, ComposeError> {
         self.take_back(account_id, outbox_id, false, |handle, account, id| {
             handle.undo_send(account, id).map(|_| ())

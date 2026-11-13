@@ -28,8 +28,9 @@ pub const MAX_QUERY_CHARS: usize = 512;
 /// The most hits one call answers (and the default).
 pub const MAX_HITS: u32 = 100;
 const DEFAULT_HITS: u32 = 50;
-/// How long the mail server is given.
-const SERVER_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the mail server is given: less than the request's own limit
+/// (`crate::http::REQUEST_TIMEOUT`), so the stored mail's hits still come back, with `failed`.
+const SERVER_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn bad(what: &str) -> Value {
     json!({ "type": "invalidArguments", "description": what })
@@ -41,6 +42,9 @@ fn ranges(r: &[TextRange]) -> Value {
 
 fn hit_json(h: &SearchHit) -> Value {
     json!({
+        // The subject the ranges count in (the core removes the mark characters a subject may
+        // carry; `Email/get` gives it as received).
+        "subject": h.row.subject,
         "subjectRanges": ranges(&h.subject_ranges),
         "snippet": h.snippet,
         "snippetRanges": ranges(&h.snippet_ranges),
@@ -79,15 +83,25 @@ impl Ctx {
             None | Some(Value::Null) => false,
             Some(v) => v.as_bool().ok_or_else(|| bad("server"))?,
         };
-        if server && !(self.server_search_allowed)() {
+        // One search per request: each holds the user's engine while it runs (up to the core's
+        // time budget), and a request may carry many calls.
+        if self.searched.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(error("rateLimit"));
         }
 
+        // The stored mail first: it parses the query, so a malformed one never uses the server
+        // budget.
         let q = query.clone();
         let local = self
             .blocking(move |c| c.search_local(Some(account), q, limit))
             .await?
             .map_err(|e| search_error(&e))?;
+        // It ran (a malformed query, refused before reading anything, does not count).
+        self.searched
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if server && !(self.server_search_allowed)() {
+            return Err(error("rateLimit"));
+        }
         let mut hits: Vec<SearchHit> = local.hits;
         let mut out = Map::new();
         out.insert("accountId".into(), json!(format!("a{account}")));

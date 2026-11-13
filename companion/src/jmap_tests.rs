@@ -1413,7 +1413,8 @@ async fn search_finds_stored_mail_with_its_matches_and_only_the_callers() {
             json!([
                 ["CroftSearch/query", {"accountId": account, "query": "subject:\"Message 2\""}, "q"],
                 ["Email/get", {"accountId": account, "#ids": {"resultOf": "q", "name": "CroftSearch/query", "path": "/ids"}, "properties": ["subject"]}, "g"],
-                ["CroftSearch/query", {"accountId": account, "query": "nothing-like-this-anywhere"}, "n"],
+                // One search per request.
+                ["CroftSearch/query", {"accountId": account, "query": "Message"}, "again"],
             ]),
         )
         .await;
@@ -1424,8 +1425,16 @@ async fn search_finds_stored_mail_with_its_matches_and_only_the_callers() {
     assert_eq!(r[1][1]["list"][0]["subject"], "Message 2");
     // The match in the subject, in UTF-16 code units (a quoted phrase is one match).
     assert_eq!(r[0][1]["hits"][id]["subjectRanges"], json!([[0, 9]]));
+    assert_eq!(r[0][1]["hits"][id]["subject"], "Message 2");
     assert_eq!(r[0][1]["serverSearched"], false);
-    assert_eq!(r[2][1]["ids"], json!([]));
+    assert_eq!(r[2][1]["type"], "rateLimit");
+    let r = h
+        .search(
+            &t,
+            json!([["CroftSearch/query", {"accountId": account, "query": "nothing-like-this-anywhere"}, "n"]]),
+        )
+        .await;
+    assert_eq!(r[0][1]["ids"], json!([]));
     // Another user cannot search the account.
     let r = h
         .search(
@@ -1475,6 +1484,16 @@ async fn search_arguments_are_bounded_and_server_searches_limited() {
         ]
     );
     assert_eq!(r[6][1]["ids"].as_array().unwrap().len(), 1);
+    // A malformed query never uses the server budget.
+    for _ in 0..crate::api::SERVER_SEARCHES_PER_MINUTE + 1 {
+        let r = h
+            .search(
+                &t,
+                json!([["CroftSearch/query", {"accountId": account, "query": "before:someday", "server": true}, "x"]]),
+            )
+            .await;
+        assert_eq!(r[0][1]["description"], "query");
+    }
     // The mail server is asked too, and its searches are limited per user.
     let call = json!(["CroftSearch/query", {"accountId": account, "query": "Message", "server": true}, "s"]);
     let mut answers = Vec::new();
@@ -1493,5 +1512,60 @@ async fn search_arguments_are_bounded_and_server_searches_limited() {
         )
         .await;
     assert!(r[0][1]["ids"].is_array());
+    stop(server).await;
+}
+
+#[tokio::test]
+async fn scheduled_messages_are_capped_per_account_and_a_time_too_far_uses_no_budget() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let server = start_server(1).await;
+    let account = h.sending_account(&t, &server).await;
+    h.inbox(&t, &account, 1).await;
+    let crowd: Vec<Value> = (0..400)
+        .map(|i| json!({"email": format!("r{i}@example.org")}))
+        .collect();
+    let creates: serde_json::Map<String, Value> = (0..4)
+        .map(|i| {
+            (
+                format!("k{i}"),
+                json!({"bcc": crowd, "subject": format!("s{i}")}),
+            )
+        })
+        .collect();
+    let r = h
+        .compose(
+            &t,
+            json!([["CroftDraft/set", {"accountId": account, "create": creates}, "s"]]),
+        )
+        .await;
+    let mut ids: Vec<String> = r[0][1]["created"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|v| v["id"].as_str().unwrap().to_owned())
+        .collect();
+    ids.sort();
+    let later = crate::api::jmap_api::iso(crate::store::now_ms() + 24 * 3600 * 1000);
+    let too_far = crate::api::jmap_api::iso(crate::store::now_ms() + 400 * 24 * 3600 * 1000);
+    // A time too far ahead, many times: refused each time, and no budget used by it.
+    for _ in 0..40 {
+        let r = h
+            .compose(
+                &t,
+                json!([["CroftOutbox/send", {"accountId": account, "draftId": ids[0], "sendAt": too_far}, "x"]]),
+            )
+            .await;
+        assert_eq!(r[0][1]["description"], "sendAt");
+    }
+    // 400 + 400 recipients scheduled; a third 400 would pass 1000 scheduled recipients.
+    let calls: Vec<Value> = ids[..3]
+        .iter()
+        .map(|id| json!(["CroftOutbox/send", {"accountId": account, "draftId": id, "sendAt": later}, "s"]))
+        .collect();
+    let r = h.compose(&t, Value::Array(calls)).await;
+    assert!(r[0][1]["outboxId"].is_string(), "{r:?}");
+    assert!(r[1][1]["outboxId"].is_string(), "{r:?}");
+    assert_eq!(r[2][1]["type"], "overQuota");
     stop(server).await;
 }

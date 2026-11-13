@@ -382,9 +382,9 @@ impl EngineHandle {
         Ok(id)
     }
 
-    /// Undo send: takes the message back if it is still waiting and its window is open, so
-    /// nothing is ever sent, and returns it (with its bytes) to reopen the composer.
-    /// [`OutboxActionError::TooLate`] once the window has closed.
+    /// Undo send: takes the message back if it is still waiting and was never handed to the
+    /// server, so nothing is ever sent, and returns it (with its bytes) to reopen the composer.
+    /// [`OutboxActionError::TooLate`] once it started going out.
     pub fn undo_send(
         &self,
         account: AccountId,

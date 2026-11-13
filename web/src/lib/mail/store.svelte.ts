@@ -127,7 +127,7 @@ export class MailState {
 
   async openMailbox(id: string): Promise<void> {
     if (!this.account) return;
-    this.#searches++;
+    const searches = ++this.#searches;
     this.search = null;
     // An email still opening belongs to the folder being left: it must not open in this one.
     this.#opens++;
@@ -138,7 +138,8 @@ export class MailState {
     this.loading = true;
     try {
       const page = await this.#jmap.page(this.account, id, 0, PAGE);
-      if (this.mailbox !== id) return;
+      // A search started meanwhile owns the list now (T33 review).
+      if (this.mailbox !== id || searches !== this.#searches) return;
       this.emails = page.emails;
       this.total = page.total;
     } finally {
@@ -150,10 +151,11 @@ export class MailState {
   async more(): Promise<void> {
     if (!this.account || !this.mailbox || this.loading || this.search || this.emails.length >= this.total) return;
     const id = this.mailbox;
+    const searches = this.#searches;
     this.loading = true;
     try {
       const page = await this.#jmap.page(this.account, id, this.emails.length, PAGE);
-      if (this.mailbox !== id) return;
+      if (this.mailbox !== id || searches !== this.#searches) return;
       const have = new Set(this.emails.map((e) => e.id));
       this.emails = [...this.emails, ...page.emails.filter((e) => !have.has(e.id))];
       this.total = page.total;
@@ -167,11 +169,12 @@ export class MailState {
     // Search results stay as they are until the person searches again.
     if (!this.account || !this.mailbox || this.loading || this.search) return;
     const id = this.mailbox;
+    const searches = this.#searches;
     const [boxes, page] = await Promise.all([
       this.#jmap.mailboxes(this.account),
       this.#jmap.page(this.account, id, 0, Math.max(PAGE, this.emails.length))
     ]);
-    if (this.mailbox !== id) return;
+    if (this.mailbox !== id || searches !== this.#searches) return;
     this.mailboxes = boxes;
     const focusedId = this.focused?.id;
     this.emails = page.emails;

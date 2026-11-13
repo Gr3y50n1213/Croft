@@ -22,6 +22,8 @@ export type Range = [number, number];
 
 /** What matched in one search result. */
 export interface SearchHit {
+  /** The subject the ranges count in (as the core stored it). */
+  subject?: string;
   subjectRanges: Range[];
   snippet: string | null;
   snippetRanges: Range[];

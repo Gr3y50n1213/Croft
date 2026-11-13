@@ -331,6 +331,7 @@ pub async fn api(State(app): State<App>, Full(c): Full, body: axum::body::Bytes)
         search,
         send_allowed: Box::new(move |recipients| limits.send_budget(user_id, recipients)),
         server_search_allowed: Box::new(move || search_limits.server_search_budget(user_id)),
+        searched: std::sync::atomic::AtomicBool::new(false),
     };
     let mut responses: Vec<Value> = Vec::new();
     let mut spent = body.len();
@@ -469,6 +470,8 @@ struct Ctx {
     search: bool,
     /// Counts a search on the mail server against the user's budget; false when over.
     server_search_allowed: Box<dyn Fn() -> bool + Send + Sync>,
+    /// This request already ran a `CroftSearch/query` (one per request).
+    searched: std::sync::atomic::AtomicBool,
 }
 
 type Answer = Vec<(String, Value)>;

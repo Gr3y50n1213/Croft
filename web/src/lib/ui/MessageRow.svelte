@@ -36,7 +36,10 @@
     /** What a search matched in this row (T33b): marked in the subject; the snippet replaces the preview. */
     hit?: SearchHit | null;
   } = $props();
-  const subjectParts = $derived(segments(email.subject || '(no subject)', email.subject ? hit?.subjectRanges : []));
+  // A search's ranges count in the subject it sends with them (T33 review: the stored subject may
+  // differ from Email/get's by characters the core removes).
+  const subjectText = $derived(hit?.subject ?? email.subject);
+  const subjectParts = $derived(segments(subjectText || '(no subject)', subjectText ? hit?.subjectRanges : []));
   const previewParts = $derived(hit?.snippet ? segments(hit.snippet, hit.snippetRanges) : segments(email.preview ?? '', []));
 
   const seen = $derived(email.keywords['$seen'] === true);

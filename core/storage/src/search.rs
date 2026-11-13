@@ -82,9 +82,46 @@ fn like_escape(s: &str) -> String {
     out
 }
 
+/// How long one search may run before SQLite stops it ([`search`]): the engine's lock is held
+/// meanwhile, so a query that matches most of a large mailbox must not stall sync (T33 review).
+pub const SEARCH_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// Searches the stored mail of `accounts` (a scope of one account, or all). Up to `limit` hits
 /// (at most [`MAX_HITS`]), best first. An empty query, or an `in:` naming no folder, finds nothing.
+/// A search that runs longer than [`SEARCH_BUDGET`] is stopped and fails.
 pub fn search(
+    conn: &Connection,
+    accounts: &[i64],
+    q: &SearchQuery,
+    limit: u32,
+) -> Result<Vec<LocalHit>> {
+    search_within(conn, accounts, q, limit, SEARCH_BUDGET)
+}
+
+/// [`search`] with its own time budget (tests). A watchdog thread interrupts the connection's
+/// running statement when the budget is spent; it is told to stop, and waited for, when the search
+/// ends first, so it never touches a later statement.
+pub fn search_within(
+    conn: &Connection,
+    accounts: &[i64],
+    q: &SearchQuery,
+    limit: u32,
+    budget: std::time::Duration,
+) -> Result<Vec<LocalHit>> {
+    let interrupt = conn.get_interrupt_handle();
+    let (done, wait) = std::sync::mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(budget) {
+            interrupt.interrupt();
+        }
+    });
+    let result = run_search(conn, accounts, q, limit);
+    drop(done);
+    let _ = watchdog.join();
+    result
+}
+
+fn run_search(
     conn: &Connection,
     accounts: &[i64],
     q: &SearchQuery,
@@ -107,9 +144,11 @@ pub fn search(
     };
 
     let fts = q.fts();
+    let mut fts_arg = 0;
     if let Some(expr) = &fts {
         args.push(Value::Text(expr.clone()));
-        wheres.push(format!("message_fts MATCH ?{}", args.len()));
+        fts_arg = args.len();
+        wheres.push(format!("message_fts MATCH ?{fts_arg}"));
     }
     let scope = placeholders(&mut args, accounts.to_vec());
     wheres.push(format!("m.account_id IN ({scope})"));
@@ -161,16 +200,23 @@ pub fn search(
     let lim = args.len();
     let wh = wheres.join(" AND ");
 
+    // The best hits are chosen first; only they get the (costly) highlight and snippet, never
+    // every row that matched (T33 review).
     let sql = if fts.is_some() {
         format!(
-            "SELECT m.id,
+            "WITH top AS (
+                 SELECT m.id AS id, bm25(message_fts, 10.0, 5.0, 1.0) AS rank, m.date_ts AS ts
+                   FROM message_fts JOIN message m ON m.id = message_fts.rowid
+                  WHERE {wh}
+                  ORDER BY rank, ts DESC, id DESC
+                  LIMIT ?{lim})
+             SELECT top.id,
                     highlight(message_fts, 0, char(2), char(3)),
                     CASE WHEN length(message_fts.body) > 0
                          THEN snippet(message_fts, 2, char(2), char(3), '…', 12) END
-               FROM message_fts JOIN message m ON m.id = message_fts.rowid
-              WHERE {wh}
-              ORDER BY bm25(message_fts, 10.0, 5.0, 1.0), m.date_ts DESC, m.id DESC
-              LIMIT ?{lim}"
+               FROM message_fts JOIN top ON top.id = message_fts.rowid
+              WHERE message_fts MATCH ?{fts_arg}
+              ORDER BY top.rank, top.ts DESC, top.id DESC"
         )
     } else {
         format!(

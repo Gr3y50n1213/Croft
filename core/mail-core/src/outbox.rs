@@ -338,12 +338,18 @@ impl Outbox {
         id
     }
 
-    /// Undo: takes a message back before anything reaches the server. Only a [`Queued`](OutboxState::Queued)
-    /// message that is not yet due can be undone; the entry is removed and returned so the caller
-    /// can reopen the draft. Once `now_ms` reaches `send_at`, the window is closed.
+    /// Undo: takes a message back before anything reaches the server. A [`Queued`](OutboxState::Queued)
+    /// message can be undone while it has never been handed out: before its time, and after it
+    /// too when it could not go yet (offline, a scheduled message whose account was paused; T33
+    /// review: nothing was sent, so nothing is lost by taking it back). Once it has been handed
+    /// out (Sending, or Queued again for a retry after an attempt that may have reached the
+    /// server) it is too late. The entry is removed and returned so the caller can reopen the
+    /// draft. Handing out ([`Outbox::take`]) and Undo run under the caller's one lock, so a message
+    /// is never both. `now_ms` is kept for the callers' contract.
     pub fn undo(&mut self, id: OutboxId, now_ms: i64) -> Result<OutboxEntry, UndoError> {
+        let _ = now_ms;
         let entry = self.entries.get(&id).ok_or(UndoError::NotFound)?;
-        if entry.state != OutboxState::Queued || now_ms >= entry.send_at_ms {
+        if entry.state != OutboxState::Queued || entry.attempts > 0 {
             return Err(UndoError::TooLate);
         }
         self.entries.remove(&id).ok_or(UndoError::NotFound)
@@ -703,6 +709,18 @@ impl Outbox {
         failed
     }
 
+    /// Forgets everything about a removed account: its messages (in any state) and its pause,
+    /// offline and back-off marks. Its stored rows are deleted with the account; this clears what
+    /// is held in memory, so nothing of it is listed or handed out before the next restart (T33
+    /// review: a scheduled message could otherwise wait in memory for a long time).
+    pub fn forget_account(&mut self, account: AccountId) {
+        self.entries.retain(|_, e| e.account != account);
+        self.paused.remove(&account);
+        self.offline.remove(&account);
+        self.send_holds.remove(&account);
+        self.file_holds.remove(&account);
+    }
+
     /// Records whether the account has a connection. While offline nothing is handed out for it,
     /// so no message uses up an attempt just because the network is down.
     pub fn set_offline(&mut self, account: AccountId, offline: bool) {
@@ -850,19 +868,41 @@ mod tests {
     }
 
     #[test]
-    fn undo_is_too_late_once_the_window_closed_or_sending_began() {
+    fn undo_is_too_late_once_sending_began() {
         let mut o = Outbox::new();
         let id = o.queue(msg(A), 0, WINDOW);
-        assert_eq!(o.undo(id, 5_000), Err(UndoError::TooLate));
-        assert_eq!(o.undo(id, 9_000), Err(UndoError::TooLate));
-        assert_eq!(
-            state(&o, id),
-            OutboxState::Queued,
-            "a refused undo changes nothing"
-        );
         o.take_due(5_000, 10);
         assert_eq!(o.undo(id, 5_001), Err(UndoError::TooLate));
-        assert_eq!(state(&o, id), OutboxState::Sending);
+        assert_eq!(
+            state(&o, id),
+            OutboxState::Sending,
+            "a refused undo changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_removed_account_is_forgotten_and_others_are_kept() {
+        let mut o = Outbox::new();
+        let a = o.queue(msg(A), 0, 10 * 24 * 3_600_000);
+        let b = o.queue(msg(B), 0, WINDOW);
+        o.set_offline(A, true);
+        o.forget_account(A);
+        assert!(o.get(a).is_none());
+        assert!(!o.is_offline(A));
+        assert!(o.get(b).is_some());
+        assert_eq!(o.visible(A).len(), 0);
+    }
+
+    #[test]
+    fn a_message_never_handed_out_can_be_taken_back_even_after_its_time() {
+        let mut o = Outbox::new();
+        // Its time came while the account was offline: nothing went out.
+        o.set_offline(A, true);
+        let id = o.queue(msg(A), 0, WINDOW);
+        assert!(o.take_due(9_000, 10).is_empty());
+        let back = o.undo(id, 9_000).unwrap();
+        assert_eq!(back.id, id);
+        assert!(o.get(id).is_none());
     }
 
     #[test]

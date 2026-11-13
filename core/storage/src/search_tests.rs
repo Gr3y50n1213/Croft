@@ -419,3 +419,38 @@ fn hostile_queries_never_fail() {
     // The table is still there.
     assert_eq!(ids(c, &[f.a1], "hello").len(), 1);
 }
+
+#[test]
+fn a_search_that_runs_too_long_is_stopped_and_the_next_one_runs() {
+    let f = fixture();
+    let c = f.db.connection();
+    // A big mailbox where one word matches everything, each with a body to snippet.
+    c.execute_batch("BEGIN").unwrap();
+    for uid in 1..=20_000u32 {
+        let id = msg(
+            c,
+            f.a1,
+            f.inbox,
+            uid,
+            &format!("Seed list {uid}"),
+            ("Ann", "ann@example.org"),
+            i64::from(uid),
+        );
+        store_body(c, f.a1, id, "seeds seedlings seedbeds and more seeds", "[]");
+    }
+    c.execute_batch("COMMIT").unwrap();
+    let q = parse("seed").unwrap();
+    let stopped =
+        crate::search::search_within(c, &[f.a1], &q, 50, std::time::Duration::from_millis(1));
+    assert!(stopped.is_err(), "a search over its budget is stopped");
+    // The connection is not left interrupted: an ordinary search works at once.
+    let found = search(c, &[f.a1], &parse("\"Seed list 7\"").unwrap(), 50).unwrap();
+    assert_eq!(found.len(), 1);
+    // And with the real budget, the broad search finishes, best first, highlights on the hits only.
+    let all = search(c, &[f.a1], &q, 50).unwrap();
+    assert_eq!(all.len(), 50);
+    assert!(all.iter().all(|h| h
+        .subject_marked
+        .as_deref()
+        .is_some_and(|s| s.contains(MARK_START))));
+}

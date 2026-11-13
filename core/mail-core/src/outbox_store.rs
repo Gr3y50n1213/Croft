@@ -270,7 +270,13 @@ impl<S: OutboxStore> PersistentOutbox<S> {
         )
     }
 
-    /// Undo: removes the message if it is still Queued and its time has not come, so nothing
+    /// Forgets a removed account's messages in memory (its stored rows are deleted with the
+    /// account): see [`Outbox::forget_account`].
+    pub fn forget_account(&mut self, account: AccountId) {
+        self.outbox.forget_account(account);
+    }
+
+    /// Undo: removes the message if it is still Queued and was never handed out, so nothing
     /// reaches the server, and returns it (with its bytes) so the draft can be reopened.
     pub fn undo(
         &mut self,
@@ -674,14 +680,15 @@ mod tests {
     }
 
     #[test]
-    fn undo_after_the_window_is_refused_and_changes_nothing() {
+    fn undo_once_sending_began_is_refused_and_changes_nothing() {
         let mut p = open();
         let id = p.queue(new_msg(), b"MIME".to_vec(), 0, WINDOW).unwrap();
+        assert_eq!(p.take_due(WINDOW, 10).unwrap().len(), 1);
         assert!(matches!(
             p.undo(A, id, WINDOW),
             Err(OutboxError::Undo(UndoError::TooLate))
         ));
-        assert_eq!(row_state(&p, id), Some(OutboxState::Queued));
+        assert_eq!(row_state(&p, id), Some(OutboxState::Sending));
     }
 
     #[test]

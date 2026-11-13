@@ -114,6 +114,51 @@ pub struct Flags {
     pub keywords: BTreeSet<String>,
 }
 
+/// A keyword Croft itself sets (T36b). Only these two: no text from the app or from a message is
+/// ever sent to a server as a keyword.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Keyword {
+    /// `$Pinned`: kept at the top of the Inbox.
+    Pinned,
+    /// `$FollowUp`: marked to follow up.
+    FollowUp,
+}
+
+impl Keyword {
+    /// Every keyword Croft sets.
+    pub const ALL: [Keyword; 2] = [Keyword::Pinned, Keyword::FollowUp];
+
+    /// The keyword as Croft writes it on IMAP and stores it (`$Pinned`, `$FollowUp`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Keyword::Pinned => "$Pinned",
+            Keyword::FollowUp => "$FollowUp",
+        }
+    }
+
+    /// The keyword as JMAP sends it: lower-case (RFC 8621 keywords are case-insensitive and
+    /// servers report them in lower case).
+    pub fn jmap_name(self) -> &'static str {
+        match self {
+            Keyword::Pinned => "$pinned",
+            Keyword::FollowUp => "$followup",
+        }
+    }
+
+    /// The keyword [`text`] names, compared without regard to case (IMAP keywords are case-blind).
+    pub fn of(text: &str) -> Option<Keyword> {
+        Keyword::ALL
+            .into_iter()
+            .find(|k| k.name().eq_ignore_ascii_case(text))
+    }
+
+    /// `text`, or this crate's own spelling when it names one of Croft's keywords, so the stored
+    /// keywords hold one spelling whatever case the server reported.
+    pub fn canonical(text: &str) -> String {
+        Keyword::of(text).map_or_else(|| text.to_owned(), |k| k.name().to_owned())
+    }
+}
+
 /// A change to apply to [`Flags`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlagChange {
@@ -121,6 +166,8 @@ pub enum FlagChange {
     Seen(bool),
     /// Set or clear `\Flagged`.
     Flagged(bool),
+    /// Set or clear one of Croft's keywords (T36b).
+    Keyword(Keyword, bool),
 }
 
 impl Flags {
@@ -129,7 +176,18 @@ impl Flags {
         match change {
             FlagChange::Seen(v) => self.seen = v,
             FlagChange::Flagged(v) => self.flagged = v,
+            FlagChange::Keyword(k, v) => {
+                self.keywords.retain(|w| Keyword::of(w) != Some(k));
+                if v {
+                    self.keywords.insert(k.name().to_owned());
+                }
+            }
         }
+    }
+
+    /// Whether the keyword `k` is set (in any case).
+    pub fn has(&self, k: Keyword) -> bool {
+        self.keywords.iter().any(|w| Keyword::of(w) == Some(k))
     }
 }
 
@@ -360,6 +418,25 @@ impl std::error::Error for BackendError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T36b: setting a keyword replaces any other spelling of it; clearing removes every spelling.
+    #[test]
+    fn a_keyword_change_keeps_one_spelling() {
+        let mut f = Flags::default();
+        f.keywords.insert("$pinned".into());
+        f.keywords.insert("$Work".into());
+        f.apply(FlagChange::Keyword(Keyword::Pinned, true));
+        assert_eq!(
+            f.keywords.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["$Pinned", "$Work"]
+        );
+        assert!(f.has(Keyword::Pinned) && !f.has(Keyword::FollowUp));
+        f.apply(FlagChange::Keyword(Keyword::Pinned, false));
+        assert!(!f.has(Keyword::Pinned) && f.keywords.contains("$Work"));
+        assert_eq!(Keyword::of("$FOLLOWUP"), Some(Keyword::FollowUp));
+        assert_eq!(Keyword::of("$Pinnedx"), None);
+        assert_eq!(Keyword::canonical("$Other"), "$Other");
+    }
 
     #[test]
     fn special_use_from_attribute_ignores_case() {

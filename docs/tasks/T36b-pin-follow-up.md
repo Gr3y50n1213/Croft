@@ -17,8 +17,8 @@ are kept on the server as keywords, so every client that reads them (other Croft
 - **Through the queue, like Star.** A new flag change (`FlagChange::Keyword(Keyword, bool)`) and operation (`SetKeyword`), applied
   locally first, sent after 1.5 s like read and star, cancelled by Undo while it waits, re-pointed after a confirmed move.
 - **A server that cannot keep keywords.** IMAP: the folder's `PERMANENTFLAGS` (from SELECT) must contain `\*` or the keyword itself;
-  otherwise the operation fails as `Permanent` and the local change is rolled back with "This server can't keep pins" (or follow-ups),
-  instead of a pin that the next sync silently drops. JMAP keeps any keyword.
+  otherwise the operation fails as `Permanent` (the app's "Couldn't pin" for a refused change) and the local change is rolled back,
+  instead of a pin that the next sync silently drops. Clearing a keyword is always sent. JMAP keeps any keyword.
 - **Storage (migration 0010).** `is_pinned` and `follows_up` columns on `message`, kept in step with `keywords_json` on every write
   and filled from it for stored mail; a partial index for each, scoped by account.
 - **The core (FFI v17).**

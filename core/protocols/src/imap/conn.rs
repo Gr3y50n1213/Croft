@@ -63,6 +63,9 @@ pub(crate) struct FolderCache {
 /// What `SELECT`/`EXAMINE` told us.
 #[derive(Debug, Default, Clone, Copy)]
 struct MailboxInfo {
+    /// What `PERMANENTFLAGS` from SELECT says about Croft's keywords; `None` when the server sent
+    /// none (then every flag is kept, RFC 3501 section 7.1).
+    permanent_flags: Option<KeptKeywords>,
     exists: u32,
     uid_validity: Option<u32>,
     uid_next: Option<u32>,
@@ -84,6 +87,7 @@ enum Item {
     UidValidity(u32),
     UidNext(u32),
     HighestModSeq(u64),
+    PermanentFlags(KeptKeywords),
     Search(Vec<Uid>),
     Vanished(Vec<RangeInclusive<u32>>),
     List(ListItem),
@@ -968,9 +972,17 @@ impl Conn {
         let (flag, on) = match change {
             FlagChange::Seen(v) => ("\\Seen", v),
             FlagChange::Flagged(v) => ("\\Flagged", v),
+            FlagChange::Keyword(k, v) => (k.name(), v),
         };
         let sign = if on { '+' } else { '-' };
-        self.select(folder, true, None).await?;
+        let info = self.select(folder, true, None).await?;
+        if let FlagChange::Keyword(k, true) = change {
+            // A keyword the folder cannot keep would last only for this session and vanish at the
+            // next sync: refuse instead, so the person is told (T36b).
+            if !info.permanent_flags.is_none_or(|p| p.keeps(k)) {
+                return Err(OpError::permanent(KEYWORDS_NOT_KEPT));
+            }
+        }
         for set in uid_sets(uids, UIDS_PER_COMMAND) {
             self.exec(
                 &format!("UID STORE {set} {sign}FLAGS.SILENT ({flag})"),
@@ -1302,10 +1314,49 @@ fn mailbox_info(reply: &Reply) -> MailboxInfo {
             Item::UidValidity(v) => info.uid_validity = Some(*v),
             Item::UidNext(v) => info.uid_next = Some(*v),
             Item::HighestModSeq(v) => info.highest_modseq = Some(*v),
+            Item::PermanentFlags(f) => info.permanent_flags = Some(*f),
             _ => {}
         }
     }
     info
+}
+
+/// The refusal when a folder cannot keep Croft's keywords; the app shows its own text for it.
+pub(crate) const KEYWORDS_NOT_KEPT: &str = "the server cannot keep this keyword";
+
+/// What a folder's `PERMANENTFLAGS` list says about Croft's keywords.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct KeptKeywords {
+    /// `\*`: the folder keeps any new keyword.
+    any: bool,
+    /// `$Pinned` is listed.
+    pinned: bool,
+    /// `$FollowUp` is listed.
+    follow_up: bool,
+}
+
+impl KeptKeywords {
+    fn of<'a>(flags: impl Iterator<Item = &'a str>) -> KeptKeywords {
+        let mut kept = KeptKeywords::default();
+        for f in flags {
+            match Keyword::of(f) {
+                _ if f == "\\*" => kept.any = true,
+                Some(Keyword::Pinned) => kept.pinned = true,
+                Some(Keyword::FollowUp) => kept.follow_up = true,
+                None => {}
+            }
+        }
+        kept
+    }
+
+    /// Whether the folder keeps the keyword `k`: `\*`, or the keyword itself.
+    fn keeps(self, k: Keyword) -> bool {
+        self.any
+            || match k {
+                Keyword::Pinned => self.pinned,
+                Keyword::FollowUp => self.follow_up,
+            }
+    }
 }
 
 fn search_results(reply: &Reply) -> Vec<Uid> {
@@ -1398,6 +1449,9 @@ fn item_from_code(code: Option<&ResponseCode<'_>>) -> Option<Item> {
         Some(ResponseCode::UidValidity(v)) => Some(Item::UidValidity(*v)),
         Some(ResponseCode::UidNext(v)) => Some(Item::UidNext(*v)),
         Some(ResponseCode::HighestModSeq(v)) => Some(Item::HighestModSeq(*v)),
+        Some(ResponseCode::PermanentFlags(f)) => Some(Item::PermanentFlags(KeptKeywords::of(
+            f.iter().map(|s| s.as_ref()),
+        ))),
         _ => None,
     }
 }
@@ -1450,7 +1504,7 @@ pub(crate) fn flags_from<'a>(raw: impl Iterator<Item = &'a str>) -> Flags {
             "\\deleted" => flags.deleted = true,
             other if other.starts_with('\\') => {}
             _ => {
-                flags.keywords.insert(f.to_string());
+                flags.keywords.insert(Keyword::canonical(f));
             }
         }
     }
@@ -1550,6 +1604,32 @@ mod tests {
             f.keywords.iter().map(String::as_str).collect::<Vec<_>>(),
             vec!["$Junk", "Work"]
         );
+    }
+
+    /// T36b: Croft's keywords are read in any case and kept in one spelling; other keywords as sent.
+    #[test]
+    fn croft_keywords_are_read_in_any_case() {
+        let f = flags_from(["$PINNED", "$followup", "$Work"].into_iter());
+        assert_eq!(
+            f.keywords.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["$FollowUp", "$Pinned", "$Work"]
+        );
+    }
+
+    /// T36b: a keyword is set only where the folder keeps it, so it never vanishes at the next sync.
+    #[test]
+    fn permanent_flags_decide_whether_a_keyword_is_kept() {
+        let any = KeptKeywords::of(["\\Seen", "\\*"].into_iter());
+        assert!(any.keeps(Keyword::Pinned) && any.keeps(Keyword::FollowUp));
+        let listed = KeptKeywords::of(["\\Seen", "$pinned"].into_iter());
+        assert!(listed.keeps(Keyword::Pinned) && !listed.keeps(Keyword::FollowUp));
+        let none = KeptKeywords::of(["\\Seen", "\\Flagged", "$Junk"].into_iter());
+        assert!(!none.keeps(Keyword::Pinned) && !none.keeps(Keyword::FollowUp));
+        // No PERMANENTFLAGS at all: every flag is kept (RFC 3501 section 7.1).
+        let info = MailboxInfo::default();
+        assert!(info
+            .permanent_flags
+            .is_none_or(|p| p.keeps(Keyword::Pinned)));
     }
 
     #[test]

@@ -9,7 +9,9 @@
 
 use std::collections::BTreeSet;
 
-use croft_protocols::{FlagChange, Flags, FolderStatus, RemoteFolder, RemoteHeader, SpecialUse};
+use croft_protocols::{
+    FlagChange, Flags, FolderStatus, Keyword, RemoteFolder, RemoteHeader, SpecialUse,
+};
 use rusqlite::Connection;
 use serde_json::json;
 
@@ -1345,4 +1347,61 @@ fn a_snooze_hides_until_its_time_then_wakes_once_with_its_mark_and_stays_in_its_
             .len(),
         1
     );
+}
+
+/// The pin and follow-up columns of a message: (is_pinned, follows_up, keywords_json).
+fn marks(c: &Connection, id: i64) -> (bool, bool, String) {
+    c.query_row(
+        "SELECT is_pinned, follows_up, keywords_json FROM message WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn pin_and_follow_up_columns_follow_the_keywords_in_their_account_and_a_sync_keeps_a_queued_change()
+{
+    let (db, a1, f1, a2, _) = two_accounts();
+    let c = db.connection();
+    let mut h = header(1, "Keep", 1_000);
+    h.flags.keywords = BTreeSet::from(["$pinned".to_owned(), "$Work".to_owned()]);
+    let m = messages::upsert(c, a1, f1, &h).unwrap();
+    assert_eq!(
+        marks(c, m),
+        (true, false, r#"["$Work","$pinned"]"#.to_owned()),
+        "a pin from the server, in any case"
+    );
+
+    assert!(
+        messages::update_flags(c, a1, m, FlagChange::Keyword(Keyword::FollowUp, true)).unwrap()
+    );
+    assert!(
+        !messages::update_flags(c, a2, m, FlagChange::Keyword(Keyword::FollowUp, false)).unwrap(),
+        "not that account's message"
+    );
+    assert_eq!(
+        marks(c, m),
+        (true, true, r#"["$FollowUp","$Work","$pinned"]"#.to_owned())
+    );
+    messages::update_flags(c, a1, m, FlagChange::Keyword(Keyword::Pinned, false)).unwrap();
+    assert_eq!(
+        marks(c, m),
+        (false, true, r#"["$FollowUp","$Work"]"#.to_owned()),
+        "every spelling of the keyword goes"
+    );
+
+    // While a change waits in the queue, a sync that has not seen it yet does not undo it.
+    c.execute("UPDATE message SET pending_ops = 1 WHERE id = ?1", [m])
+        .unwrap();
+    messages::upsert(c, a1, f1, &header(1, "Keep", 1_000)).unwrap();
+    assert_eq!(
+        marks(c, m),
+        (false, true, r#"["$FollowUp","$Work"]"#.to_owned())
+    );
+    // Once it is done, the server's state is taken.
+    c.execute("UPDATE message SET pending_ops = 0 WHERE id = ?1", [m])
+        .unwrap();
+    messages::upsert(c, a1, f1, &header(1, "Keep", 1_000)).unwrap();
+    assert_eq!(marks(c, m), (false, false, "[]".to_owned()));
 }

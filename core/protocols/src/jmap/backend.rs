@@ -790,7 +790,7 @@ impl JmapBackend {
         let (key, value) = keyword_patch(change);
         let updates: Vec<(String, Value)> = by_uid
             .values()
-            .map(|id| (id.clone(), json!({ key: value })))
+            .map(|id| (id.clone(), json!({ key.as_str(): value })))
             .collect();
         let result = self.update_emails(&mut st, updates).await;
         if let Some(cache) = st.caches.get_mut(&mb.id) {

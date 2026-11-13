@@ -103,6 +103,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "snooze",
         sql: include_str!("../migrations/0009_snooze.sql"),
     },
+    Migration {
+        version: 10,
+        name: "pin_follow_up",
+        sql: include_str!("../migrations/0010_pin_follow_up.sql"),
+    },
 ];
 
 /// The version a fully migrated database reports in `PRAGMA user_version`.

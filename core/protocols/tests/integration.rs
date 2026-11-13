@@ -240,6 +240,29 @@ async fn suite(t: Target) {
         .unwrap();
     assert!(!b.snapshot("INBOX").await.unwrap().messages[&uid1].seen);
 
+    // T36b: a pin is kept where the folder keeps new keywords, and refused (nothing changed)
+    // where it does not; never a pin that vanishes at the next sync.
+    match b
+        .set_flag("INBOX", &[uid2], FlagChange::Keyword(Keyword::Pinned, true))
+        .await
+    {
+        Ok(()) => {
+            assert!(b.snapshot("INBOX").await.unwrap().messages[&uid2].has(Keyword::Pinned));
+            b.set_flag(
+                "INBOX",
+                &[uid2],
+                FlagChange::Keyword(Keyword::Pinned, false),
+            )
+            .await
+            .unwrap();
+            assert!(!b.snapshot("INBOX").await.unwrap().messages[&uid2].has(Keyword::Pinned));
+        }
+        Err(BackendError::Permanent(_)) => {
+            assert!(!b.snapshot("INBOX").await.unwrap().messages[&uid2].has(Keyword::Pinned));
+        }
+        Err(e) => panic!("unexpected {e:?}"),
+    }
+
     // Another connection changes a flag and removes a message; our next snapshot (a delta read
     // on CONDSTORE/QRESYNC servers) must show the full, correct picture.
     {

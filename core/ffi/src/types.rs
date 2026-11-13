@@ -523,6 +523,12 @@ pub struct MessageRow {
     /// T36: woken from a snooze in the last 24 hours (the row shows a Snoozed chip).
     #[uniffi(default = false)]
     pub back_from_snooze: bool,
+    /// T36b: pinned (`$Pinned`).
+    #[uniffi(default = false)]
+    pub pinned: bool,
+    /// T36b: marked to follow up (`$FollowUp`).
+    #[uniffi(default = false)]
+    pub follow_up: bool,
 }
 
 impl std::fmt::Debug for MessageRow {

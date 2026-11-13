@@ -187,6 +187,8 @@ pub(crate) struct Folder {
     /// `(uid, modseq at removal)` for QRESYNC.
     pub expunged: Vec<(u32, u64)>,
     pub read_only: bool,
+    /// False: `PERMANENTFLAGS` leaves out `\*`, so new keywords are not kept (T36b).
+    pub keeps_new_keywords: bool,
 }
 
 impl Folder {
@@ -200,6 +202,7 @@ impl Folder {
             highest_modseq: 1,
             expunged: Vec::new(),
             read_only: false,
+            keeps_new_keywords: true,
         }
     }
 }
@@ -466,6 +469,14 @@ impl TestServer {
         let mut st = self.st();
         if let Some(f) = st.folders.iter_mut().find(|f| f.name == folder) {
             f.read_only = on;
+        }
+    }
+
+    /// Whether the folder keeps new keywords: false leaves `\*` out of its `PERMANENTFLAGS` (T36b).
+    pub fn set_keeps_new_keywords(&self, folder: &str, on: bool) {
+        let mut st = self.st();
+        if let Some(f) = st.folders.iter_mut().find(|f| f.name == folder) {
+            f.keeps_new_keywords = on;
         }
     }
 

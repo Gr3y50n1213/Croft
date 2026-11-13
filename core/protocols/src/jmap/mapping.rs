@@ -196,7 +196,9 @@ pub(crate) fn flags_from_keywords(keywords: &HashMap<String, bool>) -> Flags {
             "$answered" => flags.answered = true,
             "$draft" => flags.draft = true,
             other => {
-                flags.keywords.insert(other.to_string());
+                flags
+                    .keywords
+                    .insert(crate::types::Keyword::canonical(other));
             }
         }
     }
@@ -204,10 +206,11 @@ pub(crate) fn flags_from_keywords(keywords: &HashMap<String, bool>) -> Flags {
 }
 
 /// The patch key for a flag change, and the value (`true` to set, `null` to clear).
-pub(crate) fn keyword_patch(change: FlagChange) -> (&'static str, Value) {
+pub(crate) fn keyword_patch(change: FlagChange) -> (String, Value) {
     let (key, on) = match change {
-        FlagChange::Seen(v) => ("keywords/$seen", v),
-        FlagChange::Flagged(v) => ("keywords/$flagged", v),
+        FlagChange::Seen(v) => ("keywords/$seen".to_owned(), v),
+        FlagChange::Flagged(v) => ("keywords/$flagged".to_owned(), v),
+        FlagChange::Keyword(k, v) => (format!("keywords/{}", k.jmap_name()), v),
     };
     (key, if on { Value::Bool(true) } else { Value::Null })
 }
@@ -674,12 +677,32 @@ mod tests {
         assert!(f.seen && f.draft && !f.flagged && f.keywords.contains("$junk"));
         assert_eq!(
             keyword_patch(FlagChange::Seen(true)),
-            ("keywords/$seen", Value::Bool(true))
+            ("keywords/$seen".to_owned(), Value::Bool(true))
         );
         assert_eq!(
             keyword_patch(FlagChange::Flagged(false)),
-            ("keywords/$flagged", Value::Null)
+            ("keywords/$flagged".to_owned(), Value::Null)
         );
+    }
+
+    /// T36b: Croft's two keywords go out lower-case and come back in Croft's own spelling.
+    #[test]
+    fn pin_and_follow_up_are_lower_case_keywords_read_back_in_one_spelling() {
+        assert_eq!(
+            keyword_patch(FlagChange::Keyword(Keyword::Pinned, true)),
+            ("keywords/$pinned".to_owned(), Value::Bool(true))
+        );
+        assert_eq!(
+            keyword_patch(FlagChange::Keyword(Keyword::FollowUp, false)),
+            ("keywords/$followup".to_owned(), Value::Null)
+        );
+        let k: HashMap<String, bool> = [("$pinned", true), ("$FOLLOWUP", true)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let f = flags_from_keywords(&k);
+        assert!(f.keywords.contains("$Pinned") && f.keywords.contains("$FollowUp"));
+        assert!(f.has(Keyword::Pinned) && f.has(Keyword::FollowUp));
     }
 
     #[test]

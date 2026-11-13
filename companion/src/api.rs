@@ -1356,6 +1356,15 @@ async fn passkey_start(
 ) -> ApiResult {
     limit(&app, peer, &headers)?;
     let now = app.auth.now();
+    // T34e: a passkey added from an old (forgotten or stolen) session could sign in fresh and then
+    // delete the account; adding one needs a sign-in from the last ten minutes, like deleting.
+    if !with_store(&app, move |s| {
+        s.session_is_fresh(c.user_id, c.session_id, now)
+    })
+    .await??
+    {
+        return Err(ApiError::FreshSignIn);
+    }
     let (handle, name, existing) = with_store(&app, move |s| {
         let name = s
             .user_by_id(c.user_id)?

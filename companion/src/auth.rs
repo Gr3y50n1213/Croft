@@ -274,6 +274,29 @@ fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
 
 /// Ends every session of `user_id` and drops its access tokens (refresh rows stay, so a stolen
 /// refresh token that comes back is still recognised and refused).
+/// See [`Store::session_is_fresh`].
+fn fresh(conn: &Connection, user_id: i64, session_id: i64, now: i64) -> rusqlite::Result<bool> {
+    let signed_in: Option<i64> = conn
+        .query_row(
+            "SELECT created_ms FROM session
+             WHERE id = ?1 AND user_id = ?2 AND revoked_ms IS NULL",
+            params![session_id, user_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(signed_in.is_some_and(|t| t <= now && now - t <= DELETE_FRESH_MS))
+}
+
+/// Deletes the user (T34e), with their own audit entries: what is left is one entry saying that an
+/// account was deleted, and when (`how`: by the person, or by the operator). Entries in which they
+/// acted on others keep the action and lose them (the cascade).
+fn forget_user(tx: &Connection, user_id: i64, now: i64, how: &'static str) -> rusqlite::Result<()> {
+    tx.execute("DELETE FROM audit_log WHERE user_id = ?1", params![user_id])?;
+    tx.execute("DELETE FROM user WHERE id = ?1", params![user_id])?;
+    audit(tx, now, None, None, "user.delete", how)?;
+    Ok(())
+}
+
 fn revoke_all(conn: &Connection, user_id: i64, now: i64) -> rusqlite::Result<usize> {
     let n = conn.execute(
         "UPDATE session SET revoked_ms = ?2 WHERE user_id = ?1 AND revoked_ms IS NULL",
@@ -1074,15 +1097,7 @@ impl Store {
         if confirm != name {
             return Ok(DeleteSelf::WrongName);
         }
-        let signed_in: Option<i64> = tx
-            .query_row(
-                "SELECT created_ms FROM session
-                 WHERE id = ?1 AND user_id = ?2 AND revoked_ms IS NULL",
-                params![session_id, user_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if signed_in.is_none_or(|t| now.saturating_sub(t) > DELETE_FRESH_MS || t > now) {
+        if !fresh(&tx, user_id, session_id, now)? {
             return Ok(DeleteSelf::NotFresh);
         }
         if role == "admin" {
@@ -1095,12 +1110,31 @@ impl Store {
                 return Ok(DeleteSelf::LastAdmin);
             }
         }
-        // Written before the user goes: the cascade then clears the user and actor, so the entry
-        // says only that an account was deleted, and when.
-        audit(&tx, now, Some(user_id), Some(user_id), "user.delete", "ok")?;
-        tx.execute("DELETE FROM user WHERE id = ?1", params![user_id])?;
+        forget_user(&tx, user_id, now, "ok")?;
         tx.commit()?;
+        self.scrub();
         Ok(DeleteSelf::Deleted)
+    }
+
+    /// Whether the session signed in at most [`DELETE_FRESH_MS`] ago (T34e): deleting the account
+    /// and adding a passkey need it, so a forgotten or stolen session can do neither. A recovery
+    /// sign-in (TOTP and a recovery code) is a fresh sign-in too.
+    pub fn session_is_fresh(
+        &self,
+        user_id: i64,
+        session_id: i64,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        Ok(fresh(&self.conn, user_id, session_id, now)?)
+    }
+
+    /// After a deletion: the database keeps no copy of what was deleted (`secure_delete` zeroes
+    /// freed pages; the write-ahead log is folded in and emptied). Best effort: a busy reader only
+    /// postpones the log's truncation to the next checkpoint.
+    fn scrub(&self) {
+        let _ = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
     }
 
     /// Deletes a user from the command line (T34e: `user delete`, for someone who can no longer
@@ -1130,9 +1164,9 @@ impl Store {
                 return Ok(DeleteSelf::LastAdmin);
             }
         }
-        audit(&tx, now, Some(user_id), None, "user.delete", "operator")?;
-        tx.execute("DELETE FROM user WHERE id = ?1", params![user_id])?;
+        forget_user(&tx, user_id, now, "operator")?;
         tx.commit()?;
+        self.scrub();
         Ok(DeleteSelf::Deleted)
     }
 

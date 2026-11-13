@@ -189,7 +189,7 @@ fn lock(config: &Config, exclusive: bool) -> Result<std::fs::File, CliError> {
     };
     if !locked {
         return Err(CliError::Usage(if exclusive {
-            "the Companion is running: stop the server (and any other command) before rotating the master key".into()
+            "the Companion is running: stop the server (and any other command) first".into()
         } else {
             "a master key rotation is running: try again when it has finished".into()
         }));
@@ -265,14 +265,20 @@ pub fn run(config: &Config, command: &Command) -> Result<String, CliError> {
                 crate::auth::DeleteSelf::Deleted => {
                     let cores = crate::mail::MailCores::new(config.data_dir.clone());
                     let _ = cores.sweep(&store.user_ids()?);
+                    let left = cores.database(user.id).parent().is_some_and(|d| d.exists());
                     Ok(format!(
-                        "Deleted user {} and everything theirs: sessions, passkeys, mail accounts and \
-                         their mail on this Companion.",
-                        user.name
+                        "Deleted user {} and everything theirs: sessions, passkeys, mail accounts{}.",
+                        user.name,
+                        if left {
+                            " (their mail folder could not be removed yet: it goes at the next start)"
+                        } else {
+                            " and their mail on this Companion"
+                        }
                     ))
                 }
                 _ => Err(CliError::Usage(
-                    "That is the only admin: make another user an admin first.".to_owned(),
+                    "That is the only admin: add another admin first (user add --name NAME --admin)."
+                        .to_owned(),
                 )),
             }
         }

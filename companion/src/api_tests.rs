@@ -2590,3 +2590,117 @@ async fn the_start_sweep_removes_only_the_mail_of_users_who_are_gone() {
     assert!(!gone.exists());
     assert!(kept.is_dir());
 }
+
+#[tokio::test]
+async fn an_old_session_cannot_add_a_passkey_to_get_round_the_fresh_sign_in() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let t = h.sign_in(&mut ann).await;
+    h.advance(11 * 60 * 1000);
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/passkeys/start",
+            Some(&t.access),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert_eq!(v["error"], "fresh_sign_in");
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/me/delete",
+            Some(&t.access),
+            Some(json!({"confirm": "ann"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Signed in again, both work.
+    let fresh = h.sign_in(&mut ann).await;
+    let (s, _) = h
+        .call(
+            Method::POST,
+            "/api/passkeys/start",
+            Some(&fresh.access),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn deleting_does_not_wait_on_a_holder_that_needs_the_users_slot() {
+    let h = h();
+    let ann = h.person("ann", Role::User).await;
+    let cores = h.app.mail.clone().unwrap();
+    let held = cores.core(&h.app.store, &h.master, ann.id).unwrap();
+    // Like a push watcher: it looks at the slot while it still holds the core, then lets go.
+    let watcher = {
+        let cores = cores.clone();
+        let id = ann.id;
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let again = cores.open_core(id);
+            drop(again);
+            drop(held);
+        })
+    };
+    let store = h.app.store.clone();
+    let started = std::time::Instant::now();
+    let deleted = cores
+        .remove_user(ann.id, || {
+            store
+                .lock()
+                .unwrap()
+                .delete_user(ann.id, T0)
+                .map(|o| o == crate::auth::DeleteSelf::Deleted)
+        })
+        .unwrap();
+    watcher.join().unwrap();
+    assert!(deleted);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!(!cores.database(ann.id).parent().unwrap().exists());
+}
+
+#[test]
+fn nothing_of_a_deleted_user_is_left_in_the_database_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("companion.db");
+    let master = Key::generate().unwrap();
+    let id;
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.check_master_key(&master).unwrap();
+        s.add_user(&master, "admin", Role::Admin).unwrap();
+        id = s
+            .add_user(&master, "zelda-made-up-name", Role::User)
+            .unwrap()
+            .id;
+        s.audit(Some(id), "made.up", "zelda-made-up-detail").ok();
+        assert_eq!(
+            s.delete_user(id, T0).unwrap(),
+            crate::auth::DeleteSelf::Deleted
+        );
+        let entries = s.audit_entries(None, 100).unwrap();
+        assert!(entries
+            .iter()
+            .all(|e| e.user_id.is_none() || e.user_id != Some(id)));
+        assert_eq!(
+            entries.iter().filter(|e| e.action == "user.delete").count(),
+            1
+        );
+    }
+    for f in std::fs::read_dir(dir.path()).unwrap().flatten() {
+        let bytes = std::fs::read(f.path()).unwrap();
+        assert!(
+            !bytes.windows(18).any(|w| w == b"zelda-made-up-name"),
+            "{} still holds the deleted name",
+            f.path().display()
+        );
+    }
+}

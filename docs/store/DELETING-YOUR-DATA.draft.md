@@ -21,6 +21,9 @@ their passwords, your passkeys and your signed-in devices. To delete it:
 3. Type your user name and confirm. Everything is deleted at once and cannot be restored. Your mail on your mail servers is not
    touched.
 
+What stays: the Companion's log records that an account was deleted, and when, without saying whose. Backups that the person
+running the Companion made of its data folder keep what they held until those backups are deleted; ask them.
+
 **If you can no longer sign in** to your Companion, ask the person who runs it. They can delete your account with
 `croft-companion user delete --name <your user name>` (`companion/README.md`).
 

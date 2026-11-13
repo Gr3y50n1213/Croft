@@ -152,6 +152,9 @@ impl Store {
 
     fn setup(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", true)?;
+        // T34e: deleted rows (a deleted user's name, wrapped key, sealed passwords) are zeroed in
+        // the file, not left in free pages.
+        conn.pragma_update(None, "secure_delete", true)?;
         let _: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let mut s = Self { conn };

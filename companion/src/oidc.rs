@@ -375,6 +375,7 @@ impl Provider {
         purpose: Purpose,
         app_challenge: &str,
         app_redirect: &str,
+        ask: bool,
         now: i64,
     ) -> Result<String, OidcError> {
         if !self.app_redirect_ok(app_redirect) || !challenge_ok(app_challenge) {
@@ -401,8 +402,11 @@ impl Provider {
         ];
         // For a phone (T34a review): the provider always asks the person, so a flow some other app
         // started never completes silently on a session the browser already has.
-        if crate::app_signin::is_app_redirect(app_redirect) {
+        // T34e: also when the sign-in is to be fresh (`ask`: "Sign in again" before deleting the
+        // account), so the provider's own session is not enough.
+        if ask || crate::app_signin::is_app_redirect(app_redirect) {
             params.push(("prompt", "login"));
+            params.push(("max_age", "0"));
         }
         let url = with_query(&d.authorization_endpoint, &params);
         let flow = Flow {

@@ -19,6 +19,15 @@ export function rememberReturn(storage: Storage, to: Return): void {
   }
 }
 
+/** Whether a return is waiting (the sign-in is one the person was asked for again: it should be fresh). */
+export function hasReturn(storage: Storage): boolean {
+  try {
+    return (RETURNS as readonly string[]).includes(storage.getItem(KEY) ?? "");
+  } catch {
+    return false;
+  }
+}
+
 /** The page to go to after signing in, once; `/` unless one on [RETURNS] was remembered. */
 export function takeReturn(storage: Storage): string {
   let to: string | null = null;

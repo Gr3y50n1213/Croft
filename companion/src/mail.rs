@@ -237,14 +237,20 @@ impl MailCores {
         delete: impl FnOnce() -> Result<bool, E>,
     ) -> Result<bool, E> {
         let slot = self.slot(user_id);
-        let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
-        if !delete()? {
-            return Ok(false);
-        }
-        let core = held.take();
+        let core = {
+            let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+            if !delete()? {
+                return Ok(false);
+            }
+            held.take()
+        };
+        // The slot's lock is let go before waiting for the core's holders (a push watcher asks for
+        // the slot while it still holds the core); with the user deleted, nothing reopens it.
         self.release(core.into_iter().map(|(c, _)| c).collect());
-        let _ = self.remove_folder(user_id);
-        drop(held);
+        if self.remove_folder(user_id).is_err() {
+            // The start sweep removes it; the person's data key is already gone, so it cannot be read.
+            eprintln!("could not remove a deleted user's mail folder yet; it is removed at the next start");
+        }
         self.slots
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -269,7 +275,12 @@ impl MailCores {
         };
         let mut removed = 0;
         for e in entries.flatten() {
-            let Some(id) = e.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else {
+            // Only the names this code makes (a user id, written plainly): "+5" or "05" are left alone.
+            let Some(id) = e
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<i64>().ok().filter(|id| id.to_string() == n))
+            else {
                 continue;
             };
             if !users.contains(&id) && self.remove_folder(id).is_ok() {

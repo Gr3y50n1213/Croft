@@ -11,6 +11,7 @@
   import Dialog from '../ui/Dialog.svelte';
   import { goto } from '$app/navigation';
   import { rememberReturn } from '../after-sign-in.ts';
+  import { forgetPushAfterDeletion } from '../pwa/push.ts';
 
   interface Passkey {
     id: number;
@@ -37,6 +38,8 @@
   let deleteError = $state('');
   let needsFreshSignIn = $state(false);
   let myName = $state('');
+  /** Adding a passkey needs a sign-in from the last ten minutes too (T34e). */
+  let addNeedsFreshSignIn = $state(false);
 
   const others = $derived(sessions.filter((s) => !s.current));
 
@@ -64,7 +67,9 @@
     busy = true;
     try {
       await api.call('POST', '/api/me/delete', { confirm: typed.trim() });
-      api.forget();
+      // The session is gone on the Companion; the browser drops its cookie and its push subscription too.
+      await forgetPushAfterDeletion().catch(() => {});
+      await api.signOut().catch(() => api.forget());
       await goto('/deleted', { replaceState: true });
     } catch (e) {
       if (e instanceof ApiError && e.code === 'fresh_sign_in') {
@@ -96,10 +101,15 @@
       await work();
       notice = done;
     } catch (e) {
-      error =
-        e instanceof ApiError && e.code === 'conflict'
-          ? "Your only passkey can't be removed. Add another one first."
-          : explain(e);
+      if (e instanceof ApiError && e.code === 'fresh_sign_in') {
+        addNeedsFreshSignIn = true;
+        error = 'For your safety, sign in again before adding a passkey.';
+      } else {
+        error =
+          e instanceof ApiError && e.code === 'conflict'
+            ? "Your only passkey can't be removed. Add another one first."
+            : explain(e);
+      }
     } finally {
       busy = false;
       await load().catch(() => {});
@@ -154,6 +164,9 @@
     {/each}
   </ul>
   <button class="button tonal" type="button" disabled={busy} onclick={add}>Add a passkey on this device</button>
+  {#if addNeedsFreshSignIn}
+    <button class="button text" type="button" disabled={busy} onclick={signInAgain}>Sign in again</button>
+  {/if}
 
   <h3>Signed-in devices</h3>
   <ul class="list" aria-label="Signed-in devices" aria-busy={!loaded}>

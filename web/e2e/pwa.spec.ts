@@ -6,20 +6,25 @@
 // cache, opening offline, and push in the browser. Chromium cannot reach a real push service here,
 // so the browser's subscription is a made-up one (a fresh P-256 key, an endpoint on example.org that
 // nothing ever answers), and a ping is handed to the service worker through DevTools, as a push
-// service would. Keys and endpoints are made up, for this test only.
+// service would. Keys and endpoints are made up, for this test only. Headless Chromium refuses
+// notifications, so the "New mail" notice itself is not shown here (its rule is a unit test).
 
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { Companion, virtualAuthenticator, watchForErrors } from './companion.ts';
+import { Companion, TestMail, addAccount, virtualAuthenticator, watchForErrors } from './companion.ts';
 
 let companion: Companion;
 
+let mail: TestMail | null = null;
+
 test.beforeEach(async () => {
-  companion = await Companion.start();
+  companion = await Companion.start({ CROFT_COMPANION_MAIL_ALLOWED_NETWORKS: '127.0.0.1/32' });
 });
 
 test.afterEach(() => {
   companion.stop();
+  mail?.stop();
+  mail = null;
 });
 
 let users = 0;
@@ -119,8 +124,15 @@ test('the app opens offline with its CSP and says so; it carries on when the con
 
 /** A made-up push subscription in place of the browser's (no push service is reachable here). */
 async function fakePush(page: Page): Promise<void> {
-  await page.context().grantPermissions(['notifications'], { origin: companion.url });
   await page.addInitScript(() => {
+    // Headless Chromium refuses notification permission outright: the person's "Allow", made up.
+    // Kept for the tab's life, as the browser keeps a site's permission.
+    const permission = () => (sessionStorage.getItem('test-notifications') ?? 'default') as NotificationPermission;
+    Object.defineProperty(Notification, 'permission', { configurable: true, get: permission });
+    Notification.requestPermission = async () => {
+      sessionStorage.setItem('test-notifications', 'granted');
+      return 'granted';
+    };
     let current: PushSubscription | null = null;
     const b64 = (b: ArrayBuffer | Uint8Array) =>
       btoa(String.fromCharCode(...new Uint8Array(b instanceof Uint8Array ? b : new Uint8Array(b))))
@@ -201,9 +213,15 @@ test('push is turned on and off in W04, and given again after signing in again',
   expect(errors).toEqual([]);
 });
 
-test('a ping refreshes an open tab; with no tab in view it shows "New mail"', async ({ page }) => {
+test('a ping refreshes an open tab at once, whatever the message holds', async ({ page }) => {
   const errors = watchForErrors(page);
+  mail = await TestMail.start(2);
   await signedIn(page);
+  await addAccount(page, mail);
+  await expect(async () => {
+    await page.reload();
+    await expect(page.locator('.rows li.row').first()).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 30_000 });
   await controlled(page);
   const cdp = await page.context().newCDPSession(page);
   const registrations = new Map<string, string>();
@@ -224,26 +242,4 @@ test('a ping refreshes an open tab; with no tab in view it shows "New mail"', as
   await again;
 
   expect(errors).toEqual([]);
-
-  // No app tab open: the worker shows the content-free notice (the browser requires one for a push).
-  const context = page.context();
-  await context.grantPermissions(['notifications'], { origin: companion.url });
-  const other = await context.newPage();
-  await other.goto('about:blank');
-  const cdp2 = await context.newCDPSession(other);
-  await cdp2.send('ServiceWorker.enable');
-  await page.close();
-  await cdp2.send('ServiceWorker.deliverPushMessage', { origin: companion.url, registrationId, data: '' });
-  const back = await context.newPage();
-  await back.goto(companion.url);
-  await expect
-    .poll(
-      () =>
-        back.evaluate(async () => {
-          const reg = await navigator.serviceWorker.ready;
-          return (await reg.getNotifications()).map((n) => `${n.title}|${n.body}`);
-        }),
-      { timeout: 5_000 }
-    )
-    .toEqual(['New mail|Open Croft to read it.']);
 });

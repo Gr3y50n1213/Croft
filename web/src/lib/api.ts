@@ -56,6 +56,8 @@ export class Api {
   #unreachable = false;
   #now: () => number;
   #exclusive: Exclusive;
+  /** Told after every request whether the Companion answered at all (for the "Offline" notice). */
+  onReach: ((reached: boolean) => void) | null = null;
 
   constructor(fetchFn: Fetch, now: () => number = () => Date.now(), exclusive: Exclusive = unlocked) {
     this.#fetch = fetchFn;
@@ -108,8 +110,10 @@ export class Api {
     try {
       res = await this.#fetch(path, init);
     } catch {
+      this.onReach?.(false);
       throw new ApiError('offline', 0);
     }
+    this.onReach?.(true);
     const data: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
       const code = isRecord(data) && typeof data['error'] === 'string' ? data['error'] : 'server';

@@ -12,6 +12,10 @@ import { Companion, TestMail, addAccount, copyPasskeys, virtualAuthenticator, wa
 let companion: Companion;
 let mail: TestMail | null = null;
 
+// Without the service worker (T32b): one test blocks the app's scripts to show that theme.js alone
+// paints the look, and the worker would answer them from its cache. The worker has its own tests.
+test.use({ serviceWorkers: 'block' });
+
 test.beforeEach(async () => {
   companion = await Companion.start({ CROFT_COMPANION_MAIL_ALLOWED_NETWORKS: '127.0.0.1/32' });
 });

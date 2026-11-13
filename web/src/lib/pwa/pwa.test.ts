@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SERVER_PATHS, isServerPath, route } from './route.ts';
+import { SERVER_PATHS, isServerPath, notifyFor, route } from './route.ts';
 import { keyBytes, parseStored, sha256Hex } from './push-data.ts';
 
 const ORIGIN = 'https://companion.test';
@@ -79,4 +79,10 @@ test('the VAPID key becomes its bytes; endpoints are hashed, never kept', async 
   const h = await sha256Hex('https://push.example.org/made-up-endpoint');
   assert.match(h, /^[0-9a-f]{64}$/);
   assert.equal(h, await sha256Hex('https://push.example.org/made-up-endpoint'));
+});
+
+test('a ping shows "New mail" only when no app tab is in view', () => {
+  assert.equal(notifyFor([]), true);
+  assert.equal(notifyFor([{ visibilityState: 'hidden' }]), true);
+  assert.equal(notifyFor([{ visibilityState: 'hidden' }, { visibilityState: 'visible' }]), false);
 });

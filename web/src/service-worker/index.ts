@@ -12,7 +12,7 @@
 import { self as sw } from '$app/service-worker';
 import { immutable, assets } from '$app/manifest';
 import { version } from '$app/env';
-import { NEW_MAIL, PUSH_CHANGED, route } from '../lib/pwa/route.ts';
+import { NEW_MAIL, PUSH_CHANGED, notifyFor, route } from '../lib/pwa/route.ts';
 
 const CACHE = `croft-app-${version}`;
 const PAGE = '/';
@@ -80,13 +80,12 @@ sw.addEventListener('push', (event) => {
 async function ping(): Promise<void> {
   const tabs = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
   for (const tab of tabs) tab.postMessage({ type: NEW_MAIL });
-  // A tab in view refreshes itself; otherwise the browser requires a notice for every push.
-  if (tabs.some((t) => t.visibilityState === 'visible')) return;
-  await sw.registration.showNotification('New mail', {
-    body: 'Open Croft to read it.',
-    tag: NEW_MAIL,
-    icon: '/icon-192.png'
-  });
+  if (!notifyFor(tabs)) return;
+  await sw.registration
+    .showNotification('New mail', { body: 'Open Croft to read it.', tag: NEW_MAIL, icon: '/icon-192.png' })
+    .catch(() => {
+      // Notifications were turned off in the browser meanwhile: nothing to show.
+    });
 }
 
 sw.addEventListener('notificationclick', (event) => {

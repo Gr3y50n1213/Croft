@@ -69,12 +69,26 @@
       if (type === PUSH_CHANGED && me) void keepPush(api).catch(() => {});
     };
     navigator.serviceWorker?.addEventListener('message', fromWorker);
+    // Messages wait until the page says it listens (addEventListener alone does not).
+    navigator.serviceWorker?.startMessages();
 
     (async () => {
       if (!(await api.current())) {
         if (api.unreachable) {
           offline = true;
-          window.addEventListener('online', () => location.reload(), { once: true });
+          // Try again when the browser says it is back, and every few seconds (a network can be
+          // up while the Companion is not reachable).
+          let trying = false;
+          const retry = async () => {
+            if (stopped || trying) return;
+            trying = true;
+            if (await api.renew()) return location.reload();
+            trying = false;
+            if (api.unreachable) setTimeout(retry, 5_000);
+            else void goto('/sign-in', { replaceState: true });
+          };
+          window.addEventListener('online', () => void retry(), { once: true });
+          setTimeout(retry, 5_000);
           return;
         }
         return goto('/sign-in', { replaceState: true });
@@ -301,11 +315,12 @@
   </div>
 
   {#if compose.windows.length > 0}
-    <div class="dock" aria-label="Drafts">
+    <!-- A landmark of its own: the compose windows are not part of the folder list or the mail. -->
+    <aside class="dock" aria-label="Drafts">
       {#each compose.windows as win (win.key)}
         <ComposeWindow {win} {compose} />
       {/each}
-    </div>
+    </aside>
   {/if}
 
   {#if mail.snack}

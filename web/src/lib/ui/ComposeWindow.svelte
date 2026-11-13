@@ -46,11 +46,11 @@
   </div>
 {:else}
   <div class="window" role="dialog" aria-label={title} tabindex="-1" onkeydown={keydown}>
-    <header>
+    <div class="head">
       <h2>{title}</h2>
       <IconButton icon="back" label="Minimise" shortcut="Esc" onclick={() => compose.toggle(win.key)} />
       <IconButton icon="close" label="Close" onclick={() => void compose.close(win.key)} />
-    </header>
+    </div>
     <label class="row">
       <span>To</span>
       <input autocomplete="off" bind:value={to} oninput={changed} />
@@ -68,11 +68,11 @@
       <span class="sr-only">Message</span>
       <textarea bind:value={win.fields.body} oninput={changed}></textarea>
     </label>
-    <footer>
+    <div class="foot">
       <button type="button" class="button" disabled={win.sending} onclick={() => (changed(), void compose.send(win.key))}>Send</button>
       <span class="status" role="status">{win.status}</span>
       <IconButton icon="delete" label="Discard draft" onclick={() => void compose.discard(win.key)} />
-    </footer>
+    </div>
   </div>
 {/if}
 
@@ -88,7 +88,7 @@
     overflow: hidden;
   }
 
-  header {
+  .head {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -97,7 +97,7 @@
     color: var(--croft-color-on-primary);
   }
 
-  header :global(.icon-button) {
+  .head :global(.icon-button) {
     color: var(--croft-color-on-primary);
   }
 
@@ -145,7 +145,7 @@
     font: inherit;
   }
 
-  footer {
+  .foot {
     display: flex;
     align-items: center;
     gap: 12px;

@@ -10,28 +10,20 @@
   import { onMount } from 'svelte';
   import { settings } from '#lib/settings/store.svelte.ts';
   import { registerWorker } from '#lib/pwa/register.ts';
+  import { connection } from '#lib/pwa/connection.svelte.ts';
 
   let { children } = $props();
-  let online = $state(true);
 
   onMount(() => {
     // W04's look, applied by static/theme.js before the first paint, is followed from here on.
     settings.start();
     // The installable app: its files cached, so it opens offline (T32b).
     void registerWorker();
-    online = navigator.onLine;
-    const on = () => (online = true);
-    const off = () => (online = false);
-    window.addEventListener('online', on);
-    window.addEventListener('offline', off);
-    return () => {
-      window.removeEventListener('online', on);
-      window.removeEventListener('offline', off);
-    };
+    connection.start();
   });
 </script>
 
-{#if !online}
+{#if connection.offline}
   <p class="offline" role="status">Offline. Croft catches up when the connection is back.</p>
 {/if}
 {@render children()}

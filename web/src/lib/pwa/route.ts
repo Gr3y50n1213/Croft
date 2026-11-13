@@ -49,3 +49,11 @@ export function route(req: RequestLike, origin: string, assets: ReadonlySet<stri
 /** Messages from the service worker to the app's tabs. */
 export const NEW_MAIL = 'croft-new-mail';
 export const PUSH_CHANGED = 'croft-push-changed';
+
+/**
+ * What a push ping does: every app tab is told (it refreshes its mail); when none is in view, a
+ * notice says "New mail" (the browser requires one for every push nobody sees).
+ */
+export function notifyFor(tabs: readonly { readonly visibilityState: string }[]): boolean {
+  return !tabs.some((t) => t.visibilityState === 'visible');
+}

@@ -62,6 +62,7 @@ impl Stored {
                 date_ms: 1_794_393_000_000,
                 size: 100,
                 flags: Flags::default(),
+                list: Default::default(),
             },
         )
         .unwrap();
@@ -263,6 +264,7 @@ fn suggestions_come_from_the_sent_folder_when_the_sync_stored_recipients() {
                 date_ms: 1000,
                 size: 1,
                 flags: Flags::default(),
+                list: Default::default(),
             },
         )
         .unwrap();

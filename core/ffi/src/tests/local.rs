@@ -37,13 +37,14 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
         date_ms,
         size: 1200,
         flags: Flags::default(),
+        list: Default::default(),
     }
 }
 
 #[test]
-fn the_version_is_14() {
-    assert_eq!(FFI_API_VERSION, 14);
-    assert_eq!(ffi_api_version(), 14);
+fn the_version_is_15() {
+    assert_eq!(FFI_API_VERSION, 15);
+    assert_eq!(ffi_api_version(), 15);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -1357,5 +1358,90 @@ fn a_companion_address_is_normalized_and_a_sign_in_is_finished_once_by_its_own_c
         core.companion_link(b"nonsense".to_vec(), Arc::new(Ignore))
             .unwrap_err(),
         CompanionFailure::SignedOut
+    );
+}
+
+// ---- T35: inbox categories ----
+
+#[test]
+fn the_inbox_filters_by_category_counts_unread_and_moves_a_sender_with_always() {
+    let rig = list_rig(0);
+    {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        let c = d.connection();
+        let mut bulk = header(1, 1000);
+        bulk.from_addr = Some("deals@shop.example".into());
+        bulk.list.precedence = Some("bulk".into());
+        messages::upsert(c, rig.a1, rig.inbox1, &bulk).unwrap();
+        let mut bulk2 = bulk.clone();
+        bulk2.uid = 2;
+        bulk2.date_ms = 2000;
+        messages::upsert(c, rig.a1, rig.inbox1, &bulk2).unwrap();
+        messages::upsert(c, rig.a1, rig.inbox1, &header(3, 3000)).unwrap();
+        messages::upsert(c, rig.a2, rig.inbox2, &header(1, 1000)).unwrap();
+    }
+    let one = MessageScope::Folder {
+        account: rig.a1,
+        folder_id: rig.inbox1,
+    };
+    let promos = rig
+        .core
+        .list_messages_in(one, Some(InboxCategory::Promotions), None, 50)
+        .unwrap();
+    assert_eq!(promos.rows.len(), 2);
+    let all = rig.core.list_messages_in(one, None, None, 50).unwrap();
+    assert_eq!(all.rows.len(), 3);
+    let unified_primary = rig
+        .core
+        .list_messages_in(
+            MessageScope::UnifiedInbox,
+            Some(InboxCategory::Primary),
+            None,
+            50,
+        )
+        .unwrap();
+    assert_eq!(unified_primary.rows.len(), 2, "one per account");
+    let counts = rig.core.inbox_category_counts(None).unwrap();
+    assert_eq!(
+        counts
+            .iter()
+            .map(|c| (c.category, c.unread))
+            .collect::<Vec<_>>(),
+        vec![
+            (InboxCategory::Primary, 2),
+            (InboxCategory::Updates, 0),
+            (InboxCategory::Promotions, 2),
+            (InboxCategory::Social, 0)
+        ]
+    );
+    // "Move to Primary", then "Always do this" for the sender.
+    let first = promos.rows[0].id;
+    rig.core
+        .set_message_category(first, InboxCategory::Primary, false)
+        .unwrap();
+    assert_eq!(
+        rig.core
+            .list_messages_in(one, Some(InboxCategory::Promotions), None, 50)
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+    rig.core
+        .set_message_category(first, InboxCategory::Primary, true)
+        .unwrap();
+    assert!(rig
+        .core
+        .list_messages_in(one, Some(InboxCategory::Promotions), None, 50)
+        .unwrap()
+        .rows
+        .is_empty());
+    let a1_counts = rig.core.inbox_category_counts(Some(rig.a1)).unwrap();
+    assert_eq!(a1_counts[0].unread, 3);
+    assert_eq!(
+        rig.core
+            .set_message_category(999_999, InboxCategory::Primary, false)
+            .unwrap_err(),
+        CoreError::NoSuchMessage
     );
 }

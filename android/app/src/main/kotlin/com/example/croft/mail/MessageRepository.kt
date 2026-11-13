@@ -36,6 +36,19 @@ interface MessageRepository {
      */
     suspend fun listMessages(scope: MessageScope, before: RowCursor?, limit: Int): MessagePage
 
+    /**
+     * T35: [listMessages] with only the messages of [category] in the Inbox scopes (`null`: all of them). An implementation without
+     * categories lists everything.
+     */
+    suspend fun listMessagesIn(scope: MessageScope, category: MailCategory?, before: RowCursor?, limit: Int): MessagePage =
+        listMessages(scope, before, limit)
+
+    /** T35: unread messages per category in the Inbox of [account], or of every account (`null`). */
+    suspend fun categoryCounts(account: AccountId?): Map<MailCategory, Long> = emptyMap()
+
+    /** T35: moves a message to [category]; with [always], the sender's mail goes there from now on ("Always do this"). */
+    suspend fun setCategory(id: MessageId, category: MailCategory, always: Boolean) {}
+
     /** Returns as soon as anything changed after [after] (at once if [after] is old). Pass the batch's `seq` next time. */
     suspend fun nextChange(after: Long): ChangeBatch
 

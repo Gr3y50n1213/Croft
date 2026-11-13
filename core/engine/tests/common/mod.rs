@@ -370,6 +370,7 @@ impl MailBackend for FakeBackend {
                         date_ms: m.date_ms,
                         size: 100,
                         flags: m.flags.clone(),
+                        list: Default::default(),
                     })
                 })
                 .collect();

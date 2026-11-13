@@ -646,6 +646,7 @@ fn header(uid: Uid, id: &str) -> RemoteHeader {
         date_ms: 0,
         size: 0,
         flags: croft_protocols::Flags::default(),
+        list: Default::default(),
     }
 }
 
@@ -673,7 +674,7 @@ fn a_folder_reset_is_one_batch_and_moves_each_operation_once() {
     let put = |uid, id: &str| LocalEffect::PutHeader {
         account: A,
         folder: "INBOX".into(),
-        header: header(uid, id),
+        header: Box::new(header(uid, id)),
     };
     assert_eq!(
         take_effects(&mut q),
@@ -747,7 +748,7 @@ fn a_folder_reset_resolves_awaiting_entries_from_and_to_the_folder() {
             LocalEffect::PutHeader {
                 account: A,
                 folder: "Archive".into(),
-                header: header(7, "<a@x>")
+                header: Box::new(header(7, "<a@x>"))
             },
         ]
     );

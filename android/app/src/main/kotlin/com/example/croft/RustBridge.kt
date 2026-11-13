@@ -15,7 +15,7 @@ import uniffi.croft_ffi.ffiApiVersion
  * The FFI API version this app was written against. Bump it together with the Rust constant
  * `FFI_API_VERSION` in core/ffi/src/lib.rs, after adapting to the change that made it necessary.
  */
-const val EXPECTED_FFI_API_VERSION: UInt = 14u
+const val EXPECTED_FFI_API_VERSION: UInt = 15u
 
 /**
  * Using `uniffi.croft_ffi.Core` from the app (see also core/ffi/README.md):

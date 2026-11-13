@@ -54,6 +54,7 @@ pub fn resume_demo(db: &Db, account: AccountId, now_ms: i64) -> Result<DemoBacke
                     date_ms: m.date_ts,
                     size: u32::try_from(m.size).unwrap_or(0),
                     flags,
+                    list: Default::default(),
                 });
             }
         }

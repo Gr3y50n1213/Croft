@@ -43,6 +43,7 @@
 compile_error!("the test-server feature is host-only and must never be enabled for Android");
 
 mod background;
+mod category;
 mod changes;
 mod companion;
 mod compose;
@@ -64,6 +65,7 @@ mod types;
 
 pub use crate::core::{Core, DiscoveryObserver};
 pub use background::{BackgroundCheck, NewMailInfo};
+pub use category::{CategoryCount, InboxCategory};
 pub use companion::{
     companion_address, CompanionConnected, CompanionDevice, CompanionFailure, CompanionInfo,
     CompanionLink, CompanionSecretSaver, CompanionSignInStart,
@@ -124,11 +126,14 @@ uniffi::setup_scaffolding!();
 /// `companion_begin`, `companion_finish`, `companion_link` and the object `CompanionLink`, the
 /// callback `CompanionSecretSaver`, the records `CompanionInfo`, `CompanionSignInStart`,
 /// `CompanionConnected`, `CompanionDevice` and the error `CompanionFailure`.
+///
+/// Version 15 (T35): inbox categories: `list_messages_in`, `inbox_category_counts`,
+/// `set_message_category`, the enum `InboxCategory` and the record `CategoryCount`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 14;
+pub const FFI_API_VERSION: u32 = 15;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

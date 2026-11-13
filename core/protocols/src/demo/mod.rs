@@ -151,6 +151,7 @@ fn built_in(now_ms: i64) -> Vec<Folder> {
             date_ms: sample.date_ms(now_ms),
             size: u32::try_from(source.len()).unwrap_or(u32::MAX),
             flags: sample.flags(),
+            list: Default::default(),
         };
         if let Some(folder) = folders.iter_mut().find(|f| f.info.path == sample.folder) {
             folder.append(Stored {
@@ -347,6 +348,7 @@ fn parse_header(mime: &[u8]) -> RemoteHeader {
         date_ms,
         size: u32::try_from(mime.len()).unwrap_or(u32::MAX),
         flags: Flags::default(),
+        list: Default::default(),
     }
 }
 

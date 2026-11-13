@@ -68,6 +68,7 @@ fn message(
             date_ms,
             size: 100,
             flags: Flags::default(),
+            list: Default::default(),
         },
     )
     .unwrap()
@@ -316,6 +317,7 @@ fn a_forged_copy_of_a_message_id_never_replaces_the_real_message() {
             date_ms: 150,
             size: 100,
             flags: Flags::default(),
+            list: Default::default(),
         },
     )
     .unwrap();

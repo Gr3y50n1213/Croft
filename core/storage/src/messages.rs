@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use croft_mail_core::category::{classify, Category, SenderRule};
 use croft_protocols::{FlagChange, Flags, RemoteHeader, Uid};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -204,7 +205,8 @@ pub fn thread_key(header: &RemoteHeader) -> String {
 /// Returns the row id.
 ///
 /// If the existing row has `pending_ops > 0` a local change is in flight, so `is_seen` and
-/// `is_flagged` keep their local values instead of taking the server's. Snooze, category, snippet,
+/// `is_flagged` keep their local values instead of taking the server's. Snooze, category (decided
+/// at the first store, T35), snippet,
 /// body state, attachment flag and recipients are never touched by an upsert.
 ///
 /// Fails with [`StorageError::NotFound`] when `folder_id` is not a folder of `account_id`.
@@ -219,12 +221,21 @@ pub fn upsert(
         key = format!("uid:{folder_id}:{}", header.uid);
     }
     let keywords = serde_json::to_string(&header.flags.keywords)?;
+    // T35: the category is decided once, when the message is first stored; a later sync keeps it
+    // (the ON CONFLICT branch leaves it alone), so the person's corrections stay.
+    let category = classify(
+        header.from_addr.as_deref(),
+        &header.list,
+        &category_rules(conn, account_id)?,
+    );
     let id = conn
         .query_row(
             r#"INSERT INTO message (account_id, folder_id, uid, message_id_hdr, thread_key, subject,
                                     from_name, from_addr, date_ts, size, is_seen, is_flagged,
-                                    is_answered, is_draft, keywords_json)
-               SELECT ?1, f.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                                    is_answered, is_draft, keywords_json, category, list_id,
+                                    list_unsubscribe, list_one_click)
+               SELECT ?1, f.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                      ?18, ?19
                  FROM folder f
                 WHERE f.account_id = ?1 AND f.id = ?2
                ON CONFLICT (folder_id, uid) DO UPDATE SET
@@ -241,7 +252,10 @@ pub fn upsert(
                                      ELSE excluded.is_flagged END,
                    is_answered   = excluded.is_answered,
                    is_draft      = excluded.is_draft,
-                   keywords_json = excluded.keywords_json
+                   keywords_json = excluded.keywords_json,
+                   list_id          = excluded.list_id,
+                   list_unsubscribe = excluded.list_unsubscribe,
+                   list_one_click   = excluded.list_one_click
                WHERE message.account_id = excluded.account_id
                RETURNING id"#,
             params![
@@ -259,7 +273,11 @@ pub fn upsert(
                 header.flags.flagged,
                 header.flags.answered,
                 header.flags.draft,
-                keywords
+                keywords,
+                category.as_str(),
+                header.list.list_id,
+                header.list.unsubscribe,
+                header.list.one_click
             ],
             |r| r.get(0),
         )
@@ -510,4 +528,86 @@ pub fn release_local_state(
         }
     }
     Ok(n)
+}
+
+// ---- T35: inbox categories ----
+
+/// The account's "Always do this" rules.
+pub fn category_rules(conn: &Connection, account_id: i64) -> Result<Vec<SenderRule>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT sender, category FROM category_rule WHERE account_id = ?1")?;
+    let rows = stmt.query_map(params![account_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (sender, category) = row?;
+        if let Some(category) = Category::parse(&category) {
+            out.push(SenderRule { sender, category });
+        }
+    }
+    Ok(out)
+}
+
+/// Sets one message's category (Move to Primary, ...). False when there is no such message in
+/// this account.
+pub fn set_category(
+    conn: &Connection,
+    account_id: i64,
+    message_id: i64,
+    category: Category,
+) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE message SET category = ?3 WHERE account_id = ?1 AND id = ?2",
+        params![account_id, message_id, category.as_str()],
+    )?;
+    Ok(n > 0)
+}
+
+/// "Always do this": mail from `address` (lower case) goes to `category` from now on, and the
+/// account's mail already stored from that address is re-filed. The number of messages re-filed.
+pub fn add_category_rule(
+    conn: &Connection,
+    account_id: i64,
+    address: &str,
+    category: Category,
+) -> Result<usize> {
+    conn.execute(
+        "INSERT INTO category_rule (account_id, sender, category) VALUES (?1, ?2, ?3)
+         ON CONFLICT (account_id, sender) DO UPDATE SET category = excluded.category",
+        params![account_id, address, category.as_str()],
+    )?;
+    Ok(conn.execute(
+        "UPDATE message SET category = ?3 WHERE account_id = ?1 AND lower(from_addr) = ?2",
+        params![account_id, address, category.as_str()],
+    )?)
+}
+
+/// Unread messages per category in one folder of this account (hidden and snoozed ones left out,
+/// as in the list), for S10's chips. Every category is present, with 0 when it has none.
+pub fn unread_by_category(
+    conn: &Connection,
+    account_id: i64,
+    folder_id: i64,
+    now_ms: i64,
+) -> Result<Vec<(Category, u64)>> {
+    let mut stmt = conn.prepare_cached(
+        r#"SELECT category, COUNT(*) FROM message
+            WHERE account_id = ?1 AND folder_id = ?2 AND is_seen = 0 AND local_hidden = 0
+              AND (snoozed_until IS NULL OR snoozed_until <= ?3)
+            GROUP BY category"#,
+    )?;
+    let rows = stmt.query_map(params![account_id, folder_id, now_ms], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    let mut counts: Vec<(Category, u64)> = Category::ALL.iter().map(|c| (*c, 0)).collect();
+    for row in rows {
+        let (name, n) = row?;
+        if let Some(c) = Category::parse(&name) {
+            if let Some(slot) = counts.iter_mut().find(|(k, _)| *k == c) {
+                slot.1 = u64::try_from(n).unwrap_or(0);
+            }
+        }
+    }
+    Ok(counts)
 }

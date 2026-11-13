@@ -3,6 +3,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 """Tests for check-release-manifest.py: run with `python3 -m unittest discover -s tools` from android/."""
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -207,6 +208,56 @@ class ManifestCheck(unittest.TestCase):
             p = Path(d) / "m.xml"
             p.write_text((BASE % ("", "")).replace("<application>", '<application android:debuggable="true">'))
             self.assertEqual(len(crm.check(p, ALLOW)), 1)
+
+    def run_store(self, store, extra_top="", extra_app=""):
+        old = os.environ.get("CROFT_STORE")
+        if store is None:
+            os.environ.pop("CROFT_STORE", None)
+        else:
+            os.environ["CROFT_STORE"] = store
+        try:
+            return run(extra_top, extra_app)
+        finally:
+            if old is None:
+                os.environ.pop("CROFT_STORE", None)
+            else:
+                os.environ["CROFT_STORE"] = old
+
+    FCM_TOP = '<uses-permission android:name="com.google.android.c2dm.permission.RECEIVE" />'
+    FCM_APP = (
+        '<receiver android:name="com.google.firebase.iid.FirebaseInstanceIdReceiver" android:exported="true" '
+        'android:permission="com.google.android.c2dm.permission.SEND">'
+        '<intent-filter><action android:name="com.google.android.c2dm.intent.RECEIVE" /></intent-filter></receiver>'
+    )
+    UP_APP = (
+        '<receiver android:name="org.unifiedpush.android.connector.internal.MessagingReceiverImpl" android:exported="true">'
+        '<intent-filter><action android:name="org.unifiedpush.android.connector.MESSAGE" />'
+        '<action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" /></intent-filter></receiver>'
+        '<service android:name="org.unifiedpush.android.connector.internal.RaiseToForegroundService" android:exported="true">'
+        '<intent-filter><action android:name="org.unifiedpush.android.connector.RAISE_TO_FOREGROUND" /></intent-filter></service>'
+    )
+
+    def test_fcm_of_t34d_passes_only_in_the_play_build(self):
+        self.assertEqual(self.run_store("play", self.FCM_TOP, self.FCM_APP), [])
+        for store in ("fdroid", "github", None):
+            errs = self.run_store(store, self.FCM_TOP, self.FCM_APP)
+            self.assertEqual(len(errs), 2, (store, errs))
+
+    def test_unifiedpush_of_t34d_passes_only_in_fdroid_and_github(self):
+        for store in ("fdroid", "github"):
+            self.assertEqual(self.run_store(store, extra_app=self.UP_APP), [], store)
+        self.assertEqual(len(self.run_store("play", extra_app=self.UP_APP)), 2)
+
+    def test_the_fcm_receiver_must_keep_its_guard(self):
+        unguarded = self.FCM_APP.replace(' android:permission="com.google.android.c2dm.permission.SEND"', "")
+        self.assertEqual(len(self.run_store("play", self.FCM_TOP, unguarded)), 1)
+
+    def test_the_unifiedpush_receiver_takes_no_other_action(self):
+        extra = self.UP_APP.replace(
+            '<action android:name="org.unifiedpush.android.connector.MESSAGE" />',
+            '<action android:name="android.intent.action.VIEW" />',
+        )
+        self.assertEqual(len(self.run_store("fdroid", extra_app=extra)), 1)
 
     def test_preview_suffix_keeps_the_activity_in_the_namespace(self):
         # The preview build's package is "<namespace>.preview"; its classes and its signature permission differ accordingly.

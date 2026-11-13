@@ -33,6 +33,17 @@ class LicenceListTest {
     }
 
     @Test
+    fun eachStoreBuildListsItsOwnPushLibrary() {
+        // T34d: fdroid and github share src/unifiedpush.
+        val folder = if (com.example.croft.BuildConfig.STORE == "play") "play" else "unifiedpush"
+        val own = Licences.parse(File("src/$folder/assets/${Licences.STORE_ASSET}").readText()).map { it.name }
+        val expected = if (folder == "play") "com.google.firebase:firebase-messaging" else "org.unifiedpush.android:connector"
+        assertTrue("$expected is missing from the $folder list", own.contains(expected))
+        val other = if (folder == "play") "org.unifiedpush" else "com.google.firebase"
+        assertTrue(own.none { it.startsWith(other) } && entries.none { it.name.startsWith(other) })
+    }
+
+    @Test
     fun aDamagedFileGivesAnEmptyListInsteadOfACrash() {
         assertTrue(Licences.parse("not json").isEmpty())
         assertTrue(Licences.parse("""{"entries": 5}""").isEmpty())

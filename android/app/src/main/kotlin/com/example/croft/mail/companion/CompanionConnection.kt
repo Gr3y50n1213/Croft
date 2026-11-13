@@ -229,6 +229,29 @@ class CompanionConnection(
         _state.value = CompanionState.Connected(joined.url, joined.userName)
     }
 
+    /** Runs [block] with the open link (loading it first in a cold process); null when not connected or when it failed (the state says why). */
+    private suspend fun <T> withLink(block: suspend (CompanionLinkApi) -> T): T? {
+        if (link == null) load()
+        return lock.withLock {
+            val l = link ?: return@withLock null
+            guarded { block(l) }
+        }
+    }
+
+    /** T34d: the Companion's push key (for UnifiedPush's VAPID and the gateway's binding), or null. */
+    suspend fun pushKey(): String? = withLink { it.pushKey() }
+
+    /** T34d: subscribes this device for pings; the Companion's id for the subscription, or null when it could not. */
+    suspend fun addPush(endpoint: String, p256dh: String, auth: String): Long? = withLink { it.addPush(endpoint, p256dh, auth) }
+
+    /** T34d: removes a subscription (best effort). */
+    suspend fun removePush(id: Long) {
+        withLink { it.removePush(id) }
+    }
+
+    /** Whether a Companion is connected (a secret is kept), without the network. */
+    fun isConnected(): Boolean = link != null || try { secrets.get()?.also { it.fill(0) } != null } catch (e: Exception) { false }
+
     /** S58: the signed-in devices. */
     suspend fun loadDevices() = lock.withLock {
         val l = link ?: return@withLock

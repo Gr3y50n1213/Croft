@@ -204,6 +204,19 @@ jobs:
       - name: Build the unsigned release APKs (each store) and the Play AAB
         working-directory: android
         run: ./gradlew :app:assemblePlayRelease :app:bundlePlayRelease :app:assembleFdroidRelease :app:assembleGithubRelease
+      # T34d: the licence lists of S60 are made again from this build's own Gradle cache and Cargo metadata; a difference with the
+      # checked-in files fails, and the files made here are uploaded (artifact licence-lists) to be checked in.
+      - name: Make the licence lists again and compare (S60)
+        working-directory: android
+        run: |
+          python3 tools/gen_licences.py
+          git diff --exit-code -- app/src/main/assets/licenses app/src/play/assets/licenses app/src/unifiedpush/assets/licenses
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: licence-lists
+          path: android/app/src/*/assets/licenses/*.json
+          retention-days: 7
       - name: Check the release outputs (unsigned, manifest allowlist, 16 KB alignment)
         working-directory: android
         run: |

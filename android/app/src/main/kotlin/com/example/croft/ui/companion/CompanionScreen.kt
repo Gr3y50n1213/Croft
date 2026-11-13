@@ -6,6 +6,8 @@ package com.example.croft.ui.companion
 
 import android.content.ActivityNotFoundException
 import android.net.Uri
+import com.example.croft.push.PushRuntime
+import com.example.croft.push.PushStatus
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -59,9 +61,35 @@ object CompanionTags {
     const val ADDRESS = "companion-address"
     const val CONNECT = "companion-connect"
     const val DISCONNECT = "companion-disconnect"
+    const val PUSH_STATUS = "companion-push-status"
+    const val PUSH_ON = "companion-push-on"
 }
 
 @Composable
+/** S58's push row (T34d): what push does now, and Turn on when it is not on. */
+@Composable
+private fun PushSection(status: PushStatus, onTurnOn: () -> Unit) {
+    Text(stringResource(R.string.companion_push_title), style = MaterialTheme.typography.titleSmall)
+    Text(
+        stringResource(
+            when (status) {
+                PushStatus.ON -> R.string.companion_push_on
+                PushStatus.WAITING -> R.string.companion_push_waiting
+                PushStatus.FAILED -> R.string.companion_push_failed
+                PushStatus.NO_DISTRIBUTOR -> R.string.companion_push_no_distributor
+                PushStatus.NOT_IN_THIS_BUILD -> R.string.companion_push_not_in_build
+                PushStatus.NOT_CONNECTED -> R.string.companion_push_off
+            },
+        ),
+        modifier = Modifier.testTag(CompanionTags.PUSH_STATUS),
+    )
+    if (status != PushStatus.ON && status != PushStatus.WAITING && status != PushStatus.NOT_IN_THIS_BUILD) {
+        OutlinedButton(onClick = onTurnOn, modifier = Modifier.testTag(CompanionTags.PUSH_ON)) {
+            Text(stringResource(R.string.companion_push_turn_on))
+        }
+    }
+}
+
 private fun problemText(p: CompanionProblem): String = stringResource(
     when (p) {
         CompanionProblem.BAD_ADDRESS -> R.string.companion_problem_bad_address
@@ -91,6 +119,7 @@ fun CompanionScreen(connection: CompanionConnection, onBack: () -> Unit, modifie
     var confirming by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { connection.load() } }
+    val pushStatus by PushRuntime.status.collectAsState()
     LaunchedEffect(state is CompanionState.Connected) {
         if (state is CompanionState.Connected) withContext(Dispatchers.IO) { connection.loadDevices() }
     }
@@ -166,6 +195,10 @@ fun CompanionScreen(connection: CompanionConnection, onBack: () -> Unit, modifie
                             },
                         )
                     }
+                    PushSection(
+                        status = pushStatus,
+                        onTurnOn = { scope.launch { PushRuntime.start(context) } },
+                    )
                     OutlinedButton(onClick = { confirming = true }, modifier = Modifier.testTag(CompanionTags.DISCONNECT)) {
                         Text(stringResource(R.string.companion_disconnect))
                     }
@@ -182,7 +215,10 @@ fun CompanionScreen(connection: CompanionConnection, onBack: () -> Unit, modifie
             confirmButton = {
                 TextButton(onClick = {
                     confirming = false
-                    scope.launch(Dispatchers.IO) { connection.disconnect() }
+                    scope.launch(Dispatchers.IO) {
+                        PushRuntime.stop(context)
+                        connection.disconnect()
+                    }
                 }) { Text(stringResource(R.string.companion_disconnect_confirm)) }
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text(stringResource(R.string.companion_cancel)) } },

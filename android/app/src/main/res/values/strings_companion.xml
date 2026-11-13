@@ -25,10 +25,18 @@
     <string name="companion_devices">Signed-in devices</string>
     <string name="companion_this_device">This phone</string>
     <string name="companion_sign_out_device">Sign out</string>
-    <string name="companion_disconnect">Disconnect this phone</string>
-    <string name="companion_disconnect_title">Disconnect this phone?</string>
-    <string name="companion_disconnect_body">This phone signs out of your Companion. Your mail on this phone is not touched.</string>
-    <string name="companion_disconnect_confirm">Disconnect</string>
+    <string name="companion_disconnect">Unregister this device</string>
+    <string name="companion_disconnect_title">Unregister this device?</string>
+    <string name="companion_disconnect_body">This phone signs out of your Companion and stops getting instant notifications from it. Your mail on this phone is not touched.</string>
+    <string name="companion_disconnect_confirm">Unregister</string>
+    <string name="companion_push_title">Instant notifications</string>
+    <string name="companion_push_on">On. Your Companion tells this phone when mail comes.</string>
+    <string name="companion_push_waiting">Turning on…</string>
+    <string name="companion_push_failed">Not working right now. Croft still checks for mail on its schedule.</string>
+    <string name="companion_push_no_distributor">Needs a UnifiedPush app, such as ntfy. Install one, then turn this on. Until then Croft checks for mail on its schedule.</string>
+    <string name="companion_push_not_in_build">This build of Croft has no instant notifications. Croft checks for mail on its schedule.</string>
+    <string name="companion_push_off">Off. Croft checks for mail on its schedule.</string>
+    <string name="companion_push_turn_on">Turn on</string>
 
     <!-- Problems -->
     <string name="companion_problem_bad_address">That is not a Companion address. Enter the address of its web page, like companion.example.org.</string>

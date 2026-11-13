@@ -2,7 +2,7 @@
  "version": 1,
  "inputs": {
   "cargoLockSha256": "29b60a172744a2afcc25b034b725fc4f81a3dc1838510a4ac7c3a821a8a0c78e",
-  "libsCatalogSha256": "6f7b8a482bef67f3e42dedc476ee949b99a3e2e3b3244e1ab1688451e334a95b"
+  "libsCatalogSha256": "892f33a4f9ae7aa2ebd07f412043f4b14d22f527b6cde4506c42018c269b809c"
  },
  "entries": [
   {

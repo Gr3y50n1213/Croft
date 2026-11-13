@@ -49,7 +49,13 @@ private class LazyAccountOps(private val context: Context) : AccountOps {
             closeCore = { MailRuntime.forgetCore() },
             eraseStorage = { open.secrets.eraseEverything() },
             clearLocalFiles = { if (!MailRuntime.afterErase(context)) throw java.io.IOException("a file could not be deleted") },
-            endCompanion = { CompanionRuntime.connection(context)?.let { it.load(); it.disconnect() } },
+            endCompanion = {
+                CompanionRuntime.connection(context)?.let {
+                    com.example.croft.push.PushRuntime.stop(context)
+                    it.load()
+                    it.disconnect()
+                }
+            },
         )
     }
 

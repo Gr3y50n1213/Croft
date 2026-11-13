@@ -5,9 +5,65 @@ unverified, the next step.
 
 ---
 
+## T39c: The week view and calendar links (13 November 2026)
+
+**Status:** merged (pull request #94; CI green on draft #93). The independent review of the link fetch is done; its findings are fixed (`docs/REVIEW-QUEUE.md`).
+
+**What was built.**
+- **Calendar links (core, migration 0014, FFI v21).**
+  - `subscribe_calendar` takes an `https` or `webcal` link.
+  - The fetch:
+    - public addresses only, as for one-click unsubscribe;
+    - no cookies or credential;
+    - at most two redirects, each to a public `https` address;
+    - at most 5 MiB, with bounded waits.
+  - It must be a calendar file. Its events are split into one object per `UID` and stored as a read-only calendar of
+    the account.
+  - Each calendar sync fetches it again at most hourly, asking with `If-None-Match` and `If-Modified-Since`, and replaces
+    the events that changed or went.
+  - Edits to its events are refused. `unsubscribe_calendar` removes it with its events. The CalDAV clean-up and sync never
+    touch links.
+  - After the review:
+    - a split copies only four top-level lines and small zones, within twice the file's cap;
+    - a failed fetch waits its hour;
+    - one deadline per fetch, 20 links per account, 2 minutes of links per sync;
+    - unchanged events are not rewritten, and each fetch is stored all or nothing;
+    - a feed that empties clears its events;
+    - a link's alarms never set reminders.
+- **S35 Week.**
+  - Three days (seven on wide screens), with an hour grid, an all-day strip, blocks side by side where they overlap, and
+    the current-time line.
+  - A tap on an empty slot opens S38 at that quarter hour.
+  - A long press and drag moves an event in 15-minute steps and across days, with the Drag start and Tick haptics.
+  - Letting go saves; a repeating event asks "This event / All events" first. A series moves by the same amount from its
+    first occurrence.
+  - Screen readers get a "Move" action that opens the editor.
+- **S37:** no Edit or Delete for an event from a link.
+- **S38:** new events never go to a calendar from a link.
+- **S39:**
+  - "Subscribe to a calendar link" (in place on the screen): the link, a name and the account, with each problem said plainly.
+  - Linked calendars show a link icon and Remove, which asks first.
+
+**Checks.** All local and passed:
+- `cargo fmt` and both clippy runs;
+- `cargo test` for the whole core, including:
+  - calendar link fetch tests against an in-process server: the bare `GET`, the conditional fetch, redirects, the size
+    cap, and private and plain addresses refused before anything is sent;
+  - the split by `UID`, and a hostile file that cannot grow when split;
+  - storage and FFI tests of link calendars: all-or-nothing adds, the cap, failed tries, and a link listed before a
+    CalDAV calendar (that test fails without the fix);
+- SQLCipher;
+- `check_schema.py`.
+
+Android tests (`WeekAndLinksTest`) run in CI.
+
+**Next.** T40: invitations (iMIP) and RSVP.
+
+---
+
 ## T39b: The calendar screens (13 November 2026)
 
-**Status:** on `task/t39b`, its own pull request (CI runs the Android tests). S35 Week and "Subscribe to a calendar link" are
+**Status:** merged (#92). S35 Week and "Subscribe to a calendar link" are
 T39c; RSVP is T40.
 
 **What was built.**
@@ -50,7 +106,7 @@ card. The Android tests run in CI only.
 
 ## T39a: The calendar in the core (13 November 2026)
 
-**Status:** on `task/t39a`, its own pull request; the independent review is running. The screens are T39b.
+**Status:** merged (#90); the independent review is done (`docs/REVIEW-QUEUE.md`). The screens are T39b.
 
 **What was built.**
 - **One DAV client (protocols).** The CardDAV client became `dav/`, shared by CardDAV and CalDAV.
@@ -115,7 +171,7 @@ unchanged). The Companion's own lock file gains `jiff`.
 
 ## T38b: The contacts screens (13 November 2026)
 
-**Status:** on `task/t38b`, its own pull request (CI runs the Android tests; this machine cannot fetch from Maven).
+**Status:** merged (#89).
 
 **What was built.**
 - **S40 Contacts** from the bottom bar (Mail and Contacts switch; Calendar waits for T39):

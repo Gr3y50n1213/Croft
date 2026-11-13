@@ -157,11 +157,15 @@ uniffi::setup_scaffolding!();
 /// Version 20 (T39a): calendars: `sync_calendars`, `calendars`, `set_calendar_shown`,
 /// `events_between`, `get_event`, `save_event`, `delete_event`, `next_reminders`, and their records
 /// and enums.
+///
+/// Version 21 (T39c): calendar links: `subscribe_calendar`, `unsubscribe_calendar`, the record
+/// `LinkAdded`, the enum `LinkFailure`, `CalendarInfo.read_only` and `linked`, and
+/// `EventDetail.read_only`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 20;
+pub const FFI_API_VERSION: u32 = 21;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

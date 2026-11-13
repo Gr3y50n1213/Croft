@@ -148,7 +148,7 @@ fun EventScreen(
                 Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     CroftIconButton(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.event_back), onBack)
                     Box(Modifier.weight(1f))
-                    if (e != null) {
+                    if (e != null && !e.readOnly) {
                         CroftIconButton(Icons.Filled.Edit, stringResource(R.string.event_edit), { if (e.repeats) askScope = true else onEdit(e, EventScopeChoice.All) }, Modifier.testTag(EventTags.EDIT))
                         CroftIconButton(Icons.Filled.Delete, stringResource(R.string.event_delete), { if (e.repeats) askScope = false else confirmDelete = EventScopeChoice.All }, Modifier.testTag(EventTags.DELETE))
                     }

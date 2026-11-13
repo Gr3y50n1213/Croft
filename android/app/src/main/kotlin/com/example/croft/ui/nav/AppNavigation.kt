@@ -287,6 +287,7 @@ fun CroftNavHost(
     var editingNewEvent by rememberSaveable { mutableStateOf(true) }
     var editScopeKey by rememberSaveable { mutableStateOf<Long?>(null) }
     var newEventDay by rememberSaveable { mutableStateOf<String?>(null) }
+    var newEventTime by rememberSaveable { mutableStateOf<String?>(null) }
     if ((route == Route.CALENDAR || route == Route.EVENT || route == Route.EVENT_EDITOR || route == Route.CALENDARS) && calendarController == null) route = Route.HOME
     LaunchedEffect(calendarController) { if (route == Route.CALENDAR || route == Route.EVENT || route == Route.EVENT_EDITOR || route == Route.CALENDARS) calendarController?.start() }
     val openCalendar: (() -> Unit)? = calendarController?.let { c -> { c.start(); route = Route.CALENDAR } }
@@ -474,7 +475,14 @@ fun CroftNavHost(
                 com.example.croft.ui.calendar.CalendarScreen(
                     controller = calendarController,
                     onOpen = { o -> eventAccount = o.account; eventId = o.eventId; eventKey = o.keyMs; route = Route.EVENT },
-                    onNew = { day -> editingNewEvent = true; editScopeKey = null; newEventDay = day.toString(); route = Route.EVENT_EDITOR },
+                    onNew = { day -> editingNewEvent = true; editScopeKey = null; newEventDay = day.toString(); newEventTime = null; route = Route.EVENT_EDITOR },
+                    onNewAt = { t -> editingNewEvent = true; editScopeKey = null; newEventDay = t.toLocalDate().toString(); newEventTime = t.toLocalTime().toString(); route = Route.EVENT_EDITOR },
+                    onMoveRequest = { o ->
+                        editingNewEvent = false
+                        editScopeKey = if (o.repeats) o.keyMs else null
+                        eventAccount = o.account; eventId = o.eventId; eventKey = o.keyMs
+                        route = Route.EVENT_EDITOR
+                    },
                     onCalendars = { route = Route.CALENDARS },
                     onMail = { route = Route.HOME },
                     onContacts = openContacts,
@@ -509,6 +517,7 @@ fun CroftNavHost(
                     id = if (editingNewEvent) null else eventId,
                     scope = editScopeKey?.let { com.example.croft.mail.calendar.EventScopeChoice.One(it) } ?: com.example.croft.mail.calendar.EventScopeChoice.All,
                     newDate = newEventDay?.let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() },
+                    newTime = newEventTime?.let { runCatching { java.time.LocalTime.parse(it) }.getOrNull() },
                     accounts = calState.accounts,
                     calendars = calState.calendars,
                     onSaved = { account, id ->

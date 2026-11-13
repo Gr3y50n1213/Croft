@@ -173,7 +173,7 @@
     min-height: 360px;
     width: 100%;
     border: none;
-    border-radius: 12px;
+    border-radius: calc(12px * var(--round));
     background: var(--croft-color-surface-container-lowest);
   }
 

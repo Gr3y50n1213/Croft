@@ -23,7 +23,7 @@
     gap: 24px;
     min-height: 48px;
     padding: 0 8px 0 16px;
-    border-radius: 8px;
+    border-radius: calc(8px * var(--round));
     background: var(--croft-color-inverse-surface);
     color: var(--croft-color-inverse-on-surface);
   }

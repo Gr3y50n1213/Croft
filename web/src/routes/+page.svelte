@@ -356,7 +356,7 @@
     gap: 12px;
     min-height: 44px;
     padding: 0 16px;
-    border-radius: 22px;
+    border-radius: calc(22px * var(--round));
     background: var(--croft-color-surface-container-high);
     color: var(--croft-color-on-surface-variant);
   }
@@ -437,7 +437,7 @@
   kbd {
     padding: 0 6px;
     border: 1px solid var(--croft-color-outline);
-    border-radius: 4px;
+    border-radius: calc(4px * var(--round));
     font-family: inherit;
   }
 

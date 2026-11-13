@@ -64,6 +64,11 @@ fn draft_json(d: &FfiDraft) -> Value {
     v
 }
 
+/// The method error for a `sendAt` that is not a `UTCDate` or is more than a year and a day away.
+fn bad_send_at() -> Value {
+    json!({ "type": "invalidArguments", "description": "sendAt" })
+}
+
 /// A JMAP SetError for a property that is not right.
 fn invalid(property: &str) -> Value {
     json!({ "type": "invalidProperties", "properties": [property] })
@@ -205,6 +210,7 @@ fn compose_error(e: &ComposeError) -> Value {
         ComposeError::WrongState => "wrongState",
         ComposeError::CannotSend => "cannotSend",
         ComposeError::DraftTooLarge => "tooLarge",
+        ComposeError::BadSendTime => return bad_send_at(),
         ComposeError::Internal | ComposeError::Storage { .. } => "serverFail",
         _ => "invalidProperties",
     };
@@ -442,8 +448,10 @@ impl Ctx {
         }))
     }
 
-    /// `CroftOutbox/send`: counts against the user's mail limit (a stolen session must not turn
-    /// the account into a spam relay at full speed).
+    /// `CroftOutbox/send`: counts against the user's sending budget (a stolen session must not
+    /// turn the account into a spam relay at full speed); a scheduled message counts when it is
+    /// scheduled. With `sendAt` (a `UTCDate`) the message waits until then (S25, T33): the user's
+    /// core runs in the Companion, so it goes out with no device online.
     pub(super) async fn outbox_send(&self, args: &Value) -> Result<Value, Value> {
         let account = self.account(args)?;
         let id = args
@@ -451,6 +459,14 @@ impl Ctx {
             .and_then(Value::as_str)
             .and_then(|d| parse_id(d, 'd'))
             .ok_or_else(|| error("invalidArguments"))?;
+        let send_at = match args.get("sendAt") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_str()
+                    .and_then(super::utc_date)
+                    .ok_or_else(bad_send_at)?,
+            ),
+        };
         // The budget counts recipients: the draft as it will be sent.
         let draft = self
             .blocking(move |c| c.load_draft(account, id))
@@ -461,7 +477,10 @@ impl Ctx {
             return Err(error("rateLimit"));
         }
         let started = self
-            .blocking(move |c| c.send(account, id))
+            .blocking(move |c| match send_at {
+                Some(at) => c.schedule_send(account, id, at),
+                None => c.send(account, id),
+            })
             .await?
             .map_err(|e| compose_error(&e))?;
         Ok(json!({

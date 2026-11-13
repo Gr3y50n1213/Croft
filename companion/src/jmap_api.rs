@@ -64,7 +64,70 @@ fn parse_id(id: &str, kind: char) -> Option<i64> {
     rest.parse().ok()
 }
 
-fn iso(ms: i64) -> String {
+/// A JMAP `UTCDate` (RFC 3339, `YYYY-MM-DDTHH:MM:SSZ`, optionally with fractional seconds, always
+/// `Z`) as Unix milliseconds; `None` for anything else, a date that does not exist included. The
+/// inverse of [`iso`] (days from the civil date, Howard Hinnant's algorithm).
+fn utc_date(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 20 || b.len() > 30 || b[b.len() - 1] != b'Z' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let part = s.get(r)?;
+        if part.is_empty() || !part.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    let millis = match b.len() {
+        20 => 0,
+        n if b[19] == b'.' && n > 21 => {
+            let frac = s.get(20..n - 1)?;
+            if !frac.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let ms3: String = frac.chars().chain(std::iter::repeat('0')).take(3).collect();
+            ms3.parse::<i64>().ok()?
+        }
+        _ => return None,
+    };
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if !(1..=12).contains(&m) || d < 1 || hh > 23 || mm > 59 || ss > 59 {
+        return None;
+    }
+    if d > days_in[usize::try_from(m - 1).ok()?] {
+        return None;
+    }
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + hh * 3600 + mm * 60 + ss) * 1000) + millis)
+}
+
+pub(crate) fn iso(ms: i64) -> String {
     // RFC 3339 in UTC from Unix milliseconds (civil date from days, Howard Hinnant's algorithm).
     let secs = ms.div_euclid(1000);
     let days = secs.div_euclid(86_400);
@@ -1095,6 +1158,35 @@ mod jmap_compose;
 #[allow(clippy::unwrap_used)]
 mod unit {
     use super::*;
+
+    #[test]
+    fn utc_dates_are_read_strictly_and_round_trip() {
+        for ms in [0, 1_700_000_000_000, 951_782_400_000, 4_102_444_799_000] {
+            assert_eq!(utc_date(&iso(ms)), Some(ms), "{}", iso(ms));
+        }
+        assert_eq!(utc_date("2026-11-14T08:00:00Z"), Some(1_794_643_200_000));
+        assert_eq!(utc_date("2026-11-14T08:00:00.5Z"), Some(1_794_643_200_500));
+        assert_eq!(utc_date("2024-02-29T00:00:00Z").is_some(), true);
+        for bad in [
+            "",
+            "2026-11-14",
+            "2026-11-14T08:00:00",
+            "2026-11-14T08:00:00+01:00",
+            "2026-11-14 08:00:00Z",
+            "2026-13-01T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2026-11-31T00:00:00Z",
+            "2026-11-14T24:00:00Z",
+            "2026-11-14T08:60:00Z",
+            "2026-11-14T08:00:00.Z",
+            "2026-11-14T08:00:00.12a4Z",
+            "+026-11-14T08:00:00Z",
+            "2026-1a-14T08:00:00Z",
+            "2026-11-14T08:00:00.1234567890Z",
+        ] {
+            assert_eq!(utc_date(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn iso_dates_and_ids() {

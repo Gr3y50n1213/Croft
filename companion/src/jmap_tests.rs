@@ -1294,3 +1294,78 @@ async fn the_sending_budget_counts_recipients() {
     assert_eq!(r[2][1]["type"], "rateLimit");
     stop(server).await;
 }
+
+#[tokio::test]
+async fn a_message_is_scheduled_through_jmap_listed_with_its_time_and_cancelled() {
+    let h = h();
+    let (_, t) = h.user("ann");
+    let (_, bob) = h.user("bob");
+    let server = start_server(1).await;
+    let account = h.sending_account(&t, &server).await;
+    h.inbox(&t, &account, 1).await;
+    let r = h
+        .compose(
+            &t,
+            json!([["CroftDraft/set", {"accountId": account, "create": {
+                "k": {"to": [{"email": "cy@example.org"}], "subject": "Later", "body": "Hi"}
+            }}, "s"]]),
+        )
+        .await;
+    let draft = r[0][1]["created"]["k"]["id"].as_str().unwrap().to_owned();
+    let at = crate::api::jmap_api::iso(crate::store::now_ms() + 2 * 24 * 3600 * 1000);
+    let at = format!("{}Z", &at[..19]);
+    let too_far = crate::api::jmap_api::iso(crate::store::now_ms() + 400 * 24 * 3600 * 1000);
+    let r = h
+        .compose(
+            &t,
+            json!([
+                ["CroftOutbox/send", {"accountId": account, "draftId": draft, "sendAt": "tomorrow"}, "bad"],
+                ["CroftOutbox/send", {"accountId": account, "draftId": draft, "sendAt": 12}, "bad2"],
+                ["CroftOutbox/send", {"accountId": account, "draftId": draft, "sendAt": too_far}, "far"],
+                ["CroftOutbox/send", {"accountId": account, "draftId": draft, "sendAt": at}, "s"],
+                ["CroftOutbox/get", {"accountId": account}, "g"],
+            ]),
+        )
+        .await;
+    for i in 0..3 {
+        assert_eq!(
+            (
+                r[i][0].as_str(),
+                r[i][1]["type"].as_str(),
+                r[i][1]["description"].as_str()
+            ),
+            (Some("error"), Some("invalidArguments"), Some("sendAt")),
+            "{:?}",
+            r[i]
+        );
+    }
+    // Scheduled: waits until then (seconds kept, milliseconds dropped by the date), listed with it.
+    assert_eq!(r[3][1]["sendAt"].as_str().unwrap(), at);
+    let outbox = r[3][1]["outboxId"].as_str().unwrap().to_owned();
+    let item = &r[4][1]["list"][0];
+    assert_eq!(
+        (item["state"].as_str(), item["sendAt"].as_str()),
+        (Some("queued"), Some(at.as_str()))
+    );
+    // Another user cannot see or cancel it.
+    let r = h
+        .compose(
+            &bob,
+            json!([["CroftOutbox/undo", {"accountId": account, "outboxId": outbox}, "u"]]),
+        )
+        .await;
+    assert_eq!(r[0][1]["type"], "accountNotFound");
+    // Cancelled long after any Undo window: the draft is back, nothing waits.
+    let r = h
+        .compose(
+            &t,
+            json!([
+                ["CroftOutbox/undo", {"accountId": account, "outboxId": outbox}, "u"],
+                ["CroftOutbox/get", {"accountId": account}, "g"],
+            ]),
+        )
+        .await;
+    assert_eq!(r[0][1]["draftId"].as_str(), Some(draft.as_str()));
+    assert_eq!(r[1][1]["list"], json!([]));
+    stop(server).await;
+}

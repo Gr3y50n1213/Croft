@@ -42,7 +42,7 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 
 #[test]
 fn the_version_is_12() {
-    assert_eq!(FFI_API_VERSION, 12);
+    assert_eq!(FFI_API_VERSION, 13);
     assert_eq!(ffi_api_version(), 12);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }

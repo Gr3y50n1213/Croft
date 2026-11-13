@@ -326,6 +326,27 @@ impl EngineHandle {
     /// should be 7-bit or UTF-8 text, or the copy in Sent cannot be saved
     /// ([`croft_protocols::submit`]).
     pub fn send(&self, message: NewMessage, mime: Vec<u8>) -> Result<OutboxId, SendError> {
+        self.queue_message(message, mime, None)
+    }
+
+    /// Scheduled send (S25): like [`EngineHandle::send`], but the message waits in the Outbox until
+    /// `send_at_ms` (or the end of the Undo window, whichever is later), then goes out as any other.
+    /// [`EngineHandle::undo_send`] takes it back until then. The caller bounds how far ahead.
+    pub fn send_at(
+        &self,
+        message: NewMessage,
+        mime: Vec<u8>,
+        send_at_ms: i64,
+    ) -> Result<OutboxId, SendError> {
+        self.queue_message(message, mime, Some(send_at_ms))
+    }
+
+    fn queue_message(
+        &self,
+        message: NewMessage,
+        mime: Vec<u8>,
+        send_at_ms: Option<i64>,
+    ) -> Result<OutboxId, SendError> {
         if mime::has_bcc_header(&mime) {
             return Err(SendError::BccHeader);
         }
@@ -349,7 +370,9 @@ impl EngineHandle {
             return Err(SendError::NoSubmitter(account));
         }
         let now = self.shared.now();
-        let window = self.shared.undo_window_ms();
+        let undo_window = self.shared.undo_window_ms();
+        // A scheduled message waits until its time, never less than the Undo window.
+        let window = send_at_ms.map_or(undo_window, |at| at.saturating_sub(now).max(undo_window));
         let id = {
             let mut ob = self.shared.outbox().ok_or(SendError::NoOutbox)?;
             ob.queue(message, mime, now, window)?

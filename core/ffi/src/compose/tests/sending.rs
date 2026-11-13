@@ -4,6 +4,8 @@
 
 use croft_test_support::{SmtpMisbehavior, Stage};
 
+use crate::core::now_ms;
+
 use super::*;
 
 fn first_outbox(m: &Mail) -> OutboxItem {
@@ -953,4 +955,79 @@ fn a_server_copy_that_was_never_recorded_is_deleted_when_the_draft_is_discarded(
     wait_until("the unrecorded copy is deleted", || {
         drafts_on_server(&m).is_empty()
     });
+}
+
+#[test]
+fn a_scheduled_message_waits_for_its_time_and_can_be_taken_back_until_then() {
+    let m = Mail::new();
+    m.core().set_undo_window_ms(0);
+    let id = m.draft("Later");
+    let at = now_ms() + 60_000;
+    let started = m.core().schedule_send(m.account, id, at).unwrap();
+    assert_eq!(started.send_at_ms, at);
+    let item = first_outbox(&m);
+    assert_eq!(item.state, OutboxItemState::Queued);
+    assert_eq!(item.send_at_ms, at);
+    // Locked like any queued message.
+    assert_eq!(
+        m.core().send(m.account, id).unwrap_err(),
+        ComposeError::InOutbox
+    );
+    stays(600, || m.accepted() == 0);
+    // Cancelled long after any Undo window: nothing goes, the draft is back.
+    assert_eq!(
+        m.core().undo_send(m.account, started.outbox_id).unwrap(),
+        id
+    );
+    assert!(m.core().list_outbox(m.account).unwrap().is_empty());
+    assert_eq!(m.core().load_draft(m.account, id).unwrap().outbox_id, None);
+    stays(400, || m.accepted() == 0);
+}
+
+#[test]
+fn a_scheduled_message_goes_out_once_at_its_time_even_after_a_restart() {
+    let mut m = Mail::new();
+    m.core().set_undo_window_ms(0);
+    let id = m.draft("Timed");
+    let at = now_ms() + 1_500;
+    m.core().schedule_send(m.account, id, at).unwrap();
+    m.restart();
+    assert_eq!(first_outbox(&m).send_at_ms, at);
+    stays(800, || m.accepted() == 0);
+    wait_until("sent", || m.accepted() == 1);
+    assert!(now_ms() >= at);
+    stays(500, || m.accepted() == 1);
+    wait_until("draft finished", || {
+        m.core().list_drafts(m.account).unwrap().is_empty()
+    });
+}
+
+#[test]
+fn a_time_too_far_ahead_is_refused_and_one_in_the_past_is_an_ordinary_send() {
+    let m = Mail::new();
+    m.core().set_undo_window_ms(60_000);
+    let id = m.draft("Far");
+    let too_far = now_ms() + MAX_SCHEDULE_AHEAD_MS + 60_000;
+    assert_eq!(
+        m.core().schedule_send(m.account, id, too_far).unwrap_err(),
+        ComposeError::BadSendTime
+    );
+    // Nothing was queued and the draft is still editable.
+    assert!(m.core().list_outbox(m.account).unwrap().is_empty());
+    assert_eq!(m.core().load_draft(m.account, id).unwrap().outbox_id, None);
+    // A time already past waits only the Undo window, as Send does.
+    let before = now_ms();
+    let started = m
+        .core()
+        .schedule_send(m.account, id, before - 5_000)
+        .unwrap();
+    assert!(
+        started.send_at_ms >= before + 60_000,
+        "{}",
+        started.send_at_ms - before
+    );
+    assert_eq!(
+        m.core().undo_send(m.account, started.outbox_id).unwrap(),
+        id
+    );
 }

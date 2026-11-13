@@ -75,6 +75,8 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 40 * 1024 * 1024;
 pub const MAX_DRAFT_ATTACHMENT_BYTES: u64 = 40 * 1024 * 1024;
 /// The most attachments one draft may have.
 pub const MAX_ATTACHMENTS: u32 = 50;
+/// How far ahead a message may be scheduled ([`Core::schedule_send`]): a year and a day.
+pub const MAX_SCHEDULE_AHEAD_MS: i64 = 366 * 24 * 60 * 60 * 1000;
 /// The most recipients one draft may have (To, Cc and Bcc together).
 pub const MAX_RECIPIENTS: u32 = 500;
 /// The longest subject, in characters (RFC 5322 line limit).
@@ -181,6 +183,8 @@ pub enum ComposeError {
     NeedsConfirmation,
     /// A field is longer than the limits ([`compose_limits`]).
     DraftTooLarge,
+    /// [`Core::schedule_send`]: the time is more than [`MAX_SCHEDULE_AHEAD_MS`] away.
+    BadSendTime,
     /// The database failed.
     Storage {
         /// Fixed category.
@@ -212,6 +216,7 @@ impl std::fmt::Display for ComposeError {
             Self::BadAttachmentDirectory => "the attachment directory cannot be used",
             Self::NeedsConfirmation => "the message may already have been sent",
             Self::DraftTooLarge => "a field is too long",
+            Self::BadSendTime => "the send time is too far ahead",
             Self::Storage { .. } => "storage error",
             Self::Internal => "internal error",
         })
@@ -1863,58 +1868,28 @@ impl Core {
     /// [`Core::check_draft`]), [`ComposeError::CannotSend`] for an account with no SMTP server.
     /// Bcc recipients receive the message but are not in it.
     pub fn send(&self, account_id: i64, draft_id: i64) -> Result<SendStarted, ComposeError> {
-        let inner = &self.inner;
-        let _actions = inner.compose.actions();
-        let (envelope, mime, identity_id, from, draft) = inner.compose_db(|conn| {
-            let acct = account_of(conn, account_id)?;
-            let d = inner.editable_draft(conn, account_id, draft_id)?;
-            let (mime, identity_id, from) = build(conn, &acct, &d, false)?;
-            Ok((envelope_recipients(&d.content), mime, identity_id, from, d))
-        })?;
-        let queued = inner
-            .handle
-            .send(
-                NewMessage {
-                    account: account_id,
-                    identity: Some(identity_id),
-                    draft: Some(draft.id),
-                    envelope_from: from.address,
-                    recipients: envelope,
-                },
-                mime,
-            )
-            .map_err(|e| match e {
-                SendError::NoSubmitter(_) => ComposeError::CannotSend,
-                SendError::UnknownAccount(_) => ComposeError::NoSuchAccount,
-                SendError::NoRecipients => ComposeError::NoRecipient,
-                SendError::Storage(e) => e.into(),
-                SendError::NoOutbox
-                | SendError::BccHeader
-                | SendError::NoMessageId
-                | SendError::MessageIdNotAscii
-                | SendError::NoSender => ComposeError::Internal,
-            })?;
-        // The link in the draft is a hint written after the message (the message carries the
-        // draft's id itself): a failure here is repaired by the next check, not fatal.
-        let send_at_ms = inner
-            .handle
-            .outbox_entries(account_id)
-            .unwrap_or_default()
-            .iter()
-            .find(|e| e.id == queued)
-            .map_or_else(now_ms, |e| e.send_at_ms);
-        let linked = outbox_id_i64(queued).and_then(|oid| {
-            inner.compose_db(|conn| Ok(drafts::set_queued(conn, account_id, draft.id, oid)?))
-        });
-        if linked.is_err() {
-            log::warn!(
-                "account {account_id}: could not mark a draft as queued; it is repaired later"
-            );
+        self.send_draft(account_id, draft_id, None)
+    }
+
+    /// Schedule send (S25): like [`Core::send`], but the message waits in the Outbox until
+    /// `send_at_ms` (Unix milliseconds), then goes out as any other message (the same retries,
+    /// copy in Sent and draft clean-up). A time inside the Undo window, or in the past, is an
+    /// ordinary send; one more than [`MAX_SCHEDULE_AHEAD_MS`] away is refused with
+    /// [`ComposeError::BadSendTime`]. Until it starts going out, [`Core::undo_send`] takes it back
+    /// and the draft is editable again. [`Core::list_outbox`] lists it as Queued with its time.
+    ///
+    /// It goes out only while this core runs: on a phone that may be off, schedule through a
+    /// Companion.
+    pub fn schedule_send(
+        &self,
+        account_id: i64,
+        draft_id: i64,
+        send_at_ms: i64,
+    ) -> Result<SendStarted, ComposeError> {
+        if send_at_ms > now_ms().saturating_add(MAX_SCHEDULE_AHEAD_MS) {
+            return Err(ComposeError::BadSendTime);
         }
-        Ok(SendStarted {
-            outbox_id: queued,
-            send_at_ms,
-        })
+        self.send_draft(account_id, draft_id, Some(send_at_ms))
     }
 
     /// Undo send, inside the window: nothing is sent, the message leaves the Outbox and the draft
@@ -2115,6 +2090,65 @@ impl Core {
 }
 
 impl Core {
+    fn send_draft(
+        &self,
+        account_id: i64,
+        draft_id: i64,
+        send_at_ms: Option<i64>,
+    ) -> Result<SendStarted, ComposeError> {
+        let inner = &self.inner;
+        let _actions = inner.compose.actions();
+        let (envelope, mime, identity_id, from, draft) = inner.compose_db(|conn| {
+            let acct = account_of(conn, account_id)?;
+            let d = inner.editable_draft(conn, account_id, draft_id)?;
+            let (mime, identity_id, from) = build(conn, &acct, &d, false)?;
+            Ok((envelope_recipients(&d.content), mime, identity_id, from, d))
+        })?;
+        let message = NewMessage {
+            account: account_id,
+            identity: Some(identity_id),
+            draft: Some(draft.id),
+            envelope_from: from.address,
+            recipients: envelope,
+        };
+        let queued = match send_at_ms {
+            Some(at) => inner.handle.send_at(message, mime, at),
+            None => inner.handle.send(message, mime),
+        }
+        .map_err(|e| match e {
+            SendError::NoSubmitter(_) => ComposeError::CannotSend,
+            SendError::UnknownAccount(_) => ComposeError::NoSuchAccount,
+            SendError::NoRecipients => ComposeError::NoRecipient,
+            SendError::Storage(e) => e.into(),
+            SendError::NoOutbox
+            | SendError::BccHeader
+            | SendError::NoMessageId
+            | SendError::MessageIdNotAscii
+            | SendError::NoSender => ComposeError::Internal,
+        })?;
+        // The link in the draft is a hint written after the message (the message carries the
+        // draft's id itself): a failure here is repaired by the next check, not fatal.
+        let send_at_ms = inner
+            .handle
+            .outbox_entries(account_id)
+            .unwrap_or_default()
+            .iter()
+            .find(|e| e.id == queued)
+            .map_or_else(now_ms, |e| e.send_at_ms);
+        let linked = outbox_id_i64(queued).and_then(|oid| {
+            inner.compose_db(|conn| Ok(drafts::set_queued(conn, account_id, draft.id, oid)?))
+        });
+        if linked.is_err() {
+            log::warn!(
+                "account {account_id}: could not mark a draft as queued; it is repaired later"
+            );
+        }
+        Ok(SendStarted {
+            outbox_id: queued,
+            send_at_ms,
+        })
+    }
+
     /// Takes an Outbox message back (Undo, Edit or Discard) with the order that keeps it safe: the
     /// draft's link is cleared first, then the Outbox acts, and the link is put back when the
     /// Outbox refused. Returns the draft's id.

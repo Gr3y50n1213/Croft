@@ -34,6 +34,8 @@ export class MailState {
   cursor = $state(0);
   selected: Set<string> = $state(new Set());
   open: EmailBody | null = $state(null);
+  /** The open email's conversation, oldest first (the open email among them). */
+  conversation: EmailBody[] = $state([]);
   opening = $state(false);
   loading = $state(false);
   snack: Snack | null = $state(null);
@@ -143,6 +145,11 @@ export class MailState {
       // folder or account does), and only in the folder it was asked from.
       if (request !== this.#opens || this.account !== account || this.mailbox !== mailbox) return;
       this.open = body;
+      this.conversation = body ? [body] : [];
+      if (body) {
+        const thread = await this.#jmap.thread(account, body.threadId).catch(() => [body]);
+        if (request === this.#opens && thread.length > 0) this.conversation = thread;
+      }
     } finally {
       if (request === this.#opens) this.opening = false;
     }
@@ -152,6 +159,7 @@ export class MailState {
 
   close(): void {
     this.open = null;
+    this.conversation = [];
   }
 
   move(by: number): void {
@@ -280,6 +288,11 @@ export class MailState {
     this.#snackTimer = setTimeout(() => {
       if (this.snack?.id === id) this.dismiss();
     }, UNDO_MS);
+  }
+
+  /** A snackbar from elsewhere (compose), with an Undo if given. */
+  notify(message: string, undo: (() => Promise<void>) | null): void {
+    this.#show(message, undo);
   }
 
   dismiss(): void {

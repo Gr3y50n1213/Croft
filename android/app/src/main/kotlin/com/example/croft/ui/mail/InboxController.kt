@@ -196,6 +196,7 @@ class InboxController(
     var focusFirstPending by mutableStateOf(false)
 
     var messageScope by mutableStateOf(startScope)
+        private set
 
     /** T35: the category chip chosen above the Inbox (`null`: All). Only the Inbox scopes are filtered. */
     var category by mutableStateOf<MailCategory?>(null)
@@ -271,7 +272,6 @@ class InboxController(
         }
         reloadHead()
     }
-        private set
 
     /** The rows loaded so far, newest first. */
     var rows by mutableStateOf<List<MessageRowData>>(emptyList())

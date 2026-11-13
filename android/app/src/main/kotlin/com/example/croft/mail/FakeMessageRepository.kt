@@ -137,7 +137,7 @@ class FakeMessageRepository(
     private val senderRules = HashMap<String, MailCategory>()
 
     private fun category(row: MessageRowData): MailCategory =
-        categoryOf[row.id] ?: senderRules[row.senderAddress.lowercase()] ?: guessCategory(row.senderAddress)
+        categoryOf[row.id] ?: senderRules[row.senderAddress.orEmpty().lowercase()] ?: guessCategory(row.senderAddress.orEmpty())
 
     override suspend fun listMessagesIn(scope: MessageScope, category: MailCategory?, before: RowCursor?, limit: Int): MessagePage {
         synchronized(lock) { requestLog += ListRequest(scope, before, limit) }
@@ -162,9 +162,9 @@ class FakeMessageRepository(
         val row = all.firstOrNull { it.id == id } ?: throw MailException(MailError.NOT_FOUND)
         categoryOf[id] = category
         if (always) {
-            val sender = row.senderAddress.lowercase()
+            val sender = row.senderAddress.orEmpty().lowercase()
             senderRules[sender] = category
-            all.filter { it.senderAddress.lowercase() == sender }.forEach { categoryOf[it.id] = category }
+            if (sender.isNotEmpty()) all.filter { it.senderAddress.orEmpty().lowercase() == sender }.forEach { categoryOf[it.id] = category }
         }
         changed(setOf(FolderRef(row.account, row.folder)), emptySet())
     }

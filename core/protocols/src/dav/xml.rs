@@ -21,10 +21,12 @@ const MAX_TEXT: usize = 512 * 1024;
 /// The most `response` elements read from one answer.
 pub(crate) const MAX_RESPONSES: usize = 20_000;
 
-/// One element: its lower-case local name, its text, its children.
+/// One element: its lower-case local name, its `name` attribute (CalDAV's `<comp name="VEVENT"/>`),
+/// its text, its children.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Node {
     pub name: String,
+    pub name_attr: String,
     pub text: String,
     pub children: Vec<Node>,
 }
@@ -78,6 +80,7 @@ pub(crate) fn parse(text: &str) -> Result<Node, Unreadable> {
                 }
                 stack.push(Node {
                     name,
+                    name_attr: name_attribute(&e),
                     ..Node::default()
                 });
             }
@@ -88,6 +91,7 @@ pub(crate) fn parse(text: &str) -> Result<Node, Unreadable> {
                 }
                 let node = Node {
                     name: local(e.local_name().as_ref()),
+                    name_attr: name_attribute(&e),
                     ..Node::default()
                 };
                 if let Some(parent) = stack.last_mut() {
@@ -146,6 +150,15 @@ fn push(stack: &mut [Node], text: &str) -> Result<(), Unreadable> {
         node.text.push_str(text);
     }
     Ok(())
+}
+
+/// The element's `name` attribute (at most 64 characters), or nothing.
+fn name_attribute(e: &quick_xml::events::BytesStart<'_>) -> String {
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == "name")
+        .map(|a| a.value.chars().take(64).collect())
+        .unwrap_or_default()
 }
 
 fn local(name: &str) -> String {

@@ -2,11 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! An in-process CardDAV server for tests (T38a), plaintext on loopback: `/.well-known/carddav`
-//! redirects to `/dav/`, the principal is `/dav/principals/alice/`, its home `/dav/books/alice/`
-//! with one address book, `default/`. It answers `PROPFIND`, `REPORT` (`sync-collection` with
-//! tokens `tok-N`, `addressbook-multiget`), conditional `PUT` and `DELETE`, and checks HTTP Basic.
-//! Every request is recorded (method, path, headers without the credential).
+//! An in-process CardDAV and CalDAV server for tests (T38a, T39a), plaintext on loopback:
+//! `/.well-known/carddav` and `/.well-known/caldav` redirect to `/dav/`, the principal is
+//! `/dav/principals/alice/`, its address book home `/dav/books/alice/` with one address book,
+//! `default/`, and its calendar home `/dav/cal/alice/` with a calendar of events, `work/`, and one
+//! of tasks only, `tasks/`. It answers `PROPFIND`, `REPORT` (`sync-collection` with tokens `tok-N`,
+//! the multigets), conditional `PUT` and `DELETE`, and checks HTTP Basic. Every request is recorded
+//! (method, path, headers without the credential).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -20,6 +22,10 @@ pub const DAV_USER: &str = "alice";
 pub const DAV_PASSWORD: &str = "made-up-dav-password";
 /// The address book's path.
 pub const BOOK: &str = "/dav/books/alice/default/";
+/// The calendar of events.
+pub const CALENDAR: &str = "/dav/cal/alice/work/";
+/// A calendar of tasks only (Croft leaves it out).
+pub const TASKS: &str = "/dav/cal/alice/tasks/";
 
 /// One request the server got.
 #[derive(Debug, Clone)]
@@ -111,6 +117,20 @@ impl DavServer {
         bump(&mut s, &path, Some(text.to_owned()))
     }
 
+    /// Adds or replaces a calendar object in [`CALENDAR`] (as another client would); returns its etag.
+    pub fn put_event(&self, name: &str, text: &str) -> String {
+        let mut s = self.st();
+        let path = format!("{CALENDAR}{name}");
+        bump(&mut s, &path, Some(text.to_owned()))
+    }
+
+    /// Removes a calendar object from [`CALENDAR`] (as another client would).
+    pub fn remove_event(&self, name: &str) {
+        let mut s = self.st();
+        let path = format!("{CALENDAR}{name}");
+        bump(&mut s, &path, None);
+    }
+
     /// Removes a card (as another client would).
     pub fn remove_card(&self, name: &str) {
         let mut s = self.st();
@@ -118,7 +138,7 @@ impl DavServer {
         bump(&mut s, &path, None);
     }
 
-    /// The cards on the server: path and text.
+    /// Every object on the server (cards and calendar objects): path and text.
     pub fn cards(&self) -> Vec<(String, String)> {
         self.st()
             .cards
@@ -266,7 +286,7 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 
 fn ms(inner: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav" xmlns:cs="http://calendarserver.org/ns/">{inner}</d:multistatus>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:a="http://apple.com/ns/ical/">{inner}</d:multistatus>"#
     )
 }
 
@@ -303,7 +323,7 @@ fn route(
 ) -> (u16, Vec<(String, String)>, String) {
     let token = format!("tok-{}", s.seq);
     match (method, path) {
-        ("PROPFIND", "/.well-known/carddav") if s.well_known => (
+        ("PROPFIND", "/.well-known/carddav" | "/.well-known/caldav") if s.well_known => (
             301,
             vec![("Location".into(), "/dav/".into())],
             String::new(),
@@ -330,6 +350,29 @@ fn route(
                 "<c:addressbook-home-set><d:href>/dav/books/alice/</d:href></c:addressbook-home-set>",
             )),
         ),
+        ("PROPFIND", "/dav/principals/alice/") if body.contains("calendar-home-set") => (
+            207,
+            Vec::new(),
+            ms(&ok(
+                "/dav/principals/alice/",
+                "<cal:calendar-home-set><d:href>/dav/cal/alice/</d:href></cal:calendar-home-set>",
+            )),
+        ),
+        ("PROPFIND", "/dav/cal/alice/") => {
+            let work = format!(
+                "<d:resourcetype><d:collection/><cal:calendar/></d:resourcetype><d:displayname>Work</d:displayname>{}<cs:getctag>c{}</cs:getctag><cal:supported-calendar-component-set><cal:comp name=\"VEVENT\"/><cal:comp name=\"VTODO\"/></cal:supported-calendar-component-set><a:calendar-color>#3a7d44ff</a:calendar-color><a:calendar-order>2</a:calendar-order>",
+                if s.sync { format!("<d:sync-token>{token}</d:sync-token>") } else { String::new() },
+                s.seq
+            );
+            let tasks = "<d:resourcetype><d:collection/><cal:calendar/></d:resourcetype><d:displayname>Tasks</d:displayname><cal:supported-calendar-component-set><cal:comp name=\"VTODO\"/></cal:supported-calendar-component-set>";
+            let inner = format!(
+                "{}{}{}",
+                ok("/dav/cal/alice/", "<d:resourcetype><d:collection/></d:resourcetype>"),
+                ok(CALENDAR, &work),
+                ok(TASKS, tasks)
+            );
+            (207, Vec::new(), ms(&inner))
+        }
         ("PROPFIND", "/dav/books/alice/") => {
             let book_props = format!(
                 "<d:resourcetype><d:collection/><c:addressbook/></d:resourcetype><d:displayname>Contacts</d:displayname>{}<cs:getctag>c{}</cs:getctag>",
@@ -343,14 +386,14 @@ fn route(
             );
             (207, Vec::new(), ms(&inner))
         }
-        ("PROPFIND", BOOK) => {
-            let mut inner = ok(BOOK, "<d:resourcetype><d:collection/><c:addressbook/></d:resourcetype>");
-            for (p, (etag, _)) in &s.cards {
+        ("PROPFIND", c @ (BOOK | CALENDAR)) => {
+            let mut inner = ok(c, "<d:resourcetype><d:collection/></d:resourcetype>");
+            for (p, (etag, _)) in s.cards.iter().filter(|(p, _)| p.starts_with(c)) {
                 inner.push_str(&ok(p, &format!("<d:getetag>{}</d:getetag><d:resourcetype/>", xml_escape(etag))));
             }
             (207, Vec::new(), ms(&inner))
         }
-        ("REPORT", BOOK) if body.contains("sync-collection") => {
+        ("REPORT", c @ (BOOK | CALENDAR)) if body.contains("sync-collection") => {
             if !s.sync {
                 return (403, Vec::new(), String::new());
             }
@@ -363,7 +406,7 @@ fn route(
             };
             let mut latest: BTreeMap<&str, bool> = BTreeMap::new();
             for (n, p, removed) in &s.log {
-                if *n > since {
+                if *n > since && p.starts_with(c) {
                     latest.insert(p.as_str(), *removed);
                 }
             }
@@ -380,14 +423,15 @@ fn route(
             inner.push_str(&format!("<d:sync-token>{token}</d:sync-token>"));
             (207, Vec::new(), ms(&inner))
         }
-        ("REPORT", BOOK) if body.contains("addressbook-multiget") => {
+        ("REPORT", c @ (BOOK | CALENDAR)) if body.contains("addressbook-multiget") || body.contains("calendar-multiget") => {
+            let data = if c == BOOK { "c:address-data" } else { "cal:calendar-data" };
             let mut inner = String::new();
             for href in between(body, "<d:href>", "</d:href>") {
-                if let Some((etag, text)) = s.cards.get(href) {
+                if let Some((etag, text)) = s.cards.get(href).filter(|_| href.starts_with(c)) {
                     inner.push_str(&ok(
                         href,
                         &format!(
-                            "<d:getetag>{}</d:getetag><c:address-data>{}</c:address-data>",
+                            "<d:getetag>{}</d:getetag><{data}>{}</{data}>",
                             xml_escape(etag),
                             xml_escape(text)
                         ),
@@ -396,7 +440,7 @@ fn route(
             }
             (207, Vec::new(), ms(&inner))
         }
-        ("PUT", p) if p.starts_with(BOOK) && p.len() > BOOK.len() => {
+        ("PUT", p) if (p.starts_with(BOOK) && p.len() > BOOK.len()) || (p.starts_with(CALENDAR) && p.len() > CALENDAR.len()) => {
             let current = s.cards.get(p).map(|(e, _)| e.clone());
             match (header(headers, "if-match"), header(headers, "if-none-match"), current) {
                 (Some(want), _, Some(have)) if want == have => {

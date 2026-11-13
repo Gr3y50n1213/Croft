@@ -175,9 +175,10 @@ impl WebApp {
 /// scope is the whole app).
 pub const SERVICE_WORKER: &str = "/service-worker.js";
 
-/// The service worker's CSP: no script but itself, fetches to this origin only.
-const SERVICE_WORKER_CSP: &str =
-    "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self'";
+/// The service worker's CSP: it may import no script (its own load is the page's `worker-src`),
+/// make no Trusted Types policy, and fetch from this origin only.
+const SERVICE_WORKER_CSP: &str = "default-src 'none'; script-src 'none'; connect-src 'self'; \
+     img-src 'self'; require-trusted-types-for 'script'; trusted-types 'none'";
 
 fn content_type(name: &str) -> &'static str {
     match name.rsplit('.').next().unwrap_or("") {
@@ -372,6 +373,8 @@ mod tests {
             .unwrap();
         assert!(csp.starts_with("default-src 'none';"), "{csp}");
         assert!(csp.contains("connect-src 'self'"), "{csp}");
+        // It imports nothing, not even this origin's other scripts (`/enrol.js`).
+        assert!(csp.contains("script-src 'none'"), "{csp}");
         assert!(!csp.contains('*') && !csp.contains("unsafe"), "{csp}");
         for other in ["/favicon.svg", "/_app/immutable/app.abc.js"] {
             assert!(get(other)

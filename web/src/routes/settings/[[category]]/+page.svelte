@@ -84,7 +84,7 @@
       {:else if shown.id === 'security'}
         <SecurityPane />
       {:else if shown.id === 'notifications'}
-        <NotificationsPane />
+        <NotificationsPane user={me.id} />
       {:else if shown.id === 'accounts'}
         <AccountsPane />
       {:else}

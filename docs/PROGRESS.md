@@ -5,6 +5,57 @@ unverified, the next step.
 
 ---
 
+## T32b: The installable web app, push in the browser, accessibility (13 November 2026)
+
+**Status:** on `task/t32b`, its own pull request; an independent review (below), every finding fixed but one part accepted.
+
+**What was built.**
+- **Installable**: a web manifest and icons (drawn from the brand's mark by `web/tools/icons.mjs`), linked from the page.
+- **A service worker** (`web/src/service-worker/`, its routing in `web/src/lib/pwa/route.ts`): it keeps the app's own files (the
+  page, `/_app/immutable/`, static files). App pages open from the network first, and from the kept page when offline. It never
+  handles the Companion's paths (`/api`, `/jmap`, `/oidc`, `/enrol`, `/.well-known`, `/healthz`, `/version`). It is registered
+  through a Trusted Types policy (`croft-sw`) that accepts only its own address. The Companion serves it with a CSP of its own
+  (no imports, this origin only).
+- **Offline**: an "Offline" notice whenever the browser has no network or the Companion cannot be reached. Opening the app
+  offline shows "You're offline" (not sign-in) and tries again, backing off.
+- **Push in the browser** (W04, Notifications): subscribe with the Companion's VAPID key, give the subscription to the Companion
+  (T28), turn it off. A ping refreshes the open tab at once; with no app tab in view, a content-free "New mail" notice. The browser
+  keeps only whose push it is, the Companion's id and a hash of the endpoint. The subscription is dropped at sign-out, made again
+  when the same person signs in, and never given to anyone else.
+- **The Companion**: pings go only to sessions whose sign-in has not lapsed (an unexpired, unrotated refresh token).
+- **Accessibility**: axe-core on sign-in, W01, W02 with compose windows, every W04 category and the offline screen. The sweep found
+  W02's compose windows adding page landmarks (their header and footer) and the dock outside any landmark; both fixed.
+
+**Checks.** 165 Companion tests (new: the worker's own CSP; no ping to a lapsed session), clippy clean. 88 web unit tests (new: the
+worker's routing against the Companion's list of its own paths, files, pages and every server path in any spelling and mode;
+the stored push record; app tabs; when a ping notifies). 27 Playwright tests, 4 new:
+- the manifest, icons and worker are served and install, and the cache holds only the app;
+- the app opens offline with its CSP and recovers;
+- push on, off, after signing in again, and not for another person on the same browser;
+- a ping refreshes an open tab.
+`svelte-check` and the worker's own `tsc` are clean.
+
+**Review** (one independent agent, opus, high effort, on the worker, push and the CSP):
+- No high finding.
+- 1 medium: push followed the browser, not the person, so another user signing in on the same browser got it silently, and a
+  browser closed without signing out kept getting the first user's pings.
+- Lows: the install could keep a redirected page as the app; the worker's CSP allowed same-origin imports; the offline retry
+  could spend a refresh token whose answer was lost; the Companion's own pages counted as app tabs.
+- All fixed with tests, except the lost-answer case of the refresh retry. The retry now backs off, but a short grace window for a
+  just-rotated token is left (OPEN-ITEMS).
+- Not re-reviewed.
+
+**Found while fixing:** the worker's install fetched every file before reading any. The unread answers held their connections,
+and the Companion's limit of 32 connections per client stopped the install. Each answer is now read as it arrives, four at a time.
+
+**Unverified.** Real push services (Google, Mozilla, Apple) and the notification itself: headless Chromium refuses notification
+permission, so the tests use a made-up subscription and hand the ping to the worker through DevTools. Installing on real devices.
+Safari and Firefox.
+
+**Next.** T33: the Companion's search (tantivy) and scheduled send.
+
+---
+
 ## T32a: Web settings, W04 (13 November 2026)
 
 **Status:** on `task/t32`, its own pull request. No independent review: nothing new on the server, and the page only calls the

@@ -29,14 +29,16 @@ test.afterEach(() => {
 
 let users = 0;
 
-async function signedIn(page: Page): Promise<void> {
-  await virtualAuthenticator(page);
+/** A new user, enrolled and signed in; the function that removes their authenticator. */
+async function signedIn(page: Page): Promise<() => Promise<void>> {
+  const remove = await virtualAuthenticator(page);
   await page.goto(companion.addUser(`user${++users}`));
   await page.getByRole('button', { name: /passkey/i }).click();
   await expect(page.locator('#step-backup')).toBeVisible();
   await page.goto(`${companion.url}/sign-in`);
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page.locator('[data-screen="W01"]')).toBeVisible();
+  return remove;
 }
 
 /** Waits until the service worker is active and controls the page. */
@@ -176,7 +178,7 @@ const subscriptions = (page: Page) =>
 test('push is turned on and off in W04, and given again after signing in again', async ({ page }) => {
   const errors = watchForErrors(page);
   await fakePush(page);
-  await signedIn(page);
+  const removeFirst = await signedIn(page);
   await page.goto(`${companion.url}/settings/notifications`);
   const toggle = page.getByRole('checkbox', { name: /New mail in this browser/ });
   await expect(toggle).not.toBeChecked();
@@ -190,7 +192,7 @@ test('push is turned on and off in W04, and given again after signing in again',
   // Only the id and a hash are kept in the browser, never the endpoint.
   const stored = await page.evaluate(() => localStorage.getItem('croft.push'));
   expect(stored).not.toContain('example.org');
-  expect(JSON.parse(stored!)).toEqual({ id: subs[0]!.id, endpointHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  expect(JSON.parse(stored!)).toEqual({ user: expect.any(Number), id: subs[0]!.id, endpointHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
 
   await toggle.uncheck();
   await expect(toggle).not.toBeChecked();
@@ -210,6 +212,17 @@ test('push is turned on and off in W04, and given again after signing in again',
     subs = await subscriptions(page);
     expect(subs.filter((s) => s.current_device)).toHaveLength(1);
   }).toPass({ timeout: 10_000 });
+
+  // Someone else signs in on this browser: the first person's push is dropped, never given to them.
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(/\/sign-in$/);
+  expect(await page.evaluate(async () => (await navigator.serviceWorker.ready).pushManager.getSubscription())).toBeNull();
+  await removeFirst();
+  await signedIn(page);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('croft.push'))).toBeNull();
+  expect(await subscriptions(page)).toEqual([]);
+  await page.goto(`${companion.url}/settings/notifications`);
+  await expect(page.getByRole('checkbox', { name: /New mail in this browser/ })).not.toBeChecked();
   expect(errors).toEqual([]);
 });
 

@@ -126,21 +126,27 @@ impl Store {
         )? == 1)
     }
 
-    /// The user's subscriptions to deliver to now: of live sessions only, and none for a disabled
-    /// user. A row that does not open is skipped.
+    /// The user's subscriptions to deliver to now: of live sessions only (not signed out, and still
+    /// holding a refresh token that has not expired: a browser closed without signing out stops
+    /// getting pings once its sign-in has lapsed, T32b review), and none for a disabled user. A row
+    /// that does not open is skipped.
     pub fn push_targets(
         &self,
         master: &Key,
         user_id: i64,
+        now: i64,
     ) -> Result<Vec<Subscription>, StoreError> {
         let rows: Vec<(i64, Vec<u8>)> = {
             let mut stmt = self.conn.prepare(
                 "SELECT p.id, p.sealed FROM push_subscription p
                  JOIN session s ON s.id = p.session_id AND s.user_id = p.user_id
                  JOIN user u ON u.id = p.user_id
-                 WHERE p.user_id = ?1 AND s.revoked_ms IS NULL AND u.disabled = 0",
+                 WHERE p.user_id = ?1 AND s.revoked_ms IS NULL AND u.disabled = 0
+                   AND EXISTS (SELECT 1 FROM refresh_token r
+                               WHERE r.session_id = s.id AND r.user_id = p.user_id
+                                 AND r.rotated_ms IS NULL AND r.expires_ms > ?2)",
             )?;
-            let r = stmt.query_map(params![user_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            let r = stmt.query_map(params![user_id, now], |r| Ok((r.get(0)?, r.get(1)?)))?;
             r.collect::<rusqlite::Result<Vec<_>>>()?
         };
         if rows.is_empty() {
@@ -287,14 +293,14 @@ mod tests {
             )
             .unwrap();
         assert!(!raw.windows(9).any(|w| w == b"made-up-1"));
-        let targets = s.push_targets(&master, ann).unwrap();
+        let targets = s.push_targets(&master, ann, now_ms()).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(
             targets[0].endpoint.as_str(),
             "https://push.example/made-up-1"
         );
         assert_eq!(targets[0].auth.as_slice(), &[1; 16]);
-        assert!(s.push_targets(&master, bob).unwrap().is_empty());
+        assert!(s.push_targets(&master, bob, now_ms()).unwrap().is_empty());
         assert!(!s.delete_push(bob, id).unwrap(), "not Bob's");
         // The same endpoint replaces; the cap holds.
         s.add_push(
@@ -329,10 +335,27 @@ mod tests {
             ),
             Err(StoreError::Conflict)
         ));
+        // A device whose sign-in lapsed (closed without signing out, its refresh token expired)
+        // gets no ping, though its subscription is still listed until it is signed out.
+        s.conn
+            .execute(
+                "UPDATE refresh_token SET expires_ms = ?1 WHERE session_id = ?2",
+                params![now_ms() - 1, ann_session],
+            )
+            .unwrap();
+        assert!(s.push_targets(&master, ann, now_ms()).unwrap().is_empty());
+        assert!(!s.push_list(ann).unwrap().is_empty());
+        s.conn
+            .execute(
+                "UPDATE refresh_token SET expires_ms = ?1 WHERE session_id = ?2",
+                params![now_ms() + 60_000, ann_session],
+            )
+            .unwrap();
+        assert!(!s.push_targets(&master, ann, now_ms()).unwrap().is_empty());
         // Signing the device out removes its subscriptions (they no longer fill the cap), and a
         // signed-out device cannot add one.
         s.revoke_session(ann, ann_session, now_ms()).unwrap();
-        assert!(s.push_targets(&master, ann).unwrap().is_empty());
+        assert!(s.push_targets(&master, ann, now_ms()).unwrap().is_empty());
         assert!(s.push_list(ann).unwrap().is_empty());
         assert!(matches!(
             s.add_push(

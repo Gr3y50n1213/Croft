@@ -12,7 +12,7 @@
 import { self as sw } from '$app/service-worker';
 import { immutable, assets } from '$app/manifest';
 import { version } from '$app/env';
-import { NEW_MAIL, PUSH_CHANGED, notifyFor, route } from '../lib/pwa/route.ts';
+import { NEW_MAIL, PUSH_CHANGED, isAppTab, notifyFor, route } from '../lib/pwa/route.ts';
 
 const CACHE = `croft-app-${version}`;
 const PAGE = '/';
@@ -24,8 +24,24 @@ ASSETS.delete('/service-worker.js');
 sw.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
+      // Each file fetched as itself: no redirect followed, no HTTP cache, and the page only if it is
+      // the app's HTML with its CSP (a proxy's sign-in page or an error is never kept as the app).
+      // A few at a time, each body read at once: an unread answer holds its connection, and the
+      // Companion limits the connections one client holds.
+      const queue = [...ASSETS];
+      const fetched: [string, Response][] = [];
+      const one = async (): Promise<void> => {
+        for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+          const res = await fetch(path, { redirect: 'error', cache: 'no-store', credentials: 'same-origin' });
+          if (!acceptable(path, res)) throw new Error(`not the app's file: ${path}`);
+          const body = await res.arrayBuffer();
+          fetched.push([path, new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers })]);
+        }
+      };
+      await Promise.all(Array.from({ length: 4 }, one));
+      // Stored only once every file is in hand (an install never leaves half an app).
       const cache = await caches.open(CACHE);
-      await cache.addAll([...ASSETS]);
+      for (const [path, res] of fetched) await cache.put(path, res);
       await sw.skipWaiting();
     })()
   );
@@ -55,6 +71,15 @@ sw.addEventListener('fetch', (event) => {
   }
 });
 
+function acceptable(path: string, res: Response): boolean {
+  if (!res.ok || res.redirected || res.type !== 'basic') return false;
+  if (path !== PAGE) return true;
+  return (
+    (res.headers.get('content-type') ?? '').startsWith('text/html') &&
+    (res.headers.get('content-security-policy') ?? '').includes("default-src 'none'")
+  );
+}
+
 async function fromCache(path: string, req: Request): Promise<Response> {
   const cache = await caches.open(CACHE);
   return (await cache.match(path)) ?? fetch(req);
@@ -73,12 +98,18 @@ async function page(req: Request): Promise<Response> {
 
 // ---- Push: a content-free ping (whatever the message holds is ignored). ----
 
+/** This origin's windows that show the app (not the Companion's own pages, such as `/enrol`). */
+async function appTabs(): Promise<readonly WindowClient[]> {
+  const all = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  return all.filter((c) => isAppTab(c.url, sw.location.origin));
+}
+
 sw.addEventListener('push', (event) => {
   event.waitUntil(ping());
 });
 
 async function ping(): Promise<void> {
-  const tabs = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const tabs = await appTabs();
   for (const tab of tabs) tab.postMessage({ type: NEW_MAIL });
   if (!notifyFor(tabs)) return;
   await sw.registration
@@ -92,8 +123,7 @@ sw.addEventListener('notificationclick', (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
-      const tabs = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      const tab = tabs[0];
+      const tab = (await appTabs())[0];
       if (tab) {
         await tab.focus();
         return;
@@ -108,8 +138,7 @@ sw.addEventListener('notificationclick', (event) => {
 sw.addEventListener('pushsubscriptionchange', (event) => {
   (event as ExtendableEvent).waitUntil(
     (async () => {
-      const tabs = await sw.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      for (const tab of tabs) tab.postMessage({ type: PUSH_CHANGED });
+      for (const tab of await appTabs()) tab.postMessage({ type: PUSH_CHANGED });
     })()
   );
 });

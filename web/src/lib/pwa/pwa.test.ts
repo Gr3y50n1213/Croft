@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SERVER_PATHS, isServerPath, notifyFor, route } from './route.ts';
+import { SERVER_PATHS, isAppTab, isServerPath, notifyFor, route } from './route.ts';
 import { keyBytes, parseStored, sha256Hex } from './push-data.ts';
 
 const ORIGIN = 'https://companion.test';
@@ -63,12 +63,37 @@ test('opening an app page is a page (network first, offline the cached page); fi
   assert.equal(get('/theme.js', 'navigate'), 'network');
 });
 
-test("the stored push record is the Companion's id and an endpoint hash, read back safely", () => {
-  const ok = { id: 7, endpointHash: 'a'.repeat(64) };
+test("the stored push record is its user, the Companion's id and an endpoint hash, read back safely", () => {
+  const h = 'a'.repeat(64);
+  const ok = { user: 3, id: 7, endpointHash: h };
   assert.deepEqual(parseStored(JSON.stringify(ok)), ok);
-  for (const bad of [null, '', 'x', '[]', '{}', '{"id":"7","endpointHash":"' + 'a'.repeat(64) + '"}', '{"id":0,"endpointHash":"' + 'a'.repeat(64) + '"}', '{"id":7,"endpointHash":"https://push.example/x"}']) {
+  // After that user signed out: only "wanted".
+  assert.deepEqual(parseStored('{"user":3}'), { user: 3 });
+  for (const bad of [
+    null,
+    '',
+    'x',
+    '[]',
+    '{}',
+    `{"id":7,"endpointHash":"${h}"}`,
+    `{"user":"3","id":7,"endpointHash":"${h}"}`,
+    `{"user":3,"id":"7","endpointHash":"${h}"}`,
+    `{"user":3,"id":0,"endpointHash":"${h}"}`,
+    `{"user":3,"id":7}`,
+    `{"user":3,"endpointHash":"${h}"}`,
+    '{"user":3,"id":7,"endpointHash":"https://push.example/x"}'
+  ]) {
     assert.equal(parseStored(bad), null, String(bad));
   }
+});
+
+test("only the app's own windows count as app tabs", () => {
+  assert.equal(isAppTab(`${ORIGIN}/`, ORIGIN), true);
+  assert.equal(isAppTab(`${ORIGIN}/settings/notifications`, ORIGIN), true);
+  assert.equal(isAppTab(`${ORIGIN}/enrol#token`, ORIGIN), false);
+  assert.equal(isAppTab(`${ORIGIN}/oidc/callback?code=x`, ORIGIN), false);
+  assert.equal(isAppTab('https://elsewhere.test/', ORIGIN), false);
+  assert.equal(isAppTab('nonsense', ORIGIN), false);
 });
 
 test('the VAPID key becomes its bytes; endpoints are hashed, never kept', async () => {

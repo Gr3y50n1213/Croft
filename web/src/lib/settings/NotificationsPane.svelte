@@ -9,22 +9,23 @@
   import { explain } from '../api.ts';
   import { disablePush, enablePush, pushState, type PushState } from '../pwa/push.ts';
 
+  let { user }: { user: number } = $props();
   let status: PushState = $state('off');
   let busy = $state(false);
   let error = $state('');
 
   onMount(() => {
-    status = pushState();
+    status = pushState(user);
   });
 
   async function toggle(on: boolean) {
     error = '';
     busy = true;
     try {
-      status = on ? await enablePush(api) : await disablePush(api);
+      status = on ? await enablePush(api, user) : await disablePush(api, user);
     } catch (e) {
       error = explain(e);
-      status = pushState();
+      status = pushState(user);
     } finally {
       busy = false;
     }

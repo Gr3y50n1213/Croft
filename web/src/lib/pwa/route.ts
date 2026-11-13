@@ -57,3 +57,13 @@ export const PUSH_CHANGED = 'croft-push-changed';
 export function notifyFor(tabs: readonly { readonly visibilityState: string }[]): boolean {
   return !tabs.some((t) => t.visibilityState === 'visible');
 }
+
+/** Whether a window at `url` shows the app (this origin, not one of the Companion's own pages). */
+export function isAppTab(url: string, origin: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.origin === origin && !isServerPath(u.pathname);
+  } catch {
+    return false;
+  }
+}

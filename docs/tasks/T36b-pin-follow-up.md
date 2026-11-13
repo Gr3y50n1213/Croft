@@ -25,16 +25,17 @@ are kept on the server as keywords, so every client that reads them (other Croft
   - `set_pinned(ids, value)` and `set_follow_up(ids, value)`.
   - `list_pinned(account: Option)` for the Inbox's Pinned section (at most 20, newest first); pinned messages are left out of the
     Inbox's date-ordered list so nothing shows twice. Other folders show them in place.
-  - `MessageRow` gains `pinned` and `follow_up`.
+  - `MessageRow` and `ConversationMessage` gain `pinned` and `follow_up`.
   - A "Follow up" virtual folder per account (like Starred), newest first.
 - **Android:**
   - S10: a Pinned section above the Inbox list (its own header, collapsed to three rows with "Show all" when longer), and a pin and
     follow-up mark on rows.
-  - Pin / Unpin and Follow up / Done in the selection toolbar's overflow menu and S21's overflow menu, each with Undo.
-  - Pin and Follow up as swipe actions in the S48 picker.
+  - Pin / Unpin and Follow up / Done in the selection toolbar's overflow menu and S21's overflow menu, each with Undo; a pinned
+    row in the Pinned section has its own Unpin button.
   - The Follow up folder in the drawer, after Snoozed.
-- **Not in this task:** a follow-up reminder at a time (a device-side wake like snooze) and "remind me if nobody replies"; the web's
-  pin (T43). Both in OPEN-ITEMS.
+- **Not in this task:** a follow-up reminder at a time (a device-side wake like snooze) and "remind me if nobody replies"; Pin
+  and Follow up as swipe actions and on the web (T43: the swipe rules are shared with the web's TypeScript machine, so both change
+  together). In OPEN-ITEMS.
 
 ## Done when
 - Protocol tests: the keyword STORE on IMAP (and its refusal without `\*` in `PERMANENTFLAGS`), the JMAP keyword patch, against the
@@ -42,5 +43,5 @@ are kept on the server as keywords, so every client that reads them (other Croft
 - mail-core and storage tests: the operation, Undo, the local effect, the columns kept in step with the keywords, migration 0010,
   per-account scoping, the Pinned list and the Follow up folder.
 - FFI tests: set, list, and the rows' marks.
-- Android unit tests: the Pinned section, the toolbar and S21 items with Undo, the Follow up folder, the swipe actions.
+- Android unit tests: the Pinned section with Unpin, the toolbar and S21 items with Undo, the Follow up folder.
 - CI green.

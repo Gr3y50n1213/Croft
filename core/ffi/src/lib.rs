@@ -138,7 +138,7 @@ uniffi::setup_scaffolding!();
 /// and the error `BadSnoozeTime`.
 ///
 /// Version 17 (T36b): pin and follow-up: `set_pinned`, `set_follow_up`, `list_pinned`,
-/// `list_follow_up`, and `MessageRow.pinned` and `MessageRow.follow_up`.
+/// `list_follow_up`, and `pinned` and `follow_up` on `MessageRow` and `ConversationMessage`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and

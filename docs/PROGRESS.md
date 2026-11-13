@@ -5,6 +5,49 @@ unverified, the next step.
 
 ---
 
+## T34a: Signing a phone in to the Companion (13 November 2026)
+
+**Status:** on `task/t34a`, its own pull request. An independent review is below; every finding was fixed except one, which is
+accepted.
+
+**What was built.**
+- **The flow** (RFC 8252): the Croft app opens `/app/sign-in` in a Custom Tab with its PKCE challenge and its redirect
+  (`<applicationId>:/companion`).
+- **On that page** the person signs in with a passkey, or single sign-on started by a click there. The browser is sent to the
+  app with a one-time code. No session is ever made in the browser.
+- **The app** redeems the code at `/api/sign-in/app/exchange` for its own tokens and device. Codes are random (256 bits), last a
+  minute, work once, are bound to the challenge, and go only to the Croft app's exact redirects.
+- **Why the browser**, not a passkey in the app or an App Link: both need the self-hosted domain to name the app's signing key
+  (DECISIONS).
+
+**Review** (one independent agent, opus, high effort). No high finding.
+- **1 medium:** single sign-on could hand a code to whatever app held the Croft scheme with no action from the person, on a
+  provider session the browser already had. Now:
+  - it starts only by a click on `/app/sign-in` (a same-origin POST, never a link);
+  - the provider is told `prompt=login`;
+  - links to the Croft scheme are refused.
+- **Lows, fixed:**
+  - Two kinds of code needed two exchanges. Single sign-on codes for apps now go into the apps' table.
+  - A disabled user got a code and an "ok" entry.
+  - A wrong verifier for a live code was not audited for its user.
+  - The page's check was looser than the server's. It now has the exact list, and checks the redirect before following it.
+  - The verifier's shape was not checked.
+- **Also added:** an "Open the Croft app" link, in case the browser does not follow the redirect after the passkey prompt.
+- **Accepted:** a code issued just before a "sign out everywhere" or a passkey removal can still be redeemed within its minute. A
+  disabled user is refused.
+- Not re-reviewed.
+
+**Checks.** 176 Companion tests (new: the redirect rule, codes once and in time, wrong verifiers audited, disabled users, no
+browser session, single sign-on only from the page with `prompt=login`, one exchange for both). 30 Playwright tests (new: the
+page signs in with a virtual passkey and sends the browser to the app with a code that the test redeems once; the fallback link;
+the page only explains when opened by hand or for another app's scheme; axe-core clean).
+
+**Unverified.** On a real phone: Custom Tabs, the app chooser for the scheme, Chrome's handling of the jump after a passkey prompt.
+
+**Next.** T34b: S06 Connect a Companion and S58 on Android, with the core's Companion client.
+
+---
+
 ## T33b: Search through the Companion (13 November 2026)
 
 **Status:** on `task/t33b` with T33a, one pull request. An independent review covered both parts (below); every finding was fixed.

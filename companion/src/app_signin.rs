@@ -80,18 +80,55 @@ impl AppHandovers {
         )
     }
 
-    /// Redeems a code (spent whatever the verifier): the user, if the verifier matches.
-    pub fn redeem(&self, code: &str, verifier: &str, now: i64) -> Option<i64> {
-        let h = self
+    /// Redeems a code (spent whatever the verifier).
+    pub fn redeem(&self, code: &str, verifier: &str, now: i64) -> Redeemed {
+        let Some(h) = self
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take(code, now)?;
-        crate::crypto::ct_eq(
-            crate::oidc::s256(verifier).as_bytes(),
-            h.challenge.as_bytes(),
-        )
-        .then_some(h.user_id)
+            .take(code, now)
+        else {
+            return Redeemed::NoSuchCode;
+        };
+        if verifier_ok(verifier)
+            && crate::crypto::ct_eq(
+                crate::oidc::s256(verifier).as_bytes(),
+                h.challenge.as_bytes(),
+            )
+        {
+            Redeemed::User(h.user_id)
+        } else {
+            Redeemed::WrongVerifier(h.user_id)
+        }
+    }
+}
+
+/// What redeeming a code gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Redeemed {
+    /// Sign this user in.
+    User(i64),
+    /// A live code for this user, with the wrong verifier: what a caught redirect looks like
+    /// (audited for the user, T34a review). The code is spent.
+    WrongVerifier(i64),
+    /// No such code, or too late.
+    NoSuchCode,
+}
+
+/// A PKCE verifier as RFC 7636 says: 43 to 128 unreserved characters.
+pub fn verifier_ok(v: &str) -> bool {
+    (43..=128).contains(&v.len())
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+}
+
+impl AppHandovers {
+    #[cfg(test)]
+    fn redeem_user(&self, code: &str, verifier: &str, now: i64) -> Option<i64> {
+        match self.redeem(code, verifier, now) {
+            Redeemed::User(u) => Some(u),
+            _ => None,
+        }
     }
 }
 
@@ -128,18 +165,23 @@ mod tests {
         let challenge = crate::oidc::s256(verifier);
         assert!(challenge_ok(&challenge));
         let code = h.put(7, &challenge, 0).unwrap();
-        assert_eq!(h.redeem(&code, verifier, 1), Some(7));
-        assert_eq!(h.redeem(&code, verifier, 2), None, "once");
+        assert_eq!(h.redeem_user(&code, verifier, 1), Some(7));
+        assert_eq!(h.redeem_user(&code, verifier, 2), None, "once");
         // A wrong verifier spends it too.
         let code = h.put(7, &challenge, 0).unwrap();
         assert_eq!(
-            h.redeem(&code, "wrong-verifier-wrong-verifier-wrong-verif", 1),
+            h.redeem_user(&code, "wrong-verifier-wrong-verifier-wrong-verif", 1),
             None
         );
-        assert_eq!(h.redeem(&code, verifier, 1), None);
+        assert_eq!(h.redeem_user(&code, verifier, 1), None);
         // Too late.
         let code = h.put(7, &challenge, 0).unwrap();
-        assert_eq!(h.redeem(&code, verifier, APP_HANDOVER_TTL_MS), None);
-        assert_eq!(h.redeem("not-a-code", verifier, 1), None);
+        assert_eq!(h.redeem_user(&code, verifier, APP_HANDOVER_TTL_MS), None);
+        assert_eq!(h.redeem("not-a-code", verifier, 1), Redeemed::NoSuchCode);
+        // A verifier that is not RFC 7636's shape never matches, even if its hash did.
+        assert!(!verifier_ok("short"));
+        assert!(!verifier_ok(&"a".repeat(129)));
+        assert!(!verifier_ok(&format!("{}!", "a".repeat(43))));
+        assert!(verifier_ok(verifier));
     }
 }

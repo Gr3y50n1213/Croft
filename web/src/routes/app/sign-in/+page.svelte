@@ -9,7 +9,6 @@
   import { api } from '#lib/client.ts';
   import { explain } from '#lib/api.ts';
   import { assertionJson, requestOptions } from '#lib/passkey.ts';
-  import { startUrl } from '#lib/pkce.ts';
 
   /**
    * Connect the Croft app (T34a): the Croft app on a phone opens this page in the browser with its
@@ -17,9 +16,23 @@
    * app with a one-time code (never a session in this browser). The Companion checks that the
    * redirect is the Croft app's own; the page only refuses what is plainly not a request from it.
    */
+  /** The Croft app's redirects: the Companion's `APP_SCHEMES` (companion/src/app_signin.rs), placeholders with them. */
+  const APP_REDIRECTS = ['com.example.croft:/companion', 'com.example.croft.preview:/companion'];
   const challenge = page.url.searchParams.get('app_challenge') ?? '';
   const redirect = page.url.searchParams.get('app_redirect') ?? '';
-  const wellFormed = /^[A-Za-z0-9_-]{43}$/.test(challenge) && /^[a-z][a-z0-9.]*:\/companion$/.test(redirect);
+  const wellFormed = /^[A-Za-z0-9_-]{43}$/.test(challenge) && APP_REDIRECTS.includes(redirect);
+  /** Where the browser goes back to the app (also offered as a link, should the browser not follow). */
+  let back = $state('');
+
+  /** Only the app's own redirect with a code is ever followed. */
+  function goBack(to: string) {
+    if (!to.startsWith(`${redirect}?code=`) || !/^[A-Za-z0-9_-]+$/.test(to.slice(redirect.length + 6))) {
+      throw new Error('unexpected redirect');
+    }
+    back = to;
+    done = true;
+    location.assign(to);
+  }
 
   let busy = $state(false);
   let error = $state('');
@@ -57,12 +70,24 @@
         credential: assertionJson(cred),
         app: { challenge, redirect }
       });
-      done = true;
       // Back to the app, with its one-time code.
-      location.assign(answer.redirect);
+      goBack(answer.redirect);
     } catch (e) {
       error = explain(e);
     } finally {
+      busy = false;
+    }
+  }
+
+  /** Single sign-on, started by this click on the Companion's own page (never by a link). */
+  async function withSso() {
+    error = '';
+    busy = true;
+    try {
+      const { url } = await api.raw<{ url: string }>('POST', '/api/sign-in/app/sso', { challenge, redirect });
+      location.assign(url);
+    } catch (e) {
+      error = explain(e);
       busy = false;
     }
   }
@@ -77,6 +102,7 @@
       <p>This page is for the Croft app on your phone. Open it from the app: Settings, Companion.</p>
     {:else if done}
       <p role="status">Signed in. Go back to the Croft app to finish.</p>
+      {#if back}<a class="button" href={back}>Open the Croft app</a>{/if}
     {:else}
       <p>
         Sign in to connect the Croft app on your phone to this Companion. It gets its own sign-in, which you can end from
@@ -85,7 +111,7 @@
       <p class="warn">Only continue if you started this from the Croft app just now.</p>
       <button class="button" type="button" disabled={busy} onclick={withPasskey}>Sign in with a passkey</button>
       {#if sso}
-        <a class="button tonal" href={startUrl(challenge, redirect)}>Sign in with {sso.name}</a>
+        <button class="button tonal" type="button" disabled={busy} onclick={withSso}>Sign in with {sso.name}</button>
       {/if}
     {/if}
     <p class="error" role="alert" aria-live="assertive">{error}</p>

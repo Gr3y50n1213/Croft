@@ -319,6 +319,26 @@ impl H {
         )
     }
 
+    /// A JSON POST from the Companion's own page (`X-Croft-Web: 1`).
+    async fn post_from_page(&self, path: &str, body: Value) -> (StatusCode, Value) {
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("x-croft-web", "1")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        req.extensions_mut()
+            .insert(Peer("10.8.0.1:4000".parse().unwrap()));
+        let res = self.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
     fn user(&self, name: &str) -> i64 {
         self.store()
             .add_user(&self.master, name, Role::User)
@@ -1230,37 +1250,54 @@ async fn an_unknown_callback_state_does_not_lock_the_address_out() {
 }
 
 #[tokio::test]
-async fn a_phone_signs_in_through_the_provider_to_the_croft_apps_own_redirect() {
+async fn a_phone_signs_in_through_the_provider_only_from_the_companions_page() {
     let h = h_with(false).await;
     let ann = h.user("ann");
     h.link(ann, "made-up-sub-ann");
     let app = app_side();
-    let start = |redirect: &str| {
-        format!(
-            "/api/sign-in/oidc/start?app_challenge={}&app_redirect={}",
-            app.challenge,
-            crate::oidc::with_query("", &[("x", redirect)]).trim_start_matches("?x=")
+    // A plain link (which any app can open) never starts a flow for the Croft app's scheme.
+    let link = format!(
+        "/api/sign-in/oidc/start?app_challenge={}&app_redirect={}",
+        app.challenge,
+        crate::oidc::with_query("", &[("x", "com.example.croft:/companion")])
+            .trim_start_matches("?x=")
+    );
+    let (s, loc, _) = h.raw(Method::GET, &link, None, None).await;
+    assert_eq!((s, loc), (StatusCode::UNAUTHORIZED, None));
+    // Nor does a request that is not from the Companion's own page, or for another app.
+    let (s, _, _) = h
+        .raw(
+            Method::POST,
+            "/api/sign-in/app/sso",
+            None,
+            Some(json!({"challenge": app.challenge, "redirect": "com.example.croft:/companion"})),
         )
-    };
-    // Another app's scheme, or the Croft one with anything added, is refused.
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
     for bad in [
         "com.evil.app:/companion",
         "com.example.croft:/companion?x=1",
-        "com.example.croft://companion",
+        "https://companion.test/app",
     ] {
-        let (s, loc, _) = h.raw(Method::GET, &start(bad), None, None).await;
-        assert_eq!((s, loc), (StatusCode::UNAUTHORIZED, None), "{bad}");
+        let (s, _) = h
+            .post_from_page(
+                "/api/sign-in/app/sso",
+                json!({"challenge": app.challenge, "redirect": bad}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "{bad}");
     }
-    let (s, loc, v) = h
-        .raw(
-            Method::GET,
-            &start("com.example.croft:/companion"),
-            None,
-            None,
+    // The person's click on /app/sign-in: the provider is told to ask them to sign in.
+    let (s, v) = h
+        .post_from_page(
+            "/api/sign-in/app/sso",
+            json!({"challenge": app.challenge, "redirect": "com.example.croft:/companion"}),
         )
         .await;
-    assert_eq!(s, StatusCode::SEE_OTHER, "{v}");
-    let (s, loc) = h.browse(&loc.unwrap()).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let url = v["url"].as_str().unwrap().to_owned();
+    assert!(url.contains("prompt=login"), "{url}");
+    let (s, loc) = h.browse(&url).await;
     assert_eq!(s, StatusCode::SEE_OTHER);
     let loc = loc.unwrap();
     assert!(
@@ -1268,7 +1305,20 @@ async fn a_phone_signs_in_through_the_provider_to_the_croft_apps_own_redirect() 
         "{loc}"
     );
     let back = query_of(&loc);
-    let (s, v) = h.exchange(&back["code"], &app.verifier).await;
+    // Redeemed where every app code is, never at the web's exchange.
+    assert_eq!(
+        h.exchange(&back["code"], &app.verifier).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, _, v) = h
+        .raw(
+            Method::POST,
+            "/api/sign-in/app/exchange",
+            None,
+            Some(json!({"code": back["code"], "verifier": app.verifier, "device": "Croft for Android"})),
+        )
+        .await;
+    // The web's exchange above did not know the code and spent nothing.
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["access_token"].is_string());
 }

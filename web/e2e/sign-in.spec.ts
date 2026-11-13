@@ -161,6 +161,8 @@ test('the Croft app on a phone connects through the browser and gets a one-time 
   // The browser is sent to the app's own redirect with the code (Chromium here has no app for it).
   expect(answer.redirect).toMatch(/^com\.example\.croft:\/companion\?code=[A-Za-z0-9_-]+$/);
   await expect(page.getByRole('status')).toHaveText('Signed in. Go back to the Croft app to finish.');
+  // Should the browser not follow, a link does.
+  await expect(page.getByRole('link', { name: 'Open the Croft app' })).toHaveAttribute('href', answer.redirect);
   // No session in this browser.
   expect((await page.context().cookies()).filter((c) => c.name.includes('croft'))).toEqual([]);
 
@@ -175,10 +177,15 @@ test('the Croft app on a phone connects through the browser and gets a one-time 
   expect(typeof body.refresh_token).toBe('string');
   expect((await redeem(verifier)).status()).toBe(401);
 
-  // Opened by hand, without the app's request, the page only explains.
-  await page.goto(`${own.url}/app/sign-in`);
-  await expect(page.getByText('This page is for the Croft app on your phone.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toHaveCount(0);
+  // Opened by hand, or for another app's scheme, the page only explains.
+  for (const url of [
+    `${own.url}/app/sign-in`,
+    `${own.url}/app/sign-in?${new URLSearchParams({ app_challenge: challenge, app_redirect: 'com.evil.app:/companion' })}`
+  ]) {
+    await page.goto(url);
+    await expect(page.getByText('This page is for the Croft app on your phone.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toHaveCount(0);
+  }
   // The browser's own complaint that no app takes the redirect is expected here.
   expect(errors.filter((e) => !/scheme does not have a registered handler|com\.example\.croft/.test(e))).toEqual([]);
   own.stop();

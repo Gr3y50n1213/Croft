@@ -2204,14 +2204,55 @@ async fn a_code_needs_its_verifier_and_its_time_and_is_spent_by_any_try() {
     h.advance(crate::app_signin::APP_HANDOVER_TTL_MS);
     let (s, _) = h.app_exchange(&code, APP_VERIFIER).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
-    // A user disabled meanwhile gets no session.
+    // A user disabled meanwhile gets no session, and no code from a sign-in that was under way.
     let code = h.app_code(&mut ann).await;
+    let (c, cred) = h.assertion(&mut ann).await;
     let admin = h.add_user("root", Role::Admin);
     h.store()
         .set_disabled(admin, ann.id, true, h.now())
         .unwrap();
     let (s, _) = h.app_exchange(&code, APP_VERIFIER).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, v) = h
+        .call(
+            Method::POST,
+            "/api/sign-in/passkey/finish",
+            None,
+            Some(json!({ "ceremony": c, "credential": cred, "app": app_target() })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    assert!(v.get("redirect").is_none());
+}
+
+#[tokio::test]
+async fn a_wrong_verifier_for_a_live_code_is_audited_for_its_user() {
+    let h = h();
+    let mut ann = h.person("ann", Role::User).await;
+    let code = h.app_code(&mut ann).await;
+    let (s, _) = h
+        .app_exchange(
+            &code,
+            "another-made-up-verifier-that-is-not-the-apps-own-at-all",
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // A verifier of the wrong shape is refused the same way.
+    let code = h.app_code(&mut ann).await;
+    let (s, _) = h.app_exchange(&code, "short").await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let signed = h.sign_in(&mut ann).await;
+    let (s, log) = h
+        .call(Method::GET, "/api/audit", Some(&signed.access), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let wrong = log["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "sign_in.app" && e["outcome"] == "wrong_verifier")
+        .count();
+    assert_eq!(wrong, 2, "{log}");
 }
 
 #[tokio::test]

@@ -204,6 +204,7 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `GET /api/passkeys`, `DELETE /api/passkeys/{id}`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `GET /api/audit` | signed in |
 | `GET /api/admin/users`, `POST /api/admin/users/{id}/disable`, `/enable`, `GET /api/admin/audit` | admins |
 | `GET /api/oidc`, `GET /api/sign-in/oidc/start?app_challenge&app_redirect`, `GET /oidc/callback`, `POST /api/sign-in/oidc/exchange` (`{"code", "verifier"}`) | anyone |
+| The Croft app on a phone (T34a): `/api/sign-in/passkey/finish` with `"app": {"challenge", "redirect"}` answers `{"redirect"}`; `POST /api/sign-in/app/sso` (`{"challenge", "redirect"}`, header `X-Croft-Web: 1`, from `/app/sign-in`) answers the provider URL; `POST /api/sign-in/app/exchange` (`{"code", "verifier", "device"?}`) gives the app's tokens | the `/app/sign-in` page, then the app |
 | `POST /api/oidc/link/start`, `/api/oidc/link/finish`, `DELETE /api/oidc/link` | signed in |
 | `POST /api/admin/users/{id}/oidc/unlink` | admins |
 | `GET /api/push/vapid`, `POST /api/push/subscriptions`, `GET /api/push/subscriptions`, `DELETE /api/push/subscriptions/{id}` | signed in (not a recovery sign-in) |

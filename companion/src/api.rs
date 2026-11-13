@@ -146,6 +146,11 @@ impl Auth {
         (self.clock)()
     }
 
+    /// Phones' sign-in hand-over codes (T34a).
+    pub(crate) fn app_handovers(&self) -> &crate::app_signin::AppHandovers {
+        &self.app_handovers
+    }
+
     /// The reverse proxies whose `X-Forwarded-For` is believed (canonical addresses).
     pub fn trusted_proxies(&self) -> &[IpAddr] {
         &self.trusted_proxies
@@ -601,6 +606,12 @@ pub fn routes() -> Vec<Route> {
             "/api/sign-in/app/exchange",
             P,
             post(app_exchange),
+        ),
+        route(
+            Method::POST,
+            "/api/sign-in/app/sso",
+            P,
+            post(oidc_api::app_sso_start),
         ),
         route(Method::POST, "/api/web/refresh", P, post(web_api::refresh)),
         route(
@@ -1078,6 +1089,15 @@ async fn sign_in_finish(
     match checked {
         Checked::Good(user_id) => match req.app {
             Some(a) => {
+                // A disabled user gets no code (T34a review), as single sign-on refuses at its
+                // callback; the exchange would refuse it too.
+                let disabled = with_store(&app, move |s| {
+                    Ok::<_, StoreError>(s.user_by_id(user_id)?.is_none_or(|u| u.disabled))
+                })
+                .await??;
+                if disabled {
+                    return Err(passkey_failed(&app, ip, Some(user_id)).await);
+                }
                 let code = app.auth.app_handovers.put(user_id, &a.challenge, now)?;
                 let _ = with_store(&app, move |s| {
                     s.audit(Some(user_id), "sign_in.passkey.app_handover", "ok")
@@ -1116,15 +1136,29 @@ async fn app_exchange(
         zeroize::Zeroizing::new(req.code),
         zeroize::Zeroizing::new(req.verifier),
     );
-    let Some(user_id) = app
-        .auth
-        .app_handovers
-        .redeem(&code, &verifier, app.auth.now())
-    else {
-        failed(&app, ip);
-        return Err(ApiError::Invalid);
-    };
-    start_session(&app, user_id, device_name(req.device), false, false).await
+    let now = app.auth.now();
+    match app.auth.app_handovers.redeem(&code, &verifier, now) {
+        crate::app_signin::Redeemed::User(user_id) => {
+            let res = start_session(&app, user_id, device_name(req.device), false, false).await;
+            if res.is_ok() {
+                let _ =
+                    with_store(&app, move |s| s.audit(Some(user_id), "sign_in.app", "ok")).await;
+            }
+            res
+        }
+        crate::app_signin::Redeemed::WrongVerifier(user_id) => {
+            failed(&app, ip);
+            let _ = with_store(&app, move |s| {
+                s.audit(Some(user_id), "sign_in.app", "wrong_verifier")
+            })
+            .await;
+            Err(ApiError::Invalid)
+        }
+        crate::app_signin::Redeemed::NoSuchCode => {
+            failed(&app, ip);
+            Err(ApiError::Invalid)
+        }
+    }
 }
 
 #[derive(Deserialize)]

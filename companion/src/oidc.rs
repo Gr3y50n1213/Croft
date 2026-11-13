@@ -389,19 +389,22 @@ impl Provider {
         if self.settings.create_users {
             scope.push_str(" groups");
         }
-        let url = with_query(
-            &d.authorization_endpoint,
-            &[
-                ("response_type", "code"),
-                ("client_id", &self.settings.client_id),
-                ("redirect_uri", &self.redirect_uri),
-                ("scope", &scope),
-                ("state", &state),
-                ("nonce", &nonce),
-                ("code_challenge", &challenge),
-                ("code_challenge_method", "S256"),
-            ],
-        );
+        let mut params = vec![
+            ("response_type", "code"),
+            ("client_id", self.settings.client_id.as_str()),
+            ("redirect_uri", self.redirect_uri.as_str()),
+            ("scope", scope.as_str()),
+            ("state", state.as_str()),
+            ("nonce", nonce.as_str()),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+        ];
+        // For a phone (T34a review): the provider always asks the person, so a flow some other app
+        // started never completes silently on a session the browser already has.
+        if crate::app_signin::is_app_redirect(app_redirect) {
+            params.push(("prompt", "login"));
+        }
+        let url = with_query(&d.authorization_endpoint, &params);
         let flow = Flow {
             nonce,
             verifier,
@@ -555,6 +558,11 @@ impl TakenFlow {
     /// What the flow is for.
     pub fn purpose(&self) -> &Purpose {
         &self.0.purpose
+    }
+
+    /// The app's PKCE challenge.
+    pub fn app_challenge(&self) -> &str {
+        &self.0.app_challenge
     }
 }
 

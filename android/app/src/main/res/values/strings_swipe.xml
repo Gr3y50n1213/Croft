@@ -58,6 +58,7 @@
     <string name="swipe_preset_triage">Triage</string>
     <string name="swipe_preset_gmail">Gmail style</string>
     <string name="swipe_preset_tidy">Tidy</string>
+    <string name="swipe_preset_inbox_zero">Inbox zero</string>
     <string name="swipe_reset">Reset</string>
     <string name="swipe_choose_hint">The pill and icon use the colour shown here while you swipe. Delete in Trash and Spam deletes forever and asks first.</string>
     <string name="swipe_chosen_state">Chosen</string>

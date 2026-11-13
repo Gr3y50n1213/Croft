@@ -83,16 +83,19 @@ class CoreMessageRepository(
 
     override suspend fun listFolders(account: AccountId): List<FolderInfo> = onIo {
         core.listFolders(account).map { it.toApp(account) } +
-            FolderInfo(VirtualFolders.starred(account), account, "Starred", FolderRole.STARRED.specialUse, 0, 0)
+            FolderInfo(VirtualFolders.starred(account), account, "Starred", FolderRole.STARRED.specialUse, 0, 0) +
+            FolderInfo(VirtualFolders.snoozed(account), account, "Snoozed", FolderRole.SNOOZED.specialUse, 0, 0)
     }
 
     override suspend fun listMessages(scope: MessageScope, before: RowCursor?, limit: Int): MessagePage = onIo {
+        if (scope is MessageScope.Folder && VirtualFolders.isSnoozed(scope.folderId)) return@onIo snoozedPage(scope.account, before)
         val page = core.listMessages(scope.toCore(), before?.let { CoreRowCursor(it.dateMs, it.id) }, limit.coerceIn(0, MAX_PAGE).toUInt())
         synchronized(accountOf) { page.rows.forEach { accountOf[it.id] = it.account } }
         MessagePage(page.rows.map { it.toApp(isSample(it.account)) }, page.next?.let { RowCursor(it.dateMs, it.id) })
     }
 
     override suspend fun listMessagesIn(scope: MessageScope, category: MailCategory?, before: RowCursor?, limit: Int): MessagePage = onIo {
+        if (scope is MessageScope.Folder && VirtualFolders.isSnoozed(scope.folderId)) return@onIo snoozedPage(scope.account, before)
         val page = core.listMessagesIn(
             scope.toCore(),
             category?.toCore(),
@@ -110,6 +113,22 @@ class CoreMessageRepository(
     override suspend fun setCategory(id: MessageId, category: MailCategory, always: Boolean) = onIo {
         core.setMessageCategory(id, category.toCore(), always)
     }
+
+    /** The Snoozed mailbox: one page, soonest first (the core gives at most 500 per account). */
+    private fun snoozedPage(account: AccountId, before: RowCursor?): MessagePage {
+        if (before != null) return MessagePage(emptyList(), null)
+        val list = core.listSnoozed(account)
+        synchronized(accountOf) { list.forEach { accountOf[it.row.id] = it.row.account } }
+        return MessagePage(list.map { it.row.toApp(isSample(it.row.account)).copy(snoozedUntilMs = it.wakeMs) }, null)
+    }
+
+    override suspend fun snooze(ids: List<MessageId>, untilMs: Long) = onIo { core.snooze(ids, untilMs) }
+
+    override suspend fun unsnooze(ids: List<MessageId>) = onIo { core.unsnooze(ids) }
+
+    override suspend fun wakeDueSnoozes(): List<MessageId> = onIo { core.wakeDueSnoozes() }
+
+    override suspend fun nextSnoozeWake(): Long? = onIo { core.nextSnoozeWake() }
 
     override suspend fun nextChange(after: Long): ChangeBatch {
         val batch = try {
@@ -269,6 +288,7 @@ class CoreMessageRepository(
         subject = subject, snippet = snippet, dateMs = dateMs, seen = seen, flagged = flagged,
         hasAttachments = hasAttachments, pending = pending, threadCount = threadCount.toInt().coerceAtLeast(1),
         recipients = recipients.joinToString(", ").ifBlank { null }, localOnly = localOnly,
+        backFromSnooze = backFromSnooze,
     )
 
     private fun CoreChangeBatch.toApp() = ChangeBatch(

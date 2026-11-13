@@ -73,6 +73,7 @@ class SwipeRulesTest {
             SwipeAction.TOGGLE_STAR to SelectionAction.STAR,
             SwipeAction.SPAM to SelectionAction.SPAM,
             SwipeAction.MOVE_TO to SelectionAction.MOVE_TO,
+            SwipeAction.SNOOZE to SelectionAction.SNOOZE,
         )
         for (a in SwipeAction.picker.filter { it != SwipeAction.NONE }) {
             assertTrue("$a has a toolbar route", routeOf.getValue(a) in all)
@@ -93,8 +94,8 @@ class SwipeRulesTest {
         assertEquals("a newer file is not read", SwipeSettings.Default, SwipeSettingsJson.decodeOrDefault("""{"version":99,"startToEnd":"archive","endToStart":"archive"}"""))
         assertEquals("an unknown action keeps that side's default", SwipeSettings(SwipeAction.TOGGLE_READ, SwipeAction.ARCHIVE), SwipeSettingsJson.decodeOrDefault("""{"startToEnd":"fly","endToStart":"archive"}"""))
         assertEquals(
-            "Snooze has no sheet yet and is not read; Move to has one (S30) and is",
-            SwipeSettings(SwipeAction.TOGGLE_READ, SwipeAction.MOVE_TO),
+            "Snooze (S29, T36) and Move to (S30) both have their sheets and are read",
+            SwipeSettings(SwipeAction.SNOOZE, SwipeAction.MOVE_TO),
             SwipeSettingsJson.decodeOrDefault("""{"startToEnd":"snooze","endToStart":"move","sensitivity":"nope"}"""),
         )
     }

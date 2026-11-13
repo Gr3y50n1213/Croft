@@ -155,7 +155,7 @@ fun InboxScreen(
     }
 
     LaunchedEffect(conversationNotice) {
-        if (conversationNotice != null) { controller.showConversationNotice(conversationNotice.text, conversationNotice.ops); onConversationNoticeShown() }
+        if (conversationNotice != null) { controller.showConversationNotice(conversationNotice.text, conversationNotice.ops, conversationNotice.unsnooze); onConversationNoticeShown() }
     }
 
     val scope = rememberCoroutineScope()
@@ -510,6 +510,15 @@ private fun InboxBody(
             onCategory = controller::pickCategory,
         )
     }
+    // S29 Snooze (T36: the toolbar's Snooze, a swipe on Snooze, the row's own action).
+    controller.snoozeRequest?.let {
+        SnoozeSheet(
+            nowMs = session.clock(),
+            zone = session.zone,
+            onPick = controller::pickSnooze,
+            onDismiss = controller::dismissSnooze,
+        )
+    }
     // The first Archive or Delete of an account with no such folder: which folder is yours? (remembered, asked once)
     controller.folderRequest?.let { request ->
         MoveToSheet(
@@ -582,6 +591,11 @@ private fun LazyItemScope.RowItem(
         isNew = row.id in controller.arrived,
         hasAttachment = row.hasAttachments,
         threadCount = row.threadCount,
+        note = when {
+            row.snoozedUntilMs != null -> stringResource(R.string.row_snoozed_until, SnoozePresets.label(row.snoozedUntilMs, nowMs, zone, locale))
+            row.backFromSnooze -> stringResource(R.string.row_snoozed)
+            else -> null
+        },
     )
     val settings = controller.swipeSettings
     // The custom actions: every configured swipe action this row can do (Star is the row's own action already), then Reply.

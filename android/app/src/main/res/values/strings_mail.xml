@@ -13,6 +13,25 @@
     <string name="mail_all_accounts">All accounts</string>
     <string name="mail_compose">Compose</string>
     <string name="mail_category_all">All</string>
+    <string name="snooze_title">Snooze until</string>
+    <string name="snooze_later_today">Later today</string>
+    <string name="snooze_tomorrow">Tomorrow</string>
+    <string name="snooze_this_weekend">This weekend</string>
+    <string name="snooze_next_week">Next week</string>
+    <string name="snooze_pick">Pick date and time</string>
+    <string name="snooze_next">Next</string>
+    <string name="snooze_confirm">Snooze</string>
+    <string name="snooze_cancel">Cancel</string>
+    <string name="snooze_this_phone">It comes back unread at that time. Snoozed on this phone: your other devices still show it.</string>
+    <string name="mail_snoozed_until">Snoozed on this phone until %1$s</string>
+    <string name="mail_action_unsnooze">Unsnooze</string>
+    <string name="mail_unsnoozed">Back in your inbox</string>
+    <plurals name="notify_snooze_back">
+        <item quantity="one">A snoozed message is back</item>
+        <item quantity="other">%d snoozed messages are back</item>
+    </plurals>
+    <string name="row_snoozed">Snoozed</string>
+    <string name="row_snoozed_until">Until %1$s</string>
     <string name="mail_category_primary">Primary</string>
     <string name="mail_category_updates">Updates</string>
     <string name="mail_category_promotions">Promotions</string>

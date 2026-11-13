@@ -82,9 +82,8 @@ class SwipeSettingsScreenTest {
         for (s in listOf("Low", "Normal", "High")) rule.onNodeWithText(s).assertExists()
         rule.onNodeWithText("Delete forever asks first").assertExists()
         rule.onNodeWithText("This one cannot be turned off").assertExists()
-        for (p in listOf("Triage", "Gmail style", "Tidy")) rule.onNodeWithText(p).assertExists()
+        for (p in listOf("Triage", "Gmail style", "Tidy", "Inbox zero")) rule.onNodeWithText(p).assertExists()
         rule.onNodeWithTag(SwipeTags.RESET).assertExists()
-        assertFalse("Inbox zero needs Snooze, which does not exist yet", exists("Inbox zero"))
     }
 
     @Test
@@ -122,12 +121,11 @@ class SwipeSettingsScreenTest {
     }
 
     @Test
-    fun s48_theRadioListShowsEveryActionWithItsIcon_includingMoveTo_andLeavesOutSnoozeUntilItsSheetExists() {
+    fun s48_theRadioListShowsEveryActionWithItsIcon_includingMoveToAndSnooze() {
         show(startAt = SwipeRoute.S48_START_TO_END)
         rule.onNodeWithTag(SwipeTags.S48).assertExists()
         for (a in SwipeAction.picker) rule.onNodeWithTag(SwipeTags.option(a)).assertExists()
-        for (name in listOf("Mark read or unread", "Archive", "Delete", "Move to", "Star", "Mark as spam", "None")) rule.onNodeWithText(name).assertExists()
-        assertFalse(exists("Snooze"))
+        for (name in listOf("Mark read or unread", "Archive", "Delete", "Snooze", "Move to", "Star", "Mark as spam", "None")) rule.onNodeWithText(name).assertExists()
         assertFalse(exists("Coming later"))
         rule.onNodeWithText("The pill and icon use the colour shown here while you swipe.", substring = true).assertExists()
     }

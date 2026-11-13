@@ -99,6 +99,10 @@ data class MessageRowData(
     val recipients: String? = null,
     /** The row is in the sample mailbox: every change stays on this device, and the row says "Not saved to server" (docs/ux/server-contract.md, read-only mailbox). */
     val localOnly: Boolean = false,
+    /** T36: woken from a snooze in the last day: the row shows a Snoozed chip. */
+    val backFromSnooze: Boolean = false,
+    /** T36: in the Snoozed folder, when it comes back (Unix ms); null elsewhere. */
+    val snoozedUntilMs: Long? = null,
 ) {
     /** What the list shows as the name: the sender's name, else the address. */
     val displayName: String get() = senderName?.takeIf { it.isNotBlank() } ?: senderAddress.orEmpty()
@@ -168,6 +172,12 @@ data class FolderInfo(
 object VirtualFolders {
     /** The id of [account]'s Starred mailbox. */
     fun starred(account: AccountId): FolderId = -(account * 10 + 1)
+
+    /** T36: the id of [account]'s Snoozed mailbox (what is snoozed on this device). */
+    fun snoozed(account: AccountId): FolderId = -(account * 10 + 2)
+
+    /** Whether [id] is a Snoozed mailbox. */
+    fun isSnoozed(id: FolderId): Boolean = id < 0 && (-id) % 10 == 2L
 
     /** Whether [id] is a virtual mailbox. */
     fun isVirtual(id: FolderId): Boolean = id < 0

@@ -89,6 +89,8 @@ data class MessageRowState(
     val localOnly: Boolean = false,
     /** A permanent refusal: the row returns with a red edge. */
     val failed: Boolean = false,
+    /** T36: a short note under the preview ("Snoozed" for a day after waking, "Until Sat 09:00" in the Snoozed folder). */
+    val note: String? = null,
     /** Just arrived: a tint that fades over 1.2 s. The caller sets it only while the row is on screen. */
     val isNew: Boolean = false,
     val hasAttachment: Boolean = false,
@@ -191,6 +193,7 @@ fun MessageRow(
         if (state.pendingOffline) append(stringResource(R.string.row_pending)).append(". ")
         if (state.localOnly) append(stringResource(R.string.row_not_saved)).append(". ")
         if (state.failed) append(stringResource(R.string.row_failed)).append(". ")
+        state.note?.let { append(it).append(". ") }
         append(preview)
     }
     val selectLabel = stringResource(if (state.selected) R.string.row_action_deselect else R.string.row_action_select)
@@ -272,6 +275,7 @@ fun MessageRow(
                         if (state.localOnly) {
                             Text(stringResource(R.string.row_not_saved), Modifier.testTag(ROW_NOT_SAVED_TAG), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant, maxLines = 1)
                         }
+                        state.note?.let { Text(it, Modifier.testTag(ROW_NOTE_TAG), style = MaterialTheme.typography.labelSmall, color = colors.primary, maxLines = 1) }
                     }
                     if (state.starred || state.hasAttachment || state.encryption != EncryptionMark.NONE) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -302,6 +306,8 @@ const val ROW_PREVIEW_TAG = "row-preview"
 
 /** Test tag of the "Not saved to server" line of a sample-mailbox row. */
 const val ROW_NOT_SAVED_TAG = "row-not-saved"
+/** The tag of a row's note (T36). */
+const val ROW_NOTE_TAG = "row-note"
 
 private fun Modifier.matchParentSizeTint(colour: androidx.compose.ui.graphics.Color): Modifier =
     this.fillMaxWidth().fillMaxHeight().background(colour)

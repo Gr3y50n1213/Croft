@@ -42,9 +42,9 @@ fn header(uid: u32, date_ms: i64) -> RemoteHeader {
 }
 
 #[test]
-fn the_version_is_15() {
-    assert_eq!(FFI_API_VERSION, 15);
-    assert_eq!(ffi_api_version(), 15);
+fn the_version_is_16() {
+    assert_eq!(FFI_API_VERSION, 16);
+    assert_eq!(ffi_api_version(), 16);
     assert_eq!(croft_version(), env!("CARGO_PKG_VERSION"));
 }
 
@@ -1444,4 +1444,71 @@ fn the_inbox_filters_by_category_counts_unread_and_moves_a_sender_with_always() 
             .unwrap_err(),
         CoreError::NoSuchMessage
     );
+}
+
+// ---- T36: snooze ----
+
+#[test]
+fn snooze_lists_wakes_unread_and_refuses_bad_times() {
+    let rig = list_rig(3);
+    let inbox = MessageScope::Folder {
+        account: rig.a1,
+        folder_id: rig.inbox1,
+    };
+    let ids: Vec<i64> = rig
+        .core
+        .list_messages(inbox, None, 50)
+        .unwrap()
+        .rows
+        .iter()
+        .map(|r| r.id)
+        .collect();
+    let now = crate::core::now_ms();
+    assert_eq!(
+        rig.core.snooze(vec![ids[0]], now - 1).unwrap_err(),
+        CoreError::BadSnoozeTime
+    );
+    assert_eq!(
+        rig.core
+            .snooze(vec![ids[0]], now + 400 * 24 * 60 * 60 * 1000)
+            .unwrap_err(),
+        CoreError::BadSnoozeTime
+    );
+    rig.core
+        .snooze(vec![ids[0], ids[1]], now + 3_600_000)
+        .unwrap();
+    assert_eq!(
+        rig.core.list_messages(inbox, None, 50).unwrap().rows.len(),
+        1
+    );
+    let snoozed = rig.core.list_snoozed(None).unwrap();
+    assert_eq!(snoozed.len(), 2);
+    assert_eq!(rig.core.next_snooze_wake().unwrap(), Some(now + 3_600_000));
+    // Undo.
+    rig.core.unsnooze(vec![ids[1]]).unwrap();
+    assert_eq!(
+        rig.core.list_messages(inbox, None, 50).unwrap().rows.len(),
+        2
+    );
+    assert!(
+        rig.core.wake_due_snoozes().unwrap().is_empty(),
+        "nothing is due yet"
+    );
+    // Due: the wake time is moved into the past directly (the clock is real).
+    {
+        let d = Db::open(&rig.db.path, None).unwrap();
+        d.connection()
+            .execute(
+                "UPDATE message SET snoozed_until = 1 WHERE id = ?1",
+                [ids[0]],
+            )
+            .unwrap();
+    }
+    assert_eq!(rig.core.wake_due_snoozes().unwrap(), vec![ids[0]]);
+    let rows = rig.core.list_messages(inbox, None, 50).unwrap().rows;
+    let woken = rows.iter().find(|r| r.id == ids[0]).unwrap();
+    assert!(woken.back_from_snooze);
+    assert!(!woken.seen, "back unread");
+    assert!(rig.core.list_snoozed(None).unwrap().is_empty());
+    assert_eq!(rig.core.next_snooze_wake().unwrap(), None);
 }

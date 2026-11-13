@@ -611,3 +611,54 @@ pub fn unread_by_category(
     }
     Ok(counts)
 }
+
+// ---- T36: snooze on this device ----
+
+/// The longest a message can be snoozed: a year and a day.
+pub const MAX_SNOOZE_MS: i64 = 366 * 24 * 60 * 60 * 1000;
+
+/// Snoozes a message of this account until `until_ms` (`None` unsnoozes it). Snoozing clears an
+/// earlier back-from-snooze mark. False when there is no such message in this account.
+pub fn set_snooze(
+    conn: &Connection,
+    account_id: i64,
+    message_id: i64,
+    until_ms: Option<i64>,
+) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE message SET snoozed_until = ?3, snooze_back_at = NULL WHERE account_id = ?1 AND id = ?2",
+        params![account_id, message_id, until_ms],
+    )?;
+    Ok(n > 0)
+}
+
+/// The account's messages whose wake time has come (`snoozed_until <= now_ms`).
+pub fn due_snoozes(conn: &Connection, account_id: i64, now_ms: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached(
+        r#"SELECT id FROM message
+            WHERE account_id = ?1 AND snoozed_until IS NOT NULL AND snoozed_until <= ?2
+            ORDER BY snoozed_until, id"#,
+    )?;
+    let rows = stmt.query_map(params![account_id, now_ms], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+}
+
+/// Wakes one message: no longer snoozed, marked back from snooze at `now_ms`. False when there is
+/// no such snoozed message in this account (woken already).
+pub fn wake(conn: &Connection, account_id: i64, message_id: i64, now_ms: i64) -> Result<bool> {
+    let n = conn.execute(
+        r#"UPDATE message SET snoozed_until = NULL, snooze_back_at = ?3
+            WHERE account_id = ?1 AND id = ?2 AND snoozed_until IS NOT NULL"#,
+        params![account_id, message_id, now_ms],
+    )?;
+    Ok(n > 0)
+}
+
+/// The account's soonest wake time, if anything is snoozed.
+pub fn next_wake(conn: &Connection, account_id: i64) -> Result<Option<i64>> {
+    Ok(conn.query_row(
+        "SELECT MIN(snoozed_until) FROM message WHERE account_id = ?1 AND snoozed_until IS NOT NULL",
+        params![account_id],
+        |r| r.get(0),
+    )?)
+}

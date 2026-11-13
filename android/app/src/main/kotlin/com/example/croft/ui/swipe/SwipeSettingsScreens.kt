@@ -142,6 +142,7 @@ private fun presetName(p: SwipePreset) = stringResource(
         SwipePreset.TRIAGE -> R.string.swipe_preset_triage
         SwipePreset.GMAIL_STYLE -> R.string.swipe_preset_gmail
         SwipePreset.TIDY -> R.string.swipe_preset_tidy
+        SwipePreset.INBOX_ZERO -> R.string.swipe_preset_inbox_zero
     },
 )
 

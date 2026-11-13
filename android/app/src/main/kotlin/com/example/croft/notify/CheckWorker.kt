@@ -58,6 +58,7 @@ object CheckSchedule {
             val wm = WorkManager.getInstance(context.applicationContext)
             wm.cancelUniqueWork(UNIQUE_NAME)
             wm.cancelUniqueWork(PUSH_NAME)
+            wm.cancelUniqueWork(SnoozeSchedule.UNIQUE_NAME)
         } catch (e: IllegalStateException) { /* not initialised */ }
     }
 

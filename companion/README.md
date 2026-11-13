@@ -84,6 +84,11 @@ key is encrypted with the **master key**. The master key is a file, never in the
   lost their own passkeys gets back in. It is deliberately not in the admin API: whoever holds a user's link can become that user, and
   an admin must never be able to act as someone else. (The server's operator holds the master key, so nothing is hidden from them.)
 - **Admins** can list, disable and enable users and read the instance's audit log. They cannot read anyone's data or sign in as them.
+- **The Croft app on a phone** (T34a) signs in through the browser: it opens `/app/sign-in` in a Custom Tab, the person signs in
+  there with a passkey or single sign-on, and the browser is sent back to the app (`<application id>:/companion`) with a one-time
+  code that only the app holding the PKCE verifier can redeem (`POST /api/sign-in/app/exchange`, within a minute, once). The app then
+  has its own tokens, shown as its own device. Passkeys stay the Companion's own (the browser's), so nothing on your domain has to
+  name the app's signing key.
 
 ## Signing in through your identity provider (OIDC)
 
@@ -199,6 +204,7 @@ JSON over HTTPS; errors are `{"error": "<code>"}` and never say which part of a 
 | `GET /api/passkeys`, `DELETE /api/passkeys/{id}`, `GET /api/sessions`, `DELETE /api/sessions/{id}`, `GET /api/audit` | signed in |
 | `GET /api/admin/users`, `POST /api/admin/users/{id}/disable`, `/enable`, `GET /api/admin/audit` | admins |
 | `GET /api/oidc`, `GET /api/sign-in/oidc/start?app_challenge&app_redirect`, `GET /oidc/callback`, `POST /api/sign-in/oidc/exchange` (`{"code", "verifier"}`) | anyone |
+| The Croft app on a phone (T34a): `/api/sign-in/passkey/finish` with `"app": {"challenge", "redirect"}` answers `{"redirect"}`; `POST /api/sign-in/app/sso` (`{"challenge", "redirect"}`, header `X-Croft-Web: 1`, from `/app/sign-in`) answers the provider URL; `POST /api/sign-in/app/exchange` (`{"code", "verifier", "device"?}`) gives the app's tokens | the `/app/sign-in` page, then the app |
 | `POST /api/oidc/link/start`, `/api/oidc/link/finish`, `DELETE /api/oidc/link` | signed in |
 | `POST /api/admin/users/{id}/oidc/unlink` | admins |
 | `GET /api/push/vapid`, `POST /api/push/subscriptions`, `GET /api/push/subscriptions`, `DELETE /api/push/subscriptions/{id}` | signed in (not a recovery sign-in) |

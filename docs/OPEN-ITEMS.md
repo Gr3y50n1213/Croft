@@ -17,6 +17,8 @@ Things only the owner can decide or do. Newest first within each section.
 
 ## Placeholders to replace
 - Android application ID / package name: `com.example.croft` (Google Play refuses `com.example`, and the ID can never change after the first Play upload: pick it before then, usually a reversed domain you own such as `org.yourdomain.croft`) (defined once, in `android/gradle.properties` as `croft.applicationId` once the Android project exists).
+- The Companion's list of the app's sign-in redirects, `APP_SCHEMES` in `companion/src/app_signin.rs` (`com.example.croft` and
+  `com.example.croft.preview`): change it together with the application ID (T34a).
 - iOS bundle ID: `com.example.croft` (not used yet).
 - Publisher name, domain, contact and security-report address: `PUBLISHER_NAME`, `example.org`, `security@example.org`.
 

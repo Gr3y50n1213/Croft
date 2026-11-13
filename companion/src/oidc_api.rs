@@ -80,6 +80,12 @@ pub async fn sign_in_start(
 ) -> ApiResult {
     let ip = limit(&app, peer, &headers)?;
     let Query(q) = q.map_err(|_| ApiError::BadRequest)?;
+    // A phone's flow starts only from the Companion's own page, by a click there
+    // (`app_sso_start`): a link any app can open must not lead straight to a code for the Croft
+    // scheme (T34a review).
+    if crate::app_signin::is_app_redirect(&q.app_redirect) {
+        return Err(ApiError::Invalid);
+    }
     let p = provider(&app)?;
     let url = p
         .start(
@@ -92,6 +98,43 @@ pub async fn sign_in_start(
         .await
         .map_err(|e| oidc_error(&e))?;
     Ok(see_other(&url))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppSsoStart {
+    challenge: String,
+    redirect: String,
+}
+
+/// `POST /api/sign-in/app/sso` (T34a): single sign-on for the Croft app on a phone, started by the
+/// person's click on `/app/sign-in` (the request must come from the Companion's own page:
+/// `X-Croft-Web`). Answers the provider URL; the provider is asked to make the person sign in, and
+/// the code at the end is redeemed at `/api/sign-in/app/exchange`.
+pub async fn app_sso_start(
+    State(app): State<App>,
+    MaybePeer(peer): MaybePeer,
+    headers: HeaderMap,
+    req: Result<Json<AppSsoStart>, axum::extract::rejection::JsonRejection>,
+) -> ApiResult {
+    let ip = limit(&app, peer, &headers)?;
+    super::web_api::check_web(&app, &headers, true)?;
+    let req = body(req)?;
+    if !crate::app_signin::is_app_redirect(&req.redirect) {
+        return Err(ApiError::Invalid);
+    }
+    let p = provider(&app)?;
+    let url = p
+        .start(
+            Owner::Address(limits::who(ip)),
+            Purpose::SignIn,
+            &req.challenge,
+            &req.redirect,
+            app.auth.now(),
+        )
+        .await
+        .map_err(|e| oidc_error(&e))?;
+    Ok(Json(json!({ "url": url })).into_response())
 }
 
 #[derive(Deserialize)]
@@ -188,6 +231,21 @@ pub async fn callback(
         failed(&app, ip);
         return Ok(back(&[("error", "not_linked")]));
     };
+    // A phone's code goes into the apps' table, redeemed where every app code is (T34a review).
+    if crate::app_signin::is_app_redirect(flow.app_redirect()) {
+        let Outcome::SignIn { user_id } = outcome else {
+            return Ok(back(&[("error", "invalid")]));
+        };
+        let code = app
+            .auth
+            .app_handovers()
+            .put(user_id, flow.app_challenge(), now)?;
+        let _ = with_store(&app, move |s| {
+            s.audit(Some(user_id), "sign_in.oidc.app_handover", "ok")
+        })
+        .await;
+        return Ok(back(&[("code", code.as_str())]));
+    }
     let handover = p
         .handover(&flow, outcome, now)
         .map_err(|e| oidc_error(&e))?;
@@ -251,6 +309,10 @@ pub async fn link_start(
 ) -> ApiResult {
     limit(&app, peer, &headers)?;
     let req = body(req)?;
+    // Linking from a phone is not offered (its code would go through the app's scheme).
+    if crate::app_signin::is_app_redirect(&req.app_redirect) {
+        return Err(ApiError::Invalid);
+    }
     let p = provider(&app)?;
     let now = app.auth.now();
     // Linking adds a way in, so it needs a sign-in from the last minutes, not just any live

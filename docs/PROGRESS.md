@@ -5,9 +5,60 @@ unverified, the next step.
 
 ---
 
+## T33b: Search through the Companion (13 November 2026)
+
+**Status:** on `task/t33b` with T33a, one pull request. An independent review covered both parts (below); every finding was fixed.
+
+**What was built.**
+- **The Companion**: `CroftSearch/query` (capability `urn:croft:params:jmap:search`).
+  - It searches the core's own index inside the user's encrypted database, not tantivy (DECISIONS), with the phone's query
+    language, and with `server: true` the mail server too.
+  - It answers email ids, best first, with the matched parts of each subject and a body snippet (UTF-16 ranges).
+  - Bounded: 512 characters, 1 to 100 hits, one search per request, 10 server searches a minute per user, 20 s for the server.
+- **The web app (W01)**:
+  - The search box in the bar (`/`, Escape back to the folder), with results in the list and the matches marked as text.
+  - "Search the server too" when bodies were not all searched, and plain words when the server could not search.
+  - Actions on the results work as in a folder.
+
+**Review** (one independent agent, opus, high effort, on T33a and T33b together). Isolation, FTS5 and IMAP quoting, `utc_date`
+and the web's rendering were found sound. Findings, all fixed:
+- **Medium:** scheduled messages escaped the budget and outlived a revoked session. Now at most 100 scheduled messages and 1000
+  scheduled recipients per account.
+- **Medium:** a cancelled server search could leave the IMAP connection out of step, so the next command read its replies.
+  - Now a connection with a command left unfinished is replaced (search and APPEND).
+  - The test was shown to fail without the fix.
+- **Medium:** local search had no cost bound while it held the user's engine. Now:
+  - a 1.5 s budget (a watchdog interrupts SQLite);
+  - highlights only for the hits kept;
+  - single characters matched whole, not as prefixes;
+  - one search per request.
+- **Lows:**
+  - The server timeout was equal to the request's; it is now 20 s.
+  - An overdue message nothing had sent could not be cancelled. Undo now works while a message was never handed out.
+  - A refresh could overwrite search results.
+  - Budgets were charged before their arguments were validated.
+  - Highlights could be offset by characters the core removes. The hit now carries its subject.
+  - A deleted account's Outbox stayed in memory until restart.
+
+Not re-reviewed.
+
+**Checks.**
+- Core: the whole suite; new tests for the IMAP connection, the search budget, whole single characters, a deleted account's Outbox,
+  and Undo while never handed out. Three tests that encoded "Undo ends with the window" were rewritten to the new rule and still
+  check that nothing is taken back once sending began.
+- Companion: 169 tests (new: search results and isolation, bounds and budgets, the scheduled caps).
+- Web: 96 unit tests (new: marking matches) and 29 Playwright tests (new: search with `/`, marks, opening a result, a query
+  by sender and phrase, the mail server, no results, a bad date, Escape). axe-core is clean on the results.
+
+**Unverified.** Search against real mail servers through the Companion (only the in-process IMAP server here).
+
+**Next.** T34: phones through the Companion, the flavours and push registration.
+
+---
+
 ## T33a: Scheduled send (13 November 2026)
 
-**Status:** on `task/t33`, its own pull request. An independent review covers the new JMAP methods once search (T33b) is built.
+**Status:** merged together with T33b (one pull request), after the review below.
 
 **What was built.**
 - **The core**: `Core::schedule_send(account, draft, send_at_ms)`. The message waits in the Outbox until its time, then goes like

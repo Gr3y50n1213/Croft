@@ -408,13 +408,16 @@ async fn undo_inside_the_window_sends_nothing_ever() {
 }
 
 #[tokio::test]
-async fn undo_after_the_window_is_too_late_and_the_message_is_sent() {
+async fn undo_once_the_message_went_out_is_too_late_and_it_is_sent_once() {
     let rig = Rig::new().await;
     let id = rig.send("late-undo@example.org");
     rig.advance(WINDOW_MS + 1);
+    rig.run().await;
+    assert_eq!(rig.accepted(), 1);
+    // Handed to the server: nothing can take it back (it is too late, or already gone).
     assert!(matches!(
         rig.ui.undo_send(rig.account, id),
-        Err(OutboxActionError::TooLate)
+        Err(OutboxActionError::TooLate | OutboxActionError::NoSuchMessage)
     ));
     rig.run().await;
     assert_eq!(rig.accepted(), 1);

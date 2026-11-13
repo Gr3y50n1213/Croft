@@ -23,13 +23,13 @@ autocomplete work offline.
   saved back loses nothing. Writing produces vCard 4.0 when the card was 4.0 or new, else 3.0. Bounded (card size, lines,
   properties); folded lines, quoted-printable (3.0), escaping and parameters handled. Photos are not downloaded.
 - **Storage (migration 0012).** `address_book` and `contact` tables scoped by account (contact: book, href, etag, uid, display
-  name, sort key, the raw card); a `contact_email` table for autocomplete and "is this sender a contact"; a full-text index of
-  names and emails. Removed with the account.
-- **Sync (engine).** At start, after a mail sync, and on demand; never more than every 15 minutes in the background. Local edits
-  are queued like mail operations (create, update, delete), applied locally first, sent with the etag; a 412 (changed on the
-  server) keeps the server's card and reports the conflict.
-- **Recent recipients.** Addresses the person sent to (from the Sent folder and the Outbox) are kept per account with a count and
-  last use, for autocomplete, even without CardDAV.
+  name, sort key, the raw card, what waits to be sent, a conflict mark); a `contact_email` table for autocomplete and "is this
+  sender a contact". Search is an indexed `LIKE` on names and addresses (address books are small). Removed with the account.
+- **Sync (`sync_contacts`).** Changes made here go out first (create, update, delete, each conditional on the etag), then the
+  server's come in; a 412 (changed on the server) keeps the server's card and reports the conflict. Local edits are marked on the
+  contact row, not in the mail operation queue (a contact has no Undo window). The app asks for a sync (S40 opening, pull to
+  refresh, after an account is added); scheduling it in the background is T38b's.
+- **Recent recipients.** Already kept per account since T18d (`sent_recipient`); autocomplete merges them after the contacts.
 - **The core (FFI v19).** List and search contacts (per account or all; A to Z with a sort key), get one, create, update, delete,
   the address books of an account, `autocomplete(prefix, limit)` over contacts and recent recipients (contacts first, then by use),
   sync now, and the change notices the lists already use.
@@ -40,7 +40,7 @@ autocomplete work offline.
 - vCard tests: 3.0 and 4.0, folding, escaping, quoted-printable, unknown properties kept byte for byte through an edit, bounds.
 - Protocol tests against an in-process DAV fake: discovery, sync-collection with and without a token, multiget, conditional PUT
   and DELETE, 412, redirects refused, a hostile XML answer bounded.
-- Integration tests against Radicale (and Stalwart's CardDAV) in `test-servers/`.
+- An integration test against Stalwart's CardDAV (already in the CI's integration job); Radicale later.
 - Storage and FFI tests: scoping per account, search, autocomplete order, recent recipients, conflict handling, migration 0012.
 - An independent review (credentials sent to a new endpoint, a new parser of server data).
 - CI green.

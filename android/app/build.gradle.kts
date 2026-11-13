@@ -11,6 +11,8 @@ plugins {
 
 // The one place the application id is defined: android/gradle.properties.
 val croftApplicationId = providers.gradleProperty("croft.applicationId").get()
+// T34c: the store flavours (see productFlavors below).
+val stores = listOf("play", "fdroid", "github")
 
 // Rust side. Paths are relative to android/ (this project's parent).
 val coreDir = rootProject.layout.projectDirectory.dir("../core")
@@ -135,7 +137,24 @@ android {
         ndk { abiFilters += abis }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    // T34c: where the app is distributed. One application id for all three (a phone has one of them; the signing key keeps them
+    // apart). Only push differs (T34d): FCM through the gateway in play, UnifiedPush in fdroid and github, which share
+    // src/unifiedpush so they cannot drift. No Google Play services or Firebase library may reach fdroid or github
+    // (tools/check-flavour-dependencies.py, run by CI).
+    flavorDimensions += "store"
+    productFlavors {
+        for (store in stores) {
+            create(store) {
+                dimension = "store"
+                buildConfigField("String", "STORE", "\"$store\"")
+            }
+        }
+    }
 
     // F-Droid rejects the encrypted dependency block AGP adds by default, and it makes builds non-reproducible.
     dependenciesInfo {
@@ -199,6 +218,10 @@ android {
         getByName("preview") {
             kotlin.directories.add("src/release/kotlin")
         }
+        // The two builds without Google services share one folder.
+        for (store in listOf("fdroid", "github")) {
+            getByName(store) { kotlin.directories.add("src/unifiedpush/kotlin") }
+        }
     }
 }
 
@@ -239,8 +262,14 @@ fun registerMappingCheck(taskName: String, variant: String) = tasks.register(tas
         check(renamed.isEmpty()) { "R8 renamed classes that JNA/UniFFI look up by name: $renamed" }
     }
 }
-val checkReleaseMapping = registerMappingCheck("checkReleaseMapping", "release")
-val checkPreviewMapping = registerMappingCheck("checkPreviewMapping", "preview")
+fun capitalized(s: String) = s.replaceFirstChar { it.uppercase() }
+// (variant, build type, check): playRelease, playPreview, fdroidRelease, ...
+val mappingChecks = stores.flatMap { store ->
+    listOf("release", "preview").map { buildType ->
+        val variant = store + capitalized(buildType)
+        Triple(variant, buildType, registerMappingCheck("check${capitalized(variant)}Mapping", variant))
+    }
+}
 // The preview build must compile the release stubs and nothing from src/debug (the test hooks and the component gallery).
 val checkPreviewSourceSets = tasks.register("checkPreviewSourceSets") {
     group = "verification"
@@ -252,12 +281,15 @@ val checkPreviewSourceSets = tasks.register("checkPreviewSourceSets") {
     }
 }
 afterEvaluate {
-    tasks.matching { it.name == "minifyReleaseWithR8" || it.name == "minifyPreviewWithR8" }.configureEach { dependsOn(checkReleaseKeepRules) }
-    tasks.matching { it.name == "compilePreviewKotlin" }.configureEach { dependsOn(checkPreviewSourceSets) }
-    checkReleaseMapping.configure { mustRunAfter("minifyReleaseWithR8") }
-    checkPreviewMapping.configure { mustRunAfter("minifyPreviewWithR8") }
-    tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach { finalizedBy(checkReleaseMapping) }
-    tasks.matching { it.name == "assemblePreview" }.configureEach { finalizedBy(checkPreviewMapping) }
+    val minified = Regex("minify(${stores.joinToString("|") { capitalized(it) }})(Release|Preview)WithR8")
+    tasks.matching { minified.matches(it.name) }.configureEach { dependsOn(checkReleaseKeepRules) }
+    tasks.matching { Regex("compile\\w+PreviewKotlin").matches(it.name) }.configureEach { dependsOn(checkPreviewSourceSets) }
+    for ((variant, buildType, check) in mappingChecks) {
+        val v = capitalized(variant)
+        check.configure { mustRunAfter("minify${v}WithR8") }
+        tasks.matching { it.name == "assemble$v" || (buildType == "release" && it.name == "bundle$v") }
+            .configureEach { finalizedBy(check) }
+    }
 }
 
 tasks.named("preBuild") { dependsOn("generateUniffiBindings", "buildRustAndroid") }

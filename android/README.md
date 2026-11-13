@@ -8,7 +8,7 @@ and `cargo install cargo-ndk --version 4.1.2 --locked`.
 
 ```
 cd android
-./gradlew :app:assembleDebug :app:testDebugUnitTest
+./gradlew :app:assemblePlayDebug :app:testPlayDebugUnitTest
 tools/check-16kb-alignment.sh app/build/generated/rust/jniLibs   # LOAD segments must be 0x4000 aligned
 ```
 
@@ -90,7 +90,7 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
 - Connectivity: `mail/ConnectivityMonitor` (`registerDefaultNetworkCallback`) calls `set_network_available`. The manifest now declares
   `INTERNET` and `ACCESS_NETWORK_STATE` (and `tools/manifest-allowlist.json` allows them).
 - **Tests against a real server, as plain JVM tests: the module `:mailtests`** (`./gradlew :mailtests:test`, also run by
-  `:app:testDebugUnitTest`). It compiles the app's `mail/` data layer in place (not the four files that need Android: `MailSession`, `MailSettings`, `ConnectivityMonitor`, `MailRuntime`) with Kotlin bindings
+  `:app:testPlayDebugUnitTest`). It compiles the app's `mail/` data layer in place (not the four files that need Android: `MailSession`, `MailSettings`, `ConnectivityMonitor`, `MailRuntime`) with Kotlin bindings
   generated from the **host** library, which is built with the `test-server` feature of `croft-ffi` and so has `TestImapServer`. The
   app's own bindings are generated from the **Android** library (`generateUniffiBindings`), so the app cannot call, or even know,
   the test object; `tools/check-release-outputs.sh` checks that the release `.so` files have no test-server symbols. Why a module and
@@ -114,16 +114,34 @@ and device transfer. `BackupRulesTest` checks the manifest attributes and the ru
   profileable). With a device attached: `./gradlew :macrobenchmark:connectedBenchmarkAndroidTest`. It scrolls the 5,000-row Inbox
   and records frame timing; there is no result yet.
 
+## Store builds (T34c)
+Three flavours in the dimension `store`, with one application id:
+- `play` is for Google Play. It gets FCM through the push gateway with T34d.
+- `fdroid` is for F-Droid, which builds it from source and signs it.
+- `github` is for GitHub releases, signed with the owner's own key.
+
+`fdroid` and `github` share `app/src/unifiedpush/` (UnifiedPush, no Google services) and differ only in name. Task names carry the
+flavour: `assemblePlayDebug`, `testPlayDebugUnitTest`, `assembleFdroidRelease` and so on.
+
+`tools/check-flavour-dependencies.py` fails if a Google Play services, Firebase or Play library is in the runtime classpath of `fdroid`
+or `github`. Open-source Google libraries such as AndroidX and Material Components are allowed. To run it:
+```
+./gradlew -q :app:dependencies --configuration fdroidReleaseRuntimeClasspath > /tmp/fdroid.txt
+python3 tools/check-flavour-dependencies.py /tmp/fdroid.txt
+```
+
 ## Release build (T16b)
-- `./gradlew :app:assembleRelease :app:bundleRelease` makes `app-release-unsigned.apk` and `app-release.aab`: R8 and resource
+- `./gradlew :app:assemblePlayRelease :app:bundlePlayRelease` makes `apk/play/release/app-play-release-unsigned.apk` and
+  `bundle/playRelease/app-play-release.aab`; `assembleFdroidRelease` and `assembleGithubRelease` make the other stores' APKs: R8 and resource
   shrinking on, not debuggable, no signing config, and no dependency-info block (`dependenciesInfo` off; F-Droid rejects it).
 - No signing keys are in the repository. The owner signs afterwards, with a key kept outside it: for the APK, `zipalign -P 16 -p 4`
-  is already satisfied, then `apksigner sign --ks <keystore> app-release-unsigned.apk`; for the AAB, `jarsigner -keystore <keystore>
-  app-release.aab <alias>` (Play re-signs with its own key when Play App Signing is on). F-Droid builds and signs from source.
+  is already satisfied, then `apksigner sign --ks <keystore> app-github-release-unsigned.apk`; for the AAB, `jarsigner -keystore <keystore>
+  app-play-release.aab <alias>` (Play re-signs with its own key when Play App Signing is on). F-Droid builds and signs from source.
 - Keep rules: `app/proguard-rules.pro`, one reason per rule. `checkReleaseKeepRules` fails the build before R8 if the UniFFI
-  (`uniffi.croft_ffi.**`) and JNA (`com.sun.jna.**`) rules are missing; `checkReleaseMapping` fails after R8 if its `mapping.txt`
+  (`uniffi.croft_ffi.**`) and JNA (`com.sun.jna.**`) rules are missing; `check<Store>ReleaseMapping` (for example `checkPlayReleaseMapping`) fails after R8 if its `mapping.txt`
   shows either package renamed. This does not replace a device run: start the release build, sign in and sync by hand before any upload.
-- `tools/check-release-outputs.sh [bundletool.jar]` (after the build) checks unsigned, not debuggable, no dependency blob, the
+- `tools/check-release-outputs.sh [bundletool.jar]` (after the build; `CROFT_FLAVOR=fdroid` or `github` for the other stores, which have
+  no AAB) checks unsigned, not debuggable, no dependency blob, the
   manifest allowlist, 16 KB alignment (`check-16kb-alignment.sh`, `zipalign -c -P 16`, and the AAB's `PAGE_ALIGNMENT_16K` with bundletool).
 - Manifest allowlist: `tools/manifest-allowlist.json` (permissions and exported components, each with a reason). A new permission or
   exported component fails `tools/check-release-manifest.py` until it is added there with its justification; tests are in
@@ -140,7 +158,7 @@ Gradle cache; it runs `./gradlew --offline`). `python3 android/tools/gen_licence
 ## Swipe engine (T15)
 `:swipe` is a plain Kotlin JVM module (no Android or Compose types): the swipe state machine, the settings types and the pill
 geometry, with property tests (kotest-property) that run as ordinary JVM tests: `./gradlew :swipe:test` (also a dependency of
-`:app:testDebugUnitTest`, so one command and CI cover both). The app's gesture layer, the row host, S47 and S48 are in
+`:app:testPlayDebugUnitTest`, so one command and CI cover both). The app's gesture layer, the row host, S47 and S48 are in
 `app/src/main/kotlin/com/example/croft/ui/swipe/`; what a swipe, a menu item or a TalkBack action does to a row goes through the
 `RowActions` interface (`mail/RowActions.kt`), which T16 implements on the core. A device benchmark of the swipe is
 `macrobenchmark/.../SwipeBenchmark.kt` (not run in CI).

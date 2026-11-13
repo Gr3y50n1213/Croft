@@ -18,13 +18,13 @@ This guide is for the owner. You do not need to know Git or GitHub. Take your ti
 4. Scroll to the bottom of the page, to **Artifacts**.
 5. Tap **croft-preview-apk**. A zip file downloads.
 6. Unzip it. On the phone: open the **Files** app, tap the zip, then tap **Extract**. On a computer: double-click the zip, then copy the file out to the phone (by cable, or send it to yourself).
-7. Inside is one file, `app-preview.apk`. This is the app.
+7. Inside is one file, `app-play-preview.apk`. This is the app.
 
 Artifacts are kept for 30 days. If the page says the artifact has expired, ask for a new run.
 
 ## How to install it
 
-1. Tap `app-preview.apk` in the Files app (or in the browser's downloads).
+1. Tap `app-play-preview.apk` in the Files app (or in the browser's downloads).
 2. Android will say it cannot install apps from this source. Tap **Settings** in that message.
 3. Turn on **Allow from this source** for the app you used (for example Files or Chrome). If you do this by hand: **Settings → Apps → Special app access → Install unknown apps**, then choose that app. The exact words differ a little between phone makes.
 4. Go back and tap **Install**.

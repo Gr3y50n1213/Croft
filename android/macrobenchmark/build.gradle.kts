@@ -20,6 +20,8 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The application id lives in one place (android/gradle.properties); the benchmark reads it from here.
         testInstrumentationRunnerArguments["croft.targetPackage"] = croftApplicationId
+        // T34c: the app has store flavours; the benchmark measures the Play build.
+        missingDimensionStrategy("store", "play")
     }
 
     compileOptions {

@@ -258,7 +258,7 @@ fn contact_of(fields: &ContactFields, base: &Contact) -> Contact {
 }
 
 /// A new card's id: random, so it never says anything about the person.
-fn new_uid() -> Result<String, CoreError> {
+pub(crate) fn new_uid() -> Result<String, CoreError> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| CoreError::Internal)?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
@@ -280,6 +280,19 @@ impl Core {
     /// The account's CardDAV client, or `None` when it has no contacts sync (the sample mailbox,
     /// an OAuth account, unreadable settings). Errors only for "ask again later".
     async fn carddav(&self, account: i64) -> Result<Option<CardDav>, CoreError> {
+        Ok(self
+            .dav_access(account)
+            .await?
+            .and_then(|(config, credential)| CardDav::new(&config, &credential).ok()))
+    }
+
+    /// Where and how to reach the account's DAV services (CardDAV and CalDAV, T39a): the mail
+    /// host's origin with the account's own credential and certificate pin. `None` when it has none
+    /// (the sample mailbox, an OAuth account, unreadable settings). Errors only for "ask again later".
+    pub(crate) async fn dav_access(
+        &self,
+        account: i64,
+    ) -> Result<Option<(CardDavConfig, Credential)>, CoreError> {
         let row = self
             .inner
             .handle
@@ -358,7 +371,7 @@ impl Core {
             timeout: Duration::from_secs(20),
             deadline: Duration::from_secs(60),
         };
-        Ok(CardDav::new(&config, &credential).ok())
+        Ok(Some((config, credential)))
     }
 
     /// Sends the account's waiting changes, then brings in the server's (see the module docs).

@@ -2,6 +2,7 @@
 // server; `sending` runs against the in-process IMAP and SMTP servers of `croft-test-support`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod calendar;
 mod contacts;
 mod drafts;
 #[cfg(feature = "integration")]

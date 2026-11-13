@@ -477,6 +477,7 @@ dependencies = [
  "croft-storage",
  "croft-test-support",
  "getrandom 0.4.3",
+ "jiff",
  "libc",
  "log",
  "rusqlite",

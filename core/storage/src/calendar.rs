@@ -198,8 +198,9 @@ fn index(text: &str) -> Option<(String, i64, Option<i64>)> {
 }
 
 /// Stores an object fetched from the server at `href`. One that cannot be read, or holds no event,
-/// is skipped (`Ok(None)`); one with a change of the device's still waiting is not overwritten.
-#[allow(clippy::too_many_arguments)]
+/// is skipped (`Ok(None)`); one with a change of the device's still waiting is not overwritten. A
+/// conflict mark stays (the server's version arriving is what the mark is about); an edit made here
+/// clears it.
 pub fn store_from_server(
     conn: &Connection,
     account: i64,
@@ -225,7 +226,7 @@ pub fn store_from_server(
         Some((id, _)) => {
             conn.execute(
                 r#"UPDATE event SET etag = ?3, uid = ?4, object = ?5, first_start = ?6, last_end = ?7,
-                                    conflict = 0, updated_at = ?8
+                                    updated_at = ?8
                     WHERE account_id = ?1 AND id = ?2"#,
                 params![account, id, etag, uid, text, first, last, now_ms],
             )?;

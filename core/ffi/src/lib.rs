@@ -43,6 +43,7 @@
 compile_error!("the test-server feature is host-only and must never be enabled for Android");
 
 mod background;
+mod calendar;
 mod category;
 mod changes;
 mod companion;
@@ -152,11 +153,15 @@ uniffi::setup_scaffolding!();
 ///
 /// Version 19 (T38a): contacts: `sync_contacts`, `address_books`, `list_contacts`, `get_contact`,
 /// `save_contact`, `delete_contact`, `autocomplete`, `is_contact`, and their records.
+///
+/// Version 20 (T39a): calendars: `sync_calendars`, `calendars`, `set_calendar_shown`,
+/// `events_between`, `get_event`, `save_event`, `delete_event`, `next_reminders`, and their records
+/// and enums.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 19;
+pub const FFI_API_VERSION: u32 = 20;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

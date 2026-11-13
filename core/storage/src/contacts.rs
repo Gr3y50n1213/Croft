@@ -180,7 +180,8 @@ pub fn server_cards(conn: &Connection, account: i64, book: i64) -> Result<Vec<(S
 }
 
 /// Stores a card fetched from the server at `href`. A card that cannot be read is skipped
-/// (`Ok(None)`); a card with a change of the device's still waiting is not overwritten.
+/// (`Ok(None)`); a card with a change of the device's still waiting is not overwritten. A conflict mark
+/// stays (the server's version arriving is what the mark is about); an edit made here clears it.
 pub fn store_from_server(
     conn: &Connection,
     account: i64,
@@ -206,7 +207,7 @@ pub fn store_from_server(
         Some((id, _)) => {
             conn.execute(
                 r#"UPDATE contact SET etag = ?3, uid = ?4, display_name = ?5, sort_key = ?6, card = ?7,
-                                      conflict = 0, updated_at = ?8
+                                      updated_at = ?8
                     WHERE account_id = ?1 AND id = ?2"#,
                 params![
                     account,
@@ -689,7 +690,11 @@ mod tests {
         )
         .unwrap();
         let back = get(c, a, new).unwrap().unwrap();
-        assert!(back.card.contains("FN:Server") && !back.conflict);
+        // T39a: the server's version comes in and the mark stays, so S41 can say what happened; an
+        // edit made here clears it.
+        assert!(back.card.contains("FN:Server") && back.conflict);
+        assert!(update_local(c, a, new, &card("n", "Mine again", "new@x.example"), 10).unwrap());
+        assert!(!get(c, a, new).unwrap().unwrap().conflict);
 
         assert!(delete_local(c, a, new).unwrap());
         assert!(

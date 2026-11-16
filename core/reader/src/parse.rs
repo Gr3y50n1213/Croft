@@ -491,6 +491,53 @@ pub fn part_content(raw: &[u8], part_id: &str) -> Result<Option<Vec<u8>>, ParseE
     Ok(message.part(id).map(|p| p.decoded().into_owned()))
 }
 
+/// The largest calendar part read from a message (an invitation, T40a), in bytes.
+pub const MAX_CALENDAR_PART: usize = 1024 * 1024;
+
+/// The message's calendar invitation, if it carries one (T40a): the first `text/calendar` part of the message
+/// itself, else its first `application/ics` part or attached `.ics` file, as text. Parts of attached messages are not
+/// looked at (a forwarded invitation belongs to the forwarded message). `None` when there is none, or when the part is
+/// larger than [`MAX_CALENDAR_PART`] or not UTF-8 text. Nothing else of the message is read.
+pub fn calendar_part(raw: &[u8]) -> Result<Option<String>, ParseError> {
+    let message = parse_checked(raw)?;
+    let kind = |part: &MessagePart<'_>| -> u8 {
+        let mime = mime_type_of(part);
+        if mime == "text/calendar" {
+            2
+        } else if mime == "application/ics"
+            || part
+                .attachment_name()
+                .is_some_and(|n| n.trim().to_ascii_lowercase().ends_with(".ics"))
+        {
+            1
+        } else {
+            0
+        }
+    };
+    let root = message.root();
+    for wanted in [2u8, 1] {
+        // The message's own parts only (nested messages excluded).
+        let Some(part) = root
+            .parts()
+            .find(|p| !p.is_multipart() && !p.is_message() && kind(p) == wanted)
+        else {
+            continue;
+        };
+        if part.decoded_len() > MAX_CALENDAR_PART {
+            return Ok(None);
+        }
+        let text = match part.kind() {
+            PartKind::Text | PartKind::Html => part.text().map(|t| t.into_owned()),
+            PartKind::Binary | PartKind::InlineBinary => {
+                String::from_utf8(part.decoded().into_owned()).ok()
+            }
+            _ => None,
+        };
+        return Ok(text.filter(|t| t.len() <= MAX_CALENDAR_PART));
+    }
+    Ok(None)
+}
+
 /// A one-line preview of a body text: whitespace collapsed, at most 200 characters.
 pub fn snippet(text: &str) -> String {
     let mut out = String::new();

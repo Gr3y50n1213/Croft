@@ -5,6 +5,61 @@ unverified, the next step.
 
 ---
 
+## T40a: Invitations in the core (16 November 2026)
+
+**Status:** merged (CI green on draft #95). The independent review is done; its findings are fixed
+(`docs/REVIEW-QUEUE.md`). The screens are T40b.
+
+**What was built.**
+- **Finding the invitation** (`croft-reader`): `calendar_part` takes the message's own first `text/calendar` part (else an
+  `application/ics` part or an attached `.ics` file), at most 1 MiB; an attached message's invitation is not taken.
+- **iMIP** (`mail-core`, `ical::imip`, pure):
+  - the kind from `METHOD` (`REQUEST`, `PUBLISH`, `CANCEL`, `REPLY`);
+  - the person's own attendee line, by any of the account's addresses;
+  - the reply with only what iTIP needs;
+  - the copy for the calendar: no `METHOD`, no `VALARM`, `SCHEDULE-AGENT=CLIENT` on the organiser, the person's answer
+    (added as an attendee when the invitation came through a group address);
+  - what a cancellation calls off.
+- **Sending:** `build_message` can carry a calendar part beside the text (`multipart/alternative`, `text/calendar;
+  method=REPLY`).
+- **The core (FFI v22):**
+  - `invitation(message_id, zone)`: S22's card (title, times, place, organiser and whether it is the sender, attendees,
+    the person's answer, up to three clashes, the stored event, whether this message is outdated, what can be done).
+    Reading only.
+  - `respond_to_invitation`: the calendar first (added to the chosen or first shown calendar, or updated where it is
+    stored; No adds nothing), then the reply to the organiser through the Outbox. Outdated invitations are refused.
+  - `apply_cancellation`: only for the stored event's own organiser.
+  - `respond_to_event` (S37), with `EventDetail.my_answer` and `can_respond`.
+- **After the review:**
+  - a stored event changes only through its own organiser's invitation (`organizer_differs` on the card);
+  - control characters other than tab are removed by the iCalendar reader;
+  - the stored copy keeps only the invitation's own events and zones, marks every attendee for client scheduling, and
+    keeps no attendees from a `PUBLISH`;
+  - an update of one occurrence is merged into it;
+  - a cancellation needs the organiser as the sender, and removes only real occurrences (at most 50);
+  - the reply is built before anything is written; opening writes nothing.
+
+**Checks.** All local and passed:
+- `cargo fmt` and the three clippy runs;
+- `cargo test` for the whole core, including:
+  - reader tests (alternative, attachment, base64, quoted-printable, oversized, forwarded);
+  - `imip` unit tests (kinds, the exact reply, the calendar copy, group addresses, cancellations);
+  - the calendar part in built messages;
+  - `find_by_uid` (own calendars only, never a link's or another account's);
+  - FFI tests against the IMAP, SMTP and CalDAV fakes: opening changes nothing; Yes adds the event and mails the
+    organiser only; Maybe and No change it; the answer reaches the CalDAV server with client scheduling and no alarm;
+    an older invitation is refused; a forged cancellation is ignored and the organiser's own removes the event; no
+    calendar; S37's answer and the person's own event; a forged update from a co-attendee changes nothing; a spoofed
+    sender's cancellation and a made-up occurrence are ignored; a `PUBLISH` from the person's own address is refused and
+    another is stored without attendees;
+  - `imip` tests for a bare CR or NUL, the stored copy's contents, an occurrence merged, and the cancellation cap;
+- SQLCipher;
+- `check_schema.py`.
+
+**Next.** The independent review, then T40b: S22's card and S37's buttons.
+
+---
+
 ## T39c: The week view and calendar links (13 November 2026)
 
 **Status:** merged (pull request #94; CI green on draft #93). The independent review of the link fetch is done; its findings are fixed (`docs/REVIEW-QUEUE.md`).

@@ -171,7 +171,7 @@ fn datetime_text(dt: DateTime) -> String {
     )
 }
 
-fn utc_text(t: Timestamp) -> String {
+pub(crate) fn utc_text(t: Timestamp) -> String {
     format!("{}Z", datetime_text(t.to_zoned(TimeZone::UTC).datetime()))
 }
 
@@ -542,7 +542,7 @@ pub fn delete_one(cal: &mut Calendar, rid: &When, now: Timestamp) -> bool {
 
 /// Whether two dates or times name the same moment (dates the same day; times the same instant,
 /// floating ones read in UTC on both sides).
-fn same_moment(zones: &super::zone::Zones, a: &When, b: &When) -> bool {
+pub(crate) fn same_moment(zones: &super::zone::Zones, a: &When, b: &When) -> bool {
     match (a, b) {
         (When::Date(x), When::Date(y)) => x == y,
         (When::Date(_), _) | (_, When::Date(_)) => false,

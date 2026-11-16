@@ -378,3 +378,149 @@ fn s37_answers_an_event_from_the_server_and_never_the_persons_own() {
         put.body
     );
 }
+
+#[test]
+fn a_forged_update_from_another_organiser_never_changes_the_stored_event() {
+    let (m, _dav) = with_calendar(false);
+    m.imap.add_message(
+        "INBOX",
+        &mail_with(
+            "real",
+            "sam@example.org",
+            &invite_text("REQUEST", 2, "sam@example.org", ""),
+        ),
+    );
+    let real = row_with(&m, 1, "Invitation real");
+    let event = block(m.core().clone().respond_to_invitation(
+        real,
+        RsvpAnswer::Yes,
+        None,
+        wording(),
+    ))
+    .unwrap()
+    .event_id
+    .unwrap();
+    wait_until("the reply is sent", || m.accepted() == 1);
+
+    // A co-attendee knows the UID: same UID, a huge SEQUENCE, themselves as organiser, a new title.
+    let forged = invite_text("REQUEST", 4_000_000_000, "mallory@example.com", "")
+        .replace("Lunch with Sam", "Moved: come to my place");
+    m.imap.add_message(
+        "INBOX",
+        &mail_with("forged", "mallory@example.com", &forged),
+    );
+    let id = row_with(&m, 2, "Invitation forged");
+    let info = block(m.core().clone().invitation(id, "UTC".into()))
+        .unwrap()
+        .unwrap();
+    assert!(info.organizer_differs && !info.can_respond);
+    let out = block(
+        m.core()
+            .clone()
+            .respond_to_invitation(id, RsvpAnswer::No, None, wording()),
+    )
+    .unwrap();
+    assert_eq!(out.problem, Some(RsvpProblem::OrganizerDiffers));
+    stays(300, || m.accepted() == 1);
+    let detail = m
+        .core()
+        .get_event(m.account, event, None, "UTC".into())
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.title, "Lunch with Sam");
+    assert_eq!(detail.organizer.unwrap().address, "sam@example.org");
+
+    // The real organiser's next update still applies.
+    let update = invite_text("REQUEST", 3, "sam@example.org", "").replace("The Mill", "The Bakery");
+    m.imap
+        .add_message("INBOX", &mail_with("update", "sam@example.org", &update));
+    let id = row_with(&m, 3, "Invitation update");
+    let info = block(m.core().clone().invitation(id, "UTC".into()))
+        .unwrap()
+        .unwrap();
+    assert!(info.can_respond && !info.organizer_differs && !info.outdated);
+    block(
+        m.core()
+            .clone()
+            .respond_to_invitation(id, RsvpAnswer::Yes, None, wording()),
+    )
+    .unwrap();
+    let detail = m
+        .core()
+        .get_event(m.account, event, None, "UTC".into())
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail.location, "The Bakery");
+
+    // A cancellation naming the right organiser but sent by someone else is not applied.
+    let cancel = invite_text("CANCEL", 4, "sam@example.org", "");
+    m.imap
+        .add_message("INBOX", &mail_with("spoof", "mallory@example.com", &cancel));
+    let id = row_with(&m, 4, "Invitation spoof");
+    let info = block(m.core().clone().invitation(id, "UTC".into()))
+        .unwrap()
+        .unwrap();
+    assert!(!info.organizer_is_sender && !info.can_remove);
+    assert!(!block(m.core().clone().apply_cancellation(id)).unwrap());
+    assert!(m
+        .core()
+        .get_event(m.account, event, None, "UTC".into())
+        .unwrap()
+        .is_some());
+
+    // A cancellation of an occurrence that does not exist writes nothing.
+    let ghost = "BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:lunch-1@example.org\r\nSEQUENCE:4\r\nRECURRENCE-ID:20300101T120000Z\r\nORGANIZER:mailto:sam@example.org\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    m.imap
+        .add_message("INBOX", &mail_with("ghost", "sam@example.org", ghost));
+    let id = row_with(&m, 5, "Invitation ghost");
+    assert!(!block(m.core().clone().apply_cancellation(id)).unwrap());
+}
+
+#[test]
+fn a_published_event_from_the_persons_own_address_is_not_added_and_others_keep_no_attendees() {
+    let (m, dav) = with_calendar(false);
+    let own = invite_text("PUBLISH", 0, ME, "").replace("lunch-1@example.org", "own-1");
+    m.imap
+        .add_message("INBOX", &mail_with("own", "sam@example.org", &own));
+    let id = row_with(&m, 1, "Invitation own");
+    let info = block(m.core().clone().invitation(id, "UTC".into()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.kind, InvitationKind::Publish);
+    assert!(info.own_event && !info.can_respond);
+    let out = block(
+        m.core()
+            .clone()
+            .respond_to_invitation(id, RsvpAnswer::Yes, None, wording()),
+    )
+    .unwrap();
+    assert_eq!(out.problem, Some(RsvpProblem::NotAnswerable));
+
+    let other = invite_text("PUBLISH", 0, "sam@example.org", "");
+    m.imap
+        .add_message("INBOX", &mail_with("pub", "sam@example.org", &other));
+    let id = row_with(&m, 2, "Invitation pub");
+    let out = block(
+        m.core()
+            .clone()
+            .respond_to_invitation(id, RsvpAnswer::Yes, None, wording()),
+    )
+    .unwrap();
+    assert!(!out.sent && out.problem.is_none());
+    let event = out.event_id.unwrap();
+    let detail = m
+        .core()
+        .get_event(m.account, event, None, "UTC".into())
+        .unwrap()
+        .unwrap();
+    assert!(detail.attendees.is_empty());
+    assert!(!detail.can_respond);
+    stays(300, || m.accepted() == 0);
+    block(m.core().clone().sync_calendars(m.account)).unwrap();
+    let put = dav
+        .requests()
+        .into_iter()
+        .rfind(|r| r.method == "PUT" && r.body.contains("lunch-1@example.org"))
+        .expect("sent to the server");
+    assert!(!put.body.contains("ATTENDEE"));
+}

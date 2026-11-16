@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use croft_engine::{NewMessage, SendError};
 use croft_mail_core::compose::{self as mail, Address, CalendarPart, Outgoing};
+use croft_mail_core::ical::expand::occurrence_at;
 use croft_mail_core::ical::imip::{self, Answer, Cancelled, Method};
 use croft_mail_core::ical::{self, write, Calendar, Event};
 use croft_storage::calendar::{self as store, StoredEvent};
@@ -134,9 +135,13 @@ pub struct InvitationInfo {
     pub stored_calendar: Option<i64>,
     /// The stored event is newer than this message (a higher `SEQUENCE`): this message cannot be answered or applied.
     pub outdated: bool,
-    /// Yes, Maybe and No can be offered.
+    /// The event in the person's calendar has another organiser (or is the person's own): this message cannot change
+    /// it. Anyone can mail an update with any `UID` (T40a review).
+    pub organizer_differs: bool,
+    /// Yes, Maybe and No can be offered (for a `PUBLISH`: it can be added).
     pub can_respond: bool,
-    /// A cancellation that can remove the stored event (its organiser is the stored event's).
+    /// A cancellation that can remove the stored event: from the stored event's own organiser, who is also the
+    /// message's sender, and not the person.
     pub can_remove: bool,
     /// The cancellation calls off the whole event (else some occurrences).
     pub cancels_all: bool,
@@ -183,6 +188,8 @@ pub enum RsvpProblem {
     NotAnswerable,
     /// The stored event is newer than this message.
     Outdated,
+    /// The stored event has another organiser (or is the person's own): this message cannot change it.
+    OrganizerDiffers,
     /// The invitation names no usable organiser address.
     NoOrganizer,
     /// The account cannot send mail: the calendar was changed, no reply went.
@@ -212,11 +219,76 @@ struct Parsed {
     stored: Option<(StoredEvent, Calendar)>,
 }
 
+/// What may be done with a parsed invitation: one set of checks for the card, the answer and the cancellation, so they
+/// never disagree (T40a review).
+struct Assessment {
+    organizer: String,
+    own_event: bool,
+    organizer_is_sender: bool,
+    outdated: bool,
+    organizer_differs: bool,
+    can_respond: bool,
+    can_remove: bool,
+    cancelled: Option<Cancelled>,
+}
+
+fn assess(p: &Parsed) -> Assessment {
+    let organizer = p
+        .event
+        .organizer
+        .as_ref()
+        .map(|o| o.address.clone())
+        .or_else(|| p.stored.as_ref().and_then(|(_, c)| imip::organizer_of(c)))
+        .unwrap_or_default();
+    let is_own = |a: &str| p.own.iter().any(|o| imip::same_address(o, a));
+    let own_event = is_own(&organizer);
+    let organizer_is_sender = p
+        .message
+        .from_addr
+        .as_deref()
+        .is_some_and(|f| imip::same_address(f, &organizer));
+    let outdated = p
+        .stored
+        .as_ref()
+        .is_some_and(|(_, c)| imip::is_outdated(c, &p.invite));
+    // A stored event can be changed only by its own organiser, and never when it is the person's own.
+    let organizer_differs = p.stored.as_ref().is_some_and(|(_, c)| {
+        let stored = imip::organizer_of(c).unwrap_or_default();
+        !imip::same_address(&stored, &organizer) || is_own(&stored)
+    });
+    let usable = mail::is_valid_address(imip::bare_address(&organizer));
+    let can_respond = match p.method {
+        Method::Request => usable && !outdated && !own_event && !organizer_differs,
+        Method::Publish => !own_event && p.stored.is_none(),
+        Method::Cancel | Method::Reply => false,
+    };
+    let cancelled = (p.method == Method::Cancel)
+        .then(|| imip::cancelled(&p.invite))
+        .flatten();
+    let can_remove = cancelled.is_some()
+        && p.stored.is_some()
+        && !outdated
+        && !organizer_differs
+        && !own_event
+        && organizer_is_sender;
+    Assessment {
+        organizer,
+        own_event,
+        organizer_is_sender,
+        outdated,
+        organizer_differs,
+        can_respond,
+        can_remove,
+        cancelled,
+    }
+}
+
 /// The account's own addresses: its address and those of its identities.
 pub(crate) fn own_addresses(conn: &Connection, account: i64) -> Result<Vec<String>, CoreError> {
     let acct = accounts::get(conn, account)?.ok_or(CoreError::NoSuchAccount)?;
     let mut out = vec![acct.email.clone()];
-    for i in identities::list_or_create(conn, account, &acct.label, &acct.email)? {
+    // Read only: opening an invitation writes nothing (T40a review).
+    for i in identities::list(conn, account)? {
         if !out.iter().any(|a| imip::same_address(a, &i.address)) {
             out.push(i.address);
         }
@@ -314,6 +386,8 @@ impl Core {
     ) -> Result<Vec<InvitationClash>, CoreError> {
         let window = self.events_between(start_ms, end_ms.max(start_ms + 1), zone.to_owned())?;
         let mut out = Vec::new();
+        let mut own_by_account: std::collections::HashMap<i64, Vec<String>> =
+            std::collections::HashMap::new();
         for o in window.occurrences.into_iter().take(40) {
             if out.len() >= MAX_CLASHES {
                 break;
@@ -321,24 +395,20 @@ impl Core {
             if Some(o.event_id) == skip || (o.all_day && !all_day) || o.end_ms <= start_ms {
                 continue;
             }
-            // Not one the person declined.
+            // Not one the person declined (each account's addresses read once).
+            if let std::collections::hash_map::Entry::Vacant(e) = own_by_account.entry(o.account) {
+                let own = self
+                    .inner
+                    .handle
+                    .read(|db| own_addresses(db.connection(), o.account))
+                    .unwrap_or_default();
+                e.insert(own);
+            }
+            let own = own_by_account.get(&o.account).cloned().unwrap_or_default();
             let declined = self
                 .event_object(o.account, o.event_id)
                 .ok()
-                .and_then(|(_, cal)| {
-                    let own = self
-                        .inner
-                        .handle
-                        .read(|db| own_addresses(db.connection(), o.account))
-                        .ok()?;
-                    let ev = cal.events().into_iter().next()?;
-                    let mine = ev
-                        .attendees
-                        .iter()
-                        .find(|p| own.iter().any(|a| imip::same_address(&p.address, a)))?;
-                    Some(Answer::of(mine.status.as_deref()) == Some(Answer::Declined))
-                })
-                .unwrap_or(false);
+                .is_some_and(|(_, cal)| answer_in(&cal, &own) == Some(RsvpAnswer::No));
             if !declined {
                 out.push(InvitationClash {
                     event_id: o.event_id,
@@ -443,36 +513,12 @@ impl Core {
             .unwrap_or_default();
         let occ = first_occurrence(detail_source, &tz);
         let organizer = p.event.organizer.as_ref().or(detail.organizer.as_ref());
-        let organizer_address = organizer.map(|o| o.address.clone()).unwrap_or_default();
-        let own_event = p
-            .own
-            .iter()
-            .any(|a| imip::same_address(a, &organizer_address));
-        let organizer_is_sender = p
-            .message
-            .from_addr
-            .as_deref()
-            .is_some_and(|f| imip::same_address(f, &organizer_address));
+        let a = assess(&p);
         let invited_as = imip::own_address(&p.event, &p.own);
-        let stored_seq = p.stored.as_ref().map(|(_, c)| imip::sequence_of(c));
-        let outdated = stored_seq.is_some_and(|s| imip::sequence_of(&p.invite) < s);
         let my_answer = match &p.stored {
             Some((_, c)) => answer_in(c, &p.own),
             None => answer_in(&p.invite, &p.own),
         };
-        let stored_organizer = p.stored.as_ref().and_then(|(_, c)| imip::organizer_of(c));
-        let cancelled = (p.method == Method::Cancel)
-            .then(|| imip::cancelled(&p.invite))
-            .flatten();
-        let can_remove = cancelled.is_some()
-            && !outdated
-            && stored_organizer
-                .as_deref()
-                .is_some_and(|s| imip::same_address(s, &organizer_address));
-        let can_respond = p.method == Method::Request
-            && !outdated
-            && !own_event
-            && mail::is_valid_address(imip::bare_address(&organizer_address));
         let clashes = match (&occ, p.method) {
             (Some(o), Method::Request | Method::Publish) => self.clashes(
                 o.start.as_millisecond(),
@@ -503,8 +549,8 @@ impl Core {
             all_day: occ.as_ref().is_some_and(|o| o.all_day),
             repeats: detail.rrule.is_some() || !detail.rdates.is_empty(),
             organizer: organizer.map(person),
-            organizer_is_sender,
-            own_event,
+            organizer_is_sender: a.organizer_is_sender,
+            own_event: a.own_event,
             attendee_count: u32::try_from(p.event.attendees.len()).unwrap_or(u32::MAX),
             attendees: p
                 .event
@@ -518,10 +564,11 @@ impl Core {
             clashes,
             stored_event: p.stored.as_ref().map(|(s, _)| s.id),
             stored_calendar: p.stored.as_ref().map(|(s, _)| s.calendar_id),
-            outdated,
-            can_respond,
-            can_remove,
-            cancels_all: matches!(cancelled, Some(Cancelled::All)),
+            outdated: a.outdated,
+            organizer_differs: a.organizer_differs,
+            can_respond: a.can_respond,
+            can_remove: a.can_remove,
+            cancels_all: matches!(a.cancelled, Some(Cancelled::All)),
             replied_by,
         }))
     }
@@ -537,41 +584,37 @@ impl Core {
             return Ok(outcome(false, None, Some(RsvpProblem::NotAnswerable)));
         };
         let account = p.message.account_id;
-        let outdated = p
-            .stored
-            .as_ref()
-            .is_some_and(|(_, c)| imip::sequence_of(&p.invite) < imip::sequence_of(c));
-        if outdated {
-            return Ok(outcome(false, None, Some(RsvpProblem::Outdated)));
+        let a = assess(&p);
+        if !a.can_respond {
+            let why = if a.outdated {
+                RsvpProblem::Outdated
+            } else if a.organizer_differs {
+                RsvpProblem::OrganizerDiffers
+            } else if p.method == Method::Request
+                && !a.own_event
+                && !mail::is_valid_address(imip::bare_address(&a.organizer))
+            {
+                RsvpProblem::NoOrganizer
+            } else {
+                RsvpProblem::NotAnswerable
+            };
+            let stored = p.stored.as_ref().map(|(s, _)| s.id);
+            return Ok(outcome(false, stored, Some(why)));
         }
-        let organizer = imip::organizer_of(&p.invite).unwrap_or_default();
-        match p.method {
-            Method::Publish => {
-                if answer == RsvpAnswer::No {
-                    return Ok(outcome(false, p.stored.as_ref().map(|(s, _)| s.id), None));
-                }
-                if let Some((s, _)) = &p.stored {
-                    return Ok(outcome(false, Some(s.id), None));
-                }
-                let object = imip::stored_copy(&p.invite).to_text();
-                let added = self.add_to_calendar(account, calendar, &object)?;
-                return Ok(outcome(
-                    false,
-                    added,
-                    added.is_none().then_some(RsvpProblem::NoCalendar),
-                ));
+        if p.method == Method::Publish {
+            if answer == RsvpAnswer::No {
+                return Ok(outcome(false, None, None));
             }
-            Method::Request => {}
-            Method::Cancel | Method::Reply => {
-                return Ok(outcome(false, None, Some(RsvpProblem::NotAnswerable)))
-            }
+            // No attendees kept: a server that schedules has no one to mail (T40a review).
+            let object = imip::stored_copy(&p.invite, false).to_text();
+            let added = self.add_to_calendar(account, calendar, &object)?;
+            return Ok(outcome(
+                false,
+                added,
+                added.is_none().then_some(RsvpProblem::NoCalendar),
+            ));
         }
-        if p.own.iter().any(|a| imip::same_address(a, &organizer)) {
-            return Ok(outcome(false, None, Some(RsvpProblem::NotAnswerable)));
-        }
-        if !mail::is_valid_address(&organizer) {
-            return Ok(outcome(false, None, Some(RsvpProblem::NoOrganizer)));
-        }
+        let organizer = imip::bare_address(&a.organizer).to_owned();
         let invited = imip::own_address(&p.event, &p.own);
         let (identity, from) = self
             .inner
@@ -579,15 +622,23 @@ impl Core {
             .read(|db| sender_for(db.connection(), account, invited.as_deref()))?;
         let me = invited.unwrap_or_else(|| from.address.clone());
         let ans: Answer = answer.into();
+        // The reply first: when none can be written, nothing is changed (T40a review).
+        let Some(reply) = imip::reply(&p.invite, &me, ans, Timestamp::now()) else {
+            return Ok(outcome(false, None, Some(RsvpProblem::NoOrganizer)));
+        };
 
-        // The calendar first: the person's answer is theirs whatever happens to the mail.
+        // Then the calendar: the person's answer is theirs whatever happens to the mail.
         let mut problem = None;
         let event_id = match &p.stored {
             Some((s, stored_cal)) => {
-                let next = if imip::sequence_of(&p.invite) > imip::sequence_of(stored_cal) {
-                    // A newer version: its details, the person's own reminders kept.
-                    let mut next = imip::for_calendar(&p.invite, &me, ans);
-                    keep_reminders(stored_cal, &mut next);
+                let newer = !imip::has_master(&p.invite)
+                    || imip::sequence_of(&p.invite) > imip::sequence_of(stored_cal);
+                let next = if newer {
+                    // A newer version (or an update of some occurrences): merged, the person's own reminders kept.
+                    let mut next = imip::merge_update(stored_cal, &p.invite, &me, ans);
+                    if imip::has_master(&p.invite) {
+                        keep_reminders(stored_cal, &mut next);
+                    }
                     next
                 } else {
                     let mut next = stored_cal.clone();
@@ -595,10 +646,10 @@ impl Core {
                     next
                 };
                 let text = next.to_text();
-                self.inner.handle.read(|db| {
+                let updated = self.inner.handle.read(|db| {
                     store::update_local(db.connection(), account, s.id, &text, now_ms())
                 })?;
-                Some(s.id)
+                updated.then_some(s.id)
             }
             None if answer == RsvpAnswer::No => None,
             None => {
@@ -615,8 +666,7 @@ impl Core {
             identity,
             &from,
             &organizer,
-            &p.invite,
-            &me,
+            &reply,
             ans,
             &wording,
             p.message.message_id_hdr.as_deref(),
@@ -632,22 +682,12 @@ impl Core {
         let Some(p) = self.read_invitation(message_id).await? else {
             return Ok(false);
         };
-        if p.method != Method::Cancel {
-            return Ok(false);
-        }
-        let Some((stored, cal)) = &p.stored else {
+        let a = assess(&p);
+        let (true, Some((stored, cal))) = (a.can_remove, &p.stored) else {
             return Ok(false);
         };
-        let (Some(by), Some(owner)) = (imip::organizer_of(&p.invite), imip::organizer_of(cal))
-        else {
-            return Ok(false);
-        };
-        if !imip::same_address(&by, &owner) || imip::sequence_of(&p.invite) < imip::sequence_of(cal)
-        {
-            return Ok(false);
-        }
         let account = p.message.account_id;
-        match imip::cancelled(&p.invite) {
+        match a.cancelled {
             Some(Cancelled::All) => Ok(self
                 .inner
                 .handle
@@ -655,7 +695,13 @@ impl Core {
             Some(Cancelled::Occurrences(rids)) => {
                 let mut next = cal.clone();
                 let mut changed = false;
+                let zones = ical::zone::Zones::of(cal);
                 for rid in &rids {
+                    // Only a real occurrence of the stored series (T40a review: made-up ones would only add EXDATEs).
+                    let at = zones.resolve(rid, &jiff::tz::TimeZone::UTC).at;
+                    if occurrence_at(cal, &jiff::tz::TimeZone::UTC, at).is_none() {
+                        continue;
+                    }
                     changed |= write::delete_one(&mut next, rid, Timestamp::now());
                 }
                 if !changed {
@@ -708,30 +754,34 @@ impl Core {
             return Ok(outcome(false, None, Some(RsvpProblem::NoOrganizer)));
         }
         let ans: Answer = answer.into();
+        let Some(reply) = imip::reply(&cal, &me, ans, Timestamp::now()) else {
+            return Ok(outcome(false, None, Some(RsvpProblem::NoOrganizer)));
+        };
         let mut next = cal.clone();
         imip::answer_as(&mut next, &me, ans);
         let text = next.to_text();
-        self.inner
+        if !self
+            .inner
             .handle
-            .read(|db| store::update_local(db.connection(), account, stored.id, &text, now_ms()))?;
+            .read(|db| store::update_local(db.connection(), account, stored.id, &text, now_ms()))?
+        {
+            return Ok(outcome(false, None, Some(RsvpProblem::NotAnswerable)));
+        }
         let (identity, from) = self
             .inner
             .handle
             .read(|db| sender_for(db.connection(), account, Some(&me)))?;
-        let sent = self
-            .send_reply(
-                account,
-                identity,
-                &from,
-                imip::bare_address(&organizer),
-                &cal,
-                &me,
-                ans,
-                &wording,
-                None,
-                ev.summary.as_deref().unwrap_or_default(),
-            )
-            .map_err(|_| CoreError::Internal)?;
+        let sent = self.send_reply(
+            account,
+            identity,
+            &from,
+            imip::bare_address(&organizer),
+            &reply,
+            ans,
+            &wording,
+            None,
+            ev.summary.as_deref().unwrap_or_default(),
+        )?;
         Ok(outcome(
             sent,
             Some(stored.id),
@@ -809,16 +859,12 @@ impl Core {
         identity: i64,
         from: &Address,
         organizer: &str,
-        invite: &Calendar,
-        me: &str,
+        reply: &Calendar,
         answer: Answer,
         wording: &ReplyWording,
         in_reply_to: Option<&str>,
         title: &str,
     ) -> Result<bool, CoreError> {
-        let Some(reply) = imip::reply(invite, me, answer, Timestamp::now()) else {
-            return Ok(false);
-        };
         let to = [Address::bare(organizer)];
         let mut subject = clip(wording.subject.trim(), CARD_TEXT_CHARS);
         if subject.is_empty() {

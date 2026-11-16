@@ -7,7 +7,8 @@ unverified, the next step.
 
 ## T40a: Invitations in the core (16 November 2026)
 
-**Status:** on `task/t40a`, its own pull request; the independent review is running. The screens are T40b.
+**Status:** on `task/t40a`, its own pull request. The independent review is done; its findings are fixed
+(`docs/REVIEW-QUEUE.md`). The screens are T40b.
 
 **What was built.**
 - **Finding the invitation** (`croft-reader`): `calendar_part` takes the message's own first `text/calendar` part (else an
@@ -29,6 +30,14 @@ unverified, the next step.
     stored; No adds nothing), then the reply to the organiser through the Outbox. Outdated invitations are refused.
   - `apply_cancellation`: only for the stored event's own organiser.
   - `respond_to_event` (S37), with `EventDetail.my_answer` and `can_respond`.
+- **After the review:**
+  - a stored event changes only through its own organiser's invitation (`organizer_differs` on the card);
+  - control characters other than tab are removed by the iCalendar reader;
+  - the stored copy keeps only the invitation's own events and zones, marks every attendee for client scheduling, and
+    keeps no attendees from a `PUBLISH`;
+  - an update of one occurrence is merged into it;
+  - a cancellation needs the organiser as the sender, and removes only real occurrences (at most 50);
+  - the reply is built before anything is written; opening writes nothing.
 
 **Checks.** All local and passed:
 - `cargo fmt` and the three clippy runs;
@@ -40,7 +49,10 @@ unverified, the next step.
   - FFI tests against the IMAP, SMTP and CalDAV fakes: opening changes nothing; Yes adds the event and mails the
     organiser only; Maybe and No change it; the answer reaches the CalDAV server with client scheduling and no alarm;
     an older invitation is refused; a forged cancellation is ignored and the organiser's own removes the event; no
-    calendar; S37's answer and the person's own event;
+    calendar; S37's answer and the person's own event; a forged update from a co-attendee changes nothing; a spoofed
+    sender's cancellation and a made-up occurrence are ignored; a `PUBLISH` from the person's own address is refused and
+    another is stored without attendees;
+  - `imip` tests for a bare CR or NUL, the stored copy's contents, an occurrence merged, and the cancellation cap;
 - SQLCipher;
 - `check_schema.py`.
 

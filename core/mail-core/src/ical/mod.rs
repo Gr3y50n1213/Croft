@@ -228,6 +228,18 @@ fn unfold(text: &str, max_lines: usize) -> Result<Vec<String>, IcalError> {
     let mut out: Vec<String> = Vec::new();
     for line in text.split('\n') {
         let line = line.strip_suffix('\r').unwrap_or(line);
+        // RFC 5545 allows no control character but HTAB in a line: a bare CR, NUL or the like is removed here, so it can
+        // never end a line for another reader of what Croft writes back (T40a review).
+        let cleaned: String;
+        let line = if line.chars().any(|c| c.is_control() && c != '\t') {
+            cleaned = line
+                .chars()
+                .filter(|c| *c == '\t' || !c.is_control())
+                .collect();
+            cleaned.as_str()
+        } else {
+            line
+        };
         if let Some(rest) = line.strip_prefix([' ', '\t']).filter(|_| !out.is_empty()) {
             if let Some(last) = out.last_mut() {
                 last.push_str(rest);

@@ -49,8 +49,11 @@ event already in the calendar that invites the person can be answered from S37 t
     - No with the event not stored: nothing is added.
   - No mail is sent when the account has no submitter, no organiser address is valid, or the invitation is older than
     what is stored; the outcome says why.
-- **`apply_cancellation(message_id)`**: for a `CANCEL` whose organiser matches the stored event's: the stored event is
-  removed (a cancelled single occurrence is removed from the series). Never for an event whose organiser differs.
+- **`apply_cancellation(message_id)`**: for a `CANCEL` whose organiser matches the stored event's and who sent the
+  message: the stored event is removed (a cancelled single occurrence is removed from the series, at most 50, real
+  occurrences only). Never for an event whose organiser differs, nor for the person's own.
+- **A stored event changes only for its own organiser** (review): an invitation with the same `UID` from anyone else
+  (or for the person's own event) is shown but cannot be answered or applied.
 - **S37 (`respond_to_event(account, event_id, answer)`)**: an event where the person is an attendee and not the
   organiser: the `PARTSTAT` changes in the calendar and the reply is mailed as above. `EventDetail` gains `my_answer` and
   `can_respond`.

@@ -5,6 +5,30 @@ unverified, the next step.
 
 ---
 
+## T41a: OpenPGP in the core: the crypto crate (16 November 2026)
+
+**Status:** on `task/t41a`, its own pull request; the independent review is running. Storage, the FFI, key discovery and
+compose and reading are T41b; the screens are T42.
+
+**What was built.** A new workspace member, `croft-crypto`, over rPGP 0.21.1:
+- **Keys:** generate (v4, Ed25519 and Curve25519), read public and secret keys (a protected one unlocked with its passphrase),
+  export (public; secret protected with a passphrase), and describe (addresses, created, expires, revoked, can encrypt, can
+  sign). Validity is decided per part from its newest valid self-signature (no MD5 or RIPEMD-160; no SHA-1 after
+  2023-02-01).
+- **PGP/MIME (RFC 3156):** `encrypt` (signed and encrypted in one message to every recipient and to the sender; a recipient
+  without a usable key is named), `sign` (detached, over the canonical part, without the CRLF before the boundary),
+  `decrypt` (bounded to 50 MiB and one level of compression; GnuPG's OCB format read) and `verify`.
+- **Autocrypt** headers read (checked against `From`, unknown critical attributes refused, 64 KiB of key) and written (the
+  minimal key); **WKD** addresses (z-base-32, advanced and direct).
+
+**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (8 new tests in
+`core/crypto/tests/openpgp.rs`, with GnuPG fixtures made by `tools/make_fixtures.sh`), SQLCipher and `check_schema.py`.
+GnuPG 2.4 decrypts Croft's encrypted message and reports Croft's signatures good (`tools/check_with_gpg.sh`).
+
+**Next.** The independent review, then T41b.
+
+---
+
 ## T40b: The invitation card and answering from the event (16 November 2026)
 
 **Status:** merged (CI green on draft #97). With T40a, this closes T40.

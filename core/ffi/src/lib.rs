@@ -52,6 +52,7 @@ mod contacts;
 mod core;
 mod credentials;
 mod error;
+mod invitations;
 mod jmap_account;
 mod list;
 mod oauth;
@@ -161,11 +162,16 @@ uniffi::setup_scaffolding!();
 /// Version 21 (T39c): calendar links: `subscribe_calendar`, `unsubscribe_calendar`, the record
 /// `LinkAdded`, the enum `LinkFailure`, `CalendarInfo.read_only` and `linked`, and
 /// `EventDetail.read_only`.
+///
+/// Version 22 (T40a): invitations: `invitation`, `respond_to_invitation`, `apply_cancellation`,
+/// `respond_to_event`, the records `InvitationInfo`, `InvitationClash`, `ReplyWording` and
+/// `RsvpOutcome`, the enums `InvitationKind`, `RsvpAnswer` and `RsvpProblem`, and
+/// `EventDetail.my_answer` and `can_respond`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 21;
+pub const FFI_API_VERSION: u32 = 22;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

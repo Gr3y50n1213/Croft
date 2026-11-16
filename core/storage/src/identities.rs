@@ -61,6 +61,11 @@ pub fn list_or_create(
     list_existing(conn, account_id)
 }
 
+/// The account's identities, default first, as stored (none are made: a read only).
+pub fn list(conn: &Connection, account_id: i64) -> Result<Vec<Identity>> {
+    list_existing(conn, account_id)
+}
+
 fn list_existing(conn: &Connection, account_id: i64) -> Result<Vec<Identity>> {
     let mut stmt = conn.prepare(
         "SELECT id, account_id, display_name, address, is_default FROM identity

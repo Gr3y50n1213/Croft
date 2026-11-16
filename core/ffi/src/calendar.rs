@@ -217,6 +217,10 @@ pub struct EventDetail {
     pub pending: bool,
     /// It cannot be changed here (a calendar from a link, T39c).
     pub read_only: bool,
+    /// The person's answer, when they are invited (T40a).
+    pub my_answer: Option<crate::invitations::RsvpAnswer>,
+    /// The person is invited by someone else and can answer from S37 (T40a: `respond_to_event`).
+    pub can_respond: bool,
 }
 
 /// What S38 saves.
@@ -272,15 +276,15 @@ pub struct ReminderInfo {
     pub title: String,
 }
 
-fn zone_or_utc(zone: &str) -> TimeZone {
+pub(crate) fn zone_or_utc(zone: &str) -> TimeZone {
     iana(zone).unwrap_or(TimeZone::UTC)
 }
 
-fn ts(ms: i64) -> Timestamp {
+pub(crate) fn ts(ms: i64) -> Timestamp {
     Timestamp::from_millisecond(ms).unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
-fn person(p: &ical::Person) -> EventPerson {
+pub(crate) fn person(p: &ical::Person) -> EventPerson {
     EventPerson {
         address: p.address.clone(),
         name: p.name.clone(),
@@ -619,7 +623,7 @@ impl Core {
     }
 
     /// The stored object of event `id`, parsed.
-    fn event_object(
+    pub(crate) fn event_object(
         &self,
         account: i64,
         id: i64,
@@ -929,6 +933,24 @@ impl Core {
         };
         let ev = source(&events, &o).unwrap_or(master);
         let rule_start = master.start.as_ref().map(|s| s.civil().date());
+        let (read_only, own) = self.inner.handle.read(|db| {
+            let c = db.connection();
+            Ok::<_, CoreError>((
+                store::is_read_only_event(c, stored.account_id, stored.id)?,
+                crate::invitations::own_addresses(c, stored.account_id)?,
+            ))
+        })?;
+        let my_answer = crate::invitations::answer_in(&cal, &own);
+        let invited = ical::imip::own_address(master, &own).is_some();
+        let organizer = master
+            .organizer
+            .as_ref()
+            .map(|p| p.address.as_str())
+            .unwrap_or_default();
+        let can_respond = invited
+            && !read_only
+            && !own.iter().any(|a| ical::imip::same_address(a, organizer))
+            && croft_mail_core::compose::is_valid_address(ical::imip::bare_address(organizer));
         Ok(Some(EventDetail {
             id: stored.id,
             account: stored.account_id,
@@ -952,9 +974,9 @@ impl Core {
             status: ev.status.clone(),
             conflict: stored.conflict,
             pending: stored.pending != store::PENDING_NONE,
-            read_only: self.inner.handle.read(|db| {
-                store::is_read_only_event(db.connection(), stored.account_id, stored.id)
-            })?,
+            read_only,
+            my_answer,
+            can_respond,
         }))
     }
 
@@ -1197,7 +1219,7 @@ fn sort_occurrences(list: &mut [OccurrenceInfo]) {
 }
 
 /// The first occurrence of `cal` (the master's own start, else the first after it).
-fn first_occurrence(cal: &Calendar, tz: &TimeZone) -> Option<Occurrence> {
+pub(crate) fn first_occurrence(cal: &Calendar, tz: &TimeZone) -> Option<Occurrence> {
     let events = cal.events();
     let master = events.iter().find(|e| !e.is_override)?;
     let start = Zones::of(cal).resolve(master.start.as_ref()?, tz).at;

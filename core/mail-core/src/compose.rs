@@ -486,6 +486,27 @@ impl std::fmt::Debug for AttachmentData<'_> {
     }
 }
 
+/// An iCalendar object sent with the text (iMIP, RFC 6047: T40a's invitation replies).
+#[derive(Clone, Copy)]
+pub struct CalendarPart<'a> {
+    /// The iTIP method (`REPLY`), also written as the part's `method` parameter. Letters only.
+    pub method: &'a str,
+    /// The object's text (CRLF, folded).
+    pub text: &'a str,
+}
+
+impl std::fmt::Debug for CalendarPart<'_> {
+    /// Prints the method and size only.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CalendarPart({}, {} bytes)",
+            self.method,
+            self.text.len()
+        )
+    }
+}
+
 /// Everything [`build_message`] writes.
 #[derive(Debug, Clone, Copy)]
 pub struct Outgoing<'a> {
@@ -516,6 +537,8 @@ pub struct Outgoing<'a> {
     pub as_draft: bool,
     /// The attachments.
     pub attachments: &'a [AttachmentData<'a>],
+    /// A calendar object sent beside the text: the two then make a `multipart/alternative`.
+    pub calendar: Option<CalendarPart<'a>>,
     /// Random bytes for the part boundary. Must differ from message to message.
     pub boundary_seed: [u8; 8],
 }
@@ -529,6 +552,8 @@ pub enum BuildError {
     InvalidAddress,
     /// The Message-ID is not a `<...>` of printable ASCII.
     BadMessageId,
+    /// The calendar part's method is not a plain word.
+    BadCalendarMethod,
 }
 
 /// Whether the outgoing message has anyone to deliver to.
@@ -599,7 +624,34 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
     }
     line("MIME-Version", "1.0");
 
-    let (text_headers, text_body) = encode_body(m.body);
+    let (mut text_headers, mut text_body) = encode_body(m.body);
+    let boundary = boundary(m);
+    if let Some(cal) = m.calendar {
+        if cal.method.is_empty()
+            || cal.method.len() > 20
+            || !cal.method.bytes().all(|b| b.is_ascii_alphabetic())
+        {
+            return Err(BuildError::BadCalendarMethod);
+        }
+        // The text and the calendar as alternatives: the text for people, the calendar for their programs.
+        let inner = format!("{boundary}a");
+        let mut alt = format!("--{inner}\r\n{text_headers}\r\n{text_body}");
+        if !alt.ends_with("\r\n") {
+            alt.push_str("\r\n");
+        }
+        alt.push_str(&format!(
+            "--{inner}\r\nContent-Type: text/calendar; charset=utf-8; method={}\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+            cal.method.to_ascii_uppercase()
+        ));
+        let encoded = base64::engine::general_purpose::STANDARD.encode(cal.text.as_bytes());
+        for chunk in encoded.as_bytes().chunks(76) {
+            alt.push_str(&String::from_utf8_lossy(chunk));
+            alt.push_str("\r\n");
+        }
+        alt.push_str(&format!("--{inner}--\r\n"));
+        text_headers = format!("Content-Type: multipart/alternative; boundary=\"{inner}\"\r\n");
+        text_body = alt;
+    }
     let mut out = head;
     if m.attachments.is_empty() {
         out.push_str(&text_headers);
@@ -608,7 +660,6 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
         return Ok(out.into_bytes());
     }
 
-    let boundary = boundary(m);
     out.push_str(&format!(
         "Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n"
     ));

@@ -950,12 +950,13 @@ fn build(
         date_ms: now_ms(),
         as_draft,
         attachments: &attachments,
+        calendar: None,
         boundary_seed: random()?,
     })
     .map_err(|e| match e {
         BuildError::NoRecipient => ComposeError::NoRecipient,
         BuildError::InvalidAddress => ComposeError::InvalidAddress,
-        BuildError::BadMessageId => ComposeError::Internal,
+        BuildError::BadMessageId | BuildError::BadCalendarMethod => ComposeError::Internal,
     })?;
     Ok((mime, identity_id, from))
 }

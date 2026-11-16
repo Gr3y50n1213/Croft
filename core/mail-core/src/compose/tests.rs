@@ -26,6 +26,7 @@ fn build<'a>(body: &'a str, f: impl FnOnce(&mut Outgoing<'a>)) -> String {
         date_ms: 1_794_393_000_000,
         as_draft: false,
         attachments: &[],
+        calendar: None,
         boundary_seed: [7; 8],
     };
     f(&mut m);
@@ -222,6 +223,7 @@ fn a_message_with_only_bcc_recipients_is_allowed() {
         date_ms: 0,
         as_draft: false,
         attachments: &[],
+        calendar: None,
         boundary_seed: [0; 8],
     };
     let text = String::from_utf8(build_message(&m).unwrap()).unwrap();
@@ -245,6 +247,7 @@ fn refusals() {
         date_ms: 0,
         as_draft: false,
         attachments: &[],
+        calendar: None,
         boundary_seed: [0; 8],
     };
     assert!(build_message(&base).is_ok());
@@ -818,4 +821,79 @@ fn a_reply_to_a_long_thread_keeps_its_root_and_recent_ids_and_a_huge_body_is_cut
     assert!(r.body.contains("[...]"));
     let f = reply_fields(ReplyKind::Forward, &source, &[]);
     assert!(f.body.len() < MAX_QUOTED_BYTES + 4096);
+}
+
+#[test]
+fn a_calendar_reply_goes_beside_the_text_as_an_alternative() {
+    let ics = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n";
+    let text = build("Sam, I'll be there.", |m| {
+        m.calendar = Some(CalendarPart {
+            method: "reply",
+            text: ics,
+        });
+    });
+    assert!(text.contains("Content-Type: multipart/alternative; boundary=\"=_croft_07070707070707070a\"\r\n\r\n--=_croft_07070707070707070a\r\nContent-Type: text/plain; charset=utf-8\r\n"), "{text}");
+    assert!(text.contains("Content-Type: text/calendar; charset=utf-8; method=REPLY\r\nContent-Transfer-Encoding: base64\r\n"));
+    assert!(text.trim_end().ends_with("--=_croft_07070707070707070a--"));
+    // It reads back: the calendar part is found with its text.
+    let found = croft_reader_free_check(&text);
+    assert!(found.contains("METHOD:REPLY"));
+    // With an attachment too, the alternative is the first part of the mixed message.
+    let with_file = build("Hi", |m| {
+        m.calendar = Some(CalendarPart {
+            method: "REPLY",
+            text: ics,
+        });
+        m.attachments = Box::leak(Box::new([AttachmentData {
+            name: "a.txt",
+            mime_type: "text/plain",
+            bytes: b"x",
+        }]));
+    });
+    assert!(with_file.contains("Content-Type: multipart/mixed;"));
+    assert!(with_file.contains("Content-Type: multipart/alternative;"));
+    // Only a plain word is a method.
+    let from = addr(None, "a@example.org");
+    let to = [addr(None, "b@example.org")];
+    let bad = Outgoing {
+        from: &from,
+        to: &to,
+        cc: &[],
+        bcc: &[],
+        subject: "x",
+        body: "x",
+        in_reply_to: None,
+        references: &[],
+        message_id: "<m@example.org>",
+        date_ms: 0,
+        as_draft: false,
+        attachments: &[],
+        calendar: Some(CalendarPart {
+            method: "REPLY\r\nBcc: x",
+            text: ics,
+        }),
+        boundary_seed: [1; 8],
+    };
+    assert_eq!(
+        build_message(&bad).unwrap_err(),
+        BuildError::BadCalendarMethod
+    );
+}
+
+/// The base64 calendar part of a built message, decoded (mail-core has no MIME reader; a minimal one for this test).
+fn croft_reader_free_check(text: &str) -> String {
+    use base64::Engine;
+    let start = text
+        .find("method=REPLY\r\nContent-Transfer-Encoding: base64\r\n\r\n")
+        .unwrap();
+    let rest = &text[start..];
+    let body_start = rest.find("\r\n\r\n").unwrap() + 4;
+    let body_end = rest[body_start..].find("--").unwrap() + body_start;
+    let b64: String = rest[body_start..body_end].split_whitespace().collect();
+    String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap(),
+    )
+    .unwrap()
 }

@@ -1,7 +1,7 @@
 {
  "version": 1,
  "inputs": {
-  "cargoLockSha256": "b5174695d6e0abf616fe0f39d2e73b675872c4791e5c328489845753fb932c75",
+  "cargoLockSha256": "17c039c38add245500a70be60eb5b3702100ebbd94c1b771c011b32742e6bf2d",
   "libsCatalogSha256": "892f33a4f9ae7aa2ebd07f412043f4b14d22f527b6cde4506c42018c269b809c"
  },
  "entries": [
@@ -1230,6 +1230,12 @@
    "origin": "Rust"
   },
   {
+   "name": "libm",
+   "version": "0.2.16",
+   "licence": "MIT",
+   "origin": "Rust"
+  },
+  {
    "name": "libsqlite3-sys",
    "version": "0.39.1",
    "licence": "MIT",
@@ -2036,6 +2042,12 @@
   {
    "name": "zeroize",
    "version": "1.9.1",
+   "licence": "Apache-2.0 OR MIT",
+   "origin": "Rust"
+  },
+  {
+   "name": "zeroize_derive",
+   "version": "1.5.0",
    "licence": "Apache-2.0 OR MIT",
    "origin": "Rust"
   },

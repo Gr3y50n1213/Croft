@@ -66,6 +66,8 @@ class InvitationTest {
     )
 
     private fun fixture(i: InvitationData): ReadingFixture = ReadingFixture().also { f ->
+        // Tall enough that the whole card is on screen: a control scrolled only to the bottom edge would sit under the reply bar.
+        com.example.croft.ui.ScreenshotKit.configure(360, 1600, false, 1.0f)
         f.reading.invitations[NEWEST] = i
         f.reading.calendarChoices += CalendarChoice(10, "Personal", null)
         f.reading.calendarChoices += CalendarChoice(11, "Work", "#3A7D44")

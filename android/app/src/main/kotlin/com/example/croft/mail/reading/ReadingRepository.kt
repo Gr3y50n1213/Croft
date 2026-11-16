@@ -6,6 +6,10 @@ package com.example.croft.mail.reading
 
 import com.example.croft.mail.AccountId
 import com.example.croft.mail.MessageId
+import com.example.croft.mail.calendar.ReplyWords
+import com.example.croft.mail.calendar.RsvpChoice
+import com.example.croft.mail.calendar.RsvpProblem
+import com.example.croft.mail.calendar.RsvpResult
 import java.io.File
 
 /**
@@ -50,4 +54,20 @@ interface ReadingRepository {
      */
     suspend fun unsubscribe(messageId: MessageId, shown: UnsubscribeInfoData, deleteOlder: Boolean): UnsubscribeResultData =
         UnsubscribeResultData(done = false, openUrl = null, problem = UnsubscribeProblem.REFUSED, deletedOps = emptyList())
+
+    /** T40, S22: the invitation [messageId] carries, seen from [zone], or null. Reading only: nothing is sent or stored. */
+    suspend fun invitation(messageId: MessageId, zone: String): InvitationData? = null
+
+    /**
+     * T40, S22: answers the invitation in [messageId] (only on the person's tap): the reply goes to the organiser through the Outbox and
+     * the event is added to [calendar] (null: the account's first) or updated where it is.
+     */
+    suspend fun respondToInvitation(messageId: MessageId, answer: RsvpChoice, calendar: Long?, words: ReplyWords): RsvpResult =
+        RsvpResult(sent = false, eventId = null, problem = RsvpProblem.NOT_ANSWERABLE)
+
+    /** T40, S22: removes the event a cancellation names (only from its own organiser); false when nothing was removed. */
+    suspend fun applyCancellation(messageId: MessageId): Boolean = false
+
+    /** T40: the calendars of [account] an invitation can be added to (not from a link). */
+    suspend fun writableCalendars(account: AccountId): List<CalendarChoice> = emptyList()
 }

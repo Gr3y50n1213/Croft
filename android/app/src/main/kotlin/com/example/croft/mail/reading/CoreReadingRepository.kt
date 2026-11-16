@@ -11,6 +11,11 @@ import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import com.example.croft.mail.calendar.EventPerson
+import com.example.croft.mail.calendar.ReplyWords
+import com.example.croft.mail.calendar.RsvpChoice
+import com.example.croft.mail.calendar.RsvpProblem
+import com.example.croft.mail.calendar.RsvpResult
 import kotlinx.coroutines.withContext
 import uniffi.croft_ffi.AttachmentInfo as CoreAttachment
 import uniffi.croft_ffi.BodyState as CoreBodyState
@@ -94,6 +99,31 @@ class CoreReadingRepository(
             deletedOps = out.deletedOps.map { it.toLong() },
             deleteFailed = out.deleteFailed,
         )
+    }
+
+    override suspend fun invitation(messageId: MessageId, zone: String): InvitationData? = coreGuarded {
+        // The core's own async call: it runs on the core's runtime.
+        core.invitation(messageId, zone)?.let { i ->
+            InvitationData(
+                messageId = i.messageId, account = i.account, kind = i.kind.toApp(), title = i.title, location = i.location,
+                startMs = i.startMs, endMs = i.endMs, allDay = i.allDay, repeats = i.repeats, organizer = i.organizer?.toApp(),
+                organizerIsSender = i.organizerIsSender, ownEvent = i.ownEvent, attendees = i.attendees.map { it.toApp() },
+                attendeeCount = i.attendeeCount.toInt(), invitedAs = i.invitedAs, myAnswer = i.myAnswer?.toApp(),
+                clashes = i.clashes.map { InvitationClashData(it.eventId, it.title, it.startMs, it.endMs) },
+                storedEvent = i.storedEvent, storedCalendar = i.storedCalendar, outdated = i.outdated, organizerDiffers = i.organizerDiffers,
+                canRespond = i.canRespond, canRemove = i.canRemove, cancelsAll = i.cancelsAll, repliedBy = i.repliedBy?.toApp(),
+            )
+        }
+    }
+
+    override suspend fun respondToInvitation(messageId: MessageId, answer: RsvpChoice, calendar: Long?, words: ReplyWords): RsvpResult = coreGuarded {
+        core.respondToInvitation(messageId, answer.toCore(), calendar, uniffi.croft_ffi.ReplyWording(words.subject, words.body)).toApp()
+    }
+
+    override suspend fun applyCancellation(messageId: MessageId): Boolean = coreGuarded { core.applyCancellation(messageId) }
+
+    override suspend fun writableCalendars(account: AccountId): List<CalendarChoice> = coreGuarded {
+        withContext(io) { core.calendars(account) }.filter { !it.readOnly && !it.linked }.map { CalendarChoice(it.id, it.name, it.color) }
     }
 
     private fun CoreUnsubscribeWay.toApp() = when (this) {
@@ -181,3 +211,39 @@ fun ReadException.toProblem(): ReadProblem = when (this) {
     is ReadException.Storage -> ReadProblem.STORAGE
     is ReadException.Internal -> ReadProblem.INTERNAL
 }
+
+/** T40: the core's invitation enums and records as the app's. */
+internal fun uniffi.croft_ffi.InvitationKind.toApp(): InvitationKind = when (this) {
+    uniffi.croft_ffi.InvitationKind.REQUEST -> InvitationKind.REQUEST
+    uniffi.croft_ffi.InvitationKind.PUBLISH -> InvitationKind.PUBLISH
+    uniffi.croft_ffi.InvitationKind.CANCEL -> InvitationKind.CANCEL
+    uniffi.croft_ffi.InvitationKind.REPLY -> InvitationKind.REPLY
+}
+
+internal fun uniffi.croft_ffi.RsvpAnswer.toApp(): RsvpChoice = when (this) {
+    uniffi.croft_ffi.RsvpAnswer.YES -> RsvpChoice.YES
+    uniffi.croft_ffi.RsvpAnswer.MAYBE -> RsvpChoice.MAYBE
+    uniffi.croft_ffi.RsvpAnswer.NO -> RsvpChoice.NO
+}
+
+internal fun RsvpChoice.toCore(): uniffi.croft_ffi.RsvpAnswer = when (this) {
+    RsvpChoice.YES -> uniffi.croft_ffi.RsvpAnswer.YES
+    RsvpChoice.MAYBE -> uniffi.croft_ffi.RsvpAnswer.MAYBE
+    RsvpChoice.NO -> uniffi.croft_ffi.RsvpAnswer.NO
+}
+
+internal fun uniffi.croft_ffi.RsvpOutcome.toApp(): RsvpResult = RsvpResult(
+    sent = sent,
+    eventId = eventId,
+    problem = when (problem) {
+        null -> null
+        uniffi.croft_ffi.RsvpProblem.NOT_ANSWERABLE -> RsvpProblem.NOT_ANSWERABLE
+        uniffi.croft_ffi.RsvpProblem.OUTDATED -> RsvpProblem.OUTDATED
+        uniffi.croft_ffi.RsvpProblem.ORGANIZER_DIFFERS -> RsvpProblem.ORGANIZER_DIFFERS
+        uniffi.croft_ffi.RsvpProblem.NO_ORGANIZER -> RsvpProblem.NO_ORGANIZER
+        uniffi.croft_ffi.RsvpProblem.CANNOT_SEND -> RsvpProblem.CANNOT_SEND
+        uniffi.croft_ffi.RsvpProblem.NO_CALENDAR -> RsvpProblem.NO_CALENDAR
+    },
+)
+
+internal fun uniffi.croft_ffi.EventPerson.toApp(): EventPerson = EventPerson(address, name, status)

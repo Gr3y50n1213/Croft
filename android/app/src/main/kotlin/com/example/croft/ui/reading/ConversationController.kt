@@ -21,6 +21,12 @@ import com.example.croft.mail.MessageId
 import com.example.croft.mail.OpId
 import com.example.croft.mail.compose.ComposeStart
 import com.example.croft.mail.compose.Mailto
+import com.example.croft.mail.calendar.ReplyWords
+import com.example.croft.mail.calendar.RsvpChoice
+import com.example.croft.mail.calendar.RsvpProblem
+import com.example.croft.mail.reading.CalendarChoice
+import com.example.croft.mail.reading.InvitationData
+import com.example.croft.mail.reading.InvitationKind
 import com.example.croft.mail.reading.AttachmentData
 import com.example.croft.mail.reading.BodyData
 import com.example.croft.mail.reading.ConversationData
@@ -85,6 +91,33 @@ class ReadingTexts(private val res: Resources) {
     val noApp: String get() = res.getString(R.string.reading_attachment_no_app)
     val trustedSender: String get() = res.getString(R.string.reading_remote_trusted_snack)
     fun problem(p: ReadProblem): String = res.getString(ReadCopy.resFor(p))
+
+    // ---- T40: invitations ----
+
+    /** The reply to the organiser, in the person's language. */
+    fun replyWords(a: RsvpChoice, title: String): ReplyWords = com.example.croft.ui.calendar.replyWords(res, a, title)
+
+    fun rsvpSent(a: RsvpChoice): String = res.getString(
+        when (a) {
+            RsvpChoice.YES -> R.string.invite_sent_yes
+            RsvpChoice.MAYBE -> R.string.invite_sent_maybe
+            RsvpChoice.NO -> R.string.invite_sent_no
+        },
+    )
+
+    fun rsvpProblem(p: RsvpProblem): String = res.getString(
+        when (p) {
+            RsvpProblem.CANNOT_SEND -> R.string.invite_problem_cannot_send
+            RsvpProblem.NO_CALENDAR -> R.string.invite_problem_no_calendar
+            RsvpProblem.OUTDATED -> R.string.invite_problem_outdated
+            RsvpProblem.ORGANIZER_DIFFERS -> R.string.invite_problem_organizer
+            RsvpProblem.NOT_ANSWERABLE, RsvpProblem.NO_ORGANIZER -> R.string.invite_problem_other
+        },
+    )
+
+    val rsvpFailed: String get() = res.getString(R.string.invite_failed)
+    val invitationAdded: String get() = res.getString(R.string.invite_added)
+    val invitationRemoved: String get() = res.getString(R.string.invite_removed)
 }
 
 /**
@@ -221,6 +254,7 @@ class ConversationController(
         phase = ConversationPhase.Ready
         launch { loadFolders(first.account) }
         launch { loadUnsubscribe() }
+        launch { loadInvitation() }
         first.initiallyExpanded.forEach { id -> launch { loadBody(id) } }
         observeChanges(first.account)
     }
@@ -412,6 +446,74 @@ class ConversationController(
             } catch (e: MailException) {
                 snackbar.show(errorText(e.error))
             }
+        }
+    }
+
+    // ---- Invitations (T40, S22) ----
+
+    /** The opened message's invitation (S22's card), or null. */
+    var invitation by mutableStateOf<InvitationData?>(null)
+        private set
+
+    /** The calendars the invitation can be added to. */
+    var invitationCalendars by mutableStateOf<List<CalendarChoice>>(emptyList())
+        private set
+
+    /** The calendar chosen on the card (the first by default). */
+    var chosenCalendar by mutableStateOf<Long?>(null)
+
+    /** The answer on its way (its button waits). */
+    var answering by mutableStateOf<RsvpChoice?>(null)
+        private set
+
+    /** A cancellation being applied. */
+    var removingEvent by mutableStateOf(false)
+        private set
+
+    private suspend fun loadInvitation() {
+        val repo = reading ?: return
+        val i = try { repo.invitation(openedId, zone.id) } catch (e: ReadFailure) { null }
+        invitation = i
+        if (i != null && i.canRespond && i.storedEvent == null && invitationCalendars.isEmpty()) {
+            invitationCalendars = try { repo.writableCalendars(i.account) } catch (e: ReadFailure) { emptyList() }
+            if (chosenCalendar == null) chosenCalendar = invitationCalendars.firstOrNull()?.id
+        }
+    }
+
+    /** Yes, Maybe or No (Add to calendar for a shared event): only ever on the person's tap. */
+    fun respond(answer: RsvpChoice) {
+        val repo = reading ?: return
+        val i = invitation ?: return
+        if (answering != null || !i.canRespond) return
+        answering = answer
+        scope.launch {
+            val calendar = if (i.storedEvent == null) chosenCalendar else null
+            val result = try {
+                repo.respondToInvitation(openedId, answer, calendar, readingTexts.replyWords(answer, i.title))
+            } catch (e: ReadFailure) {
+                null
+            } finally {
+                answering = null
+            }
+            when {
+                result == null -> snackbar.show(readingTexts.rsvpFailed)
+                result.problem != null -> snackbar.show(readingTexts.rsvpProblem(result.problem))
+                i.kind == InvitationKind.PUBLISH -> snackbar.show(readingTexts.invitationAdded)
+                else -> snackbar.show(readingTexts.rsvpSent(answer))
+            }
+            loadInvitation()
+        }
+    }
+
+    /** Remove from calendar, for a cancellation from the event's own organiser. */
+    fun removeCancelled() {
+        val repo = reading ?: return
+        if (removingEvent || invitation?.canRemove != true) return
+        removingEvent = true
+        scope.launch {
+            val done = try { repo.applyCancellation(openedId) } catch (e: ReadFailure) { false } finally { removingEvent = false }
+            snackbar.show(if (done) readingTexts.invitationRemoved else readingTexts.rsvpFailed)
+            loadInvitation()
         }
     }
 

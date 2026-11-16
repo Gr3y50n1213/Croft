@@ -10,6 +10,7 @@
 //! Pure: no clock and no I/O. Times are passed in; the device's own zone is a parameter.
 
 pub mod expand;
+pub mod imip;
 pub mod rrule;
 pub mod write;
 pub mod zone;
@@ -337,7 +338,7 @@ pub(crate) fn escape(text: &str) -> String {
 }
 
 /// A parameter value: quoted when it holds a character that would end it.
-fn param_text(value: &str) -> String {
+pub(crate) fn param_text(value: &str) -> String {
     let clean: String = value
         .chars()
         .filter(|c| !c.is_control() && *c != '"')

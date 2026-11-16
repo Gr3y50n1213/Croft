@@ -171,7 +171,7 @@ fn datetime_text(dt: DateTime) -> String {
     )
 }
 
-fn utc_text(t: Timestamp) -> String {
+pub(crate) fn utc_text(t: Timestamp) -> String {
     format!("{}Z", datetime_text(t.to_zoned(TimeZone::UTC).datetime()))
 }
 

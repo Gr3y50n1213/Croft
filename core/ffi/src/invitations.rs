@@ -778,7 +778,7 @@ impl Core {
         calendar: Option<i64>,
         object: &str,
     ) -> Result<Option<i64>, CoreError> {
-        Ok(self.inner.handle.read(|db| {
+        self.inner.handle.read(|db| {
             let c = db.connection();
             let writable: Vec<store::CalendarRow> = store::calendars(c, account)?
                 .into_iter()
@@ -798,7 +798,7 @@ impl Core {
                 )?)),
                 None => Ok(None),
             }
-        })?)
+        })
     }
 
     /// Puts the iTIP reply in the Outbox: from `from` to `organizer` only. False when the account cannot send.

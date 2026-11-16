@@ -127,5 +127,14 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   Reminders more than five weeks before their event are not posted; only the first 1,000 `EXDATE`s of an event are read;
   an object that cannot be read is fetched again at every sync. A change that loses to the server's is dropped (marked
   on the item), not kept as a copy.
+- **Invitations (T40a).**
+  - Croft mails its own reply to every invitation it answers. For an event a CalDAV server placed in the calendar by
+    itself (server-side scheduling), that server may send a reply too: the organiser then gets the same answer twice.
+    Telling reliably whether a server schedules would close this.
+  - Replies to the person's own invitations (`METHOD:REPLY`) are shown ("Sam accepted") but not written into the stored
+    event's attendee list. `COUNTER`, `REFRESH` and `ADD` are not handled.
+  - A `.ics` file opened from outside the app (docs/ux/navigation.md) does not open the event with answer buttons yet.
+  - Forged invitations: as for unsubscribe, the core does not check DKIM. The card says when the organiser is not the
+    sender, and a cancellation only ever removes an event of the same organiser.
 - **CardDAV against Radicale (T38a).** Only Stalwart's CardDAV is in the CI integration job; Radicale (in `test-servers/`) needs a
   config and an address book created before it can be tested.

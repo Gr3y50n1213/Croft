@@ -204,11 +204,48 @@ pub fn set_own_answer(cal: &mut Calendar, attendee: &str, answer: Answer) -> boo
     changed
 }
 
+/// Sets the person's answer, adding them as an `ATTENDEE` of every `VEVENT` when they are not on the list (an
+/// invitation sent to a group address). Returns whether the object changed.
+pub fn answer_as(cal: &mut Calendar, attendee: &str, answer: Answer) -> bool {
+    if set_own_answer(cal, attendee, answer) {
+        return true;
+    }
+    let listed = cal
+        .root
+        .children
+        .iter()
+        .filter(|c| c.kind == "VEVENT")
+        .any(|c| {
+            c.lines_named("ATTENDEE")
+                .any(|l| same_address(&l.value, attendee))
+        });
+    if listed {
+        return false;
+    }
+    let line = make(
+        "ATTENDEE",
+        &[("PARTSTAT", answer.partstat())],
+        &format!("mailto:{}", bare_address(attendee)),
+    );
+    for c in cal.root.children.iter_mut().filter(|c| c.kind == "VEVENT") {
+        c.lines.push(line.clone());
+    }
+    true
+}
+
 /// The object to keep in the person's calendar from an invitation: the invitation without its `METHOD` (a stored
 /// object has none) and without its `VALARM`s (a stranger does not choose when the phone notifies), `ORGANIZER` marked
 /// `SCHEDULE-AGENT=CLIENT` (Croft mails the replies, so a server that schedules does not send a second one), and the
 /// person's answer set.
 pub fn for_calendar(invite: &Calendar, attendee: &str, answer: Answer) -> Calendar {
+    let mut cal = stored_copy(invite);
+    answer_as(&mut cal, attendee, answer);
+    cal
+}
+
+/// The object to keep from an invitation or a published event, before any answer: no `METHOD`, no `VALARM`s,
+/// `ORGANIZER` marked `SCHEDULE-AGENT=CLIENT`.
+pub fn stored_copy(invite: &Calendar) -> Calendar {
     let mut cal = invite.clone();
     cal.root.set_lines("METHOD", vec![]);
     for c in cal.root.children.iter_mut().filter(|c| c.kind == "VEVENT") {
@@ -217,7 +254,6 @@ pub fn for_calendar(invite: &Calendar, attendee: &str, answer: Answer) -> Calend
             *l = with_param(l, "SCHEDULE-AGENT", Some("CLIENT"));
         }
     }
-    set_own_answer(&mut cal, attendee, answer);
     cal
 }
 
@@ -376,6 +412,18 @@ mod tests {
         );
         assert_eq!(sequence_of(&kept), 2);
         assert_eq!(organizer_of(&kept).as_deref(), Some("sam@example.org"));
+    }
+
+    #[test]
+    fn answering_from_a_group_address_adds_the_person_once() {
+        let mut cal = parse(INVITE).unwrap();
+        assert!(answer_as(&mut cal, "team@example.com", Answer::Accepted));
+        assert!(!answer_as(&mut cal, "team@example.com", Answer::Accepted));
+        let ev = &cal.events()[0];
+        assert_eq!(ev.attendees.len(), 4);
+        assert_eq!(ev.attendees[3].address, "team@example.com");
+        assert!(answer_as(&mut cal, "team@example.com", Answer::Declined));
+        assert_eq!(cal.events()[0].attendees.len(), 4);
     }
 
     #[test]

@@ -671,6 +671,22 @@ pub fn get(conn: &Connection, account: i64, id: i64) -> Result<Option<StoredEven
         .optional()?)
 }
 
+/// The account's event with this `UID` in one of its own writable calendars (never one from a link), if any (T40a:
+/// an invitation already answered). The lowest id when there are several.
+pub fn find_by_uid(conn: &Connection, account: i64, uid: &str) -> Result<Option<StoredEvent>> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT {COLUMNS} FROM event e JOIN calendar c ON c.id = e.calendar_id AND c.account_id = e.account_id
+                  WHERE e.account_id = ?1 AND e.uid = ?2 AND e.pending <> 3 AND c.read_only = 0
+                  ORDER BY e.id LIMIT 1"
+            ),
+            params![account, uid],
+            stored,
+        )
+        .optional()?)
+}
+
 /// An event the window query found: enough to load it on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowRow {
@@ -989,6 +1005,42 @@ mod tests {
         assert!(!remove_link(c, b, link).unwrap());
         assert!(remove_link(c, a, link).unwrap());
         assert!(in_window(c, a, 0, i64::MAX / 2).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn an_event_is_found_by_uid_in_own_calendars_only() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        let (a, b) = (account(c, 1), account(c, 2));
+        let own = upsert_calendar(c, a, "/cal/a/", "Mine", None, None).unwrap();
+        let other = upsert_calendar(c, b, "/cal/b/", "Theirs", None, None).unwrap();
+        let link = add_link(c, a, "https://cal.example.org/x.ics", "Link")
+            .unwrap()
+            .unwrap();
+        replace_link_events(
+            c,
+            a,
+            link,
+            &[("x".to_owned(), event("x", "20261225T000000Z", ""))],
+            1,
+        )
+        .unwrap();
+        assert!(
+            find_by_uid(c, a, "x").unwrap().is_none(),
+            "never a link's event"
+        );
+        create_local(c, b, other, &event("x", "20261225T000000Z", ""), 1).unwrap();
+        assert!(
+            find_by_uid(c, a, "x").unwrap().is_none(),
+            "never another account's"
+        );
+        let id = create_local(c, a, own, &event("x", "20261225T000000Z", ""), 1).unwrap();
+        assert_eq!(find_by_uid(c, a, "x").unwrap().unwrap().id, id);
+        delete_local(c, a, id).unwrap();
+        assert!(
+            find_by_uid(c, a, "x").unwrap().is_none(),
+            "never a deleted one"
+        );
     }
 
     #[test]

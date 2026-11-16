@@ -298,7 +298,7 @@ private fun Messages(controller: ConversationController, session: MailSession) {
                 onCalendar = { controller.chosenCalendar = it },
                 onAnswer = controller::respond,
                 onRemove = controller::removeCancelled,
-                zone = java.time.ZoneId.of(controller.zone),
+                zone = controller.zone,
                 senderAddress = opened?.senderAddress,
             )
         }

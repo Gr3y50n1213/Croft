@@ -470,12 +470,9 @@ class ConversationController(
     var removingEvent by mutableStateOf(false)
         private set
 
-    /** The zone the card's times are shown in. */
-    var zone: String = java.time.ZoneId.systemDefault().id
-
     private suspend fun loadInvitation() {
         val repo = reading ?: return
-        val i = try { repo.invitation(openedId, zone) } catch (e: ReadFailure) { null }
+        val i = try { repo.invitation(openedId, zone.id) } catch (e: ReadFailure) { null }
         invitation = i
         if (i != null && i.canRespond && i.storedEvent == null && invitationCalendars.isEmpty()) {
             invitationCalendars = try { repo.writableCalendars(i.account) } catch (e: ReadFailure) { emptyList() }

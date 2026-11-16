@@ -61,9 +61,10 @@ pub fn urls(address: &str) -> Result<WkdUrls> {
                 && !l.ends_with('-')
                 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
         })
-        && !domain
-            .split('.')
-            .all(|l| l.bytes().all(|b| b.is_ascii_digit()));
+        // A real top-level label (letters, or punycode): no IP address, whatever its spelling (`0x7f.1`, `0177.0.0.1`).
+        && domain.rsplit('.').next().is_some_and(|tld| {
+            tld.len() >= 2 && (tld.bytes().all(|b| b.is_ascii_alphabetic()) || tld.starts_with("xn--"))
+        });
     if !local_ok || !domain_ok {
         return Err(CryptoError::BadAddress);
     }

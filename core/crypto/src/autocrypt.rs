@@ -54,7 +54,9 @@ pub fn parse_header(value: &str, from: &str, now: u32) -> Result<AutocryptHeader
         let val = val.trim();
         match name.as_str() {
             "addr" => {
-                if addr.replace(val.to_lowercase()).is_some() {
+                // A bare address only, compared in ASCII case only (T41a review).
+                let bare = keys::bare_address(val).ok_or(CryptoError::BadHeader)?;
+                if addr.replace(bare).is_some() {
                     return Err(CryptoError::BadHeader);
                 }
             }
@@ -72,7 +74,9 @@ pub fn parse_header(value: &str, from: &str, now: u32) -> Result<AutocryptHeader
         }
     }
     let addr = addr.ok_or(CryptoError::BadHeader)?;
-    let from = keys::address_of(from).ok_or(CryptoError::BadHeader)?;
+    // `from` must be the one mailbox of the message's `From`, as the core's mail parser read it: a bare address. Anything else
+    // (a name, a comment, a list) is refused, so a crafted header can never match another address (T41a review).
+    let from = keys::bare_address(from).ok_or(CryptoError::BadHeader)?;
     if addr != from {
         return Err(CryptoError::BadHeader);
     }
@@ -131,17 +135,30 @@ pub fn header(addr: &str, cert: &SignedPublicKey, prefer_mutual: bool, now: u32)
             EncryptionKey::Primary(_) => None,
         })
         .collect();
+    // Only signatures that verify are carried (T41a review): the subkeys' bindings, and the owner's own direct-key and revocation
+    // signatures.
     let subkeys: Vec<_> = cert
         .public_subkeys
         .iter()
         .filter(|s| enc_fps.contains(&pgp::types::KeyDetails::fingerprint(&s.key)))
-        .cloned()
+        .map(|s| {
+            let mut s = s.clone();
+            s.signatures
+                .retain(|sig| sig.verify_subkey_binding(primary, &s.key).is_ok());
+            s
+        })
         .collect();
+    let own = |sigs: &[pgp::packet::Signature]| -> Vec<pgp::packet::Signature> {
+        sigs.iter()
+            .filter(|s| s.verify_key(primary).is_ok())
+            .cloned()
+            .collect()
+    };
     let minimal = SignedPublicKey::new(
         primary.clone(),
         SignedKeyDetails::new(
-            cert.details.revocation_signatures.clone(),
-            cert.details.direct_signatures.clone(),
+            own(&cert.details.revocation_signatures),
+            own(&cert.details.direct_signatures),
             users,
             vec![],
         ),

@@ -7,8 +7,8 @@ unverified, the next step.
 
 ## T41a: OpenPGP in the core: the crypto crate (16 November 2026)
 
-**Status:** on `task/t41a`, its own pull request; the independent review is running. Storage, the FFI, key discovery and
-compose and reading are T41b; the screens are T42.
+**Status:** on `task/t41a`, its own pull request. The independent review is done; its findings are fixed
+(`docs/REVIEW-QUEUE.md`). Storage, the FFI, key discovery and compose and reading are T41b; the screens are T42.
 
 **What was built.** A new workspace member, `croft-crypto`, over rPGP 0.21.1:
 - **Keys:** generate (v4, Ed25519 and Curve25519), read public and secret keys (a protected one unlocked with its passphrase),
@@ -21,7 +21,11 @@ compose and reading are T41b; the screens are T42.
 - **Autocrypt** headers read (checked against `From`, unknown critical attributes refused, 64 KiB of key) and written (the
   minimal key); **WKD** addresses (z-base-32, advanced and direct).
 
-**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (8 new tests in
+- **After the review:** limits on signatures, recipient packets, subkeys, signatures per part and passphrase hashing; one
+  strong-hash rule for every message signature; Autocrypt against a bare `From` address; WKD without IP spellings; weak
+  keys unused; buffers wiped as they grow; `SecretKey` with a silent `Debug`.
+
+**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (14 new tests in
 `core/crypto/tests/openpgp.rs`, with GnuPG fixtures made by `tools/make_fixtures.sh`), SQLCipher and `check_schema.py`.
 GnuPG 2.4 decrypts Croft's encrypted message and reports Croft's signatures good (`tools/check_with_gpg.sh`).
 

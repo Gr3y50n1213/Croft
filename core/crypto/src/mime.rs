@@ -6,27 +6,39 @@
 //!
 //! - Encrypting signs (when asked) and encrypts in one OpenPGP message (SEIPDv1, AES-256), to every recipient's usable
 //!   encryption keys and to the sender's own, so the Sent copy stays readable.
-//! - Signing makes a detached signature over the inner part with CRLF line ends (its canonical form).
-//! - Decrypting reads at most [`MAX_MESSAGE_BYTES`] of plaintext and one level of compression; the signature is checked
-//!   against the given certificates only. A signature that no given key verifies is [`SignatureStatus::NotVerified`]:
-//!   unknown and invalid look the same to the person, and neither is ever shown as trusted.
+//! - Signing makes a detached signature over the inner part with CRLF line ends (its canonical form), without the CRLF before
+//!   the boundary (RFC 3156: it belongs to the boundary).
+//! - Decrypting reads at most [`MAX_MESSAGE_BYTES`] of plaintext and one level of compression; SEIPDv1 is checked in full
+//!   before any plaintext is released. A message with more than [`MAX_RECIPIENT_PACKETS`] recipient packets, more than
+//!   [`MAX_MATCHING_PACKETS`] for the person's keys, or more than [`MAX_SIGNATURES`] signatures is refused before the costly
+//!   work (T41a review: each is a private-key operation or a pass over the whole message).
+//! - A signature counts only with a strong hash (SHA-2 or SHA-3; never SHA-1, MD5 or RIPEMD-160), a creation time no later than
+//!   now and not past its own expiry, by a key usable now. One that no given key verifies is
+//!   [`SignatureStatus::NotVerified`]: unknown and invalid look the same to the person, and neither is ever shown as trusted.
 
 use std::io::Read;
 
 use pgp::composed::{
-    DecryptionOptions, Deserializable, DetachedSignature, Message, MessageBuilder, SignedPublicKey,
-    SignedSecretKey, TheRing,
+    DecryptionOptions, Deserializable, DetachedSignature, Esk, Message, MessageBuilder,
+    SignedPublicKey, TheRing, VerificationResult,
 };
 use pgp::crypto::hash::HashAlgorithm;
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
-use pgp::types::Seipdv1ReadMode;
-use pgp::types::{KeyDetails, Password, VerifyingKey};
+use pgp::packet::Signature;
+use pgp::types::{KeyDetails, Password, Seipdv1ReadMode, VerifyingKey};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use zeroize::Zeroizing;
 
-use crate::keys::{self, EncryptionKey, SigningPart};
+use crate::keys::{self, EncryptionKey, SecretKey, SigningPart};
 use crate::{CryptoError, Result, MAX_MESSAGE_BYTES};
+
+/// The most recipient packets one message may carry.
+pub const MAX_RECIPIENT_PACKETS: usize = 64;
+/// The most recipient packets naming one of the person's keys (or the anonymous ID) that are tried.
+pub const MAX_MATCHING_PACKETS: usize = 4;
+/// The most signatures one message may carry.
+pub const MAX_SIGNATURES: usize = 8;
 
 /// A body to put under the message's own headers: its `Content-Type` value and the text after the blank line.
 #[derive(Clone, PartialEq, Eq)]
@@ -51,8 +63,8 @@ pub enum SignatureStatus {
         /// The certificate that verified it.
         fingerprint: String,
     },
-    /// Signed, but none of the given certificates verifies it (an unknown signer, or a changed message). `issuer` is the
-    /// fingerprint or key ID the signature names, when it names one (upper-case hex).
+    /// Signed, but none of the given certificates verifies it acceptably (an unknown signer, a changed message, a weak hash,
+    /// a time out of bounds). `issuer` is the fingerprint or key ID the signature names, when known (upper-case hex).
     NotVerified {
         /// Who the signature says it is from.
         issuer: Option<String>,
@@ -108,20 +120,37 @@ pub fn canonical(text: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Whether a message signature is acceptable at `now`: a strong hash (no SHA-1 for message signatures), a binary or text
+/// signature, made no later than now and not past its own expiry.
+fn acceptable(sig: &Signature, now: u32) -> bool {
+    matches!(
+        sig.hash_alg(),
+        Some(
+            HashAlgorithm::Sha224
+                | HashAlgorithm::Sha256
+                | HashAlgorithm::Sha384
+                | HashAlgorithm::Sha512
+                | HashAlgorithm::Sha3_256
+                | HashAlgorithm::Sha3_512
+        )
+    ) && keys::live(sig, now)
+}
+
 /// The secret counterpart of a usable signing part of `key` at `now`. Boxed: rPGP implements `SigningKey` for
 /// `Box<&dyn SigningKey>`, not for a bare `&dyn SigningKey`.
 #[allow(clippy::redundant_allocation)]
-fn signing_key(key: &SignedSecretKey, now: u32) -> Result<Box<&dyn pgp::types::SigningKey>> {
+fn signing_key(key: &SecretKey, now: u32) -> Result<Box<&dyn pgp::types::SigningKey>> {
     let public = keys::public_of(key);
     let usable = keys::usable(&public, now);
     for part in &usable.signing {
         match part {
             SigningPart::Primary(_) => {
-                return Ok(Box::new(&key.primary_key as &dyn pgp::types::SigningKey))
+                return Ok(Box::new(&key.0.primary_key as &dyn pgp::types::SigningKey))
             }
             SigningPart::Subkey(p) => {
                 let fp = p.fingerprint();
                 if let Some(s) = key
+                    .0
                     .secret_subkeys
                     .iter()
                     .find(|s| s.key.fingerprint() == fp)
@@ -134,17 +163,20 @@ fn signing_key(key: &SignedSecretKey, now: u32) -> Result<Box<&dyn pgp::types::S
     Err(CryptoError::NoUsableKey)
 }
 
-/// Encrypts `inner` (a whole MIME entity, headers and body) to `recipients` and to `own` (the sender's certificate),
-/// signed by `signer` when given. Every recipient must have a usable encryption key at `now`; the first that has none is
+/// Encrypts `inner` (a whole MIME entity, headers and body) to `recipients` and to `own` (the sender's certificate), signed by
+/// `signer` when given. Every recipient must have a usable encryption key at `now`; the first that has none is
 /// [`CryptoError::NoEncryptionKey`] with its position. Returns the `multipart/encrypted` body.
 pub fn encrypt(
     inner: &[u8],
     recipients: &[&SignedPublicKey],
     own: &SignedPublicKey,
-    signer: Option<&SignedSecretKey>,
+    signer: Option<&SecretKey>,
     now: u32,
 ) -> Result<MimeBody> {
     if inner.len() > MAX_MESSAGE_BYTES {
+        return Err(CryptoError::TooLarge);
+    }
+    if recipients.len() >= MAX_RECIPIENT_PACKETS {
         return Err(CryptoError::TooLarge);
     }
     // Every encryption key first, so nothing is built when one recipient has none.
@@ -192,9 +224,9 @@ pub fn encrypt(
     })
 }
 
-/// Signs `inner` (a whole MIME entity, already 7-bit safe) with `signer`: the `multipart/signed` body, with a detached
-/// SHA-512 signature over the entity's canonical form.
-pub fn sign(inner: &[u8], signer: &SignedSecretKey, now: u32) -> Result<MimeBody> {
+/// Signs `inner` (a whole MIME entity, already 7-bit safe) with `signer`: the `multipart/signed` body, with a detached SHA-512
+/// signature over the entity's canonical form.
+pub fn sign(inner: &[u8], signer: &SecretKey, now: u32) -> Result<MimeBody> {
     if inner.len() > MAX_MESSAGE_BYTES {
         return Err(CryptoError::TooLarge);
     }
@@ -263,7 +295,7 @@ impl Verifier {
 fn verifying_keys(certs: &[&SignedPublicKey], now: u32) -> Vec<(Verifier, String)> {
     let mut out = Vec::new();
     for cert in certs {
-        let fp = keys::info(cert, now).fingerprint;
+        let fp = keys::fingerprint(cert);
         for part in keys::usable(cert, now).signing {
             match part {
                 SigningPart::Primary(p) => out.push((Verifier::Primary(p.clone()), fp.clone())),
@@ -274,11 +306,55 @@ fn verifying_keys(certs: &[&SignedPublicKey], now: u32) -> Vec<(Verifier, String
     out
 }
 
+/// Refuses an encrypted message with too many recipient packets, or too many naming one of `secrets` (or the anonymous ID):
+/// each such packet is a private-key operation.
+fn check_recipients(message: &Message<'_>, secrets: &[&SecretKey]) -> Result<()> {
+    let Message::Encrypted { esk, .. } = message else {
+        return Err(CryptoError::Unreadable);
+    };
+    if esk.len() > MAX_RECIPIENT_PACKETS {
+        return Err(CryptoError::TooLarge);
+    }
+    let mine: Vec<pgp::types::KeyId> = secrets
+        .iter()
+        .flat_map(|k| {
+            std::iter::once(k.0.primary_key.legacy_key_id())
+                .chain(k.0.secret_subkeys.iter().map(|s| s.key.legacy_key_id()))
+        })
+        .collect();
+    let matching = esk
+        .iter()
+        .filter(|e| match e {
+            Esk::PublicKeyEncryptedSessionKey(p) => {
+                p.id().is_ok_and(|id| id.is_wildcard() || mine.contains(id))
+            }
+            Esk::SymKeyEncryptedSessionKey(_) => false,
+        })
+        .count();
+    if matching > MAX_MATCHING_PACKETS {
+        return Err(CryptoError::TooLarge);
+    }
+    Ok(())
+}
+
+/// Appends `data` to `buf`, never leaving an unwiped copy behind when the buffer grows.
+fn push_wiped(buf: &mut Zeroizing<Vec<u8>>, data: &[u8]) {
+    if buf.capacity() - buf.len() < data.len() {
+        let mut bigger = Zeroizing::new(Vec::with_capacity(
+            (buf.len() + data.len()).max(buf.capacity() * 2),
+        ));
+        bigger.extend_from_slice(buf);
+        // The old buffer is wiped as it drops.
+        *buf = bigger;
+    }
+    buf.extend_from_slice(data);
+}
+
 /// Decrypts the OpenPGP message in a `multipart/encrypted` body's second part (`data`, armored or binary) with one of
 /// `secrets`, and checks a signature inside it against `certs` at `now`.
 pub fn decrypt(
     data: &[u8],
-    secrets: &[&SignedSecretKey],
+    secrets: &[&SecretKey],
     certs: &[&SignedPublicKey],
     now: u32,
 ) -> Result<Decrypted> {
@@ -299,12 +375,10 @@ pub fn decrypt(
     } else {
         Message::from_bytes(data).map_err(|_| CryptoError::Unreadable)?
     };
-    if !message.is_encrypted() {
-        return Err(CryptoError::Unreadable);
-    }
+    check_recipients(&message, secrets)?;
     let empty = Password::empty();
     let ring = TheRing {
-        secret_keys: secrets.to_vec(),
+        secret_keys: secrets.iter().map(|k| &k.0).collect(),
         key_passwords: secrets.iter().map(|_| &empty).collect(),
         // GnuPG 2.4 sends its own OCB format to keys that announce it; SEIPDv1 is checked in full before any plaintext is
         // released, up to Croft's own message cap.
@@ -328,7 +402,13 @@ pub fn decrypt(
     if plain.is_encrypted() {
         return Err(CryptoError::Unreadable);
     }
-    // Read at most the cap (compressed data could expand without bound).
+    // Every signature is a pass over the whole message while reading it (T41a review): a handful at most.
+    if let Message::Signed { reader, .. } = &plain {
+        if reader.num_signatures() > MAX_SIGNATURES {
+            return Err(CryptoError::TooLarge);
+        }
+    }
+    // Read at most the cap (compressed data could expand without bound), into a buffer wiped as it grows.
     let mut inner = Zeroizing::new(Vec::new());
     let mut buf = Zeroizing::new(vec![0u8; 64 * 1024]);
     loop {
@@ -339,7 +419,7 @@ pub fn decrypt(
         if inner.len() + n > MAX_MESSAGE_BYTES {
             return Err(CryptoError::TooLarge);
         }
-        inner.extend_from_slice(&buf[..n]);
+        push_wiped(&mut inner, &buf[..n]);
     }
     let signature = if plain.is_signed() {
         let candidates = verifying_keys(certs, now);
@@ -348,8 +428,10 @@ pub fn decrypt(
         match results
             .iter()
             .zip(candidates.iter())
-            .find(|(r, _)| matches!(r, pgp::composed::VerificationResult::Valid(_)))
-        {
+            .find(|(r, _)| match r {
+                VerificationResult::Valid(sig) => acceptable(sig, now),
+                VerificationResult::Invalid => false,
+            }) {
             Some((_, (_, fp))) => SignatureStatus::Valid {
                 fingerprint: fp.clone(),
             },
@@ -361,8 +443,8 @@ pub fn decrypt(
     Ok(Decrypted { inner, signature })
 }
 
-/// Checks the detached `signature` (armored or binary) of a `multipart/signed` message over its first part
-/// (`signed_part`, exactly as it stands between the boundaries) against `certs` at `now`.
+/// Checks the detached `signature` (armored or binary) of a `multipart/signed` message over its first part (`signed_part`,
+/// exactly as it stands between the boundaries) against `certs` at `now`.
 pub fn verify(
     signed_part: &[u8],
     signature: &[u8],
@@ -383,21 +465,10 @@ pub fn verify(
     } else {
         DetachedSignature::from_bytes(signature).map_err(|_| CryptoError::Unreadable)?
     };
-    // Only strong hashes, as for keys.
-    match sig.signature.hash_alg() {
-        Some(
-            HashAlgorithm::Sha256
-            | HashAlgorithm::Sha384
-            | HashAlgorithm::Sha512
-            | HashAlgorithm::Sha3_256
-            | HashAlgorithm::Sha3_512
-            | HashAlgorithm::Sha224,
-        ) => {}
-        _ => {
-            return Ok(SignatureStatus::NotVerified {
-                issuer: issuer(&sig),
-            })
-        }
+    if !acceptable(&sig.signature, now) {
+        return Ok(SignatureStatus::NotVerified {
+            issuer: issuer(&sig),
+        });
     }
     let part = canonical(signed_part);
     for (key, fp) in verifying_keys(certs, now) {

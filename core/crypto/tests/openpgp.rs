@@ -21,12 +21,7 @@ fn fixture(name: &str) -> Vec<u8> {
     .unwrap()
 }
 
-fn made(
-    name: &str,
-) -> (
-    pgp::composed::SignedSecretKey,
-    pgp::composed::SignedPublicKey,
-) {
+fn made(name: &str) -> (keys::SecretKey, pgp::composed::SignedPublicKey) {
     let g = keys::generate(
         &format!("{name} Example <{}@example.org>", name.to_lowercase()),
         NOW - 100,
@@ -288,7 +283,7 @@ fn autocrypt_headers_round_trip_and_odd_ones_are_refused() {
     let (_, ann) = made("Ann");
     let value = autocrypt::header("ann@example.org", &ann, true, NOW).unwrap();
     assert!(value.starts_with("addr=ann@example.org; prefer-encrypt=mutual; keydata="));
-    let h = autocrypt::parse_header(&value, "Ann Example <ANN@example.org>", NOW).unwrap();
+    let h = autocrypt::parse_header(&value, "ANN@example.org", NOW).unwrap();
     assert!(h.prefer_mutual);
     assert_eq!(
         keys::info(&h.cert, NOW).fingerprint,
@@ -406,4 +401,137 @@ fn writes_samples_for_gnupg_when_asked() {
         &signed.body[ss..se],
     )
     .unwrap();
+}
+
+// ---- The review's findings (T41a) ----
+
+#[test]
+fn weak_hashes_are_never_valid_inside_encrypted_mail_either() {
+    let alice_secret = keys::read_secret(&fixture("gpg-alice.sec.asc"), PASS).unwrap();
+    let bob = keys::read_public(&fixture("gpg-bob.pub.asc")).unwrap();
+    let d = mime::decrypt(
+        &fixture("gpg-bob-to-alice-sha1.asc"),
+        &[&alice_secret],
+        &[&bob],
+        NOW,
+    )
+    .unwrap();
+    assert!(String::from_utf8_lossy(&d.inner).contains("Hello Alice"));
+    assert_eq!(d.signature, SignatureStatus::NotVerified { issuer: None });
+}
+
+#[test]
+fn too_many_recipient_packets_for_one_key_are_refused_before_any_key_is_tried() {
+    let (sam_secret, sam) = made("Sam");
+    let (ann_secret, ann) = made("Ann");
+    // Five packets for Ann's key: refused (each would be a private-key operation).
+    let body = mime::encrypt(
+        b"x",
+        &[&ann, &ann, &ann, &ann, &ann],
+        &sam,
+        Some(&sam_secret),
+        NOW,
+    )
+    .unwrap();
+    let s = body.body.find("-----BEGIN PGP MESSAGE-----").unwrap();
+    let e = body.body.find("-----END PGP MESSAGE-----").unwrap() + 25;
+    assert_eq!(
+        mime::decrypt(&body.body.as_bytes()[s..e], &[&ann_secret], &[&sam], NOW).unwrap_err(),
+        CryptoError::TooLarge
+    );
+    // Four still read.
+    let body = mime::encrypt(
+        b"x",
+        &[&ann, &ann, &ann, &ann],
+        &sam,
+        Some(&sam_secret),
+        NOW,
+    )
+    .unwrap();
+    let s = body.body.find("-----BEGIN PGP MESSAGE-----").unwrap();
+    let e = body.body.find("-----END PGP MESSAGE-----").unwrap() + 25;
+    assert!(mime::decrypt(&body.body.as_bytes()[s..e], &[&ann_secret], &[&sam], NOW).is_ok());
+}
+
+#[test]
+fn a_message_with_many_signatures_is_refused_before_reading() {
+    use pgp::composed::MessageBuilder;
+    use pgp::crypto::{hash::HashAlgorithm, sym::SymmetricKeyAlgorithm};
+    use pgp::types::Password;
+    use rand::rngs::OsRng;
+    let (ann_secret, ann) = made("Ann");
+    let (signer, _) = made("Sid");
+    let enc = keys::usable(&ann, NOW).encryption;
+    let mut builder = MessageBuilder::from_bytes("", b"hello".to_vec())
+        .seipd_v1(OsRng, SymmetricKeyAlgorithm::AES256);
+    match &enc[0] {
+        keys::EncryptionKey::Subkey(k) => builder.encrypt_to_key(OsRng, k).unwrap(),
+        keys::EncryptionKey::Primary(k) => builder.encrypt_to_key(OsRng, k).unwrap(),
+    };
+    // Nine one-pass signatures: each would be a pass over the whole message while reading it.
+    for _ in 0..9 {
+        builder.sign(
+            &signer.rpgp_for_tests().primary_key,
+            Password::empty(),
+            HashAlgorithm::Sha256,
+        );
+    }
+    let armored = builder
+        .to_armored_string(OsRng, Default::default())
+        .unwrap();
+    assert_eq!(
+        mime::decrypt(armored.as_bytes(), &[&ann_secret], &[], NOW).unwrap_err(),
+        CryptoError::TooLarge
+    );
+}
+
+#[test]
+fn autocrypt_takes_only_a_bare_sender_address() {
+    let g = keys::generate("Alice Example <alice@example.org>", NOW - 100).unwrap();
+    let alice = keys::read_public(&g.public).unwrap();
+    let value = autocrypt::header("alice@example.org", &alice, false, NOW).unwrap();
+    for from in [
+        "mallory@evil.example (<alice@example.org>)",
+        "\"<alice@example.org>\" mallory@evil.example",
+        "Mallory <mallory@evil.example>, <alice@example.org>",
+        "Alice <alice@example.org>",
+    ] {
+        assert_eq!(
+            autocrypt::parse_header(&value, from, NOW).unwrap_err(),
+            CryptoError::BadHeader,
+            "{from}"
+        );
+    }
+    assert!(autocrypt::parse_header(&value, "Alice@Example.ORG", NOW).is_ok());
+    // No Unicode case folding: the Kelvin sign is not a `k`.
+    let g = keys::generate("Kim <kim@example.org>", NOW - 100).unwrap();
+    let kim = keys::read_public(&g.public).unwrap();
+    let value = autocrypt::header("kim@example.org", &kim, false, NOW).unwrap();
+    assert_eq!(
+        autocrypt::parse_header(&value, "\u{212A}im@example.org", NOW).unwrap_err(),
+        CryptoError::BadHeader
+    );
+}
+
+#[test]
+fn weak_keys_are_not_used_and_wkd_refuses_every_spelling_of_an_ip_address() {
+    let erin = keys::info(
+        &keys::read_public(&fixture("gpg-erin-rsa1024.pub.asc")).unwrap(),
+        NOW,
+    );
+    assert!(!erin.can_encrypt && !erin.can_sign, "RSA 1024 is too weak");
+    for bad in [
+        "joe@0x7f.1",
+        "joe@0x7f.0x1",
+        "joe@0177.0x0.1",
+        "joe@1.2.3.0x4",
+        "joe@example.1",
+    ] {
+        assert_eq!(
+            wkd::urls(bad).unwrap_err(),
+            CryptoError::BadAddress,
+            "{bad}"
+        );
+    }
+    assert!(wkd::urls("joe@example.xn--p1ai").is_ok());
 }

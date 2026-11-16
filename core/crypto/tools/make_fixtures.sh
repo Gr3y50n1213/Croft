@@ -31,7 +31,10 @@ sed 's/^:-----BEGIN/-----BEGIN/' "$home/openpgp-revocs.d/$dfp.rev" > "$home/dave
 gpg --batch --import "$home/dave.rev"
 
 
+# Erin: RSA 1024, too weak to use.
+g --quick-gen-key "Erin Example <erin@example.com>" rsa1024 cert,sign,encr never
 gpg --armor --export alice@example.org > "$out/gpg-alice.pub.asc"
+gpg --armor --export erin@example.com > "$out/gpg-erin-rsa1024.pub.asc"
 g --armor --export-secret-keys alice@example.org > "$out/gpg-alice.sec.asc"
 gpg --armor --export bob@example.net > "$out/gpg-bob.pub.asc"
 g --armor --export-secret-keys bob@example.net > "$out/gpg-bob.sec.asc"
@@ -41,6 +44,8 @@ gpg --armor --export dave@example.com > "$out/gpg-dave-revoked.pub.asc"
 # Bob signs and encrypts to Alice; Alice signs a text detached (as a multipart/signed part would be).
 printf 'Content-Type: text/plain; charset=utf-8\r\n\r\nHello Alice, from Bob.\r\n' > "$home/inner.txt"
 g --armor --sign --local-user "$bfp" --encrypt --recipient "$afp" --output "$out/gpg-bob-to-alice.asc" "$home/inner.txt"
+# The same, signed with SHA-1: never a valid signature in Croft.
+g --armor --sign --local-user "$bfp" --digest-algo SHA1 --encrypt --recipient "$afp" --output "$out/gpg-bob-to-alice-sha1.asc" "$home/inner.txt"
 cp "$home/inner.txt" "$out/gpg-signed-part.txt"
 g --armor --detach-sign --local-user "$afp" --digest-algo SHA256 --output "$out/gpg-signed-part.sig.asc" "$home/inner.txt"
 echo "fixtures written to $out"

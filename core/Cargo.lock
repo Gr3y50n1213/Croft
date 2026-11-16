@@ -731,6 +731,7 @@ dependencies = [
 name = "croft-ffi"
 version = "0.1.0"
 dependencies = [
+ "croft-crypto",
  "croft-engine",
  "croft-mail-core",
  "croft-protocols",

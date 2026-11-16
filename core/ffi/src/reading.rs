@@ -500,6 +500,7 @@ impl Core {
         remote_images: RemoteImagesSetting,
     ) -> Result<MessageBody, ReadError> {
         let m = self.owner(message_id)?;
+        let (account, from, date) = (m.account_id, m.from_addr.clone(), m.date_ts);
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
@@ -573,14 +574,25 @@ impl Core {
                             body.remote_allowed = true;
                         }
                     }
-                    Ok(body)
+                    Ok::<_, ReadError>(body)
                 })
                 .await
                 .map_err(|_| ReadError::Internal)?
             },
             false,
         );
-        task.await.map_err(|_| ReadError::Internal)?
+        let body = task.await.map_err(|_| ReadError::Internal)??;
+        // T41b: the sender's Autocrypt header, now that the message was read (never fails the read).
+        if let Ok(Some(stored)) = self
+            .inner
+            .handle
+            .read(|db| reading::body(db.connection(), account, message_id))
+        {
+            if let Some(headers) = stored.headers_raw.as_deref() {
+                self.learn_autocrypt(account, from.as_deref(), date, headers);
+            }
+        }
+        Ok(body)
     }
 
     /// Saves attachment `attachment_id` of message `message_id` into `dest_dir` and returns the

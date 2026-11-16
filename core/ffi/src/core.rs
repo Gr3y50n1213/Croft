@@ -129,6 +129,8 @@ pub(crate) struct Inner {
     pub(crate) carddav_urls: Mutex<HashMap<i64, String>>,
     /// T38a: one contacts sync at a time per account.
     pub(crate) contact_syncs: tokio::sync::Mutex<()>,
+    /// T41b: the app's key vault (the platform keystore), once it gave one.
+    pub(crate) key_vault: Mutex<Option<Arc<dyn crate::pgp::KeyVault>>>,
 }
 
 /// What `add_account` has worked out for the account, ready to be stored and started.
@@ -788,6 +790,7 @@ impl Core {
             jmap_ids_db,
             carddav_urls: Mutex::new(HashMap::new()),
             contact_syncs: tokio::sync::Mutex::new(()),
+            key_vault: Mutex::new(None),
         });
 
         watch_outbox(&inner, outbox_changes);

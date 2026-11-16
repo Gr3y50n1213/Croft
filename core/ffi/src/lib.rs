@@ -56,6 +56,7 @@ mod invitations;
 mod jmap_account;
 mod list;
 mod oauth;
+mod pgp;
 mod pin;
 mod reading;
 mod search;
@@ -167,11 +168,15 @@ uniffi::setup_scaffolding!();
 /// `respond_to_event`, the records `InvitationInfo`, `InvitationClash`, `ReplyWording` and
 /// `RsvpOutcome`, the enums `InvitationKind`, `RsvpAnswer` and `RsvpProblem`, and
 /// `EventDetail.my_answer` and `can_respond`.
+///
+/// Version 23 (T41b): OpenPGP keys: `set_key_vault` (and the `KeyVault` callback), `pgp_keys`, `generate_key`,
+/// `import_key`, `export_public_key`, `export_secret_key`, `delete_key`, `key_status`, `lookup_key`, the records
+/// `PgpKeyInfo`, `KeyStatus` and `LookupResult`, and the enums `PgpKeySource`, `LookupProblem` and `PgpError`.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 22;
+pub const FFI_API_VERSION: u32 = 23;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

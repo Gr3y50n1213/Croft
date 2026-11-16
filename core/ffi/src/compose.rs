@@ -951,6 +951,7 @@ fn build(
         as_draft,
         attachments: &attachments,
         calendar: None,
+        autocrypt: None,
         boundary_seed: random()?,
     })
     .map_err(|e| match e {

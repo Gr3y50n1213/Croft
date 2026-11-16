@@ -900,6 +900,7 @@ impl Core {
                 method: "REPLY",
                 text: &reply_text,
             }),
+            autocrypt: None,
             boundary_seed,
         })
         .map_err(|_| CoreError::Internal)?;

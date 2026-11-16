@@ -127,6 +127,18 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   Reminders more than five weeks before their event are not posted; only the first 1,000 `EXDATE`s of an event are read;
   an object that cannot be read is fetched again at every sync. A change that loses to the server's is dropped (marked
   on the item), not kept as a copy.
+- **OpenPGP (T41a).**
+  - rPGP uses the `rsa` crate 0.9, which has a known timing side channel in RSA decryption (RUSTSEC-2023-0071, "Marvin";
+    no fixed release yet). It matters only for decrypting with an RSA key, needs many timed decryptions, and keys Croft
+    makes are not RSA. Watch for `rsa` 0.10 and update rPGP when it moves.
+  - Croft makes v4 keys and sends SEIPDv1; v6 keys and SEIPDv2 (RFC 9580) wait until common readers take them.
+  - No dependency audit (`cargo audit` or `cargo deny`) runs in CI yet; it would have flagged the item above.
+  - From the review, left for later: key flags and expiry in a direct-key signature are not read when a user ID binding
+    exists (it matters for v6 keys and some Sequoia keys); a restored backup is not checked for the "key overwriting"
+    attack (v4 CFB protection does not authenticate the public part); rPGP's own buffer for SEIPDv1 (up to 50 MiB) is not
+    wiped; IDEA, CAST5, 3DES and Blowfish are still read when decrypting old mail.
+  - For T41b: an Autocrypt key may name other addresses than its `addr`: file it under `addr` only. A signed message
+    someone re-encrypted to the person shows a good signature: the screen must say "signed by", not "encrypted by".
 - **Invitations (T40a).**
   - Croft mails its own reply to every invitation it answers. For an event a CalDAV server placed in the calendar by
     itself (server-side scheduling), that server may send a reply too: the organiser then gets the same answer twice.

@@ -1,0 +1,29 @@
+[package]
+name = "croft-crypto"
+description = "OpenPGP and Autocrypt for Croft (rPGP): keys, sign, encrypt, decrypt, verify. Private keys never touch storage here."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# OpenPGP (RFC 9580 and RFC 4880), pure Rust. MIT OR Apache-2.0. See docs/DECISIONS.md.
+pgp = "0.21.1"
+# The random number generator rPGP's API takes (the version rPGP uses). MIT OR Apache-2.0.
+rand = "0.8.8"
+# The preference lists of rPGP's key builder (the version rPGP uses). MIT OR Apache-2.0.
+smallvec = "1.16.5"
+# WKD's local-part hash (the version rPGP uses). MIT OR Apache-2.0.
+sha1 = "0.10.7"
+# Secret key bytes are wiped when dropped. MIT OR Apache-2.0.
+zeroize = "1.9.1"
+# Autocrypt's keydata (the version the workspace uses). MIT OR Apache-2.0.
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+pgp = "0.21.1"

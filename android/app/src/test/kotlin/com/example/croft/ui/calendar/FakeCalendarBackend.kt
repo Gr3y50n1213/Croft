@@ -14,6 +14,9 @@ import com.example.croft.mail.calendar.EventsInWindow
 import com.example.croft.mail.calendar.Occurrence
 import com.example.croft.mail.calendar.Reminder
 import com.example.croft.mail.calendar.RepeatChoice
+import com.example.croft.mail.calendar.ReplyWords
+import com.example.croft.mail.calendar.RsvpChoice
+import com.example.croft.mail.calendar.RsvpResult
 
 /**
  * An in-memory [CalendarBackend]: occurrences and event details set by the test, calendars by account, scripted sync results, and
@@ -80,6 +83,16 @@ class FakeCalendarBackend : CalendarBackend {
     override suspend fun unsubscribe(account: Long, id: Long): Boolean {
         unsubscribed += id
         return cals[account]?.removeIf { it.id == id && it.linked } == true
+    }
+
+    /** T40: S37's answers, as (event, answer, the reply's subject). */
+    val responded = ArrayList<Triple<Long, RsvpChoice, String>>()
+    var rsvpResult = RsvpResult(sent = true, eventId = null, problem = null)
+
+    override suspend fun respond(account: Long, id: Long, answer: RsvpChoice, words: ReplyWords): RsvpResult {
+        responded += Triple(id, answer, words.subject)
+        if (rsvpResult.problem == null) events[account to id]?.let { events[account to id] = it.copy(myAnswer = answer) }
+        return rsvpResult.copy(eventId = id)
     }
 
     companion object {

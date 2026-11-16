@@ -44,12 +44,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.example.croft.R
+import com.example.croft.mail.calendar.ReplyWords
+import com.example.croft.mail.calendar.RsvpChoice
+import com.example.croft.mail.calendar.RsvpProblem
+import com.example.croft.mail.calendar.RsvpResult
 import com.example.croft.mail.calendar.CalendarBackend
 import com.example.croft.mail.calendar.CalendarRef
 import com.example.croft.mail.calendar.EventData
@@ -78,7 +83,42 @@ object EventTags {
     const val PENDING = "event-pending"
     const val SCOPE_ONE = "event-scope-one"
     const val SCOPE_ALL = "event-scope-all"
+    const val RSVP = "event-rsvp"
 }
+
+/** T40: the reply to the organiser, in the person's language. */
+fun replyWords(res: android.content.res.Resources, a: RsvpChoice, title: String) = ReplyWords(
+    res.getString(
+        when (a) {
+            RsvpChoice.YES -> R.string.invite_subject_yes
+            RsvpChoice.MAYBE -> R.string.invite_subject_maybe
+            RsvpChoice.NO -> R.string.invite_subject_no
+        },
+        title,
+    ),
+    res.getString(
+        when (a) {
+            RsvpChoice.YES -> R.string.invite_body_yes
+            RsvpChoice.MAYBE -> R.string.invite_body_maybe
+            RsvpChoice.NO -> R.string.invite_body_no
+        },
+    ),
+)
+
+/** T40: what to say after an answer: sent, or the problem in plain words. */
+fun rsvpMessage(res: android.content.res.Resources, a: RsvpChoice, out: RsvpResult?): String = res.getString(
+    when {
+        out == null -> R.string.invite_failed
+        out.problem == RsvpProblem.CANNOT_SEND -> R.string.invite_problem_cannot_send
+        out.problem == RsvpProblem.NO_CALENDAR -> R.string.invite_problem_no_calendar
+        out.problem == RsvpProblem.OUTDATED -> R.string.invite_problem_outdated
+        out.problem == RsvpProblem.ORGANIZER_DIFFERS -> R.string.invite_problem_organizer
+        out.problem != null -> R.string.invite_problem_other
+        a == RsvpChoice.YES -> R.string.invite_sent_yes
+        a == RsvpChoice.MAYBE -> R.string.invite_sent_maybe
+        else -> R.string.invite_sent_no
+    },
+)
 
 /** The words for a reminder [minutes] before the start. */
 @Composable
@@ -93,12 +133,16 @@ fun reminderText(minutes: Long): String = when {
 
 /** The date and time line of S37: "Fri 6 Nov, 12:00 to 13:00", or the date for a whole day. */
 @Composable
-fun whenText(e: EventData, zone: ZoneId): String {
+fun whenText(e: EventData, zone: ZoneId): String = whenText(e.startMs, e.endMs, e.allDay, zone)
+
+/** The same line for any start and end (T40: S22's card). */
+@Composable
+fun whenText(startMs: Long, endMs: Long, allDay: Boolean, zone: ZoneId): String {
     val locale = LocalConfiguration.current.locales[0]
-    val start = Instant.ofEpochMilli(e.startMs).atZone(zone)
-    val end = Instant.ofEpochMilli(e.endMs).atZone(zone)
+    val start = Instant.ofEpochMilli(startMs).atZone(zone)
+    val end = Instant.ofEpochMilli(endMs).atZone(zone)
     val dateF = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(locale)
-    if (e.allDay) {
+    if (allDay) {
         val last = end.minusDays(1).toLocalDate()
         return if (last.isAfter(start.toLocalDate())) stringResource(R.string.calendar_time_range, start.format(dateF), last.format(dateF)) else start.format(dateF)
     }
@@ -110,7 +154,7 @@ fun whenText(e: EventData, zone: ZoneId): String {
 /**
  * S37 Event: the header in the calendar's colour with the title and when, then the place, the organiser and the attendees with their
  * answers, the reminders, the calendar and the notes. Edit and Delete in the bar: for a repeating event both ask "This event / All
- * events"; Delete always asks first. RSVP is T40.
+ * events"; Delete always asks first. An event that invites the person offers Yes, Maybe and No (T40).
  */
 @Composable
 fun EventScreen(
@@ -133,6 +177,9 @@ fun EventScreen(
     val snackbar = remember { CroftSnackbarState() }
     val scope = rememberCoroutineScope()
     val failed = stringResource(R.string.event_delete_failed)
+    val res = LocalContext.current.resources
+    // T40: the answer on its way.
+    var answering by remember { mutableStateOf<RsvpChoice?>(null) }
     BackHandler { onBack() }
     LaunchedEffect(account, id, keyMs) {
         val e = try { backend.get(account, id, keyMs, zone.id) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
@@ -173,6 +220,24 @@ fun EventScreen(
                     if (e.conflict) Text(stringResource(R.string.event_conflict), Modifier.testTag(EventTags.CONFLICT), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (e.pending) Text(stringResource(R.string.event_pending), Modifier.testTag(EventTags.PENDING), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (e.zoneUnknown) Text(stringResource(R.string.calendar_zone_unknown), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (e.canRespond) {
+                        // T40: answering mails the organiser and changes the answer here.
+                        Column(Modifier.testTag(EventTags.RSVP), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(stringResource(R.string.invite_going), style = MaterialTheme.typography.titleSmall)
+                            RsvpButtons(e.myAnswer, answering, { a ->
+                                if (answering == null) {
+                                    answering = a
+                                    scope.launch {
+                                        val words = replyWords(res, a, e.title)
+                                        val out = try { backend.respond(e.account, e.id, a, words) } catch (x: CancellationException) { throw x } catch (x: Exception) { null }
+                                        answering = null
+                                        snackbar.show(rsvpMessage(res, a, out))
+                                        event = try { backend.get(account, id, keyMs, zone.id) } catch (x: CancellationException) { throw x } catch (x: Exception) { event }
+                                    }
+                                }
+                            })
+                        }
+                    }
                     if (e.location.isNotBlank()) Detail(Icons.Filled.LocationOn, e.location)
                     e.organizer?.let { o ->
                         Detail(Icons.Filled.Person, stringResource(R.string.event_organizer, o.name ?: o.address), e.attendees.map { personText(it) }.joinToString(", ").ifBlank { null })

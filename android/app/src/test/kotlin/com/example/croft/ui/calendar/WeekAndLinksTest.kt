@@ -189,6 +189,41 @@ class WeekAndLinksTest {
         assertTrue(rule.onAllNodes(hasTestTag(EventTags.DELETE)).fetchSemanticsNodes().isEmpty())
     }
 
+    @Test
+    fun anInvitedEventOffersYesMaybeNo_andTheAnswerIsMailedInThePersonsLanguage() {
+        val b = FakeCalendarBackend().apply {
+            calendar(1, 10, "Sam")
+            event(
+                FakeCalendarBackend.data(1, 4, "Lunch", ms("2026-11-06T12:00"), ms("2026-11-06T13:00")).copy(
+                    organizer = com.example.croft.mail.calendar.EventPerson("mira@example.net", "Mira", "ACCEPTED"),
+                    canRespond = true,
+                ),
+            )
+            event(FakeCalendarBackend.data(1, 5, "Mine", ms("2026-11-06T15:00"), ms("2026-11-06T16:00")))
+        }
+        ScreenshotKit.configure(360, 1600, false, 1.0f)
+        rule.show(AnimationLevel.OFF) { EventScreen(b, 1, 4, null, b.cals[1L].orEmpty(), onBack = {}, onEdit = { _, _ -> }, onDeleted = {}, zone = utc) }
+        rule.waitForIdle()
+        rule.onNodeWithTag(EventTags.RSVP).assertExists()
+        rule.onNodeWithTag(com.example.croft.ui.calendar.RsvpTags.answer(com.example.croft.mail.calendar.RsvpChoice.MAYBE)).performScrollTo().performClick()
+        rule.waitUntil(5_000) { b.responded.isNotEmpty() }
+        assertEquals(Triple(4L, com.example.croft.mail.calendar.RsvpChoice.MAYBE, "Tentative: Lunch"), b.responded.single())
+        rule.waitUntil(5_000) { rule.onAllNodes(hasText("You might go", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test
+    fun anEventThePersonOrganisesHasNoAnswers() {
+        val b = FakeCalendarBackend().apply {
+            calendar(1, 10, "Sam")
+            event(FakeCalendarBackend.data(1, 5, "Mine", ms("2026-11-06T15:00"), ms("2026-11-06T16:00")))
+        }
+        ScreenshotKit.configure(360, 1600, false, 1.0f)
+        rule.show(AnimationLevel.OFF) { EventScreen(b, 1, 5, null, b.cals[1L].orEmpty(), onBack = {}, onEdit = { _, _ -> }, onDeleted = {}, zone = utc) }
+        rule.waitForIdle()
+        rule.onNodeWithTag(EventTags.TITLE).assertExists()
+        assertTrue(rule.onAllNodes(hasTestTag(EventTags.RSVP)).fetchSemanticsNodes().isEmpty())
+    }
+
     private fun openCalendars(b: FakeCalendarBackend) {
         ScreenshotKit.configure(360, 1600, false, 1.0f)
         rule.show(AnimationLevel.OFF) {

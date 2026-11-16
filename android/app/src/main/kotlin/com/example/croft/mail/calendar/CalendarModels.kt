@@ -73,6 +73,10 @@ data class EventData(
     val pending: Boolean,
     /** It cannot be changed here (a calendar from a link, T39c): no Edit or Delete. */
     val readOnly: Boolean = false,
+    /** T40: the person's answer, when they are invited. */
+    val myAnswer: RsvpChoice? = null,
+    /** T40: the person is invited by someone else and can answer here. */
+    val canRespond: Boolean = false,
 ) {
     /** It repeats (Edit and Delete ask "This event / All events"). */
     val repeats: Boolean get() = keyMs != null
@@ -134,6 +138,10 @@ interface CalendarBackend {
 
     /** T39c: removes a calendar that came from a link. */
     suspend fun unsubscribe(account: Long, id: Long): Boolean
+
+    /** T40, S37: answers event [id] of [account]: the answer changes in the calendar and is mailed to the organiser. */
+    suspend fun respond(account: Long, id: Long, answer: RsvpChoice, words: ReplyWords): RsvpResult =
+        RsvpResult(sent = false, eventId = null, problem = RsvpProblem.NOT_ANSWERABLE)
 }
 
 /** A link that could not be added, and why. */

@@ -287,6 +287,21 @@ private fun Messages(controller: ConversationController, session: MailSession) {
         if (opened != null) Header(controller, opened, conversation.localOnly)
         // T37: S21's unsubscribe banner on a mailing-list message.
         controller.unsubscribe?.let { UnsubscribeBanner(it, onUnsubscribe = controller::askUnsubscribe) }
+        // T40: S22's invitation card for the opened message.
+        controller.invitation?.let { i ->
+            InvitationCard(
+                invitation = i,
+                calendars = controller.invitationCalendars,
+                chosenCalendar = controller.chosenCalendar,
+                answering = controller.answering,
+                removing = controller.removingEvent,
+                onCalendar = { controller.chosenCalendar = it },
+                onAnswer = controller::respond,
+                onRemove = controller::removeCancelled,
+                zone = java.time.ZoneId.of(controller.zone),
+                senderAddress = opened?.senderAddress,
+            )
+        }
         conversation.messages.forEach { m ->
             if (m.id in controller.expanded) ExpandedMessage(controller, session, m) else CollapsedMessage(controller, session, m)
         }

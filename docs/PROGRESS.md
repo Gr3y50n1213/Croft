@@ -5,6 +5,34 @@ unverified, the next step.
 
 ---
 
+## T40b: The invitation card and answering from the event (16 November 2026)
+
+**Status:** on `task/t40b`, its own pull request (CI runs the Android tests).
+
+**What was built.**
+- **S22, the invitation card** (above the conversation, loaded with the opened message like T37's banner):
+  - "Sam invited you" (or shared an event, cancelled it, or answered), the title, the time ("Repeats" when it does), the
+    place, and the people ("Mira, you, Ben and 2 more").
+  - The first clash in an amber row ("Conflicts with Standup 12:30", "and 2 more").
+  - Notes: the organiser is not the sender (both addresses named), a newer version is in the calendar, the event in the
+    calendar has another organiser, the person is not on the guest list.
+  - Yes, Maybe and No (the current answer filled, and said to screen readers); a calendar choice when the account has
+    more than one; "Add to calendar" for a shared event; "Remove from calendar" for a cancellation it can apply, else
+    why not.
+  - The reply's subject and text in the person's language ("Accepted: Lunch with Mira"); a snackbar for what happened,
+    and each problem in plain words.
+- **S37:** "Going?" with Yes, Maybe and No on an event that invites the person; never on their own events.
+- `RsvpButtons` is shared by both: a row of the existing buttons, not a new control.
+
+**Checks.** Android tests run in CI (`InvitationTest`, two new tests in `WeekAndLinksTest`): the card's content and
+nothing called on open; Yes with the chosen calendar and the localized subject, then the card showing Yes; a problem's
+message; the not-the-sender note; an outdated invitation without buttons; a shared event added; a cancellation removed,
+and one from someone else not; S37's answer and no answers on the person's own event.
+
+**Next.** T41: OpenPGP in the core.
+
+---
+
 ## T40a: Invitations in the core (16 November 2026)
 
 **Status:** merged (CI green on draft #95). The independent review is done; its findings are fixed

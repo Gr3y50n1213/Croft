@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at https://mozilla.org/MPL/2.0/.
+-->
+<resources>
+    <!-- T40: S22's invitation card and S37's answers. -->
+    <string name="invite_invited_you">%1$s invited you</string>
+    <string name="invite_shared">%1$s shared an event</string>
+    <string name="invite_cancelled">%1$s cancelled this event</string>
+    <string name="invite_replied_yes">%1$s is going</string>
+    <string name="invite_replied_maybe">%1$s might go</string>
+    <string name="invite_replied_no">%1$s is not going</string>
+    <string name="invite_someone">Someone</string>
+    <string name="invite_repeats">Repeats</string>
+    <string name="invite_you">you</string>
+    <string name="invite_people_more">%1$s and %2$d more</string>
+    <string name="invite_clash">Conflicts with %1$s %2$s</string>
+    <string name="invite_clash_more">Conflicts with %1$s %2$s and %3$d more</string>
+    <string name="invite_not_sender">Sent by %1$s on behalf of %2$s. Anyone can name an organiser: check before you answer.</string>
+    <string name="invite_outdated">A newer version of this event is already in your calendar.</string>
+    <string name="invite_organizer_differs">The event in your calendar has another organiser, so this message can\'t change it.</string>
+    <string name="invite_not_listed">You\'re not on the guest list. Answering adds you.</string>
+    <string name="invite_own_event">You organise this event.</string>
+    <string name="invite_yes">Yes</string>
+    <string name="invite_maybe">Maybe</string>
+    <string name="invite_no">No</string>
+    <string name="invite_answer_chosen">%1$s, chosen</string>
+    <string name="invite_add">Add to calendar</string>
+    <string name="invite_added">Added to your calendar</string>
+    <string name="invite_footnote">Your reply is sent to the organiser and the event is added to your calendar.</string>
+    <string name="invite_remove">Remove from calendar</string>
+    <string name="invite_removed">Removed from your calendar</string>
+    <string name="invite_cannot_remove">Croft only removes an event when the cancellation comes from its organiser.</string>
+    <string name="invite_not_in_calendar">This event isn\'t in your calendar.</string>
+    <string name="invite_calendar">Add to</string>
+    <string name="invite_going">Going?</string>
+    <!-- The reply's subject, in the person's language: %1$s is the event's title. -->
+    <string name="invite_subject_yes">Accepted: %1$s</string>
+    <string name="invite_subject_maybe">Tentative: %1$s</string>
+    <string name="invite_subject_no">Declined: %1$s</string>
+    <string name="invite_body_yes">I\'ll be there.</string>
+    <string name="invite_body_maybe">I might be there.</string>
+    <string name="invite_body_no">I can\'t make it.</string>
+    <!-- After answering. -->
+    <string name="invite_sent_yes">You\'re going. Your reply is on its way.</string>
+    <string name="invite_sent_maybe">You might go. Your reply is on its way.</string>
+    <string name="invite_sent_no">You\'re not going. Your reply is on its way.</string>
+    <string name="invite_problem_cannot_send">Your answer is saved, but this account can\'t send mail, so the organiser wasn\'t told.</string>
+    <string name="invite_problem_no_calendar">Your reply is on its way, but this account has no calendar to add the event to.</string>
+    <string name="invite_problem_outdated">A newer version is already in your calendar. Answer that one.</string>
+    <string name="invite_problem_organizer">This message is from someone other than the event\'s organiser, so it can\'t be answered.</string>
+    <string name="invite_problem_other">This invitation can\'t be answered.</string>
+    <string name="invite_failed">Couldn\'t answer. Try again.</string>
+</resources>

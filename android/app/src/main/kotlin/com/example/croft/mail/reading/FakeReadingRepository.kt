@@ -6,6 +6,9 @@ package com.example.croft.mail.reading
 
 import com.example.croft.mail.AccountId
 import com.example.croft.mail.MessageId
+import com.example.croft.mail.calendar.ReplyWords
+import com.example.croft.mail.calendar.RsvpChoice
+import com.example.croft.mail.calendar.RsvpResult
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -107,4 +110,37 @@ class FakeReadingRepository(
         if (result.done) unsubscribeInfos[messageId]?.let { unsubscribeInfos[messageId] = it.copy(already = true) }
         return result
     }
+
+    // ---- T40: invitations, set up by a test ----
+
+    /** What [invitation] answers, per message. */
+    val invitations = HashMap<MessageId, InvitationData>()
+
+    /** What [respondToInvitation] answers (by default: sent, stored as event 900). */
+    @Volatile var rsvpResult: RsvpResult = RsvpResult(sent = true, eventId = 900, problem = null)
+
+    /** The calendars offered. */
+    val calendarChoices = ArrayList<CalendarChoice>()
+
+    /** The wording of the last answer. */
+    @Volatile var lastWords: ReplyWords? = null
+
+    override suspend fun invitation(messageId: MessageId, zone: String): InvitationData? = invitations[messageId]
+
+    override suspend fun respondToInvitation(messageId: MessageId, answer: RsvpChoice, calendar: Long?, words: ReplyWords): RsvpResult {
+        calls += "respond:$messageId:$answer:$calendar"
+        lastWords = words
+        val result = rsvpResult
+        if (result.problem == null) invitations[messageId]?.let { invitations[messageId] = it.copy(myAnswer = answer, storedEvent = result.eventId) }
+        return result
+    }
+
+    override suspend fun applyCancellation(messageId: MessageId): Boolean {
+        calls += "cancel:$messageId"
+        val can = invitations[messageId]?.canRemove == true
+        if (can) invitations[messageId]?.let { invitations[messageId] = it.copy(canRemove = false, storedEvent = null) }
+        return can
+    }
+
+    override suspend fun writableCalendars(account: AccountId): List<CalendarChoice> = calendarChoices.toList()
 }

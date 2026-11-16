@@ -49,6 +49,14 @@ class CoreCalendarBackend(private val core: Core, private val io: CoroutineDispa
                 notes = d.notes, startMs = d.startMs, endMs = d.endMs, allDay = d.allDay, zone = d.zone, zoneUnknown = d.zoneUnknown,
                 repeat = d.repeat.toApp(), reminders = d.reminders, organizer = d.organizer?.toApp(), attendees = d.attendees.map { it.toApp() },
                 status = d.status, conflict = d.conflict, pending = d.pending, readOnly = d.readOnly,
+                myAnswer = d.myAnswer?.let {
+                    when (it) {
+                        uniffi.croft_ffi.RsvpAnswer.YES -> RsvpChoice.YES
+                        uniffi.croft_ffi.RsvpAnswer.MAYBE -> RsvpChoice.MAYBE
+                        uniffi.croft_ffi.RsvpAnswer.NO -> RsvpChoice.NO
+                    }
+                },
+                canRespond = d.canRespond,
             )
         }
     }
@@ -72,6 +80,28 @@ class CoreCalendarBackend(private val core: Core, private val io: CoroutineDispa
     }
 
     override suspend fun unsubscribe(account: Long, id: Long): Boolean = withContext(io) { core.unsubscribeCalendar(account, id) }
+
+    override suspend fun respond(account: Long, id: Long, answer: RsvpChoice, words: ReplyWords): RsvpResult = withContext(io) {
+        val coreAnswer = when (answer) {
+            RsvpChoice.YES -> uniffi.croft_ffi.RsvpAnswer.YES
+            RsvpChoice.MAYBE -> uniffi.croft_ffi.RsvpAnswer.MAYBE
+            RsvpChoice.NO -> uniffi.croft_ffi.RsvpAnswer.NO
+        }
+        val out = core.respondToEvent(account, id, coreAnswer, uniffi.croft_ffi.ReplyWording(words.subject, words.body))
+        RsvpResult(
+            sent = out.sent,
+            eventId = out.eventId,
+            problem = when (out.problem) {
+                null -> null
+                uniffi.croft_ffi.RsvpProblem.NOT_ANSWERABLE -> RsvpProblem.NOT_ANSWERABLE
+                uniffi.croft_ffi.RsvpProblem.OUTDATED -> RsvpProblem.OUTDATED
+                uniffi.croft_ffi.RsvpProblem.ORGANIZER_DIFFERS -> RsvpProblem.ORGANIZER_DIFFERS
+                uniffi.croft_ffi.RsvpProblem.NO_ORGANIZER -> RsvpProblem.NO_ORGANIZER
+                uniffi.croft_ffi.RsvpProblem.CANNOT_SEND -> RsvpProblem.CANNOT_SEND
+                uniffi.croft_ffi.RsvpProblem.NO_CALENDAR -> RsvpProblem.NO_CALENDAR
+            },
+        )
+    }
 
     companion object {
         private fun uniffi.croft_ffi.LinkFailure.toApp(): LinkProblem = when (this) {

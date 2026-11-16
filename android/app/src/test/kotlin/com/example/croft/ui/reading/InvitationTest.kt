@@ -94,7 +94,13 @@ class InvitationTest {
         val f = fixture(invite())
         f.show(rule)
         rule.waitForTag(InvitationTags.CARD)
+        rule.waitForTag(InvitationTags.calendar(11))
         rule.onNodeWithTag(InvitationTags.calendar(11)).performScrollTo().performClick()
+        // The choice shows before answering.
+        rule.waitUntil(10_000) {
+            rule.onAllNodes(hasTestTag(InvitationTags.calendar(11)).and(SemanticsMatcher.expectValue(SemanticsProperties.Selected, true)))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
         rule.onNodeWithTag(RsvpTags.answer(RsvpChoice.YES)).performScrollTo().performClick()
         rule.waitUntil(10_000) { answers(f).isNotEmpty() }
         assertEquals(listOf("respond:$NEWEST:YES:11"), answers(f))

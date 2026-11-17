@@ -202,8 +202,15 @@ pub struct MessageBody {
     /// `html_sanitised` is `None` and `text` holds the message's text. The core remembers that
     /// and never tries the HTML of that message again.
     pub truncated: bool,
-    /// The attachments, in document order.
+    /// The attachments, in document order. Inside an encrypted message they have negative ids (T41c).
     pub attachments: Vec<AttachmentInfo>,
+    /// T41c: `None` for a message that did not come encrypted; else whether it opened. A decrypted message's text, HTML and
+    /// attachments are from its decrypted part, for this view only (never stored or indexed).
+    #[uniffi(default = None)]
+    pub encryption: Option<crate::pgp_read::MessageEncryption>,
+    /// T41c: `None` for a message without an OpenPGP signature; else what its check found.
+    #[uniffi(default = None)]
+    pub signature: Option<crate::pgp_read::MessageSignature>,
 }
 
 impl std::fmt::Debug for MessageBody {
@@ -215,6 +222,8 @@ impl std::fmt::Debug for MessageBody {
             .field("remote_allowed", &self.remote_allowed)
             .field("blocked_remote_count", &self.blocked_remote_count)
             .field("attachments", &self.attachments.len())
+            .field("encryption", &self.encryption)
+            .field("signature", &self.signature)
             .finish_non_exhaustive()
     }
 }
@@ -549,6 +558,8 @@ impl Core {
                                 blocked: a.executable,
                             })
                             .collect(),
+                        encryption: None,
+                        signature: None,
                     };
                     if allowed && !too_complex && body.html_sanitised.is_some() {
                         // Sanitised again from the stored message, keeping remote images.
@@ -583,6 +594,30 @@ impl Core {
             false,
         );
         let body = task.await.map_err(|_| ReadError::Internal)??;
+        // T41c: an encrypted message is shown decrypted (nothing of it stored), a signature checked. Off the caller's
+        // thread: decrypting can take a while, and the app's key vault is asked.
+        let body = {
+            let inner = self.inner.clone();
+            let from = from.clone();
+            self.spawn(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        crate::pgp_read::open_body(
+                            &inner,
+                            account,
+                            from.as_deref(),
+                            remote_images,
+                            body,
+                        )
+                    })
+                    .await
+                    .map_err(|_| ReadError::Internal)?
+                },
+                false,
+            )
+            .await
+            .map_err(|_| ReadError::Internal)??
+        };
         // T41b: the sender's Autocrypt header, now that the message was read (never fails the read).
         if let Ok(Some(stored)) = self
             .inner
@@ -612,6 +647,32 @@ impl Core {
     ) -> Result<String, ReadError> {
         let m = self.owner(message_id)?;
         let inner = self.inner.clone();
+        if attachment_id < 0 {
+            // T41c: a part of an encrypted message, decrypted again.
+            let task = self.spawn(
+                async move {
+                    let (account, id) = (m.account_id, m.id);
+                    inner.handle.fetch_body(account, id).await?;
+                    tokio::task::spawn_blocking(move || {
+                        let (name, mime_type, bytes) = crate::pgp_read::decrypted_attachment(
+                            &inner,
+                            account,
+                            id,
+                            m.from_addr.as_deref(),
+                            -attachment_id,
+                        )?;
+                        let path = write_into(Path::new(&dest_dir), &name, &mime_type, &bytes)?;
+                        path.to_str()
+                            .map(str::to_owned)
+                            .ok_or(ReadError::WriteFailed)
+                    })
+                    .await
+                    .map_err(|_| ReadError::Internal)?
+                },
+                false,
+            );
+            return task.await.map_err(|_| ReadError::Internal)?;
+        }
         let task = self.spawn(
             async move {
                 let (account, id) = (m.account_id, m.id);

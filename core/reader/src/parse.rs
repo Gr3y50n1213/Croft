@@ -491,6 +491,77 @@ pub fn part_content(raw: &[u8], part_id: &str) -> Result<Option<Vec<u8>>, ParseE
     Ok(message.part(id).map(|p| p.decoded().into_owned()))
 }
 
+/// The OpenPGP pieces of a PGP/MIME message (RFC 3156, T41c). `Debug` prints sizes only.
+#[derive(Clone, PartialEq, Eq)]
+pub enum PgpMime {
+    /// `multipart/encrypted`: the OpenPGP message (the second part, transfer-decoded).
+    Encrypted {
+        /// The encrypted data, armored or binary.
+        data: Vec<u8>,
+    },
+    /// `multipart/signed`: the first part exactly as it stands between the boundaries (headers and body, without the line
+    /// break before the next boundary), and the detached signature.
+    Signed {
+        /// The signed entity, as sent.
+        signed_part: Vec<u8>,
+        /// The signature, armored or binary.
+        signature: Vec<u8>,
+    },
+}
+
+impl fmt::Debug for PgpMime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Encrypted { data } => write!(f, "Encrypted({} bytes)", data.len()),
+            Self::Signed {
+                signed_part,
+                signature,
+            } => write!(
+                f,
+                "Signed({} + {} bytes)",
+                signed_part.len(),
+                signature.len()
+            ),
+        }
+    }
+}
+
+/// Whether `raw` (a message, or a MIME entity on its own) is PGP/MIME, and its pieces when it is: the top-level type is
+/// `multipart/encrypted` with `protocol="application/pgp-encrypted"` and two parts, or `multipart/signed` with
+/// `protocol="application/pgp-signature"` and two parts, the second `application/pgp-signature`. `Ok(None)` otherwise.
+pub fn pgp_mime(raw: &[u8]) -> Result<Option<PgpMime>, ParseError> {
+    let message = parse_checked(raw)?;
+    let root = message.root_part();
+    let Some(ct) = root.content_type() else {
+        return Ok(None);
+    };
+    if !ct.ctype().eq_ignore_ascii_case("multipart") {
+        return Ok(None);
+    }
+    let subtype = ct.subtype().unwrap_or_default().to_ascii_lowercase();
+    let protocol = ct
+        .attribute("protocol")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let parts: Vec<_> = root.children().collect();
+    Ok(
+        match (subtype.as_str(), protocol.as_str(), parts.as_slice()) {
+            ("encrypted", "application/pgp-encrypted", [_, data]) => Some(PgpMime::Encrypted {
+                data: data.decoded().into_owned(),
+            }),
+            ("signed", "application/pgp-signature", [signed, signature])
+                if signature.is_content_type("application", "pgp-signature") =>
+            {
+                Some(PgpMime::Signed {
+                    signed_part: signed.raw().to_vec(),
+                    signature: signature.decoded().into_owned(),
+                })
+            }
+            _ => None,
+        },
+    )
+}
+
 /// The largest calendar part read from a message (an invitation, T40a), in bytes.
 pub const MAX_CALENDAR_PART: usize = 1024 * 1024;
 

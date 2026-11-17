@@ -137,6 +137,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "openpgp",
         sql: include_str!("../migrations/0015_openpgp.sql"),
     },
+    Migration {
+        version: 16,
+        name: "draft_encryption",
+        sql: include_str!("../migrations/0016_draft_encryption.sql"),
+    },
 ];
 
 /// The version a fully migrated database reports in `PRAGMA user_version`.

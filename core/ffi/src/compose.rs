@@ -185,6 +185,15 @@ pub enum ComposeError {
     DraftTooLarge,
     /// [`Core::schedule_send`]: the time is more than [`MAX_SCHEDULE_AHEAD_MS`] away.
     BadSendTime,
+    /// The draft is to be encrypted and a To or Cc recipient has no key Croft can encrypt to ([`Core::encryption_check`]
+    /// says which). Nothing was sent.
+    NoRecipientKey,
+    /// The draft is to be encrypted or signed and the account has no own key that can sign and encrypt, or its secret is
+    /// not in the app's key vault. Nothing was sent.
+    NoOwnKey,
+    /// The draft is to be encrypted and has Bcc recipients: one encrypted message would show the others who they are.
+    /// Nothing was sent.
+    EncryptionWithBcc,
     /// The database failed.
     Storage {
         /// Fixed category.
@@ -217,6 +226,9 @@ impl std::fmt::Display for ComposeError {
             Self::NeedsConfirmation => "the message may already have been sent",
             Self::DraftTooLarge => "a field is too long",
             Self::BadSendTime => "the send time is too far ahead",
+            Self::NoRecipientKey => "a recipient has no key to encrypt to",
+            Self::NoOwnKey => "the account has no own key in use",
+            Self::EncryptionWithBcc => "an encrypted message cannot have Bcc recipients",
             Self::Storage { .. } => "storage error",
             Self::Internal => "internal error",
         })
@@ -354,6 +366,15 @@ pub struct DraftContent {
     pub in_reply_to: Option<String>,
     /// The `References` ids, oldest first. Set by the reply helpers; pass it back unchanged.
     pub references: Vec<String>,
+    /// Send it encrypted with OpenPGP (T41c): to every To and Cc recipient and to the sender, signed when `sign` is set.
+    /// Never sent unencrypted instead: [`ComposeError::NoRecipientKey`], [`ComposeError::NoOwnKey`] or
+    /// [`ComposeError::EncryptionWithBcc`] until the person changes something. [`Core::encryption_check`] says what is
+    /// missing. The server's copy of such a draft is encrypted to the sender's own key.
+    #[uniffi(default = false)]
+    pub encrypt: bool,
+    /// Sign it with the account's own key (T41c): inside the encryption, or as `multipart/signed` when not encrypted.
+    #[uniffi(default = false)]
+    pub sign: bool,
 }
 
 impl std::fmt::Debug for DraftContent {
@@ -499,6 +520,9 @@ pub enum DraftSyncOutcome {
     /// The server refused the copy (for example the folder is read-only). The draft stays on the
     /// device.
     Refused,
+    /// The draft is to be sent encrypted and the account has no own key to encrypt the server's copy with (T41c): it
+    /// stays on the device.
+    EncryptedKeptOnDevice,
 }
 
 /// Where an Outbox message is.
@@ -820,6 +844,8 @@ fn stored_content(c: &DraftContent) -> Result<StoredContent, ComposeError> {
         body: c.body.clone(),
         in_reply_to: c.in_reply_to.clone(),
         references: c.references.clone(),
+        encrypt: c.encrypt,
+        sign: c.sign,
     })
 }
 
@@ -834,6 +860,8 @@ fn public_content(c: &StoredContent) -> DraftContent {
         body: c.body.clone(),
         in_reply_to: c.in_reply_to.clone(),
         references: c.references.clone(),
+        encrypt: c.encrypt,
+        sign: c.sign,
     }
 }
 
@@ -920,11 +948,15 @@ fn sender_of(
 }
 
 /// Writes the draft as a message: `as_draft` for the copy on the server, else the message to send.
+/// The account's own key with its secret, read from the app's key vault before the database is taken (T41c).
+pub(crate) type OwnKey = (croft_crypto::keys::SecretKey, croft_crypto::Certificate);
+
 fn build(
     conn: &Connection,
     account: &Account,
     draft: &Draft,
     as_draft: bool,
+    own: Option<&OwnKey>,
 ) -> Result<(Vec<u8>, i64, Address), ComposeError> {
     let (identity_id, from) = sender_of(conn, account, draft.content.identity_id)?;
     let files = drafts::attachment_data(conn, account.id, draft.id)?;
@@ -943,29 +975,96 @@ fn build(
     } else {
         crate::pgp::autocrypt_header(conn, account.id, &from.address)
     };
-    let mime = mail::build_message(&Outgoing {
-        from: &from,
-        to: &c.to,
-        cc: &c.cc,
-        bcc: &c.bcc,
-        subject: &c.subject,
-        body: &c.body,
-        in_reply_to: c.in_reply_to.as_deref(),
-        references: &c.references,
-        message_id: &draft.message_id,
-        date_ms: now_ms(),
-        as_draft,
-        attachments: &attachments,
-        calendar: None,
-        autocrypt: autocrypt.as_deref(),
-        boundary_seed: random()?,
-    })
+    // Signed only (not inside encryption): its text must survive relays unchanged.
+    let signed_as_is = !as_draft && c.sign && !c.encrypt;
+    let parts = mail::build_parts(
+        &Outgoing {
+            from: &from,
+            to: &c.to,
+            cc: &c.cc,
+            bcc: &c.bcc,
+            subject: &c.subject,
+            body: &c.body,
+            in_reply_to: c.in_reply_to.as_deref(),
+            references: &c.references,
+            message_id: &draft.message_id,
+            date_ms: now_ms(),
+            as_draft,
+            attachments: &attachments,
+            calendar: None,
+            autocrypt: autocrypt.as_deref(),
+            boundary_seed: random()?,
+        },
+        signed_as_is,
+    )
     .map_err(|e| match e {
         BuildError::NoRecipient => ComposeError::NoRecipient,
         BuildError::InvalidAddress => ComposeError::InvalidAddress,
         BuildError::BadMessageId | BuildError::BadCalendarMethod => ComposeError::Internal,
     })?;
+    let mime = protect(conn, account.id, c, as_draft, own, parts)?;
     Ok((mime, identity_id, from))
+}
+
+/// OpenPGP on a built message (T41c). Plain when the draft asks for neither. A message that is sent: encrypted to every To
+/// and Cc recipient and to the sender (signed inside when asked), or signed only; never plain instead. The server's copy of
+/// a draft to be encrypted: encrypted to the sender only, unsigned (the caller keeps it on the device when there is no own
+/// key).
+fn protect(
+    conn: &Connection,
+    account: i64,
+    c: &StoredContent,
+    as_draft: bool,
+    own: Option<&OwnKey>,
+    parts: mail::Parts,
+) -> Result<Vec<u8>, ComposeError> {
+    let plain = |p: mail::Parts| {
+        let mut out = p.head.into_bytes();
+        out.extend_from_slice(&p.entity);
+        out
+    };
+    let now = crate::pgp::now_secs();
+    let body = if as_draft {
+        if !c.encrypt {
+            return Ok(plain(parts));
+        }
+        let (_, cert) = crate::pgp::own_public(conn, account, now).ok_or(ComposeError::NoOwnKey)?;
+        croft_crypto::mime::encrypt(&parts.entity, &[], &cert, None, now)
+    } else if c.encrypt {
+        if !c.bcc.is_empty() {
+            return Err(ComposeError::EncryptionWithBcc);
+        }
+        let (secret, own_cert) = own.ok_or(ComposeError::NoOwnKey)?;
+        let mut certs = Vec::with_capacity(c.to.len() + c.cc.len());
+        for a in c.to.iter().chain(&c.cc) {
+            let bare =
+                croft_crypto::keys::bare_address(&a.address).ok_or(ComposeError::InvalidAddress)?;
+            let (_, cert) = crate::pgp::encryption_key(conn, account, &bare, now)
+                .map_err(|_| ComposeError::Internal)?
+                .ok_or(ComposeError::NoRecipientKey)?;
+            certs.push(cert);
+        }
+        let refs: Vec<&croft_crypto::Certificate> = certs.iter().collect();
+        croft_crypto::mime::encrypt(
+            &parts.entity,
+            &refs,
+            own_cert,
+            c.sign.then_some(secret),
+            now,
+        )
+    } else if c.sign {
+        let (secret, _) = own.ok_or(ComposeError::NoOwnKey)?;
+        croft_crypto::mime::sign(&parts.entity, secret, now)
+    } else {
+        return Ok(plain(parts));
+    }
+    .map_err(|e| match e {
+        croft_crypto::CryptoError::NoEncryptionKey(_) => ComposeError::NoRecipientKey,
+        croft_crypto::CryptoError::NoUsableKey => ComposeError::NoOwnKey,
+        croft_crypto::CryptoError::TooLarge => ComposeError::DraftTooLarge,
+        _ => ComposeError::Internal,
+    })?;
+    mail::wrap(&parts.head, &body.content_type, &body.body).ok_or(ComposeError::Internal)
 }
 
 /// To, Cc and Bcc as bare addresses, each once (compared without regard to case).
@@ -1262,6 +1361,12 @@ struct Prepared {
 enum Plan {
     Done(DraftSyncOutcome),
     Copy(Box<Prepared>),
+    /// T41c: the draft is now to be encrypted and there is no own key to encrypt its copy with: the plain copy already on
+    /// the server goes (`EncryptedKeptOnDevice` once it has).
+    Withdraw {
+        folder: String,
+        message_ids: Vec<String>,
+    },
 }
 
 fn plan_copy(
@@ -1283,10 +1388,25 @@ fn plan_copy(
             // Nothing worth a copy on the server.
             return Ok(Plan::Done(DraftSyncOutcome::AlreadyCurrent));
         }
+        // T41c: a draft to be encrypted goes to the server only encrypted to the sender's own key; without one, a plain copy
+        // made earlier is taken off the server at once (not held back by the pacing).
+        if d.content.encrypt
+            && crate::pgp::own_public(conn, account, crate::pgp::now_secs()).is_none()
+        {
+            return Ok(match d.server_folder {
+                Some(folder) => Plan::Withdraw {
+                    folder,
+                    message_ids: std::iter::once(d.message_id)
+                        .chain(d.stale_message_ids)
+                        .collect(),
+                },
+                None => Plan::Done(DraftSyncOutcome::EncryptedKeptOnDevice),
+            });
+        }
         if deferred {
             return Ok(Plan::Done(DraftSyncOutcome::Deferred));
         }
-        let (mime, _, _) = build(conn, &acct, &d, true)?;
+        let (mime, _, _) = build(conn, &acct, &d, true, None)?;
         let folder_hint = Inner::drafts_folder_path(conn, account);
         Ok(Plan::Copy(Box::new(Prepared {
             draft: d,
@@ -1346,6 +1466,32 @@ pub(crate) async fn sync_draft(
     let prepared = match plan {
         Plan::Done(outcome) => return Ok(outcome),
         Plan::Copy(p) => p,
+        Plan::Withdraw {
+            folder,
+            message_ids,
+        } => {
+            let gone = async {
+                let imap = backend.imap().await?;
+                for id in &message_ids {
+                    delete_draft_copies(&imap, &folder, id).await?;
+                }
+                Ok::<_, BackendError>(())
+            }
+            .await;
+            if let Err(e) = gone {
+                return Ok(outcome_of(&e));
+            }
+            blocking(inner, move |i| {
+                i.compose_db(|conn| {
+                    drafts::clear_server_copy(conn, account, draft_id)?;
+                    // The current id is not stale; the earlier ones are gone with it.
+                    drafts::clear_stale(conn, account, draft_id, &message_ids)?;
+                    Ok(())
+                })
+            })
+            .await?;
+            return Ok(DraftSyncOutcome::EncryptedKeptOnDevice);
+        }
     };
     inner
         .compose
@@ -2107,10 +2253,27 @@ impl Core {
     ) -> Result<SendStarted, ComposeError> {
         let inner = &self.inner;
         let _actions = inner.compose.actions();
+        // T41c: the own key's secret comes from the app's vault before the database is taken (the vault is the app's code).
+        let wants_key = inner.compose_db(|conn| {
+            let d = inner.editable_draft(conn, account_id, draft_id)?;
+            Ok(d.content.encrypt || d.content.sign)
+        })?;
+        let own = if wants_key {
+            match self.own_secret(account_id) {
+                Ok(k) => k,
+                Err(crate::pgp::PgpError::NoVault) => None,
+                Err(crate::pgp::PgpError::NoSuchAccount) => {
+                    return Err(ComposeError::NoSuchAccount)
+                }
+                Err(_) => return Err(ComposeError::NoOwnKey),
+            }
+        } else {
+            None
+        };
         let (envelope, mime, identity_id, from, draft) = inner.compose_db(|conn| {
             let acct = account_of(conn, account_id)?;
             let d = inner.editable_draft(conn, account_id, draft_id)?;
-            let (mime, identity_id, from) = build(conn, &acct, &d, false)?;
+            let (mime, identity_id, from) = build(conn, &acct, &d, false, own.as_ref())?;
             Ok((envelope_recipients(&d.content), mime, identity_id, from, d))
         })?;
         let message = NewMessage {
@@ -2292,6 +2455,8 @@ impl Core {
                     body: fields.body,
                     in_reply_to: fields.in_reply_to,
                     references: fields.references,
+                    encrypt: false,
+                    sign: false,
                 },
                 quote_included: fields.quote_included,
             })

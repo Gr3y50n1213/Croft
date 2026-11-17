@@ -66,6 +66,10 @@ pub struct DraftContent {
     pub in_reply_to: Option<String>,
     /// `References`.
     pub references: Vec<String>,
+    /// Sent encrypted (OpenPGP, T41c): to every recipient and to the sender, or not at all.
+    pub encrypt: bool,
+    /// Sent signed with the account's own key (T41c).
+    pub sign: bool,
 }
 
 impl std::fmt::Debug for DraftContent {
@@ -161,7 +165,7 @@ fn addresses_from(text: &str) -> Vec<Address> {
 const COLUMNS: &str =
     "id, account_id, identity_id, message_id, to_json, cc_json, bcc_json, subject, body,
        in_reply_to, references_json, state, outbox_id, revision, synced_revision, server_folder,
-       server_uid, created_at, updated_at, stale_message_ids";
+       server_uid, created_at, updated_at, stale_message_ids, encrypt, sign";
 
 fn map_row(r: &Row<'_>) -> rusqlite::Result<Draft> {
     let state: String = r.get(11)?;
@@ -179,6 +183,8 @@ fn map_row(r: &Row<'_>) -> rusqlite::Result<Draft> {
             body: r.get(8)?,
             in_reply_to: r.get(9)?,
             references: serde_json::from_str(&references).unwrap_or_default(),
+            encrypt: r.get(20)?,
+            sign: r.get(21)?,
         },
         state: DraftState::from_name(&state).unwrap_or(DraftState::Draft),
         outbox_id: r.get(12)?,
@@ -202,8 +208,8 @@ pub fn insert(
 ) -> Result<i64> {
     conn.execute(
         "INSERT INTO draft (account_id, identity_id, message_id, to_json, cc_json, bcc_json, subject,
-                            body, in_reply_to, references_json, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+                            body, in_reply_to, references_json, created_at, updated_at, encrypt, sign)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12, ?13)",
         params![
             account_id,
             content.identity_id,
@@ -216,6 +222,8 @@ pub fn insert(
             content.in_reply_to,
             serde_json::to_string(&content.references)?,
             now_ms,
+            content.encrypt,
+            content.sign,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -233,7 +241,7 @@ pub fn update(
 ) -> Result<bool> {
     let changed = conn.execute(
         "UPDATE draft SET identity_id = ?3, to_json = ?4, cc_json = ?5, bcc_json = ?6, subject = ?7,
-                          body = ?8, in_reply_to = ?9, references_json = ?10,
+                          body = ?8, in_reply_to = ?9, references_json = ?10, encrypt = ?12, sign = ?13,
                           revision = revision + 1, updated_at = ?11
           WHERE account_id = ?1 AND id = ?2 AND state = 'draft'",
         params![
@@ -248,6 +256,8 @@ pub fn update(
             content.in_reply_to,
             serde_json::to_string(&content.references)?,
             now_ms,
+            content.encrypt,
+            content.sign,
         ],
     )?;
     Ok(changed == 1)

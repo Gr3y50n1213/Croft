@@ -539,6 +539,9 @@ pub struct Outgoing<'a> {
     pub attachments: &'a [AttachmentData<'a>],
     /// A calendar object sent beside the text: the two then make a `multipart/alternative`.
     pub calendar: Option<CalendarPart<'a>>,
+    /// The `Autocrypt:` header value (T41b, from `croft_crypto::autocrypt::header`). Left out when it holds a control
+    /// character.
+    pub autocrypt: Option<&'a str>,
     /// Random bytes for the part boundary. Must differ from message to message.
     pub boundary_seed: [u8; 8],
 }
@@ -611,6 +614,12 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
     line("Subject", &subject);
     line("Date", &rfc5322_date(m.date_ms));
     line("Message-ID", &message_id);
+    if let Some(a) = m
+        .autocrypt
+        .filter(|a| !a.is_empty() && !a.chars().any(char::is_control))
+    {
+        line("Autocrypt", a);
+    }
     if let Some(parent) = m.in_reply_to.and_then(clean_message_id) {
         line("In-Reply-To", &parent);
     }

@@ -21,6 +21,7 @@ pub mod messages;
 pub mod notify;
 pub mod op_store;
 pub mod outbox_store;
+pub mod pgp;
 pub mod reading;
 pub mod recipients;
 pub mod search;
@@ -130,6 +131,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 14,
         name: "calendar_links",
         sql: include_str!("../migrations/0014_calendar_links.sql"),
+    },
+    Migration {
+        version: 15,
+        name: "openpgp",
+        sql: include_str!("../migrations/0015_openpgp.sql"),
     },
 ];
 

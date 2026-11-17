@@ -937,6 +937,12 @@ fn build(
         })
         .collect();
     let c = &draft.content;
+    // T41b: every message sent from an account with an own key carries its Autocrypt header (not the server's draft copy).
+    let autocrypt = if as_draft {
+        None
+    } else {
+        crate::pgp::autocrypt_header(conn, account.id, &from.address)
+    };
     let mime = mail::build_message(&Outgoing {
         from: &from,
         to: &c.to,
@@ -951,6 +957,7 @@ fn build(
         as_draft,
         attachments: &attachments,
         calendar: None,
+        autocrypt: autocrypt.as_deref(),
         boundary_seed: random()?,
     })
     .map_err(|e| match e {

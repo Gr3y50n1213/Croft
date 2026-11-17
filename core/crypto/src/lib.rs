@@ -62,5 +62,8 @@ impl std::fmt::Display for CryptoError {
 
 impl std::error::Error for CryptoError {}
 
+/// A public certificate (rPGP's transferable public key), as the rest of the core passes it around.
+pub type Certificate = pgp::composed::SignedPublicKey;
+
 /// Result of this crate.
 pub type Result<T> = std::result::Result<T, CryptoError>;

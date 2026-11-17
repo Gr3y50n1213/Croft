@@ -127,6 +127,14 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   Reminders more than five weeks before their event are not posted; only the first 1,000 `EXDATE`s of an event are read;
   an object that cannot be read is fetched again at every sync. A change that loses to the server's is dropped (marked
   on the item), not kept as a copy.
+- **OpenPGP keys (T41b).**
+  - The outgoing Autocrypt header never says `prefer-encrypt=mutual` yet: the setting comes with the screens (T42).
+  - A WKD lookup is made only when asked (`lookup_key`); compose (T41c) and the screens (T42) decide when to ask.
+  - Keys found in a WKD or imported are not refreshed or checked again for revocation; a revoked key is seen only when a new
+    copy arrives. Certificates are not merged: a newer copy replaces the stored one (unless the stored one is revoked), so
+    a new subkey or expiry arrives only with a full copy.
+  - Secret key bytes passed to and from the app's `KeyVault` cross uniffi in a plain buffer that uniffi frees without
+    wiping (one copy each way). Rust wipes its own copies; a wiping buffer type would close this.
 - **OpenPGP (T41a).**
   - rPGP uses the `rsa` crate 0.9, which has a known timing side channel in RSA decryption (RUSTSEC-2023-0071, "Marvin";
     no fixed release yet). It matters only for decrypting with an RSA key, needs many timed decryptions, and keys Croft

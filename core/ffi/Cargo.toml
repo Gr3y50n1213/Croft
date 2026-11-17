@@ -41,6 +41,7 @@ path = "src/bin/uniffi-bindgen.rs"
 required-features = ["cli"]
 
 [dependencies]
+croft-crypto = { path = "../crypto" }
 croft-engine = { path = "../engine" }
 croft-mail-core = { path = "../mail-core" }
 croft-protocols = { path = "../protocols" }

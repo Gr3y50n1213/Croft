@@ -120,12 +120,26 @@ impl Mail {
         tls: TlsMode,
         change: impl FnOnce(&mut StoredSettings, &SmtpServer),
     ) -> Self {
+        Self::build(tls, change, |_| {})
+    }
+
+    /// `prepare` changes the IMAP server before the core first connects (its folder list is read once, at start).
+    pub(super) fn with_server(prepare: impl FnOnce(&TestServer)) -> Self {
+        Self::build(TlsMode::None, |_, _| {}, prepare)
+    }
+
+    fn build(
+        tls: TlsMode,
+        change: impl FnOnce(&mut StoredSettings, &SmtpServer),
+        prepare: impl FnOnce(&TestServer),
+    ) -> Self {
         let imap = block(TestServer::start(ServerOptions {
             username: "alice".into(),
             password: PASSWORD.into(),
             tls: TlsMode::None,
             ..ServerOptions::default()
         }));
+        prepare(&imap);
         let smtp = block(SmtpServer::start(SmtpOptions {
             username: "alice".into(),
             password: PASSWORD.into(),

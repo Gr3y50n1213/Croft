@@ -5,6 +5,19 @@ unverified, the next step.
 
 ---
 
+## Two races found by main's CI (17 November 2026)
+
+**Status:** fixed on `claude/croft-build`, with the T41b merge.
+- `a_missing_trash_is_found_before_anything_is_sent` (T37's test) failed about one run in ten: the engine keeps the
+  folder list it read at start-up and stores it again on later syncs, which marked Trash again after the test unmarked
+  it. The test now starts against a server without a Trash folder (`Mail::with_server`, `TestServer::remove_folder`).
+  40 runs in a row pass.
+- `SearchController` (Android) set its state by reading and then writing it from more than one coroutine: a search
+  finishing while the person tapped Undo on a removed history entry could put back the old list. Every change is now an
+  atomic `update`. (Found by `SearchFlowTest`; Android compiles in CI only.)
+
+---
+
 ## T41b: OpenPGP keys in the core: storage, the keystore, discovery (17 November 2026)
 
 **Status:** merged (CI green on draft #101). The independent review is done; its findings are fixed

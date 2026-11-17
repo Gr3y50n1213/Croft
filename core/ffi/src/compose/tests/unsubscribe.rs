@@ -235,7 +235,8 @@ fn own_and_sent_mail_are_never_deleted_and_a_changed_message_sends_nothing() {
 /// T37 review: with no Trash folder, "Also delete" is refused before the sender is contacted.
 #[test]
 fn a_missing_trash_is_found_before_anything_is_sent() {
-    let m = Mail::new();
+    // A server without a Trash folder (its folder list is read once, when the core starts).
+    let m = Mail::with_server(|imap| imap.remove_folder("Trash"));
     let header = "<mailto:leave@list.example>";
     m.imap.add_message(
         "INBOX",
@@ -262,15 +263,6 @@ fn a_missing_trash_is_found_before_anything_is_sent() {
     let newest = rows.iter().find(|r| r.subject == "News b").unwrap().id;
     let info = m.core().unsubscribe_info(newest).unwrap().unwrap();
     assert_eq!(info.older_count, 1);
-    {
-        let d = croft_storage::Db::open(&m.db.path, None).unwrap();
-        d.connection()
-            .execute(
-                "UPDATE folder SET special_use = 'other' WHERE special_use = 'trash'",
-                [],
-            )
-            .unwrap();
-    }
     let out = block(m.core().clone().unsubscribe(newest, info, true)).unwrap();
     assert_eq!(out.failure, Some(UnsubscribeFailure::NoTrashFolder));
     assert!(

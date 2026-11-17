@@ -517,6 +517,64 @@ async fn calendar_link_hops(
     Err(FetchError::Redirect)
 }
 
+/// The largest key a WKD answer may hold (T41b).
+pub const MAX_WKD_KEY: usize = 256 * 1024;
+
+/// Fetches a key from a WKD address (T41b, `croft_crypto::wkd::urls`): one `GET`, no cookies, no `Authorization`, public
+/// addresses only, no redirect followed, at most [`MAX_WKD_KEY`] bytes, one deadline for all of it. `Ok(None)` when the
+/// directory has no key there (404 or 410). Nothing of the address is logged.
+pub async fn get_wkd_key(url: &str) -> Result<Option<Vec<u8>>, FetchError> {
+    let parsed = Url::parse(url).ok_or(FetchError::BadUrl)?;
+    if !parsed.secure || !parsed.is_allowed() {
+        return Err(FetchError::BadUrl);
+    }
+    wkd_with(&parsed, Reach::Internet).await
+}
+
+/// [`get_wkd_key`] to plain http on this machine: for tests only (a fake key directory).
+pub async fn get_wkd_key_from_loopback_for_tests(url: &str) -> Result<Option<Vec<u8>>, FetchError> {
+    let parsed = Url::parse(url).ok_or(FetchError::BadUrl)?;
+    if parsed.secure || !is_loopback_name(&parsed.host) {
+        return Err(FetchError::BadUrl);
+    }
+    wkd_with(&parsed, Reach::Loopback).await
+}
+
+async fn wkd_with(url: &Url, reach: Reach) -> Result<Option<Vec<u8>>, FetchError> {
+    let http = Http::new(Trust::Roots, TIMEOUT, DEADLINE);
+    let http = match reach {
+        Reach::Internet => http.internet_only(),
+        Reach::Loopback => http.admin_configured(),
+        Reach::Admin | Reach::Chosen => return Err(FetchError::BadUrl),
+    };
+    let req = HttpRequest {
+        method: "GET",
+        url,
+        authorization: None,
+        content_type: None,
+        body: &[],
+        max_response: MAX_WKD_KEY,
+        extra_time: Duration::ZERO,
+        error_body: false,
+        status_only: false,
+        extra_headers: &[],
+    };
+    let answer = tokio::time::timeout(DEADLINE, http.send(&req))
+        .await
+        .map_err(|_| FetchError::Unreachable)?
+        .map_err(|e| match e.error {
+            BackendError::Transient(_) => FetchError::Unreachable,
+            _ => FetchError::Refused,
+        })?;
+    match answer.status {
+        200..=299 => Ok(Some(answer.body)),
+        404 | 410 => Ok(None),
+        300..=399 => Err(FetchError::Redirect),
+        408 | 429 | 500..=599 => Err(FetchError::Unreachable),
+        _ => Err(FetchError::Refused),
+    }
+}
+
 /// Encodes a form body (`application/x-www-form-urlencoded`), wiped when dropped.
 pub fn form(pairs: &[(&str, &str)]) -> Zeroizing<String> {
     // One buffer, sized for the worst case first, so no partial copy of a secret value is left

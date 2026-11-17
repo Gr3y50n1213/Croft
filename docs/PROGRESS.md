@@ -5,6 +5,62 @@ unverified, the next step.
 
 ---
 
+## Two races found by main's CI (17 November 2026)
+
+**Status:** fixed on `claude/croft-build`, with the T41b merge.
+- `a_missing_trash_is_found_before_anything_is_sent` (T37's test) failed about one run in ten: the engine keeps the
+  folder list it read at start-up and stores it again on later syncs, which marked Trash again after the test unmarked
+  it. The test now starts against a server without a Trash folder (`Mail::with_server`, `TestServer::remove_folder`).
+  40 runs in a row pass.
+- `SearchController` (Android) set its state by reading and then writing it from more than one coroutine: a search
+  finishing while the person tapped Undo on a removed history entry could put back the old list. Every change is now an
+  atomic `update`. (Found by `SearchFlowTest`; Android compiles in CI only.)
+
+---
+
+## T41b: OpenPGP keys in the core: storage, the keystore, discovery (17 November 2026)
+
+**Status:** merged (CI green on draft #101). The independent review is done; its findings are fixed
+(`docs/REVIEW-QUEUE.md`). Encrypting, signing, decrypting and verifying in
+compose and reading are T41c; the screens are T42.
+
+**What was built.**
+- **Storage (migration 0015):** `pgp_key` (public certificates only, one row per fingerprint per account, own or not, and
+  where each came from: made, imported, Autocrypt, WKD), `pgp_key_address` and `autocrypt_peer` (per sender: the newest
+  header's fingerprint, `prefer-encrypt=mutual`, its date and the newest message's date).
+- **The keystore:** the `KeyVault` callback the app implements (store, load, delete a secret key by account and fingerprint).
+  Secret key bytes cross the FFI only into and out of it; without a vault nothing secret is made or imported.
+- **Own keys:** `generate_key`, `import_key` (a secret key goes to the vault; a public key becomes a contact's key, a
+  protected one opens with its passphrase), `export_public_key`, `export_secret_key` (a passphrase-protected backup),
+  `delete_key` (the vault forgets it too), `pgp_keys`.
+- **Other people's keys:** Autocrypt headers taken from mail as it is read (newer by arrival only, never from the account's
+  own addresses or a header naming another sender; a key the sender replaced goes when Croft had it only from Autocrypt);
+  `lookup_key` in the sender's Web Key Directory (`https` to public addresses only, no redirect, 256 KiB, the key must
+  name the address).
+- **For compose:** `key_status(account, addresses)`. **Outgoing:** every message sent from an account with an own key
+  carries its `Autocrypt:` header (drafts do not; invitation replies do). FFI v23.
+- **After the review:**
+  - A key the person chose (own, made or imported) is never changed or re-filed by an Autocrypt header or a WKD answer.
+  - A revoked certificate is never replaced by a copy without its revocation.
+  - A discovered key only gains addresses, and its source only goes up (Autocrypt, then WKD, then the person's).
+  - `key_status` prefers the person's keys over discovered ones.
+  - Autocrypt's date is capped at now and Junk is skipped; each step is one transaction and is undone if the key cannot
+    be stored. `prefer-encrypt` lapses after a later message without the header.
+  - The outgoing header uses the key in use (signs and encrypts).
+  - Every old-format secret-key packet is recognised on import.
+  - The Companion's lock file carries croft-crypto's dependencies.
+
+**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (1,281; new: 5 in
+`core/storage/src/pgp.rs`, 3 in `core/protocols/tests/wkd.rs`, 8 in `core/ffi/src/compose/tests/pgp.rs`), SQLCipher and
+`check_schema.py`. The Android licence list is regenerated (rPGP's crates are now in the app); `test_gen_licences` passes.
+Android compiles only in CI.
+
+**Unverified.** The Android side has no vault yet (T42), so nothing secret is made on a phone until then.
+
+**Next.** T41c (compose and reading).
+
+---
+
 ## T41a: OpenPGP in the core: the crypto crate (16 November 2026)
 
 **Status:** merged (CI green on draft #99). The independent review is done; its findings are fixed

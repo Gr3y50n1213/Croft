@@ -27,6 +27,7 @@ fn build<'a>(body: &'a str, f: impl FnOnce(&mut Outgoing<'a>)) -> String {
         as_draft: false,
         attachments: &[],
         calendar: None,
+        autocrypt: None,
         boundary_seed: [7; 8],
     };
     f(&mut m);
@@ -224,6 +225,7 @@ fn a_message_with_only_bcc_recipients_is_allowed() {
         as_draft: false,
         attachments: &[],
         calendar: None,
+        autocrypt: None,
         boundary_seed: [0; 8],
     };
     let text = String::from_utf8(build_message(&m).unwrap()).unwrap();
@@ -248,6 +250,7 @@ fn refusals() {
         as_draft: false,
         attachments: &[],
         calendar: None,
+        autocrypt: None,
         boundary_seed: [0; 8],
     };
     assert!(build_message(&base).is_ok());
@@ -872,6 +875,7 @@ fn a_calendar_reply_goes_beside_the_text_as_an_alternative() {
             method: "REPLY\r\nBcc: x",
             text: ics,
         }),
+        autocrypt: None,
         boundary_seed: [1; 8],
     };
     assert_eq!(

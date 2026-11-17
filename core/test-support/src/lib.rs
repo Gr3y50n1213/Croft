@@ -368,6 +368,11 @@ impl TestServer {
         }
     }
 
+    /// Removes a folder and its messages (to stand for a server that never had it).
+    pub fn remove_folder(&self, name: &str) {
+        self.st().folders.retain(|f| f.name != name);
+    }
+
     /// Adds a message with no flags and returns its UID.
     pub fn add_message(&self, folder: &str, raw: &str) -> u32 {
         self.add_message_with_flags(folder, raw, &[])

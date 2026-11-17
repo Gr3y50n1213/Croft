@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** Where a search is (`docs/ux/state-machines.md`, Search). */
@@ -82,10 +83,10 @@ class SearchController(
     fun onQuery(text: String) {
         job?.cancel()
         if (text.isBlank()) {
-            _state.value = _state.value.copy(query = text, phase = SearchPhase.IDLE, hits = emptyList(), bodiesPartial = false, serverNote = ServerNote.NONE, badDate = false)
+            _state.update { it.copy(query = text, phase = SearchPhase.IDLE, hits = emptyList(), bodiesPartial = false, serverNote = ServerNote.NONE, badDate = false) }
             return
         }
-        _state.value = _state.value.copy(query = text, phase = SearchPhase.TYPING)
+        _state.update { it.copy(query = text, phase = SearchPhase.TYPING) }
         job = scope.launch {
             delay(debounceMs)
             run(text)
@@ -97,7 +98,7 @@ class SearchController(
         job?.cancel()
         if (text.isBlank()) return onQuery(text)
         history.add(text)
-        _state.value = _state.value.copy(query = text, phase = SearchPhase.TYPING, history = history.list())
+        _state.update { it.copy(query = text, phase = SearchPhase.TYPING, history = history.list()) }
         job = scope.launch { run(text) }
     }
 
@@ -111,7 +112,7 @@ class SearchController(
 
     /** All accounts (null) or one. Searches again. */
     fun setAccount(account: Long?) {
-        _state.value = _state.value.copy(account = account)
+        _state.update { it.copy(account = account) }
         if (_state.value.query.isNotBlank()) submit(_state.value.query)
     }
 
@@ -127,18 +128,18 @@ class SearchController(
     /** Removes a recent search; returns its old place for [undoRemove]. */
     fun removeHistory(query: String): Int {
         val i = history.remove(query)
-        _state.value = _state.value.copy(history = history.list())
+        _state.update { it.copy(history = history.list()) }
         return i
     }
 
     fun undoRemove(query: String, index: Int) {
         history.restore(query, index)
-        _state.value = _state.value.copy(history = history.list())
+        _state.update { it.copy(history = history.list()) }
     }
 
     fun clearHistory() {
         history.clear()
-        _state.value = _state.value.copy(history = history.list())
+        _state.update { it.copy(history = history.list()) }
     }
 
     private suspend fun run(text: String) {
@@ -146,23 +147,23 @@ class SearchController(
         val local = try {
             backend.local(account, text, limit)
         } catch (e: BadSearchDate) {
-            _state.value = _state.value.copy(phase = SearchPhase.DONE, hits = emptyList(), badDate = true, bodiesPartial = false, serverNote = ServerNote.NONE)
+            _state.update { it.copy(phase = SearchPhase.DONE, hits = emptyList(), badDate = true, bodiesPartial = false, serverNote = ServerNote.NONE) }
             return
         }
         if (_state.value.query != text) return
-        _state.value = _state.value.copy(phase = SearchPhase.SEARCHING_SERVER, hits = local.hits, bodiesPartial = local.bodiesPartial, badDate = false, serverNote = ServerNote.NONE)
+        _state.update { it.copy(phase = SearchPhase.SEARCHING_SERVER, hits = local.hits, bodiesPartial = local.bodiesPartial, badDate = false, serverNote = ServerNote.NONE) }
         askServer(text)
     }
 
     private suspend fun askServer(text: String) {
         val account = _state.value.account
-        _state.value = _state.value.copy(phase = SearchPhase.SEARCHING_SERVER, serverNote = ServerNote.NONE)
+        _state.update { it.copy(phase = SearchPhase.SEARCHING_SERVER, serverNote = ServerNote.NONE) }
         val server = try {
             backend.server(account, text)
         } catch (e: CancellationException) {
             throw e
         } catch (e: BadSearchDate) {
-            _state.value = _state.value.copy(phase = SearchPhase.DONE, badDate = true)
+            _state.update { it.copy(phase = SearchPhase.DONE, badDate = true) }
             return
         } catch (e: Exception) {
             ServerSearchResult(emptyList(), failed = true)
@@ -177,13 +178,15 @@ class SearchController(
             server.unsupported -> ServerNote.DEVICE_ONLY
             else -> ServerNote.NONE
         }
-        _state.value = _state.value.copy(
-            phase = SearchPhase.DONE,
-            hits = merged,
-            // Once the servers searched everything, the "downloaded mail only" note no longer holds.
-            bodiesPartial = _state.value.bodiesPartial && note != ServerNote.NONE,
-            serverNote = note,
-        )
+        _state.update {
+            it.copy(
+                phase = SearchPhase.DONE,
+                hits = merged,
+                // Once the servers searched everything, the "downloaded mail only" note no longer holds.
+                bodiesPartial = it.bodiesPartial && note != ServerNote.NONE,
+                serverNote = note,
+            )
+        }
     }
 
     companion object {

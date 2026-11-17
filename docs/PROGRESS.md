@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T42b: Encryption on Android: the compose lock, S24 and S56 (17 November 2026)
 
-**Status:** in review (draft PR; the independent review runs before merging). Closes T42.
+**Status:** reviewed, findings fixed; waiting for CI. Closes T42.
 
 **What was built.**
 - **Compose (S23):**
@@ -21,12 +21,19 @@ unverified, the next step.
     No own key and Bcc get their own sheet.
   - A key store that cannot answer sends nothing and asks nothing. The core's own refusals never become a plain send.
   - The stored draft's flags are made to match the screen before anything is decided or sent.
+- **After the review:**
+  - The lock is frozen when Send is tapped, so the automatic lock cannot switch itself off during Send. A key store that
+    cannot answer changes neither the lock nor the chips.
+  - The stored flags must still match the decision when the message is handed over.
+  - Signing without an own key is asked about first, with "Send without signing or encryption".
+  - The person's Sign choice survives an account switch.
+  - The core reports a busy key vault as an error, never as "no key".
 - **Reading (S56):** a banner above the body:
   - Encrypted and signed (with the signer and key), Encrypted, Signed.
   - Key not confirmed (amber, for a key announced only in mail), Signature not verified (amber).
   - Could not decrypt (wax red, with the reason and the fix).
 
-**Checks.** Kotlin compiles only in CI; new tests: `ComposeEncryptionTest` (6) and `SecurityBannerTest` (6).
+**Checks.** Kotlin compiles only in CI; new tests: `ComposeEncryptionTest` (11) and `SecurityBannerTest` (6).
 
 **Next.** CI, the review, merge.
 

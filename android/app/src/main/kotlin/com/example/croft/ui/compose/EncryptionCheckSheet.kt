@@ -64,7 +64,15 @@ enum class EncryptionBlock { NO_OWN_KEY, BCC }
 
 /** S24 (T42b) for a message that cannot be encrypted as it is: no own key, or Bcc. Send without encryption or Cancel; dismissing is Cancel. */
 @Composable
-fun EncryptionBlockedSheet(block: EncryptionBlock, onSendUnencrypted: () -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+fun EncryptionBlockedSheet(
+    block: EncryptionBlock,
+    onSendUnencrypted: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** The message is to be signed: with no own key the choice sends it neither signed nor encrypted, and says so. */
+    signing: Boolean = false,
+) {
+    val noKeyAndSigning = block == EncryptionBlock.NO_OWN_KEY && signing
     CroftBottomSheet(onDismiss = onCancel, modifier = modifier.testTag(EncryptionTags.BLOCKED)) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
@@ -73,11 +81,22 @@ fun EncryptionBlockedSheet(block: EncryptionBlock, onSendUnencrypted: () -> Unit
                 style = MaterialTheme.typography.titleLarge,
             )
             Text(
-                stringResource(if (block == EncryptionBlock.NO_OWN_KEY) R.string.encryption_no_own_key_message else R.string.encryption_bcc_message),
+                stringResource(
+                    when {
+                        noKeyAndSigning -> R.string.encryption_no_own_key_sign_message
+                        block == EncryptionBlock.NO_OWN_KEY -> R.string.encryption_no_own_key_message
+                        else -> R.string.encryption_bcc_message
+                    },
+                ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            CroftButton(stringResource(R.string.encryption_send_without), onSendUnencrypted, Modifier.fillMaxWidth().testTag(EncryptionTags.SEND_UNENCRYPTED), kind = ButtonKind.OUTLINED)
+            CroftButton(
+                stringResource(if (noKeyAndSigning) R.string.encryption_send_without_both else R.string.encryption_send_without),
+                onSendUnencrypted,
+                Modifier.fillMaxWidth().testTag(EncryptionTags.SEND_UNENCRYPTED),
+                kind = ButtonKind.OUTLINED,
+            )
             CroftButton(stringResource(R.string.encryption_cancel), onCancel, Modifier.fillMaxWidth().testTag(EncryptionTags.CANCEL), kind = ButtonKind.TEXT)
         }
     }

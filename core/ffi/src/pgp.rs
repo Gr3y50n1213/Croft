@@ -758,7 +758,13 @@ impl Core {
         account: i64,
         draft_id: i64,
     ) -> Result<EncryptionCheck, PgpError> {
-        let own_key = matches!(self.own_secret(account), Ok(Some(_)));
+        // A vault that cannot answer now is an error (the app tries again), never "no key".
+        let own_key = match self.own_secret(account) {
+            Ok(k) => k.is_some(),
+            Err(PgpError::NoVault) => false,
+            Err(PgpError::VaultFailed) => return Err(PgpError::VaultFailed),
+            Err(_) => false,
+        };
         let now = now_secs();
         self.inner.handle.read(|db| {
             let c = db.connection();

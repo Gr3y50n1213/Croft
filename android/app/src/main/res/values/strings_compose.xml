@@ -91,6 +91,8 @@
     <string name="encryption_bcc_title">Encrypted mail cannot have Bcc</string>
     <string name="encryption_bcc_message">An encrypted message names every recipient\'s key, so Bcc recipients would not stay hidden. Move them to To or Cc, or send without encryption.</string>
     <string name="encryption_send_without">Send without encryption</string>
+    <string name="encryption_send_without_both">Send without signing or encryption</string>
+    <string name="encryption_no_own_key_sign_message">Signing and encrypting need a key of your own. Make or import one in Settings, Encryption keys. Croft will not send this unsigned unless you choose to.</string>
     <string name="compose_encrypt">Encrypt</string>
     <string name="compose_encrypt_on">Encrypted</string>
     <string name="compose_encrypt_off">Not encrypted</string>

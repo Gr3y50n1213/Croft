@@ -184,4 +184,85 @@ class ComposeEncryptionTest {
         assertTrue(fake.sentFlags.isEmpty())
         assertTrue(c.state.value.encrypt)
     }
+
+    // ---- After the review ----
+
+    @Test(timeout = 60_000)
+    fun aLockShownWhenSendIsTappedIsKeptEvenWhenAnAddressStillTypedHasNoKey() = runBlocking {
+        val fake = keyedFake()
+        val c = controller(fake, EncryptionDefaults(encryptWhenKeys = true))
+        c.write("bob@example.net")
+        assertTrue("the lock followed Bob's key", c.state.value.encrypt)
+        // Carol is still text in To (no comma) when Send is tapped: she becomes a chip, and the lock the person saw stays on.
+        c.setPendingRecipientText(RecipientField.TO, "carol@example.com")
+        c.requestSend()
+        assertEquals(SendPrompt.EncryptionCheck(listOf("carol@example.com")), c.state.value.prompt)
+        assertTrue(c.state.value.encrypt)
+        assertTrue("nothing went out", fake.sentFlags.isEmpty())
+    }
+
+    @Test(timeout = 60_000)
+    fun aKeyStoreThatCannotAnswerChangesNeitherTheLockNorTheChips() = runBlocking {
+        val fake = keyedFake()
+        val c = controller(fake, EncryptionDefaults(encryptWhenKeys = true))
+        c.write("bob@example.net")
+        assertTrue(c.state.value.encrypt)
+        fake.keyedFails = true
+        c.onSubject("Changed")
+        c.commitRecipients(RecipientField.CC, "bob@example.net")
+        assertTrue("cannot say is not no key", c.state.value.encrypt)
+        assertEquals(setOf("bob@example.net"), c.state.value.keyed)
+    }
+
+    @Test(timeout = 60_000)
+    fun signingWithoutAnOwnKeyAsksOnceAndCanBeSentNeitherSignedNorEncrypted() = runBlocking {
+        val fake = keyedFake().apply { ownKey = false }
+        val c = controller(fake, EncryptionDefaults(sign = true))
+        c.write("carol@example.com")
+        assertTrue(c.state.value.sign)
+        c.requestSend()
+        assertEquals(SendPrompt.EncryptionNoOwnKey, c.state.value.prompt)
+        assertTrue(fake.sentFlags.isEmpty())
+        c.confirmUnencrypted()
+        assertTrue(c.state.value.closed is ComposeClosed.Sent)
+        assertEquals(listOf(false to false), fake.sentFlags)
+    }
+
+    @Test(timeout = 60_000)
+    fun aReopenedDraftKeepsItsLockAndSignWhateverTheDefaults() = runBlocking {
+        val fake = keyedFake()
+        val first = controller(fake)
+        first.write("carol@example.com")
+        first.toggleEncrypt()
+        first.toggleSign()
+        val id = first.state.value.draftId!!
+        val again = controller(fake, EncryptionDefaults(sign = false, encryptWhenKeys = true))
+        again.open(ComposeStart.Draft(1, id))
+        assertTrue(again.state.value.encrypt)
+        assertTrue(again.state.value.sign)
+        // Carol has no key, and the reopened lock does not follow the recipients.
+        again.commitRecipients(RecipientField.TO, "dan@example.org")
+        assertTrue(again.state.value.encrypt)
+    }
+
+    @Test(timeout = 60_000)
+    fun aRefusalByTheCoreOpensTheQuestion() = runBlocking {
+        // The first check says yes, the send says no, and the second check names who has no key: S24 asks.
+        val fake = keyedFake()
+        var checks = 0
+        val changing = object : ComposeBackend by fake {
+            override suspend fun encryptionCheck(account: AccountId, draftId: Long): uniffi.croft_ffi.EncryptionCheck? {
+                checks++
+                return if (checks == 1) uniffi.croft_ffi.EncryptionCheck(ownKey = true, missing = emptyList(), hasBcc = false)
+                else fake.encryptionCheck(account, draftId)
+            }
+        }
+        val c = controller(changing)
+        c.write("carol@example.com")
+        c.toggleEncrypt()
+        c.requestSend()
+        assertEquals(SendPrompt.EncryptionCheck(listOf("carol@example.com")), c.state.value.prompt)
+        assertTrue(fake.sentFlags.isEmpty())
+    }
 }
+

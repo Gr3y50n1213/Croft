@@ -95,8 +95,8 @@ interface ComposeBackend {
 
     suspend fun forwardDraft(account: AccountId, messageId: Long): ReplyDraft
 
-    /** T42b: the addresses among [addresses] Croft can encrypt to now, in lower case. Empty when the core cannot say. */
-    suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String> = emptySet()
+    /** T42b: the addresses among [addresses] Croft can encrypt to now, in lower case; null when the core cannot say (never read as "none"). */
+    suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String>? = emptySet()
 
     /** T42b: what [draftId] lacks before it can be sent encrypted; null when the core cannot say (its key storage is busy). */
     suspend fun encryptionCheck(account: AccountId, draftId: Long): uniffi.croft_ffi.EncryptionCheck? = null
@@ -161,12 +161,12 @@ class CoreComposeBackend(
 
     override suspend fun forwardDraft(account: AccountId, messageId: Long) = onIo { core.forwardDraft(account, messageId) }
 
-    override suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String> = withContext(io) {
+    override suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String>? = withContext(io) {
         if (addresses.isEmpty()) return@withContext emptySet()
         try {
             core.keyStatus(account, addresses).filter { it.fingerprint != null }.map { it.address.trim().lowercase() }.toSet()
         } catch (e: uniffi.croft_ffi.PgpException) {
-            emptySet()
+            null
         }
     }
 

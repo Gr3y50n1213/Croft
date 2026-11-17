@@ -354,6 +354,7 @@ fun ComposeScreen(
         )
         SendPrompt.EncryptionNoOwnKey, SendPrompt.EncryptionBcc -> EncryptionBlockedSheet(
             block = if (prompt == SendPrompt.EncryptionBcc) EncryptionBlock.BCC else EncryptionBlock.NO_OWN_KEY,
+            signing = state.sign,
             onSendUnencrypted = { scope.launch { controller.confirmUnencrypted() } },
             onCancel = { controller.cancelPrompt() },
         )

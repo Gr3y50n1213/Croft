@@ -77,8 +77,11 @@ class FakeComposeBackend(
     /** T42b: the flags of a stored draft. */
     fun flagsOf(draftId: Long): Pair<Boolean, Boolean>? = drafts[draftId]?.content?.let { it.encrypt to it.sign }
 
-    override suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String> =
-        addresses.map { it.trim().lowercase() }.filter { it in keyed }.toSet()
+    /** T42b: when set, `keyedAddresses` cannot say (the key storage is busy). */
+    var keyedFails: Boolean = false
+
+    override suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String>? =
+        if (keyedFails) null else addresses.map { it.trim().lowercase() }.filter { it in keyed }.toSet()
 
     override suspend fun encryptionCheck(account: AccountId, draftId: Long): uniffi.croft_ffi.EncryptionCheck? {
         rec("encryptionCheck")
@@ -148,8 +151,8 @@ class FakeComposeBackend(
         if (d.outbox != null) throw ComposeFailure(ComposeProblem.IN_OUTBOX)
         // T42b: as the core: a message to be encrypted is sent encrypted or refused, never plain in its place.
         if (d.content.encrypt) {
-            if (!ownKey) throw ComposeFailure(ComposeProblem.NO_OWN_KEY)
             if (d.content.bcc.isNotEmpty()) throw ComposeFailure(ComposeProblem.ENCRYPTION_WITH_BCC)
+            if (!ownKey) throw ComposeFailure(ComposeProblem.NO_OWN_KEY)
             if ((d.content.to + d.content.cc).any { it.address.trim().lowercase() !in keyed }) throw ComposeFailure(ComposeProblem.NO_RECIPIENT_KEY)
         }
         if (d.content.sign && !ownKey) throw ComposeFailure(ComposeProblem.NO_OWN_KEY)

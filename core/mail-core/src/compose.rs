@@ -568,7 +568,7 @@ pub fn has_recipient(to: &[Address], cc: &[Address], bcc: &[Address]) -> bool {
 /// contains. Fails when there is no recipient, when an address is invalid or when the Message-ID
 /// is not usable.
 pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
-    let parts = build_parts(m)?;
+    let parts = build_parts(m, false)?;
     let mut out = parts.head.into_bytes();
     out.extend_from_slice(&parts.entity);
     Ok(out)
@@ -609,8 +609,10 @@ pub fn wrap(head: &str, content_type: &str, body: &str) -> Option<Vec<u8>> {
     Some(out.into_bytes())
 }
 
-/// [`build_message`], as its headers and its MIME entity.
-pub fn build_parts(m: &Outgoing<'_>) -> Result<Parts, BuildError> {
+/// [`build_message`], as its headers and its MIME entity. `signed`: the entity is to be signed as it is (`multipart/signed`),
+/// so its text must reach the reader byte for byte: a line ending in a space or tab, or starting with `From `, makes the text
+/// quoted-printable with those characters encoded (RFC 3156 section 3), as relays strip the one and escape the other.
+pub fn build_parts(m: &Outgoing<'_>, signed: bool) -> Result<Parts, BuildError> {
     if !is_valid_address(&m.from.address) {
         return Err(BuildError::InvalidAddress);
     }
@@ -676,7 +678,7 @@ pub fn build_parts(m: &Outgoing<'_>) -> Result<Parts, BuildError> {
     }
     line("MIME-Version", "1.0");
 
-    let (mut text_headers, mut text_body) = encode_body(m.body);
+    let (mut text_headers, mut text_body) = encode_body(m.body, signed);
     let boundary = boundary(m);
     if let Some(cal) = m.calendar {
         if cal.method.is_empty()
@@ -761,17 +763,19 @@ fn boundary(m: &Outgoing<'_>) -> String {
 
 /// The part headers and the encoded text of the body. `7bit` when the text is ASCII with lines no
 /// longer than 998 characters (RFC 5322), else quoted-printable.
-fn encode_body(body: &str) -> (String, String) {
+fn encode_body(body: &str, signed: bool) -> (String, String) {
     // CRLF everywhere, whatever the input used.
     let normalised = body.replace("\r\n", "\n").replace('\r', "\n");
     let mut text = normalised.replace('\n', "\r\n");
     if !text.is_empty() && !text.ends_with("\r\n") {
         text.push_str("\r\n");
     }
+    let fragile = |l: &str| l.ends_with([' ', '\t']) || l.starts_with("From ");
     let seven_bit = text.is_ascii()
         && !text.contains('\0')
         && text.split("\r\n").all(|l| l.len() <= 998)
-        && !text.lines().any(|l| l.starts_with("--=_croft_"));
+        && !text.lines().any(|l| l.starts_with("--=_croft_"))
+        && !(signed && text.split("\r\n").any(fragile));
     if seven_bit {
         (
             "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n"
@@ -782,7 +786,19 @@ fn encode_body(body: &str) -> (String, String) {
         (
             "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n"
                 .to_owned(),
-            quoted_printable(&text),
+            if signed {
+                // `From ` at a line start as `=46rom `: the same text, which no relay rewrites.
+                quoted_printable(&text)
+                    .split("\r\n")
+                    .map(|l| match l.strip_prefix("From ") {
+                        Some(rest) => format!("=46rom {rest}"),
+                        None => l.to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\r\n")
+            } else {
+                quoted_printable(&text)
+            },
         )
     }
 }

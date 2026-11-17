@@ -212,7 +212,7 @@ pub enum LookupProblem {
 /// What a draft needs before it can be sent encrypted (T41c, for the compose screen's lock).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct EncryptionCheck {
-    /// The account has an own key in use (it signs and encrypts) and the app has given the core its key vault.
+    /// The account has an own key in use (it signs and encrypts) whose secret the app's key vault holds.
     pub own_key: bool,
     /// The To and Cc addresses Croft has no key to encrypt to, as written in the draft.
     pub missing: Vec<String>,
@@ -740,13 +740,14 @@ impl Core {
     }
 
     /// What draft `draft_id` lacks before it can be sent encrypted: an own key, a key for each To and Cc recipient, no Bcc.
-    /// Reads the database only (the vault is not asked for the secret).
+    /// The own key is looked for as sending does (its secret read from the vault, then dropped), so `own_key` true means
+    /// sending will find it.
     pub fn encryption_check(
         &self,
         account: i64,
         draft_id: i64,
     ) -> Result<EncryptionCheck, PgpError> {
-        let has_vault = self.vault().is_ok();
+        let own_key = matches!(self.own_secret(account), Ok(Some(_)));
         let now = now_secs();
         self.inner.handle.read(|db| {
             let c = db.connection();
@@ -764,7 +765,7 @@ impl Core {
                 }
             }
             Ok(EncryptionCheck {
-                own_key: has_vault && own_public(c, account, now).is_some(),
+                own_key,
                 missing,
                 has_bcc: !d.content.bcc.is_empty(),
             })

@@ -975,23 +975,28 @@ fn build(
     } else {
         crate::pgp::autocrypt_header(conn, account.id, &from.address)
     };
-    let parts = mail::build_parts(&Outgoing {
-        from: &from,
-        to: &c.to,
-        cc: &c.cc,
-        bcc: &c.bcc,
-        subject: &c.subject,
-        body: &c.body,
-        in_reply_to: c.in_reply_to.as_deref(),
-        references: &c.references,
-        message_id: &draft.message_id,
-        date_ms: now_ms(),
-        as_draft,
-        attachments: &attachments,
-        calendar: None,
-        autocrypt: autocrypt.as_deref(),
-        boundary_seed: random()?,
-    })
+    // Signed only (not inside encryption): its text must survive relays unchanged.
+    let signed_as_is = !as_draft && c.sign && !c.encrypt;
+    let parts = mail::build_parts(
+        &Outgoing {
+            from: &from,
+            to: &c.to,
+            cc: &c.cc,
+            bcc: &c.bcc,
+            subject: &c.subject,
+            body: &c.body,
+            in_reply_to: c.in_reply_to.as_deref(),
+            references: &c.references,
+            message_id: &draft.message_id,
+            date_ms: now_ms(),
+            as_draft,
+            attachments: &attachments,
+            calendar: None,
+            autocrypt: autocrypt.as_deref(),
+            boundary_seed: random()?,
+        },
+        signed_as_is,
+    )
     .map_err(|e| match e {
         BuildError::NoRecipient => ComposeError::NoRecipient,
         BuildError::InvalidAddress => ComposeError::InvalidAddress,
@@ -1356,6 +1361,12 @@ struct Prepared {
 enum Plan {
     Done(DraftSyncOutcome),
     Copy(Box<Prepared>),
+    /// T41c: the draft is now to be encrypted and there is no own key to encrypt its copy with: the plain copy already on
+    /// the server goes (`EncryptedKeptOnDevice` once it has).
+    Withdraw {
+        folder: String,
+        message_ids: Vec<String>,
+    },
 }
 
 fn plan_copy(
@@ -1377,14 +1388,23 @@ fn plan_copy(
             // Nothing worth a copy on the server.
             return Ok(Plan::Done(DraftSyncOutcome::AlreadyCurrent));
         }
-        if deferred {
-            return Ok(Plan::Done(DraftSyncOutcome::Deferred));
-        }
-        // T41c: a draft to be encrypted goes to the server only encrypted to the sender's own key.
+        // T41c: a draft to be encrypted goes to the server only encrypted to the sender's own key; without one, a plain copy
+        // made earlier is taken off the server at once (not held back by the pacing).
         if d.content.encrypt
             && crate::pgp::own_public(conn, account, crate::pgp::now_secs()).is_none()
         {
-            return Ok(Plan::Done(DraftSyncOutcome::EncryptedKeptOnDevice));
+            return Ok(match d.server_folder {
+                Some(folder) => Plan::Withdraw {
+                    folder,
+                    message_ids: std::iter::once(d.message_id)
+                        .chain(d.stale_message_ids)
+                        .collect(),
+                },
+                None => Plan::Done(DraftSyncOutcome::EncryptedKeptOnDevice),
+            });
+        }
+        if deferred {
+            return Ok(Plan::Done(DraftSyncOutcome::Deferred));
         }
         let (mime, _, _) = build(conn, &acct, &d, true, None)?;
         let folder_hint = Inner::drafts_folder_path(conn, account);
@@ -1446,6 +1466,32 @@ pub(crate) async fn sync_draft(
     let prepared = match plan {
         Plan::Done(outcome) => return Ok(outcome),
         Plan::Copy(p) => p,
+        Plan::Withdraw {
+            folder,
+            message_ids,
+        } => {
+            let gone = async {
+                let imap = backend.imap().await?;
+                for id in &message_ids {
+                    delete_draft_copies(&imap, &folder, id).await?;
+                }
+                Ok::<_, BackendError>(())
+            }
+            .await;
+            if let Err(e) = gone {
+                return Ok(outcome_of(&e));
+            }
+            blocking(inner, move |i| {
+                i.compose_db(|conn| {
+                    drafts::clear_server_copy(conn, account, draft_id)?;
+                    // The current id is not stale; the earlier ones are gone with it.
+                    drafts::clear_stale(conn, account, draft_id, &message_ids)?;
+                    Ok(())
+                })
+            })
+            .await?;
+            return Ok(DraftSyncOutcome::EncryptedKeptOnDevice);
+        }
     };
     inner
         .compose

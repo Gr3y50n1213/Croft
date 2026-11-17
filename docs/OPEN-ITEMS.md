@@ -132,8 +132,9 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   - Encrypted mail with Bcc is refused rather than sent as a separate copy to each Bcc recipient.
   - Inline PGP (`-----BEGIN PGP MESSAGE-----` in a plain text body) and Autocrypt gossip headers are not read.
   - Encrypted mail cannot be searched (nothing decrypted is indexed), and its snippet is the outer part's.
-  - An encrypted draft copied to the server opens again only in Croft on a device with the same key; a plain copy made
-    before the person turned encryption on stays on the server until the draft is next copied (with an own key).
+  - An encrypted draft copied to the server opens again only in Croft on a device with the same key.
+  - The outer headers (subject, addresses, date) are not covered by any signature: the screens must not present them as
+    signed.
   - Decrypting a large message holds it in memory (up to 50 MiB) while it is shown.
 - **OpenPGP keys (T41b).**
   - The outgoing Autocrypt header never says `prefer-encrypt=mutual` yet: the setting comes with the screens (T42).

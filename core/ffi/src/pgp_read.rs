@@ -58,6 +58,15 @@ pub enum MessageSignature {
         /// The `From` address that key is filed under (bare, lower case).
         signer: String,
     },
+    /// Signed by the key this sender's own mail announced (an Autocrypt header), and valid now. Weaker than `Valid`: anyone
+    /// can send mail with any `From` and announce a key for it, so this says only that the key matches the sender's earlier
+    /// mail, not that the key is theirs. Never show it as verified.
+    Unconfirmed {
+        /// The key that made it, upper-case hex.
+        fingerprint: String,
+        /// The `From` address that key was announced for (bare, lower case).
+        signer: String,
+    },
     /// Signed, but not verified: a key Croft does not have for this sender, a changed message, a weak hash, or a time out
     /// of bounds.
     NotVerified {
@@ -70,6 +79,7 @@ impl std::fmt::Debug for MessageSignature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Valid { fingerprint, .. } => write!(f, "Valid({fingerprint})"),
+            Self::Unconfirmed { fingerprint, .. } => write!(f, "Unconfirmed({fingerprint})"),
             Self::NotVerified { issuer } => write!(f, "NotVerified({issuer:?})"),
         }
     }
@@ -105,36 +115,70 @@ fn own_secrets(inner: &Inner, account: i64) -> Result<Vec<SecretKey>, ReadError>
     Ok(out)
 }
 
-/// The certificates Croft has filed under `from` (bare): what a signature from that sender is checked against.
-fn sender_certs(
+/// A key Croft has filed under the sender's address, and whether anyone but the sender's own mail vouches for it.
+struct SenderKey {
+    cert: croft_crypto::Certificate,
+    fingerprint: String,
+    /// Made or imported by the person, their own, or from the address's domain (WKD); not only an Autocrypt header.
+    confirmed: bool,
+}
+
+/// The keys a signature from `from` (bare) is checked against: those the person chose or a WKD gave (confirmed), and the
+/// sender's current Autocrypt key (not confirmed). An Autocrypt key the sender has since replaced does not count.
+fn sender_keys(
     inner: &Inner,
     account: i64,
     from: Option<&str>,
-) -> Result<Vec<croft_crypto::Certificate>, ReadError> {
+) -> Result<Vec<SenderKey>, ReadError> {
     let Some(from) = from else {
         return Ok(Vec::new());
     };
-    let rows = inner
-        .handle
-        .read(|db| store::keys_for(db.connection(), account, from))?;
+    let (rows, current) = inner.handle.read(|db| {
+        let c = db.connection();
+        Ok::<_, ReadError>((
+            store::keys_for(c, account, from)?,
+            store::peer(c, account, from)?.and_then(|p| p.fingerprint),
+        ))
+    })?;
     Ok(rows
-        .iter()
-        .filter_map(|r| keys::read_public(&r.public_key).ok())
+        .into_iter()
+        .filter_map(|r| {
+            let confirmed = r.own || r.source != store::KeySource::Autocrypt;
+            if !confirmed && current.as_deref() != Some(r.fingerprint.as_str()) {
+                return None;
+            }
+            Some(SenderKey {
+                cert: keys::read_public(&r.public_key).ok()?,
+                fingerprint: r.fingerprint,
+                confirmed,
+            })
+        })
         .collect())
 }
 
-fn signature_of(status: SignatureStatus, from: Option<&str>) -> Option<MessageSignature> {
+fn signature_of(
+    status: SignatureStatus,
+    from: Option<&str>,
+    keys: &[SenderKey],
+) -> Option<MessageSignature> {
     match status {
         SignatureStatus::Unsigned => None,
-        SignatureStatus::Valid { fingerprint } => Some(match from {
-            Some(f) => MessageSignature::Valid {
-                fingerprint,
-                signer: f.to_owned(),
-            },
-            None => MessageSignature::NotVerified {
-                issuer: Some(fingerprint),
-            },
-        }),
+        SignatureStatus::Valid { fingerprint } => {
+            let key = keys.iter().find(|k| k.fingerprint == fingerprint);
+            Some(match (from, key) {
+                (Some(f), Some(k)) if k.confirmed => MessageSignature::Valid {
+                    fingerprint,
+                    signer: f.to_owned(),
+                },
+                (Some(f), Some(_)) => MessageSignature::Unconfirmed {
+                    fingerprint,
+                    signer: f.to_owned(),
+                },
+                _ => MessageSignature::NotVerified {
+                    issuer: Some(fingerprint),
+                },
+            })
+        }
         SignatureStatus::NotVerified { issuer } => Some(MessageSignature::NotVerified { issuer }),
     }
 }
@@ -165,15 +209,15 @@ fn open(
     if secrets.is_empty() {
         return Ok(Err(DecryptProblem::NoOwnKey));
     }
-    let certs = sender_certs(inner, account, from)?;
+    let sender = sender_keys(inner, account, from)?;
     let now = now_secs();
     let secret_refs: Vec<&SecretKey> = secrets.iter().collect();
-    let cert_refs: Vec<&croft_crypto::Certificate> = certs.iter().collect();
+    let cert_refs: Vec<&croft_crypto::Certificate> = sender.iter().map(|k| &k.cert).collect();
     let decrypted = match mime::decrypt(data, &secret_refs, &cert_refs, now) {
         Ok(d) => d,
         Err(e) => return Ok(Err(problem_of(e))),
     };
-    let mut signature = signature_of(decrypted.signature, from);
+    let mut signature = signature_of(decrypted.signature, from, &sender);
     let mut entity = decrypted.inner;
     if let Ok(Some(PgpMime::Signed {
         signed_part,
@@ -183,7 +227,7 @@ fn open(
         if signature.is_none() {
             signature = mime::verify(&signed_part, &sig, &cert_refs, now)
                 .ok()
-                .and_then(|s| signature_of(s, from));
+                .and_then(|s| signature_of(s, from, &sender));
         }
         entity = Zeroizing::new(signed_part);
     }
@@ -207,8 +251,21 @@ pub(crate) fn open_body(
         return Ok(body);
     };
     let raw = Zeroizing::new(raw);
-    let Ok(Some(pgp)) = pgp_mime(&raw) else {
-        return Ok(body);
+    let pgp = match pgp_mime(&raw) {
+        Ok(Some(p)) => p,
+        Ok(None) => return Ok(body),
+        Err(e) => {
+            // Encrypted, but past what the reader takes: say so, never show it as a plain message.
+            if says_encrypted(&raw) {
+                body.encryption = Some(MessageEncryption::CannotDecrypt {
+                    problem: match e {
+                        croft_reader::ParseError::TooLarge { .. } => DecryptProblem::TooLarge,
+                        _ => DecryptProblem::Damaged,
+                    },
+                });
+            }
+            return Ok(body);
+        }
     };
     let from = from.and_then(keys::bare_address);
     match pgp {
@@ -216,12 +273,12 @@ pub(crate) fn open_body(
             signed_part,
             signature,
         } => {
-            let certs = sender_certs(inner, account, from.as_deref())?;
-            let refs: Vec<&croft_crypto::Certificate> = certs.iter().collect();
+            let sender = sender_keys(inner, account, from.as_deref())?;
+            let refs: Vec<&croft_crypto::Certificate> = sender.iter().map(|k| &k.cert).collect();
             body.signature = Some(
                 mime::verify(&signed_part, &signature, &refs, now_secs())
                     .ok()
-                    .and_then(|s| signature_of(s, from.as_deref()))
+                    .and_then(|s| signature_of(s, from.as_deref(), &sender))
                     .unwrap_or(MessageSignature::NotVerified { issuer: None }),
             );
         }
@@ -272,6 +329,17 @@ pub(crate) fn open_body(
     Ok(body)
 }
 
+/// Whether the message's own `Content-Type` (in its first 64 KiB of headers) is `multipart/encrypted`.
+fn says_encrypted(raw: &[u8]) -> bool {
+    let head = &raw[..raw.len().min(64 * 1024)];
+    let text = String::from_utf8_lossy(head);
+    croft_mail_core::compose::header_value(&text, "Content-Type").is_some_and(|v| {
+        v.trim_start()
+            .to_ascii_lowercase()
+            .starts_with("multipart/encrypted")
+    })
+}
+
 /// One attachment inside an encrypted message (`part`: its part number in the decrypted entity), decrypted again: its safe
 /// name, type and bytes. Programs are refused.
 pub(crate) fn decrypted_attachment(
@@ -308,4 +376,27 @@ pub(crate) fn decrypted_attachment(
         .map_err(|_| ReadError::Unreadable)?
         .ok_or(ReadError::NoSuchAttachment)?;
     Ok((a.file_name, a.mime_type, Zeroizing::new(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::says_encrypted;
+
+    #[test]
+    fn an_encrypted_message_is_told_by_its_own_content_type_only() {
+        let head = |ct: &str| {
+            format!("From: a@example.org\r\nContent-Type: {ct}\r\n\r\nbody\r\n").into_bytes()
+        };
+        assert!(says_encrypted(&head(
+            "multipart/encrypted; protocol=\"application/pgp-encrypted\"; boundary=b"
+        )));
+        assert!(says_encrypted(&head("  Multipart/Encrypted; boundary=b")));
+        assert!(!says_encrypted(&head("multipart/mixed; boundary=b")));
+        // A header in the body is not the message's.
+        assert!(!says_encrypted(
+            b"From: a@example.org\r\n\r\nContent-Type: multipart/encrypted\r\n"
+        ));
+    }
 }

@@ -432,15 +432,20 @@ fn wkd_finds_a_key_that_names_the_address_and_refuses_one_that_does_not() {
     *crate::pgp::WKD_BASE_FOR_TESTS.lock().unwrap() = None;
 }
 
-/// The folder id of `path` (synced when the fixture opened).
+/// The folder id of `path`, once the first folder sync has stored it.
 fn folder(m: &Mail, path: &str) -> i64 {
-    m.core()
-        .inner
-        .handle
-        .read(|db| croft_storage::folders::find_by_path(db.connection(), m.account, path))
-        .unwrap()
-        .unwrap()
-        .id
+    let mut id = None;
+    wait_until("the folder is known", || {
+        id = m
+            .core()
+            .inner
+            .handle
+            .read(|db| croft_storage::folders::find_by_path(db.connection(), m.account, path))
+            .unwrap()
+            .map(|f| f.id);
+        id.is_some()
+    });
+    id.unwrap()
 }
 
 /// An Autocrypt header block naming `addr`, with `cert`'s minimal key.

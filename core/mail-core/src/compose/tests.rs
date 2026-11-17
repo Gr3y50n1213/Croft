@@ -929,7 +929,7 @@ fn a_message_splits_into_its_headers_and_its_entity_and_wraps_back() {
             autocrypt: None,
             boundary_seed: [3; 8],
         };
-        let parts = build_parts(&m).unwrap();
+        let parts = build_parts(&m, false).unwrap();
         assert!(parts.head.ends_with("MIME-Version: 1.0\r\n"));
         assert!(!parts.head.contains("Content-Type"));
         assert!(parts.entity.starts_with(b"Content-Type: "));
@@ -962,4 +962,50 @@ fn a_message_splits_into_its_headers_and_its_entity_and_wraps_back() {
     }
     assert!(wrap("From: a@b\r\n", "text/plain\r\nBcc: x@y", "").is_none());
     assert!(wrap("From: a@b\r\n", "", "").is_none());
+}
+
+#[test]
+fn a_signed_text_survives_relays_that_strip_trailing_spaces_or_escape_from() {
+    let from = addr(None, "alice@example.org");
+    let to = [addr(None, "bob@example.org")];
+    let body = "Hello\nFrom the hills.\n-- \nAlice";
+    let m = Outgoing {
+        from: &from,
+        to: &to,
+        cc: &[],
+        bcc: &[],
+        subject: "S",
+        body,
+        in_reply_to: None,
+        references: &[],
+        message_id: "<s@example.org>",
+        date_ms: 1_794_393_000_000,
+        as_draft: false,
+        attachments: &[],
+        calendar: None,
+        autocrypt: None,
+        boundary_seed: [3; 8],
+    };
+    let signed = String::from_utf8(build_parts(&m, true).unwrap().entity).unwrap();
+    assert!(signed.contains("Content-Transfer-Encoding: quoted-printable"));
+    assert!(signed.contains("\r\n=46rom the hills.\r\n"));
+    assert!(signed.contains("\r\n--=20\r\n"));
+    assert!(!signed
+        .split("\r\n")
+        .any(|l| l.ends_with(' ') || l.starts_with("From ")));
+    assert_eq!(
+        decode_qp(signed.split("\r\n\r\n").nth(1).unwrap()),
+        b"Hello\r\nFrom the hills.\r\n-- \r\nAlice\r\n"
+    );
+    // Not signed: the same text stays 7bit, as before.
+    let plain = String::from_utf8(build_parts(&m, false).unwrap().entity).unwrap();
+    assert!(plain.contains("Content-Transfer-Encoding: 7bit"));
+    // Signed, nothing fragile: 7bit too.
+    let calm = Outgoing {
+        body: "Hello\nthere",
+        ..m
+    };
+    assert!(String::from_utf8(build_parts(&calm, true).unwrap().entity)
+        .unwrap()
+        .contains("Content-Transfer-Encoding: 7bit"));
 }

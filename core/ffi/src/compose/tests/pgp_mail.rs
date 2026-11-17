@@ -106,7 +106,7 @@ fn an_encrypted_signed_message_goes_out_readable_only_by_its_recipient_and_the_s
 
 #[test]
 fn encryption_that_cannot_be_done_is_refused_and_nothing_is_sent_plain() {
-    let (m, _) = with_vault();
+    let (m, vault) = with_vault();
     m.core()
         .import_key(m.account, fixture("gpg-bob.pub.asc"), String::new())
         .unwrap();
@@ -159,6 +159,20 @@ fn encryption_that_cannot_be_done_is_refused_and_nothing_is_sent_plain() {
         m.core().send(m.account, id).unwrap_err(),
         ComposeError::EncryptionWithBcc
     );
+    // The own key's secret gone from the vault: the check says so, as sending would find.
+    vault.0.lock().unwrap().clear();
+    let id = draft(locked(
+        &["bob@example.net"],
+        "Secret gone",
+        "x",
+        true,
+        false,
+    ));
+    assert!(!m.core().encryption_check(m.account, id).unwrap().own_key);
+    assert_eq!(
+        m.core().send(m.account, id).unwrap_err(),
+        ComposeError::NoOwnKey
+    );
     assert!(m.core().list_outbox(m.account).unwrap().is_empty());
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(m.accepted(), 0, "nothing went out");
@@ -176,7 +190,7 @@ fn a_signed_message_goes_out_readable_with_a_signature_that_verifies() {
             locked(
                 &["carol@example.com"],
                 "Signed",
-                "Plain words, signed.",
+                "Plain words, signed.\nFrom here on, a signature:\n-- \nAlice",
                 false,
                 true,
             ),
@@ -212,16 +226,29 @@ fn a_signed_message_goes_out_readable_with_a_signature_that_verifies() {
 fn the_servers_copy_of_an_encrypted_draft_is_encrypted_or_not_made() {
     let (m, _) = with_vault();
     let words = "Draft words 4412 pomegranate.";
+    // First plain: its copy goes to the server as it is.
     let id = m
         .core()
         .save_draft(
             m.account,
             None,
-            locked(&["bob@example.net"], "Draft", words, true, true),
+            locked(&["bob@example.net"], "Draft", words, false, false),
         )
         .unwrap()
         .id;
-    // Without an own key the copy stays on the device.
+    assert_eq!(
+        block(m.core().sync_draft_to_server(m.account, id, true)).unwrap(),
+        DraftSyncOutcome::Saved
+    );
+    assert_eq!(m.imap.messages("Drafts").len(), 1);
+    // Then to be encrypted: without an own key, the plain copy comes off the server and nothing replaces it.
+    m.core()
+        .save_draft(
+            m.account,
+            Some(id),
+            locked(&["bob@example.net"], "Draft", words, true, true),
+        )
+        .unwrap();
     assert_eq!(
         block(m.core().sync_draft_to_server(m.account, id, true)).unwrap(),
         DraftSyncOutcome::EncryptedKeptOnDevice
@@ -373,4 +400,46 @@ fn a_signed_message_is_checked_against_the_senders_keys() {
         load("From Mallory").signature,
         Some(MessageSignature::NotVerified { .. })
     ));
+}
+
+#[test]
+fn a_key_announced_only_in_mail_never_makes_a_signature_valid() {
+    let (m, _) = with_vault();
+    // Mallory writes as Bob, announces a key of her own for Bob's address, and signs with it.
+    let made = keys::generate("Bob <bob@example.net>", now_secs() - 60).unwrap();
+    let mallory = keys::load_secret(&made.secret).unwrap();
+    let cert = keys::read_public(&made.public).unwrap();
+    let header =
+        croft_crypto::autocrypt::header("bob@example.net", &cert, false, now_secs()).unwrap();
+    let part = "Content-Type: text/plain; charset=utf-8\r\n\r\nPay the invoice today.\r\n";
+    let signed = mime::sign(part.as_bytes(), &mallory, now_secs()).unwrap();
+    m.imap.add_message(
+        "INBOX",
+        &format!(
+            "From: Bob <bob@example.net>\r\nTo: alice@example.org\r\nSubject: Invoice\r\nDate: Mon, 16 Nov 2026 09:00:00 +0000\r\n\
+             Message-ID: <invoice@example.net>\r\nAutocrypt: {header}\r\nMIME-Version: 1.0\r\nContent-Type: {}\r\n\r\n{}",
+            signed.content_type, signed.body
+        ),
+    );
+    let id = rows(&m, 1)[0].id;
+    let open = || {
+        block(m.core().load_body(id, RemoteImagesSetting::Ask))
+            .unwrap()
+            .signature
+    };
+    // First open: the key is not known yet. It is learnt from the header as the message is read.
+    assert!(matches!(open(), Some(MessageSignature::NotVerified { .. })));
+    // Later opens: signed by the key the mail announced, never "valid".
+    assert_eq!(
+        open(),
+        Some(MessageSignature::Unconfirmed {
+            fingerprint: made.fingerprint.clone(),
+            signer: "bob@example.net".into()
+        })
+    );
+    // Bob's real key imported by the person: Mallory's signature is still only "unconfirmed".
+    m.core()
+        .import_key(m.account, fixture("gpg-bob.pub.asc"), String::new())
+        .unwrap();
+    assert!(matches!(open(), Some(MessageSignature::Unconfirmed { .. })));
 }

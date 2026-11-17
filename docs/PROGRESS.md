@@ -7,7 +7,7 @@ unverified, the next step.
 
 ## T41c: OpenPGP in compose and reading (17 November 2026)
 
-**Status:** in review (draft PR open; the independent review runs before merging). The screens are T42.
+**Status:** reviewed, findings fixed; waiting for CI on draft #103. The screens are T42.
 
 **What was built.**
 - **Drafts** carry `encrypt` and `sign` (migration 0016). `encryption_check(account, draft)` says what is missing: an own
@@ -30,13 +30,22 @@ unverified, the next step.
   - Attachments inside get negative ids, and `save_attachment` decrypts again for them.
 - **Pieces:** `croft_reader::pgp_mime` reads the PGP/MIME parts (the signed part exactly as sent);
   `mail-core::build_parts` and `wrap` split a message into its headers and its entity. FFI v24.
+- **After the review:**
+  - A signature is `Valid` only for a key the person made or imported, or one from the sender's domain (WKD). A key
+    known only from an Autocrypt header (anyone can announce one for any `From`) gives `Unconfirmed`, and only while
+    it is that sender's current key.
+  - Signed-only text is quoted-printable when a line ends in whitespace or starts with `From `, so relays cannot
+    break the signature.
+  - Turning encryption on without an own key takes an earlier plain copy off the server.
+  - `encryption_check.own_key` asks the vault, as sending does.
+  - An encrypted message too large or broken to parse says `CannotDecrypt`, never "not encrypted".
 
 **Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (1,292; new: 1 storage, 1
-mail-core, 3 reader, 6 FFI), SQLCipher and `check_schema.py`. Android compiles only in CI.
+mail-core, 3 reader, 6 FFI), SQLCipher and `check_schema.py` (1,295 tests after the review fixes). Android compiles only in CI.
 
 **Unverified.** No vault on Android yet (T42), so nothing is encrypted or decrypted on a phone until then.
 
-**Next.** The independent review, CI, merge; then T42 (the screens).
+**Next.** CI, merge; then T42 (the screens).
 
 ---
 

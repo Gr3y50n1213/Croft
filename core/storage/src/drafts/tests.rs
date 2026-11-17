@@ -58,6 +58,29 @@ fn a_draft_round_trips_and_its_revision_goes_up_with_each_change() {
 }
 
 #[test]
+fn whether_to_encrypt_and_sign_is_kept_with_the_draft() {
+    let db = Db::open_in_memory().unwrap();
+    let a = account(&db, "a@example.org");
+    let c = db.connection();
+    let id = insert(c, a, "<m1@x>", &content("Plain"), 10).unwrap();
+    let d = get(c, a, id).unwrap().unwrap();
+    assert!(!d.content.encrypt && !d.content.sign);
+    let locked = DraftContent {
+        encrypt: true,
+        sign: true,
+        ..content("Locked")
+    };
+    assert!(update(c, a, id, &locked, 20).unwrap());
+    assert_eq!(get(c, a, id).unwrap().unwrap().content, locked);
+    let signed_only = DraftContent {
+        sign: true,
+        ..content("Signed")
+    };
+    let id2 = insert(c, a, "<m2@x>", &signed_only, 30).unwrap();
+    assert_eq!(get(c, a, id2).unwrap().unwrap().content, signed_only);
+}
+
+#[test]
 fn another_accounts_draft_cannot_be_read_changed_or_removed() {
     let db = Db::open_in_memory().unwrap();
     let (a, b) = (account(&db, "a@example.org"), account(&db, "b@example.org"));

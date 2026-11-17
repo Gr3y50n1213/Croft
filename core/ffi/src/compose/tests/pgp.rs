@@ -13,7 +13,7 @@ use crate::pgp::{KeyVault, LookupProblem, PgpError, PgpKeySource};
 
 /// The platform keystore, in memory.
 #[derive(Default)]
-struct Vault(Mutex<HashMap<(i64, String), Vec<u8>>>);
+pub(super) struct Vault(pub(super) Mutex<HashMap<(i64, String), Vec<u8>>>);
 
 impl KeyVault for Vault {
     fn store_secret_key(
@@ -46,16 +46,16 @@ impl KeyVault for Vault {
     }
 }
 
-const PASS: &str = "made-up passphrase";
+pub(super) const PASS: &str = "made-up passphrase";
 
-fn with_vault() -> (Mail, Arc<Vault>) {
+pub(super) fn with_vault() -> (Mail, Arc<Vault>) {
     let m = Mail::new();
     let vault = Arc::new(Vault::default());
     m.core().set_key_vault(vault.clone());
     (m, vault)
 }
 
-fn fixture(name: &str) -> Vec<u8> {
+pub(super) fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!(
         "{}/../crypto/tests/fixtures/{name}",
         env!("CARGO_MANIFEST_DIR")
@@ -63,7 +63,7 @@ fn fixture(name: &str) -> Vec<u8> {
     .unwrap()
 }
 
-fn rows(m: &Mail, n: usize) -> Vec<MessageRow> {
+pub(super) fn rows(m: &Mail, n: usize) -> Vec<MessageRow> {
     let mut rows = Vec::new();
     wait_until("the inbox has the messages", || {
         let _ = m.core().sync_now(m.account);
@@ -93,7 +93,7 @@ fn mail_from(from: &str, subject: &str, date: &str, autocrypt: Option<&str>) -> 
     format!("From: {from}\r\nTo: alice@example.org\r\nSubject: {subject}\r\nDate: {date}\r\nMessage-ID: <{subject}@example.net>\r\n{header}\r\nHello.\r\n")
 }
 
-fn now_secs() -> u32 {
+pub(super) fn now_secs() -> u32 {
     u32::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

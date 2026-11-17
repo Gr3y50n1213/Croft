@@ -901,3 +901,65 @@ fn croft_reader_free_check(text: &str) -> String {
     )
     .unwrap()
 }
+
+#[test]
+fn a_message_splits_into_its_headers_and_its_entity_and_wraps_back() {
+    let from = addr(None, "alice@example.org");
+    let to = [addr(None, "bob@example.org")];
+    let files = [AttachmentData {
+        name: "a.txt",
+        mime_type: "text/plain",
+        bytes: b"file",
+    }];
+    for attachments in [&[][..], &files[..]] {
+        let m = Outgoing {
+            from: &from,
+            to: &to,
+            cc: &[],
+            bcc: &[],
+            subject: "Split",
+            body: "Hello",
+            in_reply_to: None,
+            references: &[],
+            message_id: "<s@example.org>",
+            date_ms: 1_794_393_000_000,
+            as_draft: false,
+            attachments,
+            calendar: None,
+            autocrypt: None,
+            boundary_seed: [3; 8],
+        };
+        let parts = build_parts(&m).unwrap();
+        assert!(parts.head.ends_with("MIME-Version: 1.0\r\n"));
+        assert!(!parts.head.contains("Content-Type"));
+        assert!(parts.entity.starts_with(b"Content-Type: "));
+        let mut joined = parts.head.clone().into_bytes();
+        joined.extend_from_slice(&parts.entity);
+        assert_eq!(joined, build_message(&m).unwrap());
+        // Wrapped: the same headers over the new body.
+        let wrapped = String::from_utf8(
+            wrap(
+                &parts.head,
+                "multipart/signed; micalg=pgp-sha512; protocol=\"application/pgp-signature\"; boundary=\"b\"",
+                "--b\r\nbody\r\n--b--\r\n",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            header(&wrapped, "Content-Type")
+                .unwrap()
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            [
+                "multipart/signed;",
+                "micalg=pgp-sha512;",
+                "protocol=\"application/pgp-signature\";",
+                "boundary=\"b\""
+            ]
+        );
+        assert!(wrapped.ends_with("\r\n\r\n--b\r\nbody\r\n--b--\r\n"));
+    }
+    assert!(wrap("From: a@b\r\n", "text/plain\r\nBcc: x@y", "").is_none());
+    assert!(wrap("From: a@b\r\n", "", "").is_none());
+}

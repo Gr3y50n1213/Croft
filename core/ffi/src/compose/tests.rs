@@ -9,6 +9,7 @@ mod drafts;
 mod integration;
 mod invitations;
 mod pgp;
+mod pgp_mail;
 mod reply;
 mod sending;
 mod unsubscribe;
@@ -43,6 +44,8 @@ pub(super) fn content(to: &[&str], subject: &str, body: &str) -> DraftContent {
         body: body.to_owned(),
         in_reply_to: None,
         references: vec![],
+        encrypt: false,
+        sign: false,
     }
 }
 

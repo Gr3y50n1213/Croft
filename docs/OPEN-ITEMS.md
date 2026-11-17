@@ -127,6 +127,14 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   Reminders more than five weeks before their event are not posted; only the first 1,000 `EXDATE`s of an event are read;
   an object that cannot be read is fetched again at every sync. A change that loses to the server's is dropped (marked
   on the item), not kept as a copy.
+- **OpenPGP in compose and reading (T41c).**
+  - The subject is not protected (no "protected headers"): it travels in the clear.
+  - Encrypted mail with Bcc is refused rather than sent as a separate copy to each Bcc recipient.
+  - Inline PGP (`-----BEGIN PGP MESSAGE-----` in a plain text body) and Autocrypt gossip headers are not read.
+  - Encrypted mail cannot be searched (nothing decrypted is indexed), and its snippet is the outer part's.
+  - An encrypted draft copied to the server opens again only in Croft on a device with the same key; a plain copy made
+    before the person turned encryption on stays on the server until the draft is next copied (with an own key).
+  - Decrypting a large message holds it in memory (up to 50 MiB) while it is shown.
 - **OpenPGP keys (T41b).**
   - The outgoing Autocrypt header never says `prefer-encrypt=mutual` yet: the setting comes with the screens (T42).
   - A WKD lookup is made only when asked (`lookup_key`); compose (T41c) and the screens (T42) decide when to ask.

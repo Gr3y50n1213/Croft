@@ -357,6 +357,7 @@ impl Core {
                 return Ok(());
             };
             let fp = keys::fingerprint(&h.cert);
+            let before = store::peer(c, account, &from)?.and_then(|p| p.fingerprint);
             if store::saw_message(c, account, &from, date_ms, Some((&fp, h.prefer_mutual)))? {
                 // Filed under the header's address only (the key may name others).
                 let _ = store_cert(
@@ -365,8 +366,12 @@ impl Core {
                     &h.cert,
                     false,
                     KeySource::Autocrypt,
-                    &[h.addr.clone()],
+                    std::slice::from_ref(&h.addr),
                 );
+                // The key the sender replaced goes, when Croft had it only from their Autocrypt header.
+                if let Some(old) = before.filter(|o| *o != fp) {
+                    store::drop_replaced_autocrypt_key(c, account, &old)?;
+                }
             }
             Ok(())
         });
@@ -477,7 +482,7 @@ impl Core {
                 &cert,
                 true,
                 KeySource::Made,
-                &[address.clone()],
+                std::slice::from_ref(&address),
             )
         });
         if stored.is_err() {
@@ -616,7 +621,14 @@ impl Core {
                 let bare = keys::bare_address(&asked);
                 let (mut fingerprint, mut source, mut prefer) = (None, None, false);
                 if let Some(a) = bare.as_deref() {
+                    let current = store::peer(c, account, a)?.and_then(|p| p.fingerprint);
                     for row in store::keys_for(c, account, a)? {
+                        // A key from an Autocrypt header counts only while it is that sender's current one.
+                        if row.source == KeySource::Autocrypt
+                            && current.as_deref() != Some(row.fingerprint.as_str())
+                        {
+                            continue;
+                        }
                         let Ok(cert) = keys::read_public(&row.public_key) else {
                             continue;
                         };
@@ -666,7 +678,8 @@ pub(crate) static WKD_BASE_FOR_TESTS: std::sync::Mutex<Option<String>> =
 impl Core {
     async fn lookup_now(&self, account: i64, address: &str) -> Result<LookupResult, PgpError> {
         let bare = keys::bare_address(address).ok_or(PgpError::BadAddress)?;
-        let urls = wkd::urls(&bare)?;
+        // The local part as written goes into `l=`; the hash is of the lower-cased one either way.
+        let urls = wkd::urls(address.trim())?;
         let none = |p| {
             Ok(LookupResult {
                 key: None,
@@ -723,7 +736,7 @@ impl Core {
                 &cert,
                 false,
                 KeySource::Wkd,
-                &[bare.clone()],
+                std::slice::from_ref(&bare),
             )
         })?;
         Ok(LookupResult {

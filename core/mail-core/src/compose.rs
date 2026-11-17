@@ -614,7 +614,10 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
     line("Subject", &subject);
     line("Date", &rfc5322_date(m.date_ms));
     line("Message-ID", &message_id);
-    if let Some(a) = m.autocrypt.filter(|a| !a.is_empty() && !a.chars().any(char::is_control)) {
+    if let Some(a) = m
+        .autocrypt
+        .filter(|a| !a.is_empty() && !a.chars().any(char::is_control))
+    {
         line("Autocrypt", a);
     }
     if let Some(parent) = m.in_reply_to.and_then(clean_message_id) {

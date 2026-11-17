@@ -235,6 +235,20 @@ pub fn delete_key(conn: &Connection, account: i64, fingerprint: &str) -> Result<
     )? > 0)
 }
 
+/// Removes a key Croft had only from an Autocrypt header once no sender's newest header names it any more (the sender replaced
+/// it). A key made, imported or found in a Web Key Directory stays. True when it went.
+pub fn drop_replaced_autocrypt_key(
+    conn: &Connection,
+    account: i64,
+    fingerprint: &str,
+) -> Result<bool> {
+    Ok(conn.execute(
+        "DELETE FROM pgp_key WHERE account_id = ?1 AND fingerprint = ?2 AND own = 0 AND source = 'autocrypt'
+           AND NOT EXISTS (SELECT 1 FROM autocrypt_peer p WHERE p.account_id = ?1 AND p.fingerprint = ?2)",
+        params![account, fingerprint],
+    )? > 0)
+}
+
 /// What the account knows of a sender's Autocrypt headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
@@ -373,6 +387,31 @@ mod tests {
         assert!(!delete_key(c, b, "AA").unwrap());
         assert!(delete_key(c, a, "AA").unwrap());
         assert!(keys_for(c, a, "sam@example.org").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_replaced_autocrypt_key_goes_only_when_no_sender_names_it_and_it_came_from_autocrypt() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        let a = account(c, 1);
+        let (sam, kim) = (
+            vec!["sam@example.org".to_string()],
+            vec!["kim@example.org".to_string()],
+        );
+        upsert_key(c, a, &new_key("AA", false, KeySource::Autocrypt, &sam), 1).unwrap();
+        upsert_key(c, a, &new_key("CC", false, KeySource::Wkd, &sam), 1).unwrap();
+        saw_message(c, a, "sam@example.org", 100, Some(("AA", false))).unwrap();
+        saw_message(c, a, "kim@example.org", 100, Some(("AA", false))).unwrap();
+        upsert_key(c, a, &new_key("AA", false, KeySource::Autocrypt, &kim), 1).unwrap();
+        // Sam moves on; Kim's newest header still names AA, so it stays.
+        saw_message(c, a, "sam@example.org", 200, Some(("BB", false))).unwrap();
+        assert!(!drop_replaced_autocrypt_key(c, a, "AA").unwrap());
+        saw_message(c, a, "kim@example.org", 200, Some(("BB", false))).unwrap();
+        assert!(drop_replaced_autocrypt_key(c, a, "AA").unwrap());
+        assert!(key(c, a, "AA").unwrap().is_none());
+        // A key from a Web Key Directory is never dropped this way.
+        assert!(!drop_replaced_autocrypt_key(c, a, "CC").unwrap());
+        assert!(key(c, a, "CC").unwrap().is_some());
     }
 
     #[test]

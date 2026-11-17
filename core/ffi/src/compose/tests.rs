@@ -8,6 +8,7 @@ mod drafts;
 #[cfg(feature = "integration")]
 mod integration;
 mod invitations;
+mod pgp;
 mod reply;
 mod sending;
 mod unsubscribe;

@@ -5,6 +5,38 @@ unverified, the next step.
 
 ---
 
+## T41b: OpenPGP keys in the core: storage, the keystore, discovery (17 November 2026)
+
+**Status:** in review (draft PR open; the independent review runs before merging). Encrypting, signing, decrypting and
+verifying in compose and reading are T41c; the screens are T42.
+
+**What was built.**
+- **Storage (migration 0015):** `pgp_key` (public certificates only, one row per fingerprint per account, own or not, and
+  where each came from: made, imported, Autocrypt, WKD), `pgp_key_address` and `autocrypt_peer` (per sender: the newest
+  header's fingerprint, `prefer-encrypt=mutual`, its date and the newest message's date).
+- **The keystore:** the `KeyVault` callback the app implements (store, load, delete a secret key by account and fingerprint).
+  Secret key bytes cross the FFI only into and out of it; without a vault nothing secret is made or imported.
+- **Own keys:** `generate_key`, `import_key` (a secret key goes to the vault; a public key becomes a contact's key, a
+  protected one opens with its passphrase), `export_public_key`, `export_secret_key` (a passphrase-protected backup),
+  `delete_key` (the vault forgets it too), `pgp_keys`.
+- **Other people's keys:** Autocrypt headers taken from mail as it is read (newer by arrival only, never from the account's
+  own addresses or a header naming another sender; a key the sender replaced goes when Croft had it only from Autocrypt);
+  `lookup_key` in the sender's Web Key Directory (`https` to public addresses only, no redirect, 256 KiB, the key must
+  name the address).
+- **For compose:** `key_status(account, addresses)`. **Outgoing:** every message sent from an account with an own key
+  carries its `Autocrypt:` header (drafts do not). FFI v23.
+
+**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (1,277; new: 3 in
+`core/storage/src/pgp.rs`, 3 in `core/protocols/tests/wkd.rs`, 6 in `core/ffi/src/compose/tests/pgp.rs`), SQLCipher and
+`check_schema.py`. The Android licence list is regenerated (rPGP's crates are now in the app); `test_gen_licences` passes.
+Android compiles only in CI.
+
+**Unverified.** The Android side has no vault yet (T42), so nothing secret is made on a phone until then.
+
+**Next.** The independent review, CI, merge; then T41c (compose and reading).
+
+---
+
 ## T41a: OpenPGP in the core: the crypto crate (16 November 2026)
 
 **Status:** merged (CI green on draft #99). The independent review is done; its findings are fixed

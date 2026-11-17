@@ -5,6 +5,41 @@ unverified, the next step.
 
 ---
 
+## T42b: Encryption on Android: the compose lock, S24 and S56 (17 November 2026)
+
+**Status:** merged (CI green on draft #106). The independent review is done; its findings are fixed
+(`docs/REVIEW-QUEUE.md`). Closes T42.
+
+**What was built.**
+- **Compose (S23):**
+  - A lock in the toolbar turns encryption on or off for the message, and "Sign" in the menu does the same for signing.
+    Both are saved with the draft.
+  - A new message starts with S54's defaults. "Encrypt when keys exist" turns the lock on while every recipient has a
+    key, until the person touches it.
+  - Recipient chips show a lock for addresses Croft has a key for.
+- **Sending (S24):**
+  - With the lock on, Send asks the core first. A recipient without a key gets "Send unencrypted", "Remove" or Cancel.
+    No own key and Bcc get their own sheet.
+  - A key store that cannot answer sends nothing and asks nothing. The core's own refusals never become a plain send.
+  - The stored draft's flags are made to match the screen before anything is decided or sent.
+- **After the review:**
+  - The lock is frozen when Send is tapped, so the automatic lock cannot switch itself off during Send. A key store that
+    cannot answer changes neither the lock nor the chips.
+  - The stored flags must still match the decision when the message is handed over.
+  - Signing without an own key is asked about first, with "Send without signing or encryption".
+  - The person's Sign choice survives an account switch.
+  - The core reports a busy key vault as an error, never as "no key".
+- **Reading (S56):** a banner above the body:
+  - Encrypted and signed (with the signer and key), Encrypted, Signed.
+  - Key not confirmed (amber, for a key announced only in mail), Signature not verified (amber).
+  - Could not decrypt (wax red, with the reason and the fix).
+
+**Checks.** Kotlin compiles only in CI; new tests: `ComposeEncryptionTest` (11) and `SecurityBannerTest` (6).
+
+**Next.** The rest of phase 3 (`docs/tasks/PHASE-3.md`).
+
+---
+
 ## T42a: Encryption keys on Android: the key vault, S54 and S55 (17 November 2026)
 
 **Status:** merged (CI green on draft #105). The independent review is done; its findings are fixed

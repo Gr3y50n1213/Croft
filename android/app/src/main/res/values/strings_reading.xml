@@ -108,4 +108,19 @@
     <string name="reading_settings_known_empty">No senders yet. Tap Always for this sender on a message to add one.</string>
     <string name="reading_settings_known_remove">Stop showing images from %1$s</string>
     <string name="reading_settings_known_account">%1$s</string>
+    <!-- S56 (T42b): the encrypted message banner. "Signed" is about the body only. -->
+    <string name="s56_encrypted_signed">Encrypted and signed</string>
+    <string name="s56_encrypted">Encrypted</string>
+    <string name="s56_encrypted_hint">Decrypted on this phone for reading. Nothing of it is kept unencrypted.</string>
+    <string name="s56_signed">Signed</string>
+    <string name="s56_signed_by">Signed by %1$s, key %2$s</string>
+    <string name="s56_unconfirmed_title">Key not confirmed</string>
+    <string name="s56_unconfirmed">Signed with the key %1$s announced in their own mail. Anyone can announce a key, so this is not proof the message is from them. Import their key or check it with them to confirm.</string>
+    <string name="s56_not_verified_title">Signature not verified</string>
+    <string name="s56_not_verified">The message is signed, but Croft cannot confirm it: the key is not one Croft has for this sender, or the message changed after it was signed.</string>
+    <string name="s56_failed_title">Could not decrypt this message</string>
+    <string name="s56_failed_no_key">There is no key for this account on this phone. Import it from Settings, Encryption keys.</string>
+    <string name="s56_failed_not_for_key">It was written for a key that is not on this phone. Import that key from Settings, Encryption keys.</string>
+    <string name="s56_failed_damaged">The encrypted part is damaged or was changed on the way.</string>
+    <string name="s56_failed_too_large">It is too large to decrypt on this phone.</string>
 </resources>

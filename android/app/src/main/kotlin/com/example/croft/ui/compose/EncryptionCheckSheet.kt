@@ -36,6 +36,8 @@ object EncryptionTags {
     const val SHEET = "encryption-sheet"
     const val SEND_UNENCRYPTED = "encryption-send-unencrypted"
     const val CANCEL = "encryption-cancel"
+    const val REMOVE = "encryption-remove"
+    const val BLOCKED = "encryption-blocked"
 }
 
 /**
@@ -49,15 +51,60 @@ fun EncryptionCheckSheet(
     onSendUnencrypted: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
+    /** T42b: take the recipients without a key out of the message (shown when given). */
+    onRemove: (() -> Unit)? = null,
 ) {
     CroftBottomSheet(onDismiss = onCancel, modifier = modifier.testTag(EncryptionTags.SHEET)) {
-        EncryptionCheckContent(missing, onSendUnencrypted, onCancel)
+        EncryptionCheckContent(missing, onSendUnencrypted, onCancel, onRemove)
+    }
+}
+
+/** Why S24 stops an encrypted message other than a missing recipient key (T42b). */
+enum class EncryptionBlock { NO_OWN_KEY, BCC }
+
+/** S24 (T42b) for a message that cannot be encrypted as it is: no own key, or Bcc. Send without encryption or Cancel; dismissing is Cancel. */
+@Composable
+fun EncryptionBlockedSheet(
+    block: EncryptionBlock,
+    onSendUnencrypted: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** The message is to be signed: with no own key the choice sends it neither signed nor encrypted, and says so. */
+    signing: Boolean = false,
+) {
+    val noKeyAndSigning = block == EncryptionBlock.NO_OWN_KEY && signing
+    CroftBottomSheet(onDismiss = onCancel, modifier = modifier.testTag(EncryptionTags.BLOCKED)) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                stringResource(if (block == EncryptionBlock.NO_OWN_KEY) R.string.encryption_no_own_key_title else R.string.encryption_bcc_title),
+                Modifier.semantics { heading(); liveRegion = LiveRegionMode.Assertive },
+                style = MaterialTheme.typography.titleLarge,
+            )
+            Text(
+                stringResource(
+                    when {
+                        noKeyAndSigning -> R.string.encryption_no_own_key_sign_message
+                        block == EncryptionBlock.NO_OWN_KEY -> R.string.encryption_no_own_key_message
+                        else -> R.string.encryption_bcc_message
+                    },
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            CroftButton(
+                stringResource(if (noKeyAndSigning) R.string.encryption_send_without_both else R.string.encryption_send_without),
+                onSendUnencrypted,
+                Modifier.fillMaxWidth().testTag(EncryptionTags.SEND_UNENCRYPTED),
+                kind = ButtonKind.OUTLINED,
+            )
+            CroftButton(stringResource(R.string.encryption_cancel), onCancel, Modifier.fillMaxWidth().testTag(EncryptionTags.CANCEL), kind = ButtonKind.TEXT)
+        }
     }
 }
 
 /** The content of the S24 sheet, apart from the sheet itself (the screenshots draw it directly). */
 @Composable
-fun EncryptionCheckContent(missing: List<String>, onSendUnencrypted: () -> Unit, onCancel: () -> Unit) {
+fun EncryptionCheckContent(missing: List<String>, onSendUnencrypted: () -> Unit, onCancel: () -> Unit, onRemove: (() -> Unit)? = null) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             pluralStringResource(R.plurals.encryption_title, missing.size, missing.size),
@@ -75,6 +122,14 @@ fun EncryptionCheckContent(missing: List<String>, onSendUnencrypted: () -> Unit,
             }
         }
         CroftButton(stringResource(R.string.encryption_send_unencrypted), onSendUnencrypted, Modifier.fillMaxWidth().testTag(EncryptionTags.SEND_UNENCRYPTED), kind = ButtonKind.OUTLINED)
+        if (onRemove != null) {
+            CroftButton(
+                pluralStringResource(R.plurals.encryption_remove, missing.size),
+                onRemove,
+                Modifier.fillMaxWidth().testTag(EncryptionTags.REMOVE),
+                kind = ButtonKind.TONAL,
+            )
+        }
         CroftButton(stringResource(R.string.encryption_cancel), onCancel, Modifier.fillMaxWidth().testTag(EncryptionTags.CANCEL), kind = ButtonKind.TEXT)
     }
 }

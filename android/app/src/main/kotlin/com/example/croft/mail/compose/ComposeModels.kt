@@ -93,10 +93,16 @@ sealed interface SendPrompt {
     /** "Send without subject or text?" */
     data object EmptyConfirm : SendPrompt
 
-    /** S24: encryption is required and [missing] have no key. Send unencrypted or Cancel. */
+    /** S24: encryption is required and [missing] have no key. Send unencrypted, remove them, or Cancel. */
     data class EncryptionCheck(val missing: List<String>) : SendPrompt {
         override fun toString(): String = "EncryptionCheck(${missing.size})"
     }
+
+    /** S24 (T42b): the message is to be encrypted and the account has no own key on this phone. Send unencrypted or Cancel. */
+    data object EncryptionNoOwnKey : SendPrompt
+
+    /** S24 (T42b): the message is to be encrypted and has Bcc recipients. Send unencrypted or Cancel. */
+    data object EncryptionBcc : SendPrompt
 
     /** Tapping a disabled Send: the reason, once. */
     data class Explain(val state: SendState) : SendPrompt
@@ -158,6 +164,12 @@ data class ComposeState(
     val offlineOrSignIn: Boolean = false,
     /** Encryption is required and a recipient has no key: Send shows the warning icon. */
     val encryptionWarning: Boolean = false,
+    /** T42b: the message is to be encrypted (the lock). Saved with the draft. */
+    val encrypt: Boolean = false,
+    /** T42b: the message is to be signed. Saved with the draft. */
+    val sign: Boolean = false,
+    /** T42b: the recipients' addresses (lower case) Croft has a key for: their chips show a lock. */
+    val keyed: Set<String> = emptySet(),
     /** The reply's quote could not be filled (the body is not stored on the device yet). */
     val quoteMissing: Boolean = false,
     /** The last Send was refused for a reason the Send button cannot show (the account has no SMTP server, a failure of the core). */

@@ -135,6 +135,8 @@ data class BodyData(
     /** Cut at a size limit, or too complex to show as HTML: with [html] null the text version is shown, with a quiet note. */
     val truncated: Boolean,
     val attachments: List<AttachmentData>,
+    /** S56 (T42b): whether it came encrypted or signed, and what the checks found. */
+    val security: BodySecurity = BodySecurity(),
 ) {
     /** HTML was expected but is not there (too complex, or past a limit): "This message is shown as plain text". */
     val shownAsPlainText: Boolean get() = html == null && truncated
@@ -143,6 +145,43 @@ data class BodyData(
     val chips: List<AttachmentData> get() = attachments.filter { !it.shownInline }
 
     override fun toString(): String = "BodyData(messageId=$messageId, html=${html != null}, blocked=$blockedRemoteCount, attachments=${attachments.size})"
+}
+
+/**
+ * S56 (T42b): what a message's OpenPGP says, as the core found it. A decrypted message's text was decrypted for this view only.
+ * "Signed" covers the body: the subject and the addresses are never shown as signed. `toString` names the states only.
+ */
+data class BodySecurity(
+    val encryption: Encryption = Encryption.NONE,
+    /** Why it could not be opened, when [encryption] is [Encryption.FAILED]. */
+    val problem: DecryptIssue? = null,
+    val signature: Signature = Signature.NONE,
+    /** The key that signed it (upper-case hex), when the signature names one. */
+    val signerKey: String? = null,
+    /** The sender's address the key is filed under, for [Signature.VALID] and [Signature.UNCONFIRMED]. */
+    val signer: String? = null,
+) {
+    enum class Encryption { NONE, DECRYPTED, FAILED }
+
+    enum class Signature {
+        NONE,
+
+        /** By a key the person made, imported or found in the sender's domain directory. */
+        VALID,
+
+        /** By the key the sender's own mail announced: weaker, never shown as verified. */
+        UNCONFIRMED,
+
+        /** Signed, but the check failed or the key is unknown. */
+        NOT_VERIFIED,
+    }
+
+    enum class DecryptIssue { NO_OWN_KEY, NOT_FOR_THIS_KEY, DAMAGED, TOO_LARGE }
+
+    /** Nothing to say: no banner. */
+    val plain: Boolean get() = encryption == Encryption.NONE && signature == Signature.NONE
+
+    override fun toString(): String = "BodySecurity($encryption, $problem, $signature)"
 }
 
 /** Why a reading call failed: the core's `ReadError` as fixed categories. Each one has a plain-language text ([ReadCopy]). */

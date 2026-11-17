@@ -591,6 +591,13 @@ fun CroftNavHost(
                 ComposeHost(
                     session = session,
                     start = start,
+                    // T42b: S54's defaults, read when a message opens.
+                    encryptionDefaults = { account ->
+                        com.example.croft.mail.compose.EncryptionDefaults(
+                            sign = account in accountPrefs.signByDefault,
+                            encryptWhenKeys = account in accountPrefs.encryptByDefault,
+                        )
+                    },
                     onClosed = { closed ->
                         when (closed) {
                             // Nothing was kept, or it was thrown away: back to where compose was opened from.

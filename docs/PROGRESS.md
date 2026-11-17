@@ -5,9 +5,54 @@ unverified, the next step.
 
 ---
 
+## T41c: OpenPGP in compose and reading (17 November 2026)
+
+**Status:** merged (CI green on draft #103). The independent review is done; its findings are fixed
+(`docs/REVIEW-QUEUE.md`). The screens are T42.
+
+**What was built.**
+- **Drafts** carry `encrypt` and `sign` (migration 0016). `encryption_check(account, draft)` says what is missing: an own
+  key in use, a key for each To and Cc address, no Bcc.
+- **Sending:**
+  - Encrypted: the message's MIME entity is encrypted to every To and Cc recipient and to the sender (signed inside
+    when asked) and wrapped as `multipart/encrypted`.
+  - It is never sent plain instead: the send is refused with `NoRecipientKey`, `NoOwnKey` or `EncryptionWithBcc`, and
+    nothing is queued.
+  - Signed only: `multipart/signed`.
+  - The own key's secret is read from the app's vault before the database is taken.
+- **The server's draft copy** of a draft to be encrypted is encrypted to the sender's own key only; without one it stays
+  on the device (`DraftSyncOutcome::EncryptedKeptOnDevice`).
+- **Reading:**
+  - `multipart/encrypted` is decrypted with the account's own keys each time it is opened and rendered from the
+    decrypted entity. Nothing decrypted is stored, indexed or put in a snippet.
+  - `MessageBody.encryption` says whether it opened and why not.
+  - A signature (inside the encryption, a signed entity inside it, or `multipart/signed`) is checked against the keys
+    filed under the `From` address: `MessageBody.signature`.
+  - Attachments inside get negative ids, and `save_attachment` decrypts again for them.
+- **Pieces:** `croft_reader::pgp_mime` reads the PGP/MIME parts (the signed part exactly as sent);
+  `mail-core::build_parts` and `wrap` split a message into its headers and its entity. FFI v24.
+- **After the review:**
+  - A signature is `Valid` only for a key the person made or imported, or one from the sender's domain (WKD). A key
+    known only from an Autocrypt header (anyone can announce one for any `From`) gives `Unconfirmed`, and only while
+    it is that sender's current key.
+  - Signed-only text is quoted-printable when a line ends in whitespace or starts with `From `, so relays cannot
+    break the signature.
+  - Turning encryption on without an own key takes an earlier plain copy off the server.
+  - `encryption_check.own_key` asks the vault, as sending does.
+  - An encrypted message too large or broken to parse says `CannotDecrypt`, never "not encrypted".
+
+**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (1,292; new: 1 storage, 1
+mail-core, 3 reader, 6 FFI), SQLCipher and `check_schema.py` (1,295 tests after the review fixes). Android compiles only in CI.
+
+**Unverified.** No vault on Android yet (T42), so nothing is encrypted or decrypted on a phone until then.
+
+**Next.** T42 (the screens).
+
+---
+
 ## Two races found by main's CI (17 November 2026)
 
-**Status:** fixed on `claude/croft-build`, with the T41b merge.
+**Status:** merged with T41b (#102; CI green, Android included).
 - `a_missing_trash_is_found_before_anything_is_sent` (T37's test) failed about one run in ten: the engine keeps the
   folder list it read at start-up and stores it again on later syncs, which marked Trash again after the test unmarked
   it. The test now starts against a server without a Trash folder (`Mail::with_server`, `TestServer::remove_folder`).

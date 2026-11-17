@@ -57,6 +57,7 @@ mod jmap_account;
 mod list;
 mod oauth;
 mod pgp;
+mod pgp_read;
 mod pin;
 mod reading;
 mod search;
@@ -172,11 +173,17 @@ uniffi::setup_scaffolding!();
 /// Version 23 (T41b): OpenPGP keys: `set_key_vault` (and the `KeyVault` callback), `pgp_keys`, `generate_key`,
 /// `import_key`, `export_public_key`, `export_secret_key`, `delete_key`, `key_status`, `lookup_key`, the records
 /// `PgpKeyInfo`, `KeyStatus` and `LookupResult`, and the enums `PgpKeySource`, `LookupProblem` and `PgpError`.
+///
+/// Version 24 (T41c): OpenPGP in compose and reading: `DraftContent.encrypt` and `sign`, `encryption_check` (the record
+/// `EncryptionCheck`), `ComposeError::NoRecipientKey`, `NoOwnKey` and `EncryptionWithBcc`,
+/// `DraftSyncOutcome::EncryptedKeptOnDevice`, `PgpError::NoSuchDraft`, `MessageBody.encryption` and `signature` (the enums
+/// `MessageEncryption`, `DecryptProblem` and `MessageSignature`), and negative attachment ids for the parts of a decrypted
+/// message.
 /// Bump on any change to what is
 /// exported. (The `test-server` feature adds
 /// a test-only object to the host library the JVM tests load; it is not part of the surface and
 /// is never in the Android library.)
-pub const FFI_API_VERSION: u32 = 23;
+pub const FFI_API_VERSION: u32 = 24;
 
 /// The version of the Croft core library, for example `0.1.0`.
 #[uniffi::export]

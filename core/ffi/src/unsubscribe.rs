@@ -303,6 +303,9 @@ impl Core {
                     body: m.body.clone(),
                     in_reply_to: None,
                     references: Vec::new(),
+                    // A list's unsubscribe address takes it plain.
+                    encrypt: false,
+                    sign: false,
                 };
                 match self.save_draft(f.account, None, content) {
                     Ok(d) => match self.send(f.account, d.id) {

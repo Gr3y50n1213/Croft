@@ -43,9 +43,9 @@ pub mod shape;
 #[doc(hidden)]
 pub use parse::sanitizer_running;
 pub use parse::{
-    calendar_part, part_content, render, render_with, sniff_image, snippet, Address, Attachment,
-    ParseError, Rendered, Sanitizer, MAX_CALENDAR_PART, MAX_DEPTH, MAX_HTML_BYTES,
-    MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TOTAL_BYTES, MAX_MESSAGE_BYTES, MAX_PARTS,
+    calendar_part, part_content, pgp_mime, render, render_with, sniff_image, snippet, Address,
+    Attachment, ParseError, PgpMime, Rendered, Sanitizer, MAX_CALENDAR_PART, MAX_DEPTH,
+    MAX_HTML_BYTES, MAX_INLINE_IMAGE_BYTES, MAX_INLINE_TOTAL_BYTES, MAX_MESSAGE_BYTES, MAX_PARTS,
     MAX_REFERENCES_EACH_END, MAX_TEXT_BYTES, SANITIZE_DEADLINE,
 };
 pub use remote::{normalise_address, remote_allowed, RemoteImages};

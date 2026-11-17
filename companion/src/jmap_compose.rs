@@ -132,6 +132,9 @@ fn content_from(v: &Value, base: Option<DraftContent>) -> Result<DraftContent, V
         body: String::new(),
         in_reply_to: None,
         references: Vec::new(),
+        // The Companion holds no secret key: what it sends is never encrypted or signed.
+        encrypt: false,
+        sign: false,
     });
     const KNOWN: &[&str] = &[
         "identityId",
@@ -201,6 +204,8 @@ fn content_from(v: &Value, base: Option<DraftContent>) -> Result<DraftContent, V
         },
         in_reply_to,
         references,
+        encrypt: base.encrypt,
+        sign: base.sign,
     })
 }
 

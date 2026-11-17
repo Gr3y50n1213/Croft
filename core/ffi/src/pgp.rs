@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use croft_crypto::keys::{self, KeyInfo, SecretKey};
 use croft_crypto::{autocrypt, wkd, CryptoError, SecretBytes};
-use croft_storage::pgp::{self as store, KeySource, NewKey};
+use croft_storage::pgp::{self as store, KeyRow, KeySource, NewKey};
 use croft_storage::{accounts, identities};
 use rusqlite::Connection;
 use zeroize::Zeroizing;
@@ -64,6 +64,8 @@ pub enum PgpError {
     NoSuchKey,
     /// No such account.
     NoSuchAccount,
+    /// No such draft in the account (or it was sent).
+    NoSuchDraft,
     /// Not an address.
     BadAddress,
     /// Something else failed.
@@ -207,6 +209,17 @@ pub enum LookupProblem {
     Refused,
 }
 
+/// What a draft needs before it can be sent encrypted (T41c, for the compose screen's lock).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct EncryptionCheck {
+    /// The account has an own key in use (it signs and encrypts) whose secret the app's key vault holds.
+    pub own_key: bool,
+    /// The To and Cc addresses Croft has no key to encrypt to, as written in the draft.
+    pub missing: Vec<String>,
+    /// The draft has Bcc recipients (an encrypted message cannot).
+    pub has_bcc: bool,
+}
+
 /// A WKD lookup's outcome: the key stored, or why not.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct LookupResult {
@@ -216,7 +229,7 @@ pub struct LookupResult {
     pub problem: Option<LookupProblem>,
 }
 
-fn now_secs() -> u32 {
+pub(crate) fn now_secs() -> u32 {
     u32::try_from(now_ms().max(0) / 1000).unwrap_or(u32::MAX)
 }
 
@@ -293,7 +306,6 @@ impl Core {
 
     /// The account's own key in use: the newest own key that can sign and encrypt now, with its secret from the vault.
     /// Signing and decrypting use it (T41c).
-    #[allow(dead_code)]
     pub(crate) fn own_secret(
         &self,
         account: i64,
@@ -422,17 +434,53 @@ fn in_transaction<T>(
     }
 }
 
+/// The key Croft encrypts to for `address` (bare, any case): the first usable one filed under it, the person's own choice
+/// before a WKD's before an Autocrypt header's, and an Autocrypt key only while it is that sender's newest. `None` when there
+/// is none.
+pub(crate) fn encryption_key(
+    conn: &Connection,
+    account: i64,
+    address: &str,
+    now: u32,
+) -> Result<Option<(KeyRow, croft_crypto::Certificate)>, PgpError> {
+    let current = store::peer(conn, account, address)?.and_then(|p| p.fingerprint);
+    for row in store::keys_for(conn, account, address)? {
+        // A key from an Autocrypt header counts only while it is that sender's current one.
+        if row.source == KeySource::Autocrypt
+            && current.as_deref() != Some(row.fingerprint.as_str())
+        {
+            continue;
+        }
+        let Ok(cert) = keys::read_public(&row.public_key) else {
+            continue;
+        };
+        if keys::info(&cert, now).can_encrypt {
+            return Ok(Some((row, cert)));
+        }
+    }
+    Ok(None)
+}
+
+/// The account's own key in use, public part: the newest that can both sign and encrypt. `None` when there is none.
+pub(crate) fn own_public(
+    conn: &Connection,
+    account: i64,
+    now: u32,
+) -> Option<(String, croft_crypto::Certificate)> {
+    let rows = store::own_keys(conn, account).ok()?;
+    rows.into_iter().find_map(|row| {
+        let cert = keys::read_public(&row.public_key).ok()?;
+        let info = keys::info(&cert, now);
+        (info.can_encrypt && info.can_sign).then_some((row.fingerprint, cert))
+    })
+}
+
 /// The `Autocrypt:` header value for a message sent from `from` (an identity of the account): the account's own key in use
 /// (the newest that can sign and encrypt, as for sending encrypted mail), when it names that address. `None` otherwise (and
 /// on any failure: a message is never held back for it).
 pub(crate) fn autocrypt_header(conn: &Connection, account: i64, from: &str) -> Option<String> {
-    let rows = store::own_keys(conn, account).ok()?;
     let now = now_secs();
-    let cert = rows.iter().find_map(|row| {
-        let cert = keys::read_public(&row.public_key).ok()?;
-        let info = keys::info(&cert, now);
-        (info.can_encrypt && info.can_sign).then_some(cert)
-    })?;
+    let (_, cert) = own_public(conn, account, now)?;
     autocrypt::header(from, &cert, false, now).ok()
 }
 
@@ -668,22 +716,9 @@ impl Core {
                 let bare = keys::bare_address(&asked);
                 let (mut fingerprint, mut source, mut prefer) = (None, None, false);
                 if let Some(a) = bare.as_deref() {
-                    let current = store::peer(c, account, a)?.and_then(|p| p.fingerprint);
-                    for row in store::keys_for(c, account, a)? {
-                        // A key from an Autocrypt header counts only while it is that sender's current one.
-                        if row.source == KeySource::Autocrypt
-                            && current.as_deref() != Some(row.fingerprint.as_str())
-                        {
-                            continue;
-                        }
-                        let Ok(cert) = keys::read_public(&row.public_key) else {
-                            continue;
-                        };
-                        if keys::info(&cert, now).can_encrypt {
-                            fingerprint = Some(row.fingerprint.clone());
-                            source = Some(row.source.into());
-                            break;
-                        }
+                    if let Some((row, _)) = encryption_key(c, account, a, now)? {
+                        fingerprint = Some(row.fingerprint);
+                        source = Some(row.source.into());
                     }
                     // Asked for only while the sender's newest mail still carries the header (Autocrypt: a later message
                     // without one discourages encryption).
@@ -701,6 +736,39 @@ impl Core {
                 });
             }
             Ok::<_, PgpError>(out)
+        })
+    }
+
+    /// What draft `draft_id` lacks before it can be sent encrypted: an own key, a key for each To and Cc recipient, no Bcc.
+    /// The own key is looked for as sending does (its secret read from the vault, then dropped), so `own_key` true means
+    /// sending will find it.
+    pub fn encryption_check(
+        &self,
+        account: i64,
+        draft_id: i64,
+    ) -> Result<EncryptionCheck, PgpError> {
+        let own_key = matches!(self.own_secret(account), Ok(Some(_)));
+        let now = now_secs();
+        self.inner.handle.read(|db| {
+            let c = db.connection();
+            let d = croft_storage::drafts::get(c, account, draft_id)?
+                .filter(|d| d.state == croft_storage::drafts::DraftState::Draft)
+                .ok_or(PgpError::NoSuchDraft)?;
+            let mut missing = Vec::new();
+            for a in d.content.to.iter().chain(&d.content.cc) {
+                let found = match keys::bare_address(&a.address) {
+                    Some(bare) => encryption_key(c, account, &bare, now)?.is_some(),
+                    None => false,
+                };
+                if !found && !missing.contains(&a.address) {
+                    missing.push(a.address.clone());
+                }
+            }
+            Ok(EncryptionCheck {
+                own_key,
+                missing,
+                has_bcc: !d.content.bcc.is_empty(),
+            })
         })
     }
 

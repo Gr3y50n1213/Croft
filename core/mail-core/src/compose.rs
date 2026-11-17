@@ -568,6 +568,51 @@ pub fn has_recipient(to: &[Address], cc: &[Address], bcc: &[Address]) -> bool {
 /// contains. Fails when there is no recipient, when an address is invalid or when the Message-ID
 /// is not usable.
 pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
+    let parts = build_parts(m, false)?;
+    let mut out = parts.head.into_bytes();
+    out.extend_from_slice(&parts.entity);
+    Ok(out)
+}
+
+/// A message in two pieces (T41c): its own headers, and the MIME entity under them (its `Content-*` headers and body). The
+/// entity is what OpenPGP encrypts or signs; [`wrap`] puts the result back under the headers.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Parts {
+    /// The message headers, each line ending in CRLF, up to and including `MIME-Version`.
+    pub head: String,
+    /// The MIME entity: its `Content-Type` (and other part headers), a blank line, and its body.
+    pub entity: Vec<u8>,
+}
+
+impl std::fmt::Debug for Parts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Parts({} + {} bytes)",
+            self.head.len(),
+            self.entity.len()
+        )
+    }
+}
+
+/// The message headers over a body of `content_type` (one header value, such as `multipart/encrypted; ...`): `None` when
+/// the value holds a control character.
+pub fn wrap(head: &str, content_type: &str, body: &str) -> Option<Vec<u8>> {
+    if content_type.is_empty() || content_type.chars().any(char::is_control) {
+        return None;
+    }
+    let mut out = String::with_capacity(head.len() + content_type.len() + body.len() + 32);
+    out.push_str(head);
+    out.push_str(&fold("Content-Type", content_type));
+    out.push_str("\r\n\r\n");
+    out.push_str(body);
+    Some(out.into_bytes())
+}
+
+/// [`build_message`], as its headers and its MIME entity. `signed`: the entity is to be signed as it is (`multipart/signed`),
+/// so its text must reach the reader byte for byte: a line ending in a space or tab, or starting with `From `, makes the text
+/// quoted-printable with those characters encoded (RFC 3156 section 3), as relays strip the one and escape the other.
+pub fn build_parts(m: &Outgoing<'_>, signed: bool) -> Result<Parts, BuildError> {
     if !is_valid_address(&m.from.address) {
         return Err(BuildError::InvalidAddress);
     }
@@ -633,7 +678,7 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
     }
     line("MIME-Version", "1.0");
 
-    let (mut text_headers, mut text_body) = encode_body(m.body);
+    let (mut text_headers, mut text_body) = encode_body(m.body, signed);
     let boundary = boundary(m);
     if let Some(cal) = m.calendar {
         if cal.method.is_empty()
@@ -661,12 +706,15 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
         text_headers = format!("Content-Type: multipart/alternative; boundary=\"{inner}\"\r\n");
         text_body = alt;
     }
-    let mut out = head;
+    let mut out = String::new();
     if m.attachments.is_empty() {
         out.push_str(&text_headers);
         out.push_str("\r\n");
         out.push_str(&text_body);
-        return Ok(out.into_bytes());
+        return Ok(Parts {
+            head,
+            entity: out.into_bytes(),
+        });
     }
 
     out.push_str(&format!(
@@ -692,7 +740,10 @@ pub fn build_message(m: &Outgoing<'_>) -> Result<Vec<u8>, BuildError> {
         }
     }
     out.push_str(&format!("--{boundary}--\r\n"));
-    Ok(out.into_bytes())
+    Ok(Parts {
+        head,
+        entity: out.into_bytes(),
+    })
 }
 
 /// A boundary that appears nowhere in the message's own text: random, and checked against the body
@@ -712,17 +763,19 @@ fn boundary(m: &Outgoing<'_>) -> String {
 
 /// The part headers and the encoded text of the body. `7bit` when the text is ASCII with lines no
 /// longer than 998 characters (RFC 5322), else quoted-printable.
-fn encode_body(body: &str) -> (String, String) {
+fn encode_body(body: &str, signed: bool) -> (String, String) {
     // CRLF everywhere, whatever the input used.
     let normalised = body.replace("\r\n", "\n").replace('\r', "\n");
     let mut text = normalised.replace('\n', "\r\n");
     if !text.is_empty() && !text.ends_with("\r\n") {
         text.push_str("\r\n");
     }
+    let fragile = |l: &str| l.ends_with([' ', '\t']) || l.starts_with("From ");
     let seven_bit = text.is_ascii()
         && !text.contains('\0')
         && text.split("\r\n").all(|l| l.len() <= 998)
-        && !text.lines().any(|l| l.starts_with("--=_croft_"));
+        && !text.lines().any(|l| l.starts_with("--=_croft_"))
+        && !(signed && text.split("\r\n").any(fragile));
     if seven_bit {
         (
             "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 7bit\r\n"
@@ -733,7 +786,19 @@ fn encode_body(body: &str) -> (String, String) {
         (
             "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n"
                 .to_owned(),
-            quoted_printable(&text),
+            if signed {
+                // `From ` at a line start as `=46rom `: the same text, which no relay rewrites.
+                quoted_printable(&text)
+                    .split("\r\n")
+                    .map(|l| match l.strip_prefix("From ") {
+                        Some(rest) => format!("=46rom {rest}"),
+                        None => l.to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\r\n")
+            } else {
+                quoted_printable(&text)
+            },
         )
     }
 }

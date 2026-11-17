@@ -67,6 +67,8 @@ class ComposeController(
     private val files: (String) -> PickedFile? = { null },
     /** Work that must outlive the screen (the copy to the server when compose closes). */
     private val background: CoroutineScope = defaultBackground,
+    /** T42b: S54's defaults for a new message from an account. */
+    private val defaults: (AccountId) -> EncryptionDefaults = { EncryptionDefaults() },
 ) {
     private val mutable = MutableStateFlow(ComposeState())
 
@@ -74,6 +76,21 @@ class ComposeController(
     val state: StateFlow<ComposeState> = mutable.asStateFlow()
 
     private val ops = Mutex()
+
+    // T42b: encryption follows "Encrypt when keys exist" (every recipient has a key) until the person touches the lock.
+    private var encryptAuto = false
+    private var encryptTouched = false
+
+    // The encrypt and sign flags the stored draft has (null before the first save): Send saves until they match the screen.
+    private var savedFlags: Pair<Boolean, Boolean>? = null
+
+    /** A new message starts with the account's defaults (a reopened draft keeps its own). */
+    private fun applyDefaults(account: AccountId) {
+        val d = defaults(account)
+        encryptAuto = d.encryptWhenKeys
+        encryptTouched = false
+        mutable.update { it.copy(sign = d.sign, encrypt = false) }
+    }
     private var localJob: Job? = null
     private var serverJob: Job? = null
     private val intakeJobs = ArrayList<Job>()
@@ -150,6 +167,7 @@ class ComposeController(
                 initialCursor = if (fill.body.isEmpty()) null else BodyCursor(0, 0),
             )
         }
+        applyDefaults(account)
         refreshStatus()
         pendingUris = fill.attachments
     }
@@ -173,6 +191,7 @@ class ComposeController(
                 initialCursor = BodyCursor(0, 0),
             )
         }
+        applyDefaults(account)
         refreshStatus()
     }
 
@@ -191,6 +210,8 @@ class ComposeController(
                 identity = c.identity ?: identities.firstOrNull { i -> i.isDefault }?.id ?: identities.firstOrNull()?.id,
                 to = chipsOf(c.to), cc = chipsOf(c.cc), bcc = chipsOf(c.bcc), showCcBcc = c.cc.isNotEmpty() || c.bcc.isNotEmpty(),
                 subject = c.subject, body = c.body, attachments = draft.attachments,
+                // A reopened draft keeps its own choice, which the person made or confirmed.
+                encrypt = c.encrypt, sign = c.sign,
                 initialCursor = cursor ?: BodyCursor(c.body.length, c.body.length),
                 saveStatus = when (draft.serverCopy) {
                     uniffi.croft_ffi.ServerCopy.CURRENT -> SaveStatus.SAVED
@@ -199,6 +220,9 @@ class ComposeController(
             )
         }
         bodyCursor = cursor
+        encryptAuto = false
+        encryptTouched = true
+        savedFlags = c.encrypt to c.sign
         if (draft.outboxId == null) refreshStatus()
     }
 
@@ -342,6 +366,8 @@ class ComposeController(
         mutable.update {
             it.copy(account = account, draftId = null, identities = identities, identity = identity ?: identities.firstOrNull { i -> i.isDefault }?.id, saveStatus = SaveStatus.NONE)
         }
+        savedFlags = null
+        if (!encryptTouched) applyDefaults(account)
         saveLocked()
     }
 
@@ -513,6 +539,7 @@ class ComposeController(
         identity = s.identity,
         to = s.to.map { it.address }, cc = s.cc.map { it.address }, bcc = s.bcc.map { it.address },
         subject = s.subject, body = s.body, inReplyTo = inReplyTo, references = references,
+        encrypt = s.encrypt, sign = s.sign,
     )
 
     /** Makes sure a draft exists on the device (a file can only be added to one). Call with [ops] held. */
@@ -530,6 +557,7 @@ class ComposeController(
         try {
             val saved = backend.saveDraft(s.account, s.draftId, contentOf(s))
             dirty = false
+            savedFlags = s.encrypt to s.sign
             mutable.update {
                 it.copy(
                     draftId = saved.id,
@@ -553,7 +581,18 @@ class ComposeController(
         val offline = status == AccountState.OFFLINE || status == AccountState.NEEDS_SIGN_IN
         mutable.update { it.copy(accountStatus = status) }
         val addresses = s.allRecipients.map { it.address.address }
-        val warn = addresses.isNotEmpty() && policy.check(s.account, addresses) is EncryptionDecision.RequiredKeysMissing
+        // T42b: which recipients Croft has a key for (their chips show a lock), and the lock that follows them.
+        val keyed = try { backend.keyedAddresses(s.account, addresses) } catch (e: Exception) { emptySet() }
+        val allKeyed = addresses.isNotEmpty() && addresses.all { it.trim().lowercase() in keyed }
+        val encryptNow = if (encryptAuto && !encryptTouched) allKeyed else state.value.encrypt
+        val flipped = encryptNow != state.value.encrypt
+        mutable.update { it.copy(keyed = keyed, encrypt = encryptNow) }
+        // The lock followed the recipients: the draft is saved with it (and Send saves first anyway).
+        if (flipped) touch()
+        val warn = addresses.isNotEmpty() && (
+            (encryptNow && !allKeyed) ||
+                (!encryptNow && policy.check(s.account, addresses) is EncryptionDecision.RequiredKeysMissing)
+            )
         val id = s.draftId
         if (id == null) {
             mutable.update {
@@ -635,6 +674,25 @@ class ComposeController(
         syncToServer(force = true)
     }
 
+    // ---- Encryption (T42b) ----
+
+    /** The lock: encrypt this message or not. The person's choice from now on (the default no longer follows the recipients). */
+    suspend fun toggleEncrypt() {
+        if (!editable()) return
+        userEdited = true
+        encryptTouched = true
+        mutable.update { it.copy(encrypt = !it.encrypt, sendProblem = null) }
+        saveStructural()
+    }
+
+    /** Sign this message or not. */
+    suspend fun toggleSign() {
+        if (!editable()) return
+        userEdited = true
+        mutable.update { it.copy(sign = !it.sign, sendProblem = null) }
+        saveStructural()
+    }
+
     // ---- Send ----
 
     /** The person tapped Send. See the class comment for the order of the questions. */
@@ -686,23 +744,79 @@ class ComposeController(
         askPolicyThenSend()
     }
 
-    /** S24 "Send unencrypted": the only way past a missing key. */
+    /**
+     * S24 "Send without encryption": the only way past a missing key, a missing own key or Bcc. For a message that was to be encrypted it
+     * turns encryption off for this message (the person's choice, saved with the draft) before it is sent.
+     */
     suspend fun confirmUnencrypted() {
-        if (state.value.prompt !is SendPrompt.EncryptionCheck) return
+        val prompt = state.value.prompt
+        if (prompt !is SendPrompt.EncryptionCheck && prompt != SendPrompt.EncryptionNoOwnKey && prompt != SendPrompt.EncryptionBcc) return
         mutable.update { it.copy(prompt = null) }
+        if (state.value.encrypt) {
+            encryptTouched = true
+            mutable.update { it.copy(encrypt = false) }
+            ops.withLock { saveFlagsLocked() }
+            if (savedFlags?.first != false) return
+        }
         doSend()
+    }
+
+    /** S24 "Remove": the recipients without a key leave To, Cc and Bcc; nothing is sent (the person sends again). */
+    suspend fun removeMissing() {
+        val prompt = state.value.prompt as? SendPrompt.EncryptionCheck ?: return
+        val gone = prompt.missing.map { it.trim().lowercase() }.toSet()
+        mutable.update {
+            fun keep(list: List<RecipientChipData>) = list.filter { c -> c.address.address.trim().lowercase() !in gone }
+            it.copy(prompt = null, to = keep(it.to), cc = keep(it.cc), bcc = keep(it.bcc))
+        }
+        userEdited = true
+        saveStructural()
+    }
+
+    /** Saves until the stored draft has the encrypt and sign flags the screen shows (at most twice). Call with [ops] held. */
+    private suspend fun saveFlagsLocked() {
+        repeat(2) {
+            val s = state.value
+            if (s.draftId != null && savedFlags == (s.encrypt to s.sign)) return
+            saveLocked(force = true)
+        }
+    }
+
+    /** T42b: what the core says about sending this draft encrypted. */
+    private suspend fun encryptionDecision(account: AccountId, draftId: Long): EncryptionDecision {
+        val check = try { backend.encryptionCheck(account, draftId) } catch (e: Exception) { null } ?: return EncryptionDecision.Unknown
+        return when {
+            !check.ownKey -> EncryptionDecision.NoOwnKey
+            check.hasBcc -> EncryptionDecision.BccNotAllowed
+            check.missing.isNotEmpty() -> EncryptionDecision.RequiredKeysMissing(check.missing)
+            else -> EncryptionDecision.NotRequired
+        }
+    }
+
+    private fun promptFor(decision: EncryptionDecision) {
+        when (decision) {
+            EncryptionDecision.NotRequired -> {}
+            is EncryptionDecision.RequiredKeysMissing -> mutable.update { it.copy(prompt = SendPrompt.EncryptionCheck(decision.missing), encryptionWarning = true) }
+            EncryptionDecision.NoOwnKey -> mutable.update { it.copy(prompt = SendPrompt.EncryptionNoOwnKey) }
+            EncryptionDecision.BccNotAllowed -> mutable.update { it.copy(prompt = SendPrompt.EncryptionBcc) }
+            EncryptionDecision.Unknown -> mutable.update { it.copy(sendProblem = ComposeProblem.FAILED) }
+        }
     }
 
     /** Cancel on any question: nothing is sent, compose stays open. */
     fun cancelPrompt() { mutable.update { it.copy(prompt = null) } }
 
     private suspend fun askPolicyThenSend() {
+        // T42b: the stored draft must say what the screen says (the lock may have followed the recipients since the last save).
+        ops.withLock { saveFlagsLocked() }
         val s = state.value
-        val decision = policy.check(s.account, s.allRecipients.map { it.address.address })
-        when (decision) {
-            EncryptionDecision.NotRequired -> doSend()
-            is EncryptionDecision.RequiredKeysMissing -> mutable.update { it.copy(prompt = SendPrompt.EncryptionCheck(decision.missing), encryptionWarning = true) }
+        val id = s.draftId
+        if (id == null || savedFlags != (s.encrypt to s.sign)) {
+            mutable.update { it.copy(sendProblem = ComposeProblem.FAILED) }
+            return
         }
+        val decision = if (s.encrypt) encryptionDecision(s.account, id) else policy.check(s.account, s.allRecipients.map { it.address.address })
+        if (decision == EncryptionDecision.NotRequired) doSend() else promptFor(decision)
     }
 
     private suspend fun doSend() = ops.withLock {
@@ -716,6 +830,21 @@ class ComposeController(
             if (cursor != null) cursors.remember(id, cursor)
             mutable.update { it.copy(phase = ComposeState.Phase.CLOSED, closed = ComposeClosed.Sent(s.account, started.outboxId.toLong(), started.sendAtMs, cursor)) }
         } catch (e: ComposeFailure) {
+            if (e.problem == ComposeProblem.NO_RECIPIENT_KEY || e.problem == ComposeProblem.NO_OWN_KEY || e.problem == ComposeProblem.ENCRYPTION_WITH_BCC) {
+                // T42b: the core refused to send it unencrypted in its place: ask S24's question (never a silent downgrade).
+                mutable.update { it.copy(phase = ComposeState.Phase.EDITING) }
+                val decision = encryptionDecision(s.account, id)
+                promptFor(
+                    when {
+                        decision != EncryptionDecision.NotRequired -> decision
+                        e.problem == ComposeProblem.NO_OWN_KEY -> EncryptionDecision.NoOwnKey
+                        e.problem == ComposeProblem.ENCRYPTION_WITH_BCC -> EncryptionDecision.BccNotAllowed
+                        else -> EncryptionDecision.Unknown
+                    },
+                )
+                refreshStatus()
+                return@withLock
+            }
             mutable.update { it.copy(phase = ComposeState.Phase.EDITING, sendProblem = e.problem) }
             refreshStatus()
         }

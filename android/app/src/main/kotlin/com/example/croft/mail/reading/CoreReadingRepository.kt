@@ -178,7 +178,27 @@ class CoreReadingRepository(
         messageId = messageId, text = text, html = htmlSanitised, remoteAllowed = remoteAllowed,
         blockedRemoteCount = blockedRemoteCount.toInt(), trackersRemoved = trackersRemoved.toInt(), senderKnown = senderKnown,
         truncated = truncated, attachments = attachments.map { it.toApp() },
+        security = securityOf(encryption, signature),
     )
+
+    private fun securityOf(e: uniffi.croft_ffi.MessageEncryption?, s: uniffi.croft_ffi.MessageSignature?): BodySecurity {
+        val (encryption, problem) = when (e) {
+            null -> BodySecurity.Encryption.NONE to null
+            is uniffi.croft_ffi.MessageEncryption.Decrypted -> BodySecurity.Encryption.DECRYPTED to null
+            is uniffi.croft_ffi.MessageEncryption.CannotDecrypt -> BodySecurity.Encryption.FAILED to when (e.problem) {
+                uniffi.croft_ffi.DecryptProblem.NO_OWN_KEY -> BodySecurity.DecryptIssue.NO_OWN_KEY
+                uniffi.croft_ffi.DecryptProblem.NOT_FOR_THIS_KEY -> BodySecurity.DecryptIssue.NOT_FOR_THIS_KEY
+                uniffi.croft_ffi.DecryptProblem.DAMAGED -> BodySecurity.DecryptIssue.DAMAGED
+                uniffi.croft_ffi.DecryptProblem.TOO_LARGE -> BodySecurity.DecryptIssue.TOO_LARGE
+            }
+        }
+        return when (s) {
+            null -> BodySecurity(encryption, problem)
+            is uniffi.croft_ffi.MessageSignature.Valid -> BodySecurity(encryption, problem, BodySecurity.Signature.VALID, s.fingerprint, s.signer)
+            is uniffi.croft_ffi.MessageSignature.Unconfirmed -> BodySecurity(encryption, problem, BodySecurity.Signature.UNCONFIRMED, s.fingerprint, s.signer)
+            is uniffi.croft_ffi.MessageSignature.NotVerified -> BodySecurity(encryption, problem, BodySecurity.Signature.NOT_VERIFIED, s.issuer, null)
+        }
+    }
 
     private fun CoreAttachment.toApp() = AttachmentData(
         id = id, fileName = fileName, mimeType = mimeType, size = size.toLong().coerceAtLeast(0), shownInline = shownInline, blocked = blocked,

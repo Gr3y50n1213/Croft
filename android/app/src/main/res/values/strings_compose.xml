@@ -81,6 +81,21 @@
     <string name="encryption_message">Encryption is required, so Croft will not send this unless you choose to.</string>
     <string name="encryption_send_unencrypted">Send unencrypted</string>
     <string name="encryption_cancel">Cancel</string>
+    <!-- T42b: the compose lock, Sign, and S24's other questions. -->
+    <plurals name="encryption_remove">
+        <item quantity="one">Remove this recipient</item>
+        <item quantity="other">Remove these recipients</item>
+    </plurals>
+    <string name="encryption_no_own_key_title">You have no key on this phone</string>
+    <string name="encryption_no_own_key_message">To send encrypted mail, make or import a key in Settings, Encryption keys. Croft will not send this unencrypted unless you choose to.</string>
+    <string name="encryption_bcc_title">Encrypted mail cannot have Bcc</string>
+    <string name="encryption_bcc_message">An encrypted message names every recipient\'s key, so Bcc recipients would not stay hidden. Move them to To or Cc, or send without encryption.</string>
+    <string name="encryption_send_without">Send without encryption</string>
+    <string name="compose_encrypt">Encrypt</string>
+    <string name="compose_encrypt_on">Encrypted</string>
+    <string name="compose_encrypt_off">Not encrypted</string>
+    <string name="compose_sign">Sign</string>
+    <string name="compose_dont_sign">Do not sign</string>
 
     <!-- S26 Outbox -->
     <string name="outbox_title">Outbox</string>

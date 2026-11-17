@@ -31,6 +31,9 @@ enum class ComposeProblem {
     NO_SUCH_ACCOUNT, NO_SUCH_DRAFT, NO_SUCH_OUTBOX_ITEM, NO_SUCH_MESSAGE, NO_SUCH_IDENTITY, NO_SUCH_ATTACHMENT, IN_OUTBOX,
     NO_RECIPIENT, INVALID_ADDRESS, CANNOT_SEND, TOO_LATE, WRONG_STATE, ATTACHMENT_TOO_LARGE, TOO_MANY_ATTACHMENTS,
     ATTACHMENT_UNREADABLE, NO_ATTACHMENT_DIRECTORY, BAD_ATTACHMENT_DIRECTORY, NEEDS_CONFIRMATION, DRAFT_TOO_LARGE, FAILED,
+
+    /** T42b: the core refused to send a message to be encrypted (a key missing, no own key, or Bcc): compose asks S24's question. */
+    NO_RECIPIENT_KEY, NO_OWN_KEY, ENCRYPTION_WITH_BCC,
 }
 
 /** A compose call that was refused. Carries only the category. */
@@ -91,6 +94,12 @@ interface ComposeBackend {
     suspend fun replyAllDraft(account: AccountId, messageId: Long): ReplyDraft
 
     suspend fun forwardDraft(account: AccountId, messageId: Long): ReplyDraft
+
+    /** T42b: the addresses among [addresses] Croft can encrypt to now, in lower case. Empty when the core cannot say. */
+    suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String> = emptySet()
+
+    /** T42b: what [draftId] lacks before it can be sent encrypted; null when the core cannot say (its key storage is busy). */
+    suspend fun encryptionCheck(account: AccountId, draftId: Long): uniffi.croft_ffi.EncryptionCheck? = null
 }
 
 /**
@@ -152,6 +161,23 @@ class CoreComposeBackend(
 
     override suspend fun forwardDraft(account: AccountId, messageId: Long) = onIo { core.forwardDraft(account, messageId) }
 
+    override suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String> = withContext(io) {
+        if (addresses.isEmpty()) return@withContext emptySet()
+        try {
+            core.keyStatus(account, addresses).filter { it.fingerprint != null }.map { it.address.trim().lowercase() }.toSet()
+        } catch (e: uniffi.croft_ffi.PgpException) {
+            emptySet()
+        }
+    }
+
+    override suspend fun encryptionCheck(account: AccountId, draftId: Long): uniffi.croft_ffi.EncryptionCheck? = withContext(io) {
+        try {
+            core.encryptionCheck(account, draftId)
+        } catch (e: uniffi.croft_ffi.PgpException) {
+            null
+        }
+    }
+
     private suspend fun <T> onIo(block: () -> T): T = call { withContext(io) { block() } }
 
     /** The core's fixed errors as [ComposeFailure]; cancellation passes through. */
@@ -189,6 +215,9 @@ class CoreComposeBackend(
         is ComposeException.BadAttachmentDirectory -> ComposeProblem.BAD_ATTACHMENT_DIRECTORY
         is ComposeException.NeedsConfirmation -> ComposeProblem.NEEDS_CONFIRMATION
         is ComposeException.DraftTooLarge -> ComposeProblem.DRAFT_TOO_LARGE
+        is ComposeException.NoRecipientKey -> ComposeProblem.NO_RECIPIENT_KEY
+        is ComposeException.NoOwnKey -> ComposeProblem.NO_OWN_KEY
+        is ComposeException.EncryptionWithBcc -> ComposeProblem.ENCRYPTION_WITH_BCC
         else -> ComposeProblem.FAILED
     }
 

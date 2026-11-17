@@ -138,4 +138,23 @@ class SecretStoreKeyVaultTest {
         }
         assertFalse(SecretStoreKeyVault(store).toString().contains("made-up"))
     }
+
+    @Test
+    fun aDamagedEntryIsAFailureAndIsKept() {
+        val fp = "3F2A91C47B10E5D28A6C40B19F7E62C3D8150A4B"
+        val vault = SecretStoreKeyVault(store)
+        vault.storeSecretKey(7, fp, "made-up secret key bytes".toByteArray())
+        val file = File(dir, "secrets/acct-7.pgp-$fp.v1")
+        val bytes = file.readBytes()
+        bytes[bytes.size - 1] = (bytes[bytes.size - 1].toInt() xor 1).toByte()
+        file.writeBytes(bytes)
+        try {
+            vault.secretKey(7, fp)
+            fail("expected ProviderException.Failed")
+        } catch (e: ProviderException.Failed) {
+            // not "no key": the core uses no key now, and nothing is deleted
+        }
+        assertTrue("a private key's entry is never deleted for not opening", file.exists())
+    }
 }
+

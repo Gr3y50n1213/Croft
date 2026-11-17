@@ -92,6 +92,9 @@ object KeysTags {
     const val MESSAGE = "key-message"
 }
 
+/** What happened to a save or an open whose screen was gone when the system dialog answered (the phone turned, the app was closed). */
+enum class KeyFileNotice { SAVED, NOT_SAVED, NOT_OPENED }
+
 /** Where key files go and come from: the system's save and open dialogs in the app, a fake in tests. */
 interface KeyFiles {
     /** Asks where to save [text] as [name]; [done] gets true once it is written. */
@@ -100,72 +103,136 @@ interface KeyFiles {
     /** Asks for a file; [done] gets its bytes (at most [MAX_KEY_FILE]), or null when none was chosen or it could not be read. */
     fun open(done: (ByteArray?) -> Unit)
 
+    /** A notice left by a save or open that finished while its screen was gone, taken once. */
+    fun takeNotice(): KeyFileNotice? = null
+
     companion object {
         /** The largest key file read (the core takes 1 MiB). */
         const val MAX_KEY_FILE = 1024 * 1024
     }
 }
 
-/** [KeyFiles] through the system's document dialogs (the app's own storage access, no permission needed). */
+/**
+ * The save or open the system dialog is answering, kept outside the composition: turning the phone while the dialog is open
+ * recreates the activity, and the answer then reaches a new screen. [owner] says which screen asked.
+ */
+internal object KeyFileRequests {
+    class Save(val owner: Any, val text: String, val done: (Boolean) -> Unit)
+    class Open(val owner: Any, val done: (ByteArray?) -> Unit)
+
+    @Volatile var save: Save? = null
+    @Volatile var open: Open? = null
+    @Volatile var notice: KeyFileNotice? = null
+}
+
+/** [KeyFiles] through the system's document dialogs (the app's own storage access, no permission needed). Files are read and written off the main thread. */
 @Composable
 fun rememberSystemKeyFiles(): KeyFiles {
     val context = LocalContext.current
-    var pendingSave by remember { mutableStateOf<Pair<String, (Boolean) -> Unit>?>(null) }
-    var pendingOpen by remember { mutableStateOf<((ByteArray?) -> Unit)?>(null) }
+    val scope = rememberCoroutineScope()
+    // A new object for every composition: after the activity is recreated, an older request's owner is not this one.
+    val owner = remember { Any() }
     val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pgp-keys")) { uri: Uri? ->
-        val (text, done) = pendingSave ?: return@rememberLauncherForActivityResult
-        pendingSave = null
-        done(
-            uri != null && try {
-                context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) } != null
-            } catch (e: Exception) {
-                false
-            },
-        )
+        val request = KeyFileRequests.save
+        KeyFileRequests.save = null
+        val resolver = context.contentResolver
+        if (request == null) {
+            // The request was lost (the app was closed while the dialog was open): the provider made an empty file; remove it.
+            if (uri != null) {
+                try {
+                    android.provider.DocumentsContract.deleteDocument(resolver, uri)
+                } catch (e: Exception) {
+                    // best effort
+                }
+                KeyFileRequests.notice = KeyFileNotice.NOT_SAVED
+            }
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            val ok = uri != null && kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    resolver.openOutputStream(uri, "wt")?.use { it.write(request.text.toByteArray(Charsets.UTF_8)) } != null
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            if (request.owner === owner) request.done(ok) else if (uri != null) {
+                KeyFileRequests.notice = if (ok) KeyFileNotice.SAVED else KeyFileNotice.NOT_SAVED
+            }
+        }
     }
     val opener = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        val done = pendingOpen ?: return@rememberLauncherForActivityResult
-        pendingOpen = null
-        done(
-            uri?.let {
-                try {
-                    context.contentResolver.openInputStream(it)?.use { input -> readAtMost(input, KeyFiles.MAX_KEY_FILE) }
-                } catch (e: Exception) {
-                    null
+        val request = KeyFileRequests.open
+        KeyFileRequests.open = null
+        if (request == null || request.owner !== owner) {
+            // Its screen is gone: nothing is read, and the next S55 asks the person to choose again.
+            if (uri != null) KeyFileRequests.notice = KeyFileNotice.NOT_OPENED
+            return@rememberLauncherForActivityResult
+        }
+        val resolver = context.contentResolver
+        scope.launch {
+            val bytes = uri?.let {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    try {
+                        resolver.openInputStream(it)?.use { input -> readAtMost(input, KeyFiles.MAX_KEY_FILE) }
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
-            },
-        )
+            }
+            request.done(bytes)
+        }
     }
     return remember(saver, opener) {
         object : KeyFiles {
             override fun save(name: String, text: String, done: (Boolean) -> Unit) {
-                pendingSave = text to done
+                KeyFileRequests.save = KeyFileRequests.Save(owner, text, done)
                 saver.launch(name)
             }
 
             override fun open(done: (ByteArray?) -> Unit) {
-                pendingOpen = done
+                KeyFileRequests.open = KeyFileRequests.Open(owner, done)
                 opener.launch(arrayOf("application/pgp-keys", "application/pgp-encrypted", "text/plain", "application/octet-stream", "*/*"))
             }
+
+            override fun takeNotice(): KeyFileNotice? = KeyFileRequests.notice.also { KeyFileRequests.notice = null }
         }
     }
 }
 
-/** The stream's bytes, or null when there are more than [limit] (minSdk 26 has no `readNBytes`). */
+/**
+ * The stream's bytes, or null when there are more than [limit] (minSdk 26 has no `readNBytes`). Every buffer it outgrows, and the
+ * read buffer, is wiped: the file may be an unprotected secret key.
+ */
 internal fun readAtMost(input: java.io.InputStream, limit: Int): ByteArray? {
-    val out = java.io.ByteArrayOutputStream()
     val buf = ByteArray(8192)
-    while (true) {
-        val n = input.read(buf)
-        if (n < 0) break
-        out.write(buf, 0, n)
-        if (out.size() > limit) {
-            buf.fill(0)
-            return null
+    var data = ByteArray(8192)
+    var size = 0
+    try {
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            if (size + n > limit) {
+                data.fill(0)
+                return null
+            }
+            if (size + n > data.size) {
+                val bigger = data.copyOf(maxOf(data.size * 2, size + n).coerceAtMost(limit))
+                data.fill(0)
+                data = bigger
+            }
+            System.arraycopy(buf, 0, data, size, n)
+            size += n
         }
+        val out = data.copyOf(size)
+        data.fill(0)
+        return out
+    } catch (e: java.io.IOException) {
+        data.fill(0)
+        throw e
+    } finally {
+        buf.fill(0)
     }
-    buf.fill(0)
-    return out.toByteArray()
 }
 
 @Composable
@@ -345,6 +412,7 @@ fun KeyDetailScreen(
 ) {
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     var key by remember { mutableStateOf<OwnKey?>(null) }
     var loaded by remember { mutableStateOf(false) }
     var mode by remember { mutableStateOf<KeyMode>(KeyMode.Details) }
@@ -385,19 +453,27 @@ fun KeyDetailScreen(
         loaded = true
     }
 
-    fun import(bytes: ByteArray, passphrase: String) = run {
+    // Every change of what S55 is doing goes through here: a key file waiting for its passphrase is wiped when it is left behind.
+    fun switchMode(next: KeyMode) {
+        val current = mode
+        if (current is KeyMode.Passphrase && current !== next) current.bytes.fill(0)
+        mode = next
+    }
+
+    fun import(bytes: ByteArray, passphrase: String, fromClipboard: Boolean = false) = run {
         try {
             val own = backend.import(account, bytes.copyOf(), passphrase)
-            (mode as? KeyMode.Passphrase)?.bytes?.fill(0)
             bytes.fill(0)
-            mode = KeyMode.Details
+            switchMode(KeyMode.Details)
             importPass = ""
             if (own == null) message = publicText
+            // A private key pasted in does not stay on the clipboard, where any app could read it.
+            if (own != null && fromClipboard) clearClipboard(context)
             reload()
         } catch (e: KeysFailure) {
             if (e.problem == KeysProblem.WRONG_PASSPHRASE && mode !is KeyMode.Passphrase) {
                 // A protected key: ask for its passphrase, keeping the bytes until then.
-                mode = KeyMode.Passphrase(bytes)
+                switchMode(KeyMode.Passphrase(bytes))
             } else {
                 if (mode !is KeyMode.Passphrase) bytes.fill(0)
                 throw e
@@ -410,6 +486,12 @@ fun KeyDetailScreen(
         onDispose { (mode as? KeyMode.Passphrase)?.bytes?.fill(0) }
     }
     LaunchedEffect(backend, account) {
+        // A save or an open that finished while this screen was gone (the phone turned during the system dialog).
+        when (files.takeNotice()) {
+            KeyFileNotice.SAVED -> message = savedText
+            KeyFileNotice.NOT_SAVED, KeyFileNotice.NOT_OPENED -> fileProblem = true
+            null -> {}
+        }
         try {
             reload()
         } catch (e: KeysFailure) {
@@ -474,7 +556,7 @@ fun KeyDetailScreen(
                     supportingContent = { Text(stringResource(R.string.key_backup_hint)) },
                     modifier = Modifier.testTag(KeysTags.BACKUP).clickable(role = Role.Button, enabled = !busy) {
                         clearNotes()
-                        mode = KeyMode.Backup
+                        switchMode(KeyMode.Backup)
                     },
                 )
                 if (mode == KeyMode.Backup) {
@@ -491,12 +573,13 @@ fun KeyDetailScreen(
                         Button(
                             enabled = !busy && issue == null && one.length >= MIN_PASSPHRASE && one == two,
                             onClick = {
+                                // The passphrase leaves the fields at once, whatever happens next.
                                 val pass = one
+                                one = ""
+                                two = ""
                                 run {
                                     val text = backend.exportSecret(account, k.fingerprint, pass)
-                                    one = ""
-                                    two = ""
-                                    mode = KeyMode.Details
+                                    switchMode(KeyMode.Details)
                                     files.save("${k.addresses.firstOrNull() ?: "key"}.private-backup.asc", text) { ok ->
                                         if (ok) message = savedText else fileProblem = true
                                     }
@@ -504,7 +587,9 @@ fun KeyDetailScreen(
                             },
                             modifier = Modifier.testTag(KeysTags.BACKUP_SAVE),
                         ) { Text(stringResource(R.string.key_backup_save)) }
-                        TextButton(onClick = { one = ""; two = ""; mode = KeyMode.Details }) { Text(stringResource(R.string.key_cancel)) }
+                        TextButton(enabled = !busy, onClick = { one = ""; two = ""; switchMode(KeyMode.Details) }) {
+                            Text(stringResource(R.string.key_cancel))
+                        }
                     }
                 }
                 ListItem(
@@ -526,10 +611,9 @@ fun KeyDetailScreen(
                             onClick = { import(pending.bytes, importPass) },
                             modifier = Modifier.testTag(KeysTags.IMPORT_GO),
                         ) { Text(stringResource(R.string.key_import_go)) }
-                        TextButton(onClick = {
-                            pending.bytes.fill(0)
+                        TextButton(enabled = !busy, onClick = {
                             importPass = ""
-                            mode = KeyMode.Details
+                            switchMode(KeyMode.Details)
                         }) { Text(stringResource(R.string.key_cancel)) }
                     }
                 } else {
@@ -547,7 +631,7 @@ fun KeyDetailScreen(
                             onClick = {
                                 clearNotes()
                                 val text = (paste ?: { clipboard.getText()?.text })()
-                                if (text.isNullOrBlank()) message = nothingToPaste else import(text.toByteArray(Charsets.UTF_8), "")
+                                if (text.isNullOrBlank()) message = nothingToPaste else import(text.toByteArray(Charsets.UTF_8), "", fromClipboard = true)
                             },
                             modifier = Modifier.testTag(KeysTags.PASTE),
                         ) { Text(stringResource(R.string.key_paste)) }
@@ -576,6 +660,16 @@ fun KeyDetailScreen(
             },
             dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text(stringResource(R.string.key_cancel)) } },
         )
+    }
+}
+
+/** Empties the system clipboard (after a pasted private key was taken). */
+private fun clearClipboard(context: android.content.Context) {
+    val manager = context.getSystemService(android.content.ClipboardManager::class.java) ?: return
+    try {
+        if (android.os.Build.VERSION.SDK_INT >= 28) manager.clearPrimaryClip() else manager.setPrimaryClip(android.content.ClipData.newPlainText("", ""))
+    } catch (e: Exception) {
+        // best effort
     }
 }
 

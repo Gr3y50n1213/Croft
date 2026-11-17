@@ -132,6 +132,8 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   - No "Revoke key" (S55): the core cannot make a revocation certificate yet. "Remove key" deletes it from this phone only.
   - Other people's keys are not listed anywhere yet (they are used, and shown per recipient in compose with T42b).
   - S54 does not say whether a key was backed up.
+  - The secret key the vault hands to the core is a Java array UniFFI copies from; it cannot be wiped from Kotlin and is
+    left to the garbage collector (the core wipes its own copy).
 - **OpenPGP in compose and reading (T41c).**
   - The subject is not protected (no "protected headers"): it travels in the clear.
   - Encrypted mail with Bcc is refused rather than sent as a separate copy to each Bcc recipient.

@@ -230,8 +230,27 @@ class KeysScreensTest {
     }
 
     @Test
+    fun aSaveThatFinishedWhileTheScreenWasGoneIsReportedWhenItIsBack() {
+        val backend = FakeKeysBackend()
+        runBlocking { backend.generate(1) }
+        val files = object : KeyFiles by Files() {
+            var notice: KeyFileNotice? = KeyFileNotice.NOT_SAVED
+            override fun takeNotice(): KeyFileNotice? = notice.also { notice = null }
+        }
+        ScreenshotKit.configure(360, 2600, false, 1.0f)
+        rule.show(AnimationLevel.OFF) {
+            KeyDetailScreen(backend = backend, account = 1, files = files, onBack = {}, zone = ZoneOffset.UTC, paste = { null })
+        }
+        waitFor(KeysTags.MESSAGE)
+        rule.onNodeWithTag(KeysTags.MESSAGE).assert(hasText("could not be read or written", substring = true))
+    }
+
+    @Test
     fun readingAFileStopsPastTheLimit() {
         assertEquals(3, readAtMost("abc".byteInputStream(), 3)!!.size)
         assertNull(readAtMost(ByteArray(10_000).inputStream(), 9_999))
+        // Larger than one read buffer, and growing more than once: every byte arrives, in order.
+        val big = ByteArray(50_000) { (it % 251).toByte() }
+        assertTrue(big.contentEquals(readAtMost(big.inputStream(), 60_000)))
     }
 }

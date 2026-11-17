@@ -13,7 +13,11 @@ import uniffi.croft_ffi.ProviderException
  *
  * It wipes the array the core hands over once it is sealed. A Keystore that cannot answer now (or whose loss is only suspected)
  * is `ProviderException.NotReady`: the core then makes, imports or uses no key, and nothing is deleted. A definite loss reads as
- * "no secret" (it is gone). Anything else is `ProviderException.Failed`. Nothing here logs, and no exception carries a secret.
+ * "no secret" (it is gone). An entry that does not open (damaged) is `ProviderException.Failed` and is kept. Anything else is
+ * `ProviderException.Failed`. Nothing here logs, and no exception carries a secret.
+ *
+ * The array [secretKey] returns crosses into the core and cannot be wiped from here (UniFFI copies it; the Java copy is left to the
+ * garbage collector): noted in OPEN-ITEMS.
  */
 class SecretStoreKeyVault(private val store: SecretStore) : KeyVault {
     override fun storeSecretKey(accountId: Long, fingerprint: String, secret: ByteArray) {
@@ -44,6 +48,8 @@ class SecretStoreKeyVault(private val store: SecretStore) : KeyVault {
         try {
             store.removeKey(accountId, fingerprint)
         } catch (e: IllegalArgumentException) {
+            throw ProviderException.Failed()
+        } catch (e: java.io.IOException) {
             throw ProviderException.Failed()
         }
     }

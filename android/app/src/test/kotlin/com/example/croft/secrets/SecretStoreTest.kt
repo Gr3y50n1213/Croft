@@ -323,15 +323,22 @@ class SecretStoreTest {
     }
 
     @Test
-    fun aKeyFileCopiedOntoAnotherEntryDoesNotOpenAndIsDropped() {
+    fun aKeyFileCopiedOntoAnotherEntryDoesNotOpenAndIsNeverDeleted() {
         store.putKey(3, fpA, bytes("made-up secret key A"))
         val a = File(dir, "acct-3.pgp-$fpA.v1")
         assertTrue(a.exists())
-        a.copyTo(File(dir, "acct-3.pgp-$fpB.v1"))
-        a.copyTo(File(dir, "acct-9.pgp-$fpA.v1"))
-        assertNull(store.getKey(3, fpB))
-        assertNull(store.getKey(9, fpA))
-        assertFalse(File(dir, "acct-3.pgp-$fpB.v1").exists())
+        val copies = listOf(File(dir, "acct-3.pgp-$fpB.v1"), File(dir, "acct-9.pgp-$fpA.v1"))
+        copies.forEach { a.copyTo(it) }
+        for ((account, fp) in listOf(3L to fpB, 9L to fpA)) {
+            try {
+                store.getKey(account, fp)
+                fail("expected CORRUPT")
+            } catch (e: SecretBoxException) {
+                assertEquals(SecretBoxException.Kind.CORRUPT, e.kind)
+            }
+        }
+        // Unlike a password, a key entry that does not open is kept: a private key cannot be typed in again.
+        assertTrue(copies.all { it.exists() })
         assertArrayEquals(bytes("made-up secret key A"), store.getKey(3, fpA))
     }
 

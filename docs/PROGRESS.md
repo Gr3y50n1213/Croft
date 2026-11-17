@@ -7,8 +7,7 @@ unverified, the next step.
 
 ## T42a: Encryption keys on Android: the key vault, S54 and S55 (17 November 2026)
 
-**Status:** in review (draft PR open; the independent review of the vault runs before merging). S56 and the compose lock
-are T42b.
+**Status:** reviewed, findings fixed; waiting for CI on draft #105. S56 and the compose lock are T42b.
 
 **What was built.**
 - **The vault:**
@@ -26,6 +25,14 @@ are T42b.
   - Remove key, asked first.
   - Import of a file or pasted text; a protected key asks for its passphrase. The bytes are wiped once used or when
     the screen is left.
+- **After the review:**
+  - A key entry that does not open is kept and reported, never deleted (a private key cannot be typed in again).
+  - A save or open survives the phone turning during the system dialog; an empty file left by a lost request is
+    removed.
+  - Read buffers, a pending import and the backup fields are wiped; a pasted private key is cleared from the
+    clipboard.
+  - A failed delete is reported.
+  - The core no longer deletes a working secret when re-importing it fails.
 
 **Checks.** Kotlin compiles only in CI; the new tests are `SecretStoreTest` (4 new), `SecretStoreKeyVaultTest` (3, against
 the real core), `KeysScreensTest` (10) and `AccountsTest` (1).

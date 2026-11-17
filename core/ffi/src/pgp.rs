@@ -13,7 +13,7 @@ use croft_crypto::{autocrypt, wkd, CryptoError, SecretBytes};
 use croft_storage::pgp::{self as store, KeyRow, KeySource, NewKey};
 use croft_storage::{accounts, identities};
 use rusqlite::Connection;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::core::{now_ms, Core};
 use crate::credentials::ProviderError;
@@ -611,6 +611,17 @@ impl Core {
                 return Err(PgpError::NoUsableKey);
             }
             let secret = keys::store_secret(&key)?;
+            // Whether the vault already held this key (the person imports a key they already have): a failure below must
+            // then leave that secret in place, not delete a working key.
+            let had_it = vault
+                .secret_key(account, info.fingerprint.clone())
+                .map(|old| {
+                    old.is_some_and(|mut b| {
+                        b.zeroize();
+                        true
+                    })
+                })
+                .unwrap_or(true);
             vault.store_secret_key(account, info.fingerprint.clone(), secret.0.to_vec())?;
             let stored = self.inner.handle.read(|db| {
                 store_cert(
@@ -622,7 +633,7 @@ impl Core {
                     &info.addresses,
                 )
             });
-            if stored.is_err() {
+            if stored.is_err() && !had_it {
                 let _ = vault.delete_secret_key(account, info.fingerprint.clone());
             }
             return stored;

@@ -129,7 +129,11 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
         synchronized(this) { writeAtomically(keyFile(accountId, fingerprint), blob) }
     }
 
-    /** The OpenPGP secret key [fingerprint] of [accountId], or null; a damaged entry is deleted and reads as null (as [get]). */
+    /**
+     * The OpenPGP secret key [fingerprint] of [accountId], or null when there is none. Unlike a password, an entry that does not
+     * open is **never deleted** (a private key cannot be typed again): it is reported with [SecretBoxException] (CORRUPT) and stays,
+     * so a passing fault of the Keystore or the disk loses nothing.
+     */
     fun getKey(accountId: Long, fingerprint: String): ByteArray? {
         val f = keyFile(accountId, checkedFingerprint(fingerprint))
         val blob = synchronized(this) {
@@ -139,23 +143,14 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
                 return null
             }
         }
-        try {
-            return box.open(blob, keyContext(accountId, fingerprint))
-        } catch (e: SecretBoxException) {
-            if (e.kind == SecretBoxException.Kind.CORRUPT) {
-                synchronized(this) {
-                    if (f.exists() && f.readBytes().contentEquals(blob)) f.delete()
-                }
-                return null
-            }
-            throw e
-        }
+        return box.open(blob, keyContext(accountId, fingerprint))
     }
 
-    /** Deletes the OpenPGP secret key [fingerprint] of [accountId]. */
+    /** Deletes the OpenPGP secret key [fingerprint] of [accountId]. Throws [IOException] when the file is still there afterwards. */
     @Synchronized
     fun removeKey(accountId: Long, fingerprint: String) {
-        keyFile(accountId, checkedFingerprint(fingerprint)).delete()
+        val f = keyFile(accountId, checkedFingerprint(fingerprint))
+        if (!f.delete() && f.exists()) throw IOException("the key entry could not be deleted")
     }
 
     private fun keyFile(accountId: Long, fingerprint: String) = File(dir, "$PREFIX$accountId.$KEY_INFIX$fingerprint.v1")

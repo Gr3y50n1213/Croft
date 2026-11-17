@@ -883,6 +883,19 @@ impl Core {
         let message_id = mail::new_message_id(seed, &from.address);
         let references: Vec<String> = in_reply_to.map(str::to_owned).into_iter().collect();
         let reply_text = reply.to_text();
+        // T41b: the account's Autocrypt header, as on every message Croft sends.
+        let autocrypt = self
+            .inner
+            .handle
+            .read(|db| {
+                Ok::<_, CoreError>(crate::pgp::autocrypt_header(
+                    db.connection(),
+                    account,
+                    &from.address,
+                ))
+            })
+            .ok()
+            .flatten();
         let mime = mail::build_message(&Outgoing {
             from,
             to: &to,
@@ -900,7 +913,7 @@ impl Core {
                 method: "REPLY",
                 text: &reply_text,
             }),
-            autocrypt: None,
+            autocrypt: autocrypt.as_deref(),
             boundary_seed,
         })
         .map_err(|_| CoreError::Internal)?;

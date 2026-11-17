@@ -431,3 +431,159 @@ fn wkd_finds_a_key_that_names_the_address_and_refuses_one_that_does_not() {
     );
     *crate::pgp::WKD_BASE_FOR_TESTS.lock().unwrap() = None;
 }
+
+/// The folder id of `path` (synced when the fixture opened).
+fn folder(m: &Mail, path: &str) -> i64 {
+    m.core()
+        .inner
+        .handle
+        .read(|db| croft_storage::folders::find_by_path(db.connection(), m.account, path))
+        .unwrap()
+        .unwrap()
+        .id
+}
+
+/// An Autocrypt header block naming `addr`, with `cert`'s minimal key.
+fn header_block(addr: &str, cert: &croft_crypto::Certificate, mutual: bool) -> String {
+    let named = keys::info(cert, now_secs()).addresses[0].clone();
+    let value = autocrypt::header(&named, cert, mutual, now_secs())
+        .unwrap()
+        .replace(&format!("addr={named}"), &format!("addr={addr}"));
+    format!("Autocrypt: {value}\r\n")
+}
+
+fn now_ms_here() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+#[test]
+fn a_header_cannot_take_over_a_key_the_person_chose_nor_file_it_under_another_sender() {
+    let (m, _) = with_vault();
+    let inbox = folder(&m, "INBOX");
+    let made = m.core().generate_key(m.account).unwrap();
+    let bob = m
+        .core()
+        .import_key(m.account, fixture("gpg-bob.pub.asc"), String::new())
+        .unwrap();
+    let own_cert = keys::read_public(
+        m.core()
+            .export_public_key(m.account, made.fingerprint.clone())
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+    let bob_cert = keys::read_public(&fixture("gpg-bob.pub.asc")).unwrap();
+    // Mallory sends the account's own key, then Bob's, as Mallory's Autocrypt key.
+    for cert in [&own_cert, &bob_cert] {
+        m.core().learn_autocrypt(
+            m.account,
+            inbox,
+            Some("mallory@example.com"),
+            now_ms_here(),
+            &header_block("mallory@example.com", cert, true),
+        );
+    }
+    let keys_now = m.core().pgp_keys(m.account).unwrap();
+    assert_eq!(keys_now.len(), 2);
+    let own = keys_now.iter().find(|k| k.own).unwrap();
+    assert_eq!(
+        (own.source, own.addresses.clone(), own.can_sign),
+        (
+            PgpKeySource::Made,
+            vec!["alice@example.org".to_owned()],
+            true
+        )
+    );
+    let theirs = keys_now.iter().find(|k| !k.own).unwrap();
+    assert_eq!(
+        (
+            theirs.fingerprint.as_str(),
+            theirs.source,
+            theirs.addresses.clone()
+        ),
+        (
+            bob.fingerprint.as_str(),
+            PgpKeySource::Imported,
+            vec!["bob@example.net".to_owned()]
+        )
+    );
+    let status = m
+        .core()
+        .key_status(
+            m.account,
+            vec!["mallory@example.com".into(), "bob@example.net".into()],
+        )
+        .unwrap();
+    assert!(
+        status[0].fingerprint.is_none(),
+        "nothing filed under Mallory"
+    );
+    assert_eq!(
+        status[1].fingerprint.as_deref(),
+        Some(bob.fingerprint.as_str())
+    );
+    // The account still announces its own key.
+    let header = m
+        .core()
+        .inner
+        .handle
+        .read(|db| {
+            Ok::<_, PgpError>(crate::pgp::autocrypt_header(
+                db.connection(),
+                m.account,
+                "alice@example.org",
+            ))
+        })
+        .unwrap();
+    assert!(header.is_some());
+}
+
+#[test]
+fn autocrypt_from_a_future_date_or_junk_pins_nothing_and_a_later_plain_mail_stops_asking() {
+    let (m, _) = with_vault();
+    let (inbox, junk) = (folder(&m, "INBOX"), folder(&m, "Junk"));
+    let first = keys::generate("Sam <sam@example.net>", now_secs() - 60).unwrap();
+    let second = keys::generate("Sam <sam@example.net>", now_secs() - 60).unwrap();
+    let cert = |k: &keys::Generated| keys::read_public(&k.public).unwrap();
+    let learn = |folder: i64, date: i64, headers: &str| {
+        m.core()
+            .learn_autocrypt(m.account, folder, Some("sam@example.net"), date, headers);
+    };
+    // In Junk: nothing at all, not even the date.
+    learn(
+        junk,
+        now_ms_here(),
+        &header_block("sam@example.net", &cert(&first), true),
+    );
+    assert!(m.core().pgp_keys(m.account).unwrap().is_empty());
+    // Dated in 2099: taken as dated now, so the next real header still replaces it.
+    learn(
+        inbox,
+        4_070_908_800_000,
+        &header_block("sam@example.net", &cert(&first), false),
+    );
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    learn(
+        inbox,
+        now_ms_here(),
+        &header_block("sam@example.net", &cert(&second), true),
+    );
+    let status = |m: &Mail| {
+        m.core()
+            .key_status(m.account, vec!["sam@example.net".into()])
+            .unwrap()
+            .remove(0)
+    };
+    let s = status(&m);
+    assert_eq!(s.fingerprint.as_deref(), Some(second.fingerprint.as_str()));
+    assert!(s.prefer_mutual);
+    // A later message without the header: the key stays, encryption is no longer asked for.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    learn(inbox, now_ms_here(), "Subject: plain\r\n");
+    let s = status(&m);
+    assert_eq!(s.fingerprint.as_deref(), Some(second.fingerprint.as_str()));
+    assert!(!s.prefer_mutual);
+}

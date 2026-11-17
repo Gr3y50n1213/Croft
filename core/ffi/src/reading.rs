@@ -500,7 +500,8 @@ impl Core {
         remote_images: RemoteImagesSetting,
     ) -> Result<MessageBody, ReadError> {
         let m = self.owner(message_id)?;
-        let (account, from, date) = (m.account_id, m.from_addr.clone(), m.date_ts);
+        let (account, folder, from, date) =
+            (m.account_id, m.folder_id, m.from_addr.clone(), m.date_ts);
         let inner = self.inner.clone();
         let task = self.spawn(
             async move {
@@ -589,7 +590,7 @@ impl Core {
             .read(|db| reading::body(db.connection(), account, message_id))
         {
             if let Some(headers) = stored.headers_raw.as_deref() {
-                self.learn_autocrypt(account, from.as_deref(), date, headers);
+                self.learn_autocrypt(account, folder, from.as_deref(), date, headers);
             }
         }
         Ok(body)

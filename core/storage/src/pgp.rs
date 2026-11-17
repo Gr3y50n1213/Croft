@@ -32,6 +32,20 @@ impl KeySource {
         }
     }
 
+    /// Chosen by the person (made here or imported), not discovered.
+    fn chosen(self) -> bool {
+        matches!(self, KeySource::Made | KeySource::Imported)
+    }
+
+    /// How much a copy from here counts: the person's choice, then a WKD (the domain's own answer), then an Autocrypt header.
+    fn rank(self) -> u8 {
+        match self {
+            KeySource::Made | KeySource::Imported => 3,
+            KeySource::Wkd => 2,
+            KeySource::Autocrypt => 1,
+        }
+    }
+
     fn parse(s: &str) -> KeySource {
         match s {
             "made" => KeySource::Made,
@@ -95,27 +109,32 @@ pub struct NewKey<'a> {
     pub addresses: &'a [String],
 }
 
-/// Stores `key` for `account` (or updates the stored copy: a newer certificate, the addresses; once own, a key stays own,
-/// and its source stays the strongest of made, imported, then the rest). Returns its row id; `None` when there is no such
-/// account.
+/// Stores `key` for `account`, or updates the stored copy, and returns its row id (`None` when there is no such account).
+///
+/// A key the person chose (their own, made or imported) is changed only by the person: a copy from an Autocrypt header or a
+/// WKD changes nothing about it, not even where it is filed. A revoked certificate is never replaced (a copy without the
+/// revocation would bring the key back). Once own, a key stays own; its source becomes the strongest seen (made or
+/// imported, then WKD, then Autocrypt). The person's copy replaces the addresses the key is filed under; a discovered
+/// copy only adds to them.
 pub fn upsert_key(
     conn: &Connection,
     account: i64,
     key: &NewKey<'_>,
     now: i64,
 ) -> Result<Option<i64>> {
-    let id: Option<i64> = conn
-        .query_row(
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM account WHERE id = ?1)",
+        params![account],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    let by_person = key.source.chosen();
+    let id = match self::key(conn, account, key.fingerprint)? {
+        None => conn.query_row(
             r#"INSERT INTO pgp_key (account_id, fingerprint, public_key, own, source, created_at, expires_at, revoked, updated_at)
-               SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9 WHERE EXISTS (SELECT 1 FROM account WHERE id = ?1)
-               ON CONFLICT (account_id, fingerprint) DO UPDATE SET
-                   public_key = excluded.public_key,
-                   own = MAX(own, excluded.own),
-                   source = CASE WHEN source IN ('made', 'imported') THEN source ELSE excluded.source END,
-                   expires_at = excluded.expires_at,
-                   revoked = excluded.revoked,
-                   updated_at = excluded.updated_at
-               RETURNING id"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) RETURNING id"#,
             params![
                 account,
                 key.fingerprint,
@@ -127,16 +146,45 @@ pub fn upsert_key(
                 key.revoked,
                 now
             ],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(id) = id else {
-        return Ok(None);
+            |r| r.get::<_, i64>(0),
+        )?,
+        Some(old) if !by_person && (old.own || old.source.chosen()) => return Ok(Some(old.id)),
+        Some(old) => {
+            let source = if key.source.rank() > old.source.rank() {
+                key.source
+            } else {
+                old.source
+            };
+            if old.revoked {
+                conn.execute(
+                    "UPDATE pgp_key SET own = MAX(own, ?3), source = ?4, updated_at = ?5 WHERE account_id = ?1 AND id = ?2",
+                    params![account, old.id, key.own, source.as_str(), now],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE pgp_key SET public_key = ?3, own = MAX(own, ?4), source = ?5, expires_at = ?6, revoked = ?7,
+                        updated_at = ?8 WHERE account_id = ?1 AND id = ?2",
+                    params![
+                        account,
+                        old.id,
+                        key.public_key,
+                        key.own,
+                        source.as_str(),
+                        key.expires_at,
+                        key.revoked,
+                        now
+                    ],
+                )?;
+            }
+            if by_person {
+                conn.execute(
+                    "DELETE FROM pgp_key_address WHERE key_id = ?1 AND account_id = ?2",
+                    params![old.id, account],
+                )?;
+            }
+            old.id
+        }
     };
-    conn.execute(
-        "DELETE FROM pgp_key_address WHERE key_id = ?1 AND account_id = ?2",
-        params![id, account],
-    )?;
     for a in key.addresses.iter().take(64) {
         conn.execute(
             "INSERT OR IGNORE INTO pgp_key_address (account_id, key_id, address) VALUES (?1, ?2, ?3)",
@@ -203,11 +251,14 @@ pub fn key(conn: &Connection, account: i64, fingerprint: &str) -> Result<Option<
     })
 }
 
-/// The account's keys filed under `address` (ASCII lower-cased here), own first, newest first.
+/// The account's keys filed under `address` (ASCII lower-cased here): own first, then the person's imports, then WKD, then
+/// Autocrypt; newest first within each.
 pub fn keys_for(conn: &Connection, account: i64, address: &str) -> Result<Vec<KeyRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {} FROM pgp_key k JOIN pgp_key_address a ON a.key_id = k.id AND a.account_id = k.account_id
-          WHERE k.account_id = ?1 AND a.address = ?2 ORDER BY k.own DESC, k.created_at DESC, k.id DESC LIMIT 20",
+          WHERE k.account_id = ?1 AND a.address = ?2
+          ORDER BY k.own DESC, CASE k.source WHEN 'made' THEN 3 WHEN 'imported' THEN 3 WHEN 'wkd' THEN 2 ELSE 1 END DESC,
+                   k.created_at DESC, k.id DESC LIMIT 20",
         COLUMNS.split(", ").map(|c| format!("k.{c}")).collect::<Vec<_>>().join(", ")
     ))?;
     let rows: Vec<KeyRow> = stmt
@@ -359,11 +410,15 @@ mod tests {
         upsert_key(c, a, &new_key("AA", false, KeySource::Autocrypt, &sam), 1)
             .unwrap()
             .unwrap();
-        // The same key again (a newer header): one row, its source unchanged in kind.
+        // The same key again, from a WKD: one row, the stronger source.
         upsert_key(c, a, &new_key("AA", false, KeySource::Wkd, &sam), 2)
             .unwrap()
             .unwrap();
         assert_eq!(keys(c, a).unwrap().len(), 1);
+        assert_eq!(keys(c, a).unwrap()[0].source, KeySource::Wkd);
+        // A later Autocrypt copy does not lower it.
+        upsert_key(c, a, &new_key("AA", false, KeySource::Autocrypt, &sam), 3).unwrap();
+        assert_eq!(keys(c, a).unwrap()[0].source, KeySource::Wkd);
         assert_eq!(
             keys_for(c, a, "SAM@example.ORG").unwrap()[0].fingerprint,
             "AA"
@@ -387,6 +442,99 @@ mod tests {
         assert!(!delete_key(c, b, "AA").unwrap());
         assert!(delete_key(c, a, "AA").unwrap());
         assert!(keys_for(c, a, "sam@example.org").unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_the_person_changes_a_key_they_chose_and_a_revoked_certificate_is_never_replaced() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        let a = account(c, 1);
+        let (bob, mallory) = (
+            vec!["bob@example.org".to_owned()],
+            vec!["mallory@example.com".to_owned()],
+        );
+        let imported = NewKey {
+            public_key: b"bob's full certificate",
+            ..new_key("BB", false, KeySource::Imported, &bob)
+        };
+        upsert_key(c, a, &imported, 1).unwrap();
+        // Discovered copies (Mallory's header with Bob's key, a WKD answer) change nothing about it.
+        for source in [KeySource::Autocrypt, KeySource::Wkd] {
+            let copy = NewKey {
+                public_key: b"a minimal copy",
+                ..new_key("BB", false, source, &mallory)
+            };
+            upsert_key(c, a, &copy, 2).unwrap();
+        }
+        let k = key(c, a, "BB").unwrap().unwrap();
+        assert_eq!(
+            (k.public_key.as_slice(), k.source, k.addresses.clone()),
+            (
+                &b"bob's full certificate"[..],
+                KeySource::Imported,
+                bob.clone()
+            )
+        );
+        assert!(keys_for(c, a, "mallory@example.com").unwrap().is_empty());
+        // A discovered key adds addresses as senders use it; it never loses one.
+        let (sam, samuel) = (
+            vec!["sam@example.org".to_owned()],
+            vec!["samuel@example.org".to_owned()],
+        );
+        upsert_key(c, a, &new_key("SS", false, KeySource::Autocrypt, &sam), 1).unwrap();
+        upsert_key(
+            c,
+            a,
+            &new_key("SS", false, KeySource::Autocrypt, &samuel),
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            keys_for(c, a, "sam@example.org").unwrap()[0].fingerprint,
+            "SS"
+        );
+        assert_eq!(
+            keys_for(c, a, "samuel@example.org").unwrap()[0].fingerprint,
+            "SS"
+        );
+        // Revoked: a later copy without the revocation, even the person's, does not bring it back.
+        let revoked = NewKey {
+            public_key: b"with its revocation",
+            revoked: true,
+            ..new_key("RR", false, KeySource::Wkd, &bob)
+        };
+        upsert_key(c, a, &revoked, 1).unwrap();
+        for source in [KeySource::Autocrypt, KeySource::Imported] {
+            let older = NewKey {
+                public_key: b"without it",
+                ..new_key("RR", false, source, &bob)
+            };
+            upsert_key(c, a, &older, 2).unwrap();
+        }
+        let k = key(c, a, "RR").unwrap().unwrap();
+        assert!(k.revoked);
+        assert_eq!(k.public_key, b"with its revocation");
+    }
+
+    #[test]
+    fn a_key_the_person_imported_comes_before_a_newer_discovered_one() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.connection();
+        let a = account(c, 1);
+        let bob = vec!["bob@example.org".to_owned()];
+        upsert_key(c, a, &new_key("OLD", false, KeySource::Imported, &bob), 1).unwrap();
+        let newer = |fp, source| NewKey {
+            created_at: 99,
+            ..new_key(fp, false, source, &bob)
+        };
+        upsert_key(c, a, &newer("AC", KeySource::Autocrypt), 2).unwrap();
+        upsert_key(c, a, &newer("WK", KeySource::Wkd), 3).unwrap();
+        let order: Vec<String> = keys_for(c, a, "bob@example.org")
+            .unwrap()
+            .into_iter()
+            .map(|k| k.fingerprint)
+            .collect();
+        assert_eq!(order, ["OLD", "WK", "AC"]);
     }
 
     #[test]

@@ -7,8 +7,8 @@ unverified, the next step.
 
 ## T41b: OpenPGP keys in the core: storage, the keystore, discovery (17 November 2026)
 
-**Status:** in review (draft PR open; the independent review runs before merging). Encrypting, signing, decrypting and
-verifying in compose and reading are T41c; the screens are T42.
+**Status:** reviewed, findings fixed; waiting for CI on draft #101. Encrypting, signing, decrypting and verifying in
+compose and reading are T41c; the screens are T42.
 
 **What was built.**
 - **Storage (migration 0015):** `pgp_key` (public certificates only, one row per fingerprint per account, own or not, and
@@ -24,16 +24,26 @@ verifying in compose and reading are T41c; the screens are T42.
   `lookup_key` in the sender's Web Key Directory (`https` to public addresses only, no redirect, 256 KiB, the key must
   name the address).
 - **For compose:** `key_status(account, addresses)`. **Outgoing:** every message sent from an account with an own key
-  carries its `Autocrypt:` header (drafts do not). FFI v23.
+  carries its `Autocrypt:` header (drafts do not; invitation replies do). FFI v23.
+- **After the review:**
+  - A key the person chose (own, made or imported) is never changed or re-filed by an Autocrypt header or a WKD answer.
+  - A revoked certificate is never replaced by a copy without its revocation.
+  - A discovered key only gains addresses, and its source only goes up (Autocrypt, then WKD, then the person's).
+  - `key_status` prefers the person's keys over discovered ones.
+  - Autocrypt's date is capped at now and Junk is skipped; each step is one transaction and is undone if the key cannot
+    be stored. `prefer-encrypt` lapses after a later message without the header.
+  - The outgoing header uses the key in use (signs and encrypts).
+  - Every old-format secret-key packet is recognised on import.
+  - The Companion's lock file carries croft-crypto's dependencies.
 
-**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (1,277; new: 3 in
-`core/storage/src/pgp.rs`, 3 in `core/protocols/tests/wkd.rs`, 6 in `core/ffi/src/compose/tests/pgp.rs`), SQLCipher and
+**Checks.** All local and passed: `cargo fmt`, the three clippy runs, the whole core's tests (1,281; new: 5 in
+`core/storage/src/pgp.rs`, 3 in `core/protocols/tests/wkd.rs`, 8 in `core/ffi/src/compose/tests/pgp.rs`), SQLCipher and
 `check_schema.py`. The Android licence list is regenerated (rPGP's crates are now in the app); `test_gen_licences` passes.
 Android compiles only in CI.
 
 **Unverified.** The Android side has no vault yet (T42), so nothing secret is made on a phone until then.
 
-**Next.** The independent review, CI, merge; then T41c (compose and reading).
+**Next.** CI, merge; then T41c (compose and reading).
 
 ---
 

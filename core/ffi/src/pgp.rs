@@ -327,11 +327,14 @@ impl Core {
     }
 
     /// Takes the Autocrypt header of a read message (T41b): the sender's key is filed under the header's address when the
-    /// message is newer than the last header taken from them. Messages from the account's own addresses, with more than one
-    /// Autocrypt header, or whose header does not match the `From` address, give nothing. Never fails the caller.
+    /// message is newer than the last header taken from them. "Newer" uses the message's date no later than now (Autocrypt's
+    /// effective date), so a date in the future cannot pin a key. Messages in Junk, from the account's own addresses, with
+    /// more than one Autocrypt header, or whose header does not match the `From` address, give nothing. All of it is one
+    /// transaction. Never fails the caller.
     pub(crate) fn learn_autocrypt(
         &self,
         account: i64,
+        folder_id: i64,
         from: Option<&str>,
         date_ms: i64,
         headers_raw: &str,
@@ -339,54 +342,98 @@ impl Core {
         let Some(from) = from.and_then(keys::bare_address) else {
             return;
         };
+        let date_ms = date_ms.min(now_ms());
+        // Parsed and checked before the database is touched.
+        let values = header_values(headers_raw, "autocrypt");
+        let header = match values.as_slice() {
+            [one] => autocrypt::parse_header(one, &from, now_secs()).ok(),
+            _ => None,
+        };
         let _ = self.inner.handle.read(|db| {
             let c = db.connection();
-            if own_addresses(c, account)
-                .map_err(|_| croft_storage::StorageError::NotFound("account"))?
-                .contains(&from)
-            {
-                return Ok::<_, croft_storage::StorageError>(());
+            let junk = croft_storage::folders::get(c, account, folder_id)?
+                .is_none_or(|f| f.special_use == "junk");
+            if junk || own_addresses(c, account)?.contains(&from) {
+                return Ok::<_, PgpError>(());
             }
-            let values = header_values(headers_raw, "autocrypt");
-            let header = match values.as_slice() {
-                [one] => autocrypt::parse_header(one, &from, now_secs()).ok(),
-                _ => None,
-            };
-            let Some(h) = header else {
-                store::saw_message(c, account, &from, date_ms, None)?;
-                return Ok(());
-            };
-            let fp = keys::fingerprint(&h.cert);
-            let before = store::peer(c, account, &from)?.and_then(|p| p.fingerprint);
-            if store::saw_message(c, account, &from, date_ms, Some((&fp, h.prefer_mutual)))? {
-                // Filed under the header's address only (the key may name others).
-                let _ = store_cert(
-                    c,
-                    account,
-                    &h.cert,
-                    false,
-                    KeySource::Autocrypt,
-                    std::slice::from_ref(&h.addr),
-                );
-                // The key the sender replaced goes, when Croft had it only from their Autocrypt header.
-                if let Some(old) = before.filter(|o| *o != fp) {
-                    store::drop_replaced_autocrypt_key(c, account, &old)?;
+            in_transaction(c, || {
+                let Some(h) = &header else {
+                    store::saw_message(c, account, &from, date_ms, None)?;
+                    return Ok(());
+                };
+                let fp = keys::fingerprint(&h.cert);
+                let before = store::peer(c, account, &from)?.and_then(|p| p.fingerprint);
+                if store::saw_message(c, account, &from, date_ms, Some((&fp, h.prefer_mutual)))? {
+                    // Filed under the header's address only (the key may name others); a key the person chose is left
+                    // as it is. A failure undoes the whole step.
+                    store_cert(
+                        c,
+                        account,
+                        &h.cert,
+                        false,
+                        KeySource::Autocrypt,
+                        std::slice::from_ref(&h.addr),
+                    )?;
+                    // The key the sender replaced goes, when Croft had it only from Autocrypt headers.
+                    if let Some(old) = before.filter(|o| *o != fp) {
+                        store::drop_replaced_autocrypt_key(c, account, &old)?;
+                    }
                 }
-            }
-            Ok(())
+                Ok(())
+            })
         });
     }
 }
 
-/// The `Autocrypt:` header value for a message sent from `from` (an identity of the account), when the account has an own key
-/// that names that address. `None` otherwise (and on any failure: a message is never held back for it).
+/// Runs `f` in one transaction (a savepoint when the caller already has one): all of it or nothing.
+fn in_transaction<T>(
+    c: &Connection,
+    f: impl FnOnce() -> Result<T, PgpError>,
+) -> Result<T, PgpError> {
+    let own = c.is_autocommit();
+    c.execute_batch(if own {
+        "BEGIN IMMEDIATE"
+    } else {
+        "SAVEPOINT pgp_step"
+    })
+    .map_err(|_| PgpError::Internal)?;
+    match f() {
+        Ok(v) => {
+            let done = c.execute_batch(if own { "COMMIT" } else { "RELEASE pgp_step" });
+            if done.is_err() {
+                // Never leave the shared connection inside a transaction.
+                let _ = c.execute_batch(if own {
+                    "ROLLBACK"
+                } else {
+                    "ROLLBACK TO pgp_step; RELEASE pgp_step"
+                });
+                return Err(PgpError::Internal);
+            }
+            Ok(v)
+        }
+        Err(e) => {
+            let _ = c.execute_batch(if own {
+                "ROLLBACK"
+            } else {
+                "ROLLBACK TO pgp_step; RELEASE pgp_step"
+            });
+            Err(e)
+        }
+    }
+}
+
+/// The `Autocrypt:` header value for a message sent from `from` (an identity of the account): the account's own key in use
+/// (the newest that can sign and encrypt, as for sending encrypted mail), when it names that address. `None` otherwise (and
+/// on any failure: a message is never held back for it).
 pub(crate) fn autocrypt_header(conn: &Connection, account: i64, from: &str) -> Option<String> {
     let rows = store::own_keys(conn, account).ok()?;
     let now = now_secs();
-    rows.iter().find_map(|row| {
+    let cert = rows.iter().find_map(|row| {
         let cert = keys::read_public(&row.public_key).ok()?;
-        autocrypt::header(from, &cert, false, now).ok()
-    })
+        let info = keys::info(&cert, now);
+        (info.can_encrypt && info.can_sign).then_some(cert)
+    })?;
+    autocrypt::header(from, &cert, false, now).ok()
 }
 
 /// The unfolded values of every header called `name` (case-insensitive) in a header block, at most 4.
@@ -505,7 +552,7 @@ impl Core {
         let looks_secret = bytes.windows(19).any(|w| w == b"PRIVATE KEY BLOCK--")
             || bytes
                 .first()
-                .is_some_and(|b| matches!(b, 0x95 | 0x94 | 0xc5));
+                .is_some_and(|b| matches!(b, 0x94..=0x97 | 0xc5));
         let now = now_secs();
         if looks_secret {
             let vault = self.vault()?;
@@ -638,8 +685,13 @@ impl Core {
                             break;
                         }
                     }
-                    prefer = store::peer(c, account, a)?
-                        .is_some_and(|p| p.prefer_mutual && p.fingerprint == fingerprint);
+                    // Asked for only while the sender's newest mail still carries the header (Autocrypt: a later message
+                    // without one discourages encryption).
+                    prefer = store::peer(c, account, a)?.is_some_and(|p| {
+                        p.prefer_mutual
+                            && p.fingerprint == fingerprint
+                            && p.autocrypt_at.is_some_and(|t| p.last_seen <= t)
+                    });
                 }
                 out.push(KeyStatus {
                     address: asked,

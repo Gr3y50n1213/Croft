@@ -30,6 +30,10 @@ data class AccountPrefs(
     /** The name the person gave an account; absent means the core's label. */
     val names: Map<AccountId, String> = emptyMap(),
     val colours: Map<AccountId, AccountColour> = emptyMap(),
+    /** S54 (T42a): accounts whose new messages start signed (OpenPGP). Off unless the person turns it on. */
+    val signByDefault: Set<AccountId> = emptySet(),
+    /** S54 (T42a): accounts whose new messages start encrypted when every recipient has a key. Off unless turned on. */
+    val encryptByDefault: Set<AccountId> = emptySet(),
 ) {
     /** [accounts] in the person's order. */
     fun ordered(accounts: List<AccountInfo>): List<AccountInfo> {
@@ -60,12 +64,27 @@ data class AccountPrefs(
     fun withColour(id: AccountId, colour: AccountColour?): AccountPrefs =
         copy(colours = if (colour == null) colours - id else colours + (id to colour))
 
+    /** S54: whether [id]'s new messages start signed. */
+    fun withSignByDefault(id: AccountId, on: Boolean): AccountPrefs =
+        copy(signByDefault = if (on) signByDefault + id else signByDefault - id)
+
+    /** S54: whether [id]'s new messages start encrypted when every recipient has a key. */
+    fun withEncryptByDefault(id: AccountId, on: Boolean): AccountPrefs =
+        copy(encryptByDefault = if (on) encryptByDefault + id else encryptByDefault - id)
+
     /** Keeps only what belongs to accounts in [known] (the start-up sweep: an entry for an account the core no longer lists is dropped). */
     fun keepOnly(known: Set<AccountId>): AccountPrefs =
-        AccountPrefs(order.filter { it in known }, names.filterKeys { it in known }, colours.filterKeys { it in known })
+        AccountPrefs(
+            order.filter { it in known },
+            names.filterKeys { it in known },
+            colours.filterKeys { it in known },
+            signByDefault.filter { it in known }.toSet(),
+            encryptByDefault.filter { it in known }.toSet(),
+        )
 
     /** Forget everything about a removed account. */
-    fun without(id: AccountId): AccountPrefs = AccountPrefs(order - id, names - id, colours - id)
+    fun without(id: AccountId): AccountPrefs =
+        AccountPrefs(order - id, names - id, colours - id, signByDefault - id, encryptByDefault - id)
 
     companion object {
         /** The longest name S45 accepts. */
@@ -87,7 +106,11 @@ object AccountPrefsJson {
                 "order" to JsonArray(p.order.map { JsonPrimitive(it) }),
                 "names" to JsonObject(p.names.entries.sortedBy { it.key }.associate { it.key.toString() to JsonPrimitive(it.value) }),
                 "colours" to JsonObject(p.colours.entries.sortedBy { it.key }.associate { it.key.toString() to JsonPrimitive(it.value.name) }),
-            ),
+            ).apply {
+                // T42a: written only when set, so a file without them reads and writes as before.
+                if (p.signByDefault.isNotEmpty()) put("signByDefault", JsonArray(p.signByDefault.sorted().map { JsonPrimitive(it) }))
+                if (p.encryptByDefault.isNotEmpty()) put("encryptByDefault", JsonArray(p.encryptByDefault.sorted().map { JsonPrimitive(it) }))
+            },
         ),
     ) + "\n"
 
@@ -107,6 +130,7 @@ object AccountPrefsJson {
             val colour = AccountColour.entries.firstOrNull { it.name == (v as? JsonPrimitive)?.contentOrNull } ?: return@mapNotNull null
             id to colour
         }?.toMap().orEmpty()
-        return AccountPrefs(order, names, colours)
+        val ids = { key: String -> (obj[key] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.longOrNull }?.toSet().orEmpty() }
+        return AccountPrefs(order, names, colours, ids("signByDefault"), ids("encryptByDefault"))
     }
 }

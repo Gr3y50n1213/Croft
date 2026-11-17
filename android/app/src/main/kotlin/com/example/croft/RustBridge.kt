@@ -62,6 +62,8 @@ fun openCore(databasePath: String, secrets: AppSecrets, provider: CredentialProv
     }
     // A start counts only now: the key was made or opened AND the core accepted it.
     secrets.recordSuccessfulStart()
+    // T42a: OpenPGP secret keys live in the same Keystore-backed store as the account passwords.
+    core.setKeyVault(com.example.croft.secrets.SecretStoreKeyVault(secrets.secrets))
     return core
 }
 

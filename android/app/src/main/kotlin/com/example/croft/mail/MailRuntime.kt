@@ -149,6 +149,7 @@ object MailRuntime {
             search = com.example.croft.mail.search.CoreSearchBackend(open.core),
             contacts = com.example.croft.mail.contacts.CoreContactsBackend(open.core),
             calendar = com.example.croft.mail.calendar.CoreCalendarBackend(open.core),
+            keys = com.example.croft.mail.keys.CoreKeysBackend(open.core),
             onCalendarChanged = { com.example.croft.notify.CalendarReminderSchedule.planNow(app) },
             onSnoozesChanged = { snoozePlanner.execute { planSnoozes() } },
         )

@@ -61,6 +61,8 @@ class MailSession(
     val calendar: com.example.croft.mail.calendar.CalendarBackend? = null,
     /** T39b: called after a calendar sync or change, so the app plans the reminder job again. Nothing in tests. */
     val onCalendarChanged: () -> Unit = {},
+    /** S54 and S55 (T42a): the core's OpenPGP keys. Null where there is no core: the Settings entry is hidden. */
+    val keys: com.example.croft.mail.keys.KeysBackend? = null,
 ) {
     private val cache = HashMap<String, CachedList>()
 

@@ -117,6 +117,12 @@ enum class Route(val parent: Route?) {
     /** S06 Connect a Companion, and S58 Companion and devices once connected (T34b). */
     COMPANION(SETTINGS),
 
+    /** S54 Encryption keys (T42a). */
+    ENCRYPTION_KEYS(SETTINGS),
+
+    /** S55 Key details and import, for one account (T42a). */
+    KEY_DETAIL(ENCRYPTION_KEYS),
+
     /** The open-source licences list, from S60. */
     LICENCES(ABOUT),
 
@@ -263,6 +269,8 @@ fun CroftNavHost(
     }
     var contactAccount by rememberSaveable { mutableStateOf(0L) }
     var contactId by rememberSaveable { mutableStateOf(0L) }
+    // S55's account (T42a).
+    var keyAccount by rememberSaveable { mutableStateOf(0L) }
     // S42: editing contact `contactId` of `contactAccount`, or a new one; and where Close goes back to.
     var editingNew by rememberSaveable { mutableStateOf(true) }
     if ((route == Route.CONTACTS || route == Route.CONTACT || route == Route.EDIT_CONTACT) && contactsController == null) route = Route.HOME
@@ -604,8 +612,29 @@ fun CroftNavHost(
                 onOpenAbout = { route = Route.ABOUT },
                 onOpenNotifications = if (notifyStore != null) ({ route = Route.NOTIFICATIONS }) else null,
                 onOpenCompanion = if (CompanionRuntime.connection(context) != null) ({ route = Route.COMPANION }) else null,
+                onOpenKeys = if (session.keys != null) ({ route = Route.ENCRYPTION_KEYS }) else null,
                 onBack = { route = Route.HOME },
             )
+            Route.ENCRYPTION_KEYS -> session.keys?.let { backend ->
+                com.example.croft.ui.keys.EncryptionKeysScreen(
+                    backend = backend,
+                    prefs = accountPrefs,
+                    onPrefsChange = onAccountPrefsChange,
+                    onOpenKey = { id -> keyAccount = id; route = Route.KEY_DETAIL },
+                    onImport = { id -> keyAccount = id; route = Route.KEY_DETAIL },
+                    onBack = { route = Route.SETTINGS },
+                    zone = session.zone,
+                )
+            }
+            Route.KEY_DETAIL -> session.keys?.let { backend ->
+                com.example.croft.ui.keys.KeyDetailScreen(
+                    backend = backend,
+                    account = keyAccount,
+                    files = com.example.croft.ui.keys.rememberSystemKeyFiles(),
+                    onBack = { route = Route.ENCRYPTION_KEYS },
+                    zone = session.zone,
+                )
+            }
             Route.COMPANION -> CompanionRuntime.connection(context)?.let { c ->
                 CompanionScreen(connection = c, onBack = { route = Route.SETTINGS })
             }

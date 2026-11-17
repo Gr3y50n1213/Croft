@@ -111,7 +111,49 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     @Synchronized
     fun removeAccount(accountId: Long) {
         SecretKind.values().forEach { remove(accountId, it) }
+        // T42a: the account's OpenPGP secret keys go with it.
+        dir.listFiles { f -> f.name.startsWith("$PREFIX$accountId.$KEY_INFIX") }?.forEach { it.delete() }
     }
+
+    // ---- OpenPGP secret keys (T42a): one entry per account and key fingerprint, beside the account's other secrets (so the
+    // sweep, account removal and erasing everything cover them). The core hands them over and reads them back through
+    // [SecretStoreKeyVault]; nothing else reads them.
+
+    /**
+     * Stores (or replaces) the OpenPGP secret key [fingerprint] (upper-case hex) of [accountId]. Copies [secret]; the caller wipes its
+     * array. Throws [IllegalArgumentException] for a fingerprint that is not upper-case hex and [SecretBoxException] when it cannot
+     * be sealed.
+     */
+    fun putKey(accountId: Long, fingerprint: String, secret: ByteArray) {
+        val blob = box.seal(secret, keyContext(accountId, checkedFingerprint(fingerprint)))
+        synchronized(this) { writeAtomically(keyFile(accountId, fingerprint), blob) }
+    }
+
+    /**
+     * The OpenPGP secret key [fingerprint] of [accountId], or null when there is none. Unlike a password, an entry that does not
+     * open is **never deleted** (a private key cannot be typed again): it is reported with [SecretBoxException] (CORRUPT) and stays,
+     * so a passing fault of the Keystore or the disk loses nothing.
+     */
+    fun getKey(accountId: Long, fingerprint: String): ByteArray? {
+        val f = keyFile(accountId, checkedFingerprint(fingerprint))
+        val blob = synchronized(this) {
+            try {
+                f.readBytes()
+            } catch (e: java.io.FileNotFoundException) {
+                return null
+            }
+        }
+        return box.open(blob, keyContext(accountId, fingerprint))
+    }
+
+    /** Deletes the OpenPGP secret key [fingerprint] of [accountId]. Throws [IOException] when the file is still there afterwards. */
+    @Synchronized
+    fun removeKey(accountId: Long, fingerprint: String) {
+        val f = keyFile(accountId, checkedFingerprint(fingerprint))
+        if (!f.delete() && f.exists()) throw IOException("the key entry could not be deleted")
+    }
+
+    private fun keyFile(accountId: Long, fingerprint: String) = File(dir, "$PREFIX$accountId.$KEY_INFIX$fingerprint.v1")
 
     /**
      * True when any secret exists (an account's, or the app's own such as the Companion connection). Throws [IOException] when the
@@ -181,6 +223,19 @@ class SecretStore(private val dir: File, private val box: SecretBox) {
     internal companion object {
         const val PREFIX = "acct-"
         const val APP_PREFIX = "app-"
+        const val KEY_INFIX = "pgp-"
+
+        private val FINGERPRINT = Regex("^[0-9A-F]{16,64}$")
+
+        /** A fingerprint as the core gives it (upper-case hex): it becomes part of a file name. */
+        fun checkedFingerprint(fingerprint: String): String {
+            require(FINGERPRINT.matches(fingerprint)) { "not a key fingerprint" }
+            return fingerprint
+        }
+
+        /** Binds a key's blob to its account and fingerprint, so a file copied onto another entry does not open. */
+        fun keyContext(accountId: Long, fingerprint: String): ByteArray =
+            "croft/pgp-secret/v1/$accountId/$fingerprint".toByteArray(Charsets.UTF_8)
 
         /** Binds a blob to the app's entry, so an account's file copied onto it does not open. */
         fun appContext(kind: AppSecretKind): ByteArray = "croft/app-secret/v1/${kind.wireName}".toByteArray(Charsets.UTF_8)

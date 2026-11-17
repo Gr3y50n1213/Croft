@@ -238,4 +238,22 @@ class AccountsTest {
         assertTrue(forgotten.names.isEmpty())
         assertEquals(mapOf(3L to AccountColour.AMBER), forgotten.colours)
     }
+
+    @Test
+    fun theEncryptionDefaultsAreKeptPerAccountAndAnOlderFileReadsAsOff() {
+        // T42a (S54): sign and encrypt-when-keys-exist, off unless turned on.
+        var prefs = AccountPrefs().withSignByDefault(1L, true).withEncryptByDefault(1L, true).withEncryptByDefault(2L, true)
+        assertEquals(setOf(1L), prefs.signByDefault)
+        assertEquals(setOf(1L, 2L), prefs.encryptByDefault)
+        assertEquals(prefs, AccountPrefsJson.decodeOrDefault(AccountPrefsJson.encode(prefs)))
+        prefs = prefs.withEncryptByDefault(2L, false)
+        assertEquals(setOf(1L), prefs.encryptByDefault)
+        // A removed account, or one the core no longer lists, takes its settings with it.
+        assertEquals(AccountPrefs(), prefs.without(1L))
+        assertEquals(AccountPrefs(), prefs.keepOnly(setOf(2L)))
+        // A file written before these settings existed reads as both off; one without them is written as before.
+        val older = """{"version":1,"order":[1],"names":{},"colours":{}}"""
+        assertEquals(AccountPrefs(order = listOf(1L)), AccountPrefsJson.decodeOrDefault(older))
+        assertTrue(!AccountPrefsJson.encode(AccountPrefs(order = listOf(1L))).contains("ByDefault"))
+    }
 }

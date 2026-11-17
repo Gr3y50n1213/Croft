@@ -5,6 +5,43 @@ unverified, the next step.
 
 ---
 
+## T42a: Encryption keys on Android: the key vault, S54 and S55 (17 November 2026)
+
+**Status:** merged (CI green on draft #105). The independent review is done; its findings are fixed
+(`docs/REVIEW-QUEUE.md`). S56 and the compose lock are T42b.
+
+**What was built.**
+- **The vault:**
+  - `SecretStore` keeps an OpenPGP secret key per account and fingerprint (`acct-<id>.pgp-<FINGERPRINT>.v1`), sealed by
+    the same Keystore-backed box and bound to its entry. Account removal, the start-up sweep and "Erase all Croft
+    data" cover these entries.
+  - `SecretStoreKeyVault` is the core's `KeyVault`: it wipes the bytes it is handed, and reports a busy Keystore as
+    "not ready". `openCore` sets it.
+- **S54 Encryption keys** (Settings): a card per account with its key's state, short fingerprint and expiry, the
+  defaults for new messages (Sign messages, Encrypt when keys exist: kept in `AccountPrefs`, off unless turned on), and
+  Generate and Import for an account without a key.
+- **S55 Key details and import:** the fingerprint in groups of four, identity, created, expires and state.
+  - Export public key, and Back up private key (a passphrase typed twice, at least 8 characters), both through the
+    system's save dialog.
+  - Remove key, asked first.
+  - Import of a file or pasted text; a protected key asks for its passphrase. The bytes are wiped once used or when
+    the screen is left.
+- **After the review:**
+  - A key entry that does not open is kept and reported, never deleted (a private key cannot be typed in again).
+  - A save or open survives the phone turning during the system dialog; an empty file left by a lost request is
+    removed.
+  - Read buffers, a pending import and the backup fields are wiped; a pasted private key is cleared from the
+    clipboard.
+  - A failed delete is reported.
+  - The core no longer deletes a working secret when re-importing it fails.
+
+**Checks.** Kotlin compiles only in CI; the new tests are `SecretStoreTest` (4 new), `SecretStoreKeyVaultTest` (3, against
+the real core), `KeysScreensTest` (10) and `AccountsTest` (1).
+
+**Next.** T42b.
+
+---
+
 ## T41c: OpenPGP in compose and reading (17 November 2026)
 
 **Status:** merged (CI green on draft #103). The independent review is done; its findings are fixed

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
+<!-- T42a: S54 Encryption keys and S55 Key details and import. -->
+<resources>
+    <string name="settings_keys">Encryption keys</string>
+    <string name="settings_keys_hint">OpenPGP keys to sign and encrypt your mail</string>
+
+    <!-- S54 -->
+    <string name="keys_title">Encryption keys</string>
+    <string name="keys_status_active">Active</string>
+    <string name="keys_status_expired">Expired</string>
+    <string name="keys_status_revoked">Revoked</string>
+    <string name="keys_status_unusable">Cannot be used</string>
+    <string name="keys_status_none">No key</string>
+    <string name="keys_key_line">Key %1$s</string>
+    <string name="keys_expires">Expires %1$s</string>
+    <string name="keys_no_expiry">Does not expire</string>
+    <string name="keys_sign_default">Sign messages</string>
+    <string name="keys_encrypt_default">Encrypt when keys exist</string>
+    <string name="keys_no_key_text">Generate a key on this phone or import one you already use.</string>
+    <string name="keys_generate">Generate</string>
+    <string name="keys_import">Import</string>
+    <string name="keys_footer">Private keys stay on this phone, protected by its secure storage. They are never sent to a Companion.</string>
+    <string name="keys_none">No accounts that send mail yet.</string>
+    <string name="keys_open">Key details</string>
+
+    <!-- S55 -->
+    <string name="key_title">Key details</string>
+    <string name="key_import_title">Import a key</string>
+    <string name="key_fingerprint">Fingerprint</string>
+    <string name="key_identity">Identity</string>
+    <string name="key_created">Created</string>
+    <string name="key_expires">Expires</string>
+    <string name="key_never">Never</string>
+    <string name="key_status_label">Status</string>
+    <string name="key_export_public">Export public key</string>
+    <string name="key_export_public_hint">Share it with people who write to you</string>
+    <string name="key_backup">Back up private key</string>
+    <string name="key_backup_hint">Protect the file with a passphrase</string>
+    <string name="key_backup_passphrase">Passphrase</string>
+    <string name="key_backup_again">Passphrase again</string>
+    <string name="key_backup_mismatch">The two passphrases are not the same.</string>
+    <string name="key_backup_short">Use at least 8 characters.</string>
+    <string name="key_backup_save">Save backup</string>
+    <string name="key_backup_note">Anyone with this file and its passphrase can read your encrypted mail. Keep it somewhere safe.</string>
+    <string name="key_remove">Remove key</string>
+    <string name="key_remove_hint">From this phone only</string>
+    <string name="key_remove_title">Remove this key?</string>
+    <string name="key_remove_text">Its private part is deleted from this phone. Mail encrypted to it cannot be read here again unless you import a backup. Croft stops signing and encrypting with it.</string>
+    <string name="key_remove_confirm">Remove</string>
+    <string name="key_import_section">Import</string>
+    <string name="key_import_text">Choose a key file or paste a key.</string>
+    <string name="key_choose_file">Choose file</string>
+    <string name="key_paste">Paste</string>
+    <string name="key_import_passphrase">The key is protected. Type its passphrase.</string>
+    <string name="key_import_go">Import</string>
+    <string name="key_cancel">Cancel</string>
+    <string name="key_saved">Saved</string>
+    <string name="key_imported_public">That was someone else\'s public key. Croft keeps it to encrypt mail to them.</string>
+    <string name="key_nothing_to_paste">The clipboard has no key.</string>
+
+    <!-- Problems -->
+    <string name="key_problem_no_vault">This phone\'s secure storage is not ready. Try again in a moment.</string>
+    <string name="key_problem_vault">The secure storage could not keep the key. Try again in a moment.</string>
+    <string name="key_problem_unreadable">That is not a key Croft can read.</string>
+    <string name="key_problem_not_one">The file holds more than one key. Import them one at a time.</string>
+    <string name="key_problem_too_large">The file is too large to be a key.</string>
+    <string name="key_problem_passphrase">The passphrase does not open this key.</string>
+    <string name="key_problem_unusable">This key cannot be used: it is expired, revoked, too weak or has no address.</string>
+    <string name="key_problem_gone">The key is gone.</string>
+    <string name="key_problem_failed">Something went wrong. Try again.</string>
+    <string name="key_problem_file">The file could not be read or written.</string>
+</resources>

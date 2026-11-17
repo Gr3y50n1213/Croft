@@ -38,6 +38,7 @@ object SettingsTags {
     const val ABOUT = "settings-about"
     const val ACCOUNTS = "settings-accounts"
     const val COMPANION = "settings-companion"
+    const val KEYS = "settings-keys"
 }
 
 /**
@@ -64,6 +65,8 @@ fun SettingsHomeScreen(
     onOpenNotifications: (() -> Unit)? = null,
     /** S06 and S58 Companion (T34b); hidden when null. */
     onOpenCompanion: (() -> Unit)? = null,
+    /** S54 Encryption keys (T42a); hidden when null. */
+    onOpenKeys: (() -> Unit)? = null,
 ) {
     Scaffold(
         modifier = modifier.testTag(SettingsTags.SCREEN),
@@ -109,6 +112,13 @@ fun SettingsHomeScreen(
                     headlineContent = { Text(stringResource(R.string.settings_companion)) },
                     supportingContent = { Text(stringResource(R.string.settings_companion_hint)) },
                     modifier = Modifier.testTag(SettingsTags.COMPANION).clickable(role = Role.Button, onClick = onOpenCompanion),
+                )
+            }
+            if (onOpenKeys != null) {
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.settings_keys)) },
+                    supportingContent = { Text(stringResource(R.string.settings_keys_hint)) },
+                    modifier = Modifier.testTag(SettingsTags.KEYS).clickable(role = Role.Button, onClick = onOpenKeys),
                 )
             }
             if (onOpenInbox != null) {

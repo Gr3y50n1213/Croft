@@ -299,4 +299,68 @@ class SecretStoreTest {
         assertNull(store.getApp(AppSecretKind.COMPANION))
         assertArrayEquals(bytes("z"), store.get(5, SecretKind.PASSWORD))
     }
+
+    // ---- T42a: OpenPGP secret keys
+
+    private val fpA = "3F2A91C47B10E5D28A6C40B19F7E62C3D8150A4B"
+    private val fpB = "0123456789ABCDEF0123456789ABCDEF01234567"
+
+    @Test
+    fun aKeyIsKeptPerAccountAndFingerprintAndTheCallersArrayIsNotKept() {
+        val secret = bytes("made-up secret key A")
+        store.putKey(3, fpA, secret)
+        secret.fill(0)
+        store.putKey(3, fpB, bytes("made-up secret key B"))
+        store.putKey(4, fpA, bytes("another account's copy"))
+        assertArrayEquals(bytes("made-up secret key A"), store.getKey(3, fpA))
+        assertArrayEquals(bytes("made-up secret key B"), store.getKey(3, fpB))
+        assertArrayEquals(bytes("another account's copy"), store.getKey(4, fpA))
+        assertNull(store.getKey(5, fpA))
+        assertEquals(setOf(3L, 4L), store.accountIds())
+        store.removeKey(3, fpA)
+        assertNull(store.getKey(3, fpA))
+        assertArrayEquals(bytes("made-up secret key B"), store.getKey(3, fpB))
+    }
+
+    @Test
+    fun aKeyFileCopiedOntoAnotherEntryDoesNotOpenAndIsDropped() {
+        store.putKey(3, fpA, bytes("made-up secret key A"))
+        val a = File(dir, "acct-3.pgp-$fpA.v1")
+        assertTrue(a.exists())
+        a.copyTo(File(dir, "acct-3.pgp-$fpB.v1"))
+        a.copyTo(File(dir, "acct-9.pgp-$fpA.v1"))
+        assertNull(store.getKey(3, fpB))
+        assertNull(store.getKey(9, fpA))
+        assertFalse(File(dir, "acct-3.pgp-$fpB.v1").exists())
+        assertArrayEquals(bytes("made-up secret key A"), store.getKey(3, fpA))
+    }
+
+    @Test
+    fun aFingerprintThatIsNotUpperCaseHexIsRefusedBeforeAnyFileIsTouched() {
+        for (bad in listOf("", "3f2a91c47b10e5d2", "../../etc/passwd", "ABCD", "3F2A 91C4 7B10 E5D2", "$fpA.v1")) {
+            try {
+                store.putKey(3, bad, bytes("x"))
+                fail("expected a refusal for '$bad'")
+            } catch (e: IllegalArgumentException) {
+                // refused
+            }
+        }
+        assertTrue(dir.listFiles()!!.isEmpty())
+    }
+
+    @Test
+    fun removingAnAccountRemovesItsKeysOnlyAndClearRemovesAll() {
+        store.putKey(1, fpA, bytes("one"))
+        store.putKey(12, fpA, bytes("twelve"))
+        store.put(1, SecretKind.PASSWORD, bytes("pw"))
+        store.removeAccount(1)
+        assertNull(store.getKey(1, fpA))
+        assertNull(store.get(1, SecretKind.PASSWORD))
+        assertArrayEquals("account 12 is not account 1", bytes("twelve"), store.getKey(12, fpA))
+        assertTrue(store.hasAny())
+        store.clear()
+        assertNull(store.getKey(12, fpA))
+        assertFalse(store.hasAny())
+    }
 }
+

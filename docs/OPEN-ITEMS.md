@@ -127,6 +127,11 @@ S45 (Account) has no entry yet for these, because the core has no storage for th
   Reminders more than five weeks before their event are not posted; only the first 1,000 `EXDATE`s of an event are read;
   an object that cannot be read is fetched again at every sync. A change that loses to the server's is dropped (marked
   on the item), not kept as a copy.
+- **Encryption on Android (T42b).**
+  - S24's "no own key" sheet tells the person where to make a key but does not open S54 from compose.
+  - A received key change ("New key for Dan Weir, Verify" in the S56 wireframe) is not shown yet: the core keeps only the
+    newest Autocrypt key and does not record that it changed.
+  - Encrypted drafts opened from the server on another device are not decrypted into compose.
 - **Encryption keys on Android (T42a).**
   - No "Publish public key" (S54): publishing to a Web Key Directory needs the mail server's help.
   - No "Revoke key" (S55): the core cannot make a revocation certificate yet. "Remove key" deletes it from this phone only.

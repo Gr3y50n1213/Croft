@@ -62,6 +62,35 @@ class FakeComposeBackend(
     /** When set, the next `retryOutboxItem` answers like this. */
     var failRetryWith: ComposeProblem? = null
 
+    /** T42b: addresses (lower case) the fake "has keys" for. */
+    var keyed: Set<String> = emptySet()
+
+    /** T42b: whether the account has an own key in use. */
+    var ownKey: Boolean = true
+
+    /** T42b: when set, `encryptionCheck` cannot say (the key storage is busy). */
+    var encryptionCheckFails: Boolean = false
+
+    /** T42b: the encrypt and sign flags of each draft as last saved, and of each message sent. */
+    val sentFlags = ArrayList<Pair<Boolean, Boolean>>()
+
+    /** T42b: the flags of a stored draft. */
+    fun flagsOf(draftId: Long): Pair<Boolean, Boolean>? = drafts[draftId]?.content?.let { it.encrypt to it.sign }
+
+    /** T42b: when set, `keyedAddresses` cannot say (the key storage is busy). */
+    var keyedFails: Boolean = false
+
+    override suspend fun keyedAddresses(account: AccountId, addresses: List<String>): Set<String>? =
+        if (keyedFails) null else addresses.map { it.trim().lowercase() }.filter { it in keyed }.toSet()
+
+    override suspend fun encryptionCheck(account: AccountId, draftId: Long): uniffi.croft_ffi.EncryptionCheck? {
+        rec("encryptionCheck")
+        if (encryptionCheckFails) return null
+        val c = drafts[draftId]?.content ?: return null
+        val missing = (c.to + c.cc).map { it.address }.filter { it.trim().lowercase() !in keyed }.distinct()
+        return uniffi.croft_ffi.EncryptionCheck(ownKey = ownKey, missing = missing, hasBcc = c.bcc.isNotEmpty())
+    }
+
     private fun rec(name: String) = synchronized(calls) { calls += name }
 
     override suspend fun identities(account: AccountId): List<FfiIdentity> = identitiesOf(account).also { rec("identities") }
@@ -120,6 +149,14 @@ class FakeComposeBackend(
         rec("send")
         val d = drafts[draftId] ?: throw ComposeFailure(ComposeProblem.NO_SUCH_DRAFT)
         if (d.outbox != null) throw ComposeFailure(ComposeProblem.IN_OUTBOX)
+        // T42b: as the core: a message to be encrypted is sent encrypted or refused, never plain in its place.
+        if (d.content.encrypt) {
+            if (d.content.bcc.isNotEmpty()) throw ComposeFailure(ComposeProblem.ENCRYPTION_WITH_BCC)
+            if (!ownKey) throw ComposeFailure(ComposeProblem.NO_OWN_KEY)
+            if ((d.content.to + d.content.cc).any { it.address.trim().lowercase() !in keyed }) throw ComposeFailure(ComposeProblem.NO_RECIPIENT_KEY)
+        }
+        if (d.content.sign && !ownKey) throw ComposeFailure(ComposeProblem.NO_OWN_KEY)
+        sentFlags += d.content.encrypt to d.content.sign
         val id = nextOutbox++
         d.outbox = id
         val at = clock() + undoWindowMs

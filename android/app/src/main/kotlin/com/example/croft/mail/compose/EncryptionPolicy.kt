@@ -15,7 +15,19 @@ sealed interface EncryptionDecision {
     data class RequiredKeysMissing(val missing: List<String>) : EncryptionDecision {
         override fun toString(): String = "RequiredKeysMissing(${missing.size})"
     }
+
+    /** T42b: the message is to be encrypted and the account has no own key in use (or its secret is not on this phone). */
+    data object NoOwnKey : EncryptionDecision
+
+    /** T42b: the message is to be encrypted and has Bcc recipients, which an encrypted message cannot have. */
+    data object BccNotAllowed : EncryptionDecision
+
+    /** T42b: the core could not say (its key storage is busy): nothing is sent, the person tries again. Never read as "no key". */
+    data object Unknown : EncryptionDecision
 }
+
+/** S54's defaults for a new message from an account (T42b): start signed; start encrypted when every recipient has a key. */
+data class EncryptionDefaults(val sign: Boolean = false, val encryptWhenKeys: Boolean = false)
 
 /**
  * S24, the seam only: compose asks this before it sends ([ComposeController.send]). No keys exist before phase 3, so the app's

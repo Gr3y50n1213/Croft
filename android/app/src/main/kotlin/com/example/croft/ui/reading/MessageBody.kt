@@ -123,6 +123,8 @@ fun MessageBodyView(
             is BodyPhase.Failed -> BodyFailure(id, phase.problem, onRetry)
             is BodyPhase.Ready -> {
                 val body = phase.body
+                // S56 (T42b): encrypted or signed, said before anything else of the message.
+                if (!body.security.plain) SecurityBanner(id, body.security)
                 if (body.blockedRemoteCount > 0 && !body.remoteAllowed && !barDismissed) {
                     RemoteContentBar(id, body.blockedRemoteCount, remoteSetting, onShowImages, onAlwaysForSender, onDismissBar)
                 }

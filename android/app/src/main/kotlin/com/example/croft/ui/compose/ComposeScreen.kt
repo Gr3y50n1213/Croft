@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -75,6 +76,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -119,6 +121,8 @@ import kotlinx.coroutines.launch
 
 /** Test tags of S23. */
 object ComposeTags {
+    /** T42b: the lock (encrypt this message). */
+    const val ENCRYPT = "compose-encrypt"
     const val SCREEN = "compose-screen"
     const val SEND = "compose-send"
     const val SUBJECT = "compose-subject"
@@ -145,6 +149,8 @@ fun ComposeHost(
     modifier: Modifier = Modifier,
     /** Reading and checking addresses: the core's own functions; tests that must not load the native library give a stand-in. */
     tools: AddressTools = CoreAddressTools,
+    /** T42b: S54's defaults for a new message from an account. */
+    encryptionDefaults: (AccountId) -> com.example.croft.mail.compose.EncryptionDefaults = { com.example.croft.mail.compose.EncryptionDefaults() },
 ) {
     val backend = session.compose
     if (backend == null) {
@@ -165,6 +171,7 @@ fun ComposeHost(
         policy = session.encryptionPolicy,
         cursors = session.cursors,
         files = { ComposeFiles.resolve(context, it) },
+        defaults = encryptionDefaults,
     ).also { holder.controller = it }
     LaunchedEffect(controller) {
         if (!holder.opened) { holder.opened = true; controller.open(start) }
@@ -322,7 +329,7 @@ fun ComposeScreen(
                         accountName = state.senders.firstOrNull { it.account == state.account }?.identity?.address.orEmpty(),
                     )
                     Fields(state, controller, scope, Modifier.weight(1f))
-                    ComposeToolbar(attachFile, attachPhoto)
+                    ComposeToolbar(attachFile, attachPhoto, encrypt = state.encrypt, onEncrypt = { scope.launch { controller.toggleEncrypt() } })
                 }
             }
         }
@@ -340,6 +347,14 @@ fun ComposeScreen(
         )
         is SendPrompt.EncryptionCheck -> EncryptionCheckSheet(
             missing = prompt.missing,
+            onSendUnencrypted = { scope.launch { controller.confirmUnencrypted() } },
+            onCancel = { controller.cancelPrompt() },
+            // T42b: a message the person chose to encrypt can drop the recipients without a key instead.
+            onRemove = if (state.encrypt) ({ scope.launch { controller.removeMissing() } }) else null,
+        )
+        SendPrompt.EncryptionNoOwnKey, SendPrompt.EncryptionBcc -> EncryptionBlockedSheet(
+            block = if (prompt == SendPrompt.EncryptionBcc) EncryptionBlock.BCC else EncryptionBlock.NO_OWN_KEY,
+            signing = state.sign,
             onSendUnencrypted = { scope.launch { controller.confirmUnencrypted() } },
             onCancel = { controller.cancelPrompt() },
         )
@@ -391,6 +406,8 @@ private fun TopBar(
                         MenuItemSpec(stringResource(R.string.compose_show_cc_bcc), { controller.showCcBcc() }, visible = !state.showCcBcc),
                         MenuItemSpec(stringResource(R.string.compose_attach), onAttachFile, icon = CroftIcons.Attachment),
                         MenuItemSpec(stringResource(R.string.compose_attach_photo), onAttachPhoto, icon = CroftIcons.Photo),
+                        // T42b: sign this message (or not); the lock in the toolbar is encryption.
+                        MenuItemSpec(stringResource(if (state.sign) R.string.compose_dont_sign else R.string.compose_sign), { scope.launch { controller.toggleSign() } }),
                         MenuItemSpec(stringResource(R.string.compose_discard), { confirmDiscard = true }, icon = Icons.Filled.Delete, destructive = true),
                     ),
                 )
@@ -413,13 +430,29 @@ private fun TopBar(
 }
 
 @Composable
-private fun ComposeToolbar(onAttachFile: () -> Unit, onAttachPhoto: () -> Unit) {
+private fun ComposeToolbar(onAttachFile: () -> Unit, onAttachPhoto: () -> Unit, encrypt: Boolean = false, onEncrypt: (() -> Unit)? = null) {
     Row(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer).windowInsetsPadding(WindowInsets.navigationBars).imePadding().padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CroftIconButton(CroftIcons.Attachment, stringResource(R.string.compose_attach), onAttachFile, Modifier.testTag(ComposeTags.ATTACH))
         CroftIconButton(CroftIcons.Photo, stringResource(R.string.compose_attach_photo), onAttachPhoto, Modifier.testTag(ComposeTags.PHOTO))
+        if (onEncrypt != null) {
+            // T42b: the lock. Its state is said in words, never by colour alone.
+            val stateText = stringResource(if (encrypt) R.string.compose_encrypt_on else R.string.compose_encrypt_off)
+            androidx.compose.material3.IconToggleButton(
+                checked = encrypt,
+                onCheckedChange = { onEncrypt() },
+                modifier = Modifier.testTag(ComposeTags.ENCRYPT).semantics { stateDescription = stateText },
+            ) {
+                Icon(
+                    Icons.Filled.Lock,
+                    contentDescription = stringResource(R.string.compose_encrypt),
+                    tint = if (encrypt) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (encrypt) Text(stateText, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        }
     }
 }
 
@@ -444,11 +477,12 @@ private fun Fields(state: ComposeState, controller: ComposeController, scope: ko
             FromRow(state, controller, scope)
             RecipientRow(
                 stringResource(R.string.compose_to), RecipientField.TO, state.to, controller, focusRequester = toFocus, clearTick = state.recipientTextTick,
+                keyed = state.keyed,
                 trailing = if (!state.showCcBcc) ({ CcBccToggle { controller.showCcBcc() } }) else null,
             )
             if (state.showCcBcc) {
-                RecipientRow(stringResource(R.string.compose_cc), RecipientField.CC, state.cc, controller, clearTick = state.recipientTextTick)
-                RecipientRow(stringResource(R.string.compose_bcc), RecipientField.BCC, state.bcc, controller, clearTick = state.recipientTextTick)
+                RecipientRow(stringResource(R.string.compose_cc), RecipientField.CC, state.cc, controller, clearTick = state.recipientTextTick, keyed = state.keyed)
+                RecipientRow(stringResource(R.string.compose_bcc), RecipientField.BCC, state.bcc, controller, clearTick = state.recipientTextTick, keyed = state.keyed)
             }
             OutlinedTextField(
                 value = subject,

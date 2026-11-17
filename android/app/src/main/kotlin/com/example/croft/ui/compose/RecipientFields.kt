@@ -82,6 +82,8 @@ internal fun RecipientRow(
     /** Counts up when Send or Back turned the typed text into chips: this field clears its text then. */
     clearTick: Int = 0,
     trailing: (@Composable () -> Unit)? = null,
+    /** T42b: addresses (lower case) Croft has a key for: their chips show a lock. */
+    keyed: Set<String> = emptySet(),
 ) {
     val scope = rememberCoroutineScope()
     var text by rememberSaveable(field.name) { mutableStateOf("") }
@@ -121,6 +123,7 @@ internal fun RecipientRow(
                             name = chip.label,
                             state = if (chip.valid) RecipientChipState.NORMAL else RecipientChipState.ERROR,
                             onClick = { menuChip = chip },
+                            hasKey = chip.address.address.trim().lowercase() in keyed,
                         )
                         CroftMenu(
                             expanded = menuChip == chip,

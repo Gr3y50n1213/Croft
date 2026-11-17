@@ -2265,6 +2265,8 @@ impl Core {
                 Err(crate::pgp::PgpError::NoSuchAccount) => {
                     return Err(ComposeError::NoSuchAccount)
                 }
+                // A vault that cannot answer now is not "no key": nothing is sent, the app tries again.
+                Err(crate::pgp::PgpError::VaultFailed) => return Err(ComposeError::Internal),
                 Err(_) => return Err(ComposeError::NoOwnKey),
             }
         } else {

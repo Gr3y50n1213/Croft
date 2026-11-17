@@ -103,6 +103,12 @@ pub(super) fn now_secs() -> u32 {
     .unwrap()
 }
 
+fn made_public(m: &Mail, fingerprint: &str) -> String {
+    m.core()
+        .export_public_key(m.account, fingerprint.to_owned())
+        .unwrap()
+}
+
 #[test]
 fn an_own_key_is_made_backed_up_removed_and_imported_back_with_its_secret_only_in_the_vault() {
     let (m, vault) = with_vault();
@@ -117,11 +123,28 @@ fn an_own_key_is_made_backed_up_removed_and_imported_back_with_its_secret_only_i
         .get(&(m.account, made.fingerprint.clone()))
         .cloned()
         .unwrap();
-    // Nothing of the secret in the database file.
-    let file = std::fs::read(&m.db.path).unwrap();
-    let probe = &secret[secret.len() - 40..secret.len() - 8];
+    // Nothing of the secret in the database's files (the main file and any journal beside it): no 24-byte run of the secret
+    // that is not also in the public certificate (which the database keeps, signatures and all).
+    let public = keys::public_bytes(
+        &keys::read_public(made_public(&m, &made.fingerprint).as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let secret_only: Vec<&[u8]> = secret
+        .windows(24)
+        .filter(|w| !public.windows(24).any(|p| p == *w))
+        .collect();
     assert!(
-        !file.windows(probe.len()).any(|w| w == probe),
+        !secret_only.is_empty(),
+        "the secret has material of its own"
+    );
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(m.db.path.parent().unwrap()).unwrap() {
+        files.extend(std::fs::read(entry.unwrap().path()).unwrap_or_default());
+    }
+    assert!(
+        !secret_only
+            .iter()
+            .any(|run| files.windows(run.len()).any(|w| w == *run)),
         "a secret key byte run is in the database"
     );
     // A backup opens only with its passphrase.

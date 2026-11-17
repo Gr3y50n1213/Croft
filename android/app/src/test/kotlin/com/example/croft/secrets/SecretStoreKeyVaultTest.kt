@@ -74,6 +74,20 @@ class SecretStoreKeyVaultTest {
         )
     }
 
+    /** The binary of an armored OpenPGP block. */
+    private fun dearmor(armored: String): ByteArray {
+        val lines = armored.lines().map { it.trim() }
+        val start = lines.indexOfFirst { it.isEmpty() } + 1
+        val body = lines.drop(start).takeWhile { !it.startsWith("=") && !it.startsWith("-----END") }.joinToString("")
+        return java.util.Base64.getDecoder().decode(body)
+    }
+
+    /** The 24-byte runs of [secret] that do not occur in [public]. */
+    private fun secretOnlyRuns(secret: ByteArray, public: ByteArray): List<ByteArray> =
+        (0..secret.size - RUN).map { secret.copyOfRange(it, it + RUN) }.filter { !containsBytes(public, it) }
+
+    private val RUN = 24
+
     private fun databaseBytes(): ByteArray =
         dir.listFiles { f -> f.name.startsWith("croft.db") }!!.fold(ByteArray(0)) { acc, f -> acc + f.readBytes() }
 
@@ -87,10 +101,15 @@ class SecretStoreKeyVaultTest {
         assertNotNull("the secret is in the vault", secret)
         val file = File(dir, "secrets/acct-$id.pgp-${made.fingerprint}.v1")
         assertTrue(file.exists())
-        // Sealed: the file does not hold the secret's bytes, and neither does the database.
-        val probe = secret!!.copyOfRange(secret.size - 40, secret.size - 8)
-        assertFalse(containsBytes(file.readBytes(), probe))
-        assertFalse(containsBytes(databaseBytes(), probe))
+        // Sealed: no run of the secret's bytes that is not also in the public certificate (which the database keeps, signatures
+        // and all) is in the store's file or anywhere in the database's files.
+        val public = dearmor(core.exportPublicKey(id, made.fingerprint))
+        val secretOnly = secretOnlyRuns(secret!!, public)
+        assertTrue("the secret has material of its own", secretOnly.isNotEmpty())
+        val sealed = file.readBytes()
+        val database = databaseBytes()
+        assertTrue(secretOnly.none { containsBytes(sealed, it) })
+        assertTrue(secretOnly.none { containsBytes(database, it) })
         secret.fill(0)
         // The core reads it back through the vault: a backup opens only with its passphrase.
         assertTrue(core.exportSecretKey(id, made.fingerprint, "made-up passphrase").startsWith("-----BEGIN PGP PRIVATE KEY BLOCK-----"))
